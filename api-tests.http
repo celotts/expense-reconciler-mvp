@@ -1,0 +1,243 @@
+# Expense Reconciler MVP - API Test Collection
+# Uso: VS Code REST Client extension, o copiar a Insomnia/Postman
+# Variables: reemplaza los UUIDs según se vayan generando
+
+@baseUrl = http://localhost:8000/api/v1
+@companyId = 
+@ticketId = 
+@bankTxId = 
+@reconId = 
+@mappingId = 
+
+### ============================================
+### 1. COMPANIES - Gestión de Empresas
+### ============================================
+
+### Crear Empresa (Tu negocio)
+POST {{baseUrl}}/companies/
+Content-Type: application/json
+
+{
+  "name": "Mi Taquería El Buen Sabor",
+  "tax_id": "MTA123456789"
+}
+
+### Listar Empresas
+GET {{baseUrl}}/companies/
+
+### Obtener Empresa
+GET {{baseUrl}}/companies/{{companyId}}
+
+### Actualizar Empresa
+PATCH {{baseUrl}}/companies/{{companyId}}
+Content-Type: application/json
+
+{
+  "name": "Mi Taquería El Buen Sabor SA de CV"
+}
+
+### Eliminar Empresa
+DELETE {{baseUrl}}/companies/{{companyId}}
+
+
+### ============================================
+### 2. TICKETS - Facturas/Gastos
+### ============================================
+
+### Crear Ticket Manual
+POST {{baseUrl}}/tickets/
+Content-Type: application/json
+
+{
+  "company_id": "{{companyId}}",
+  "provider_name": "GAS PROVEEDOR SA DE CV",
+  "provider_tax_id": "GPS010101XXX",
+  "total_amount": "500.00",
+  "tax_amount": "80.00",
+  "expense_date": "2025-01-15",
+  "category": "SUMINISTROS",
+  "raw_text": "Factura manual de gas"
+}
+
+### Extraer datos de PDF/imagen (PREVIEW - no guarda)
+POST {{baseUrl}}/tickets/extract
+Content-Type: multipart/form-data
+
+< ./test-files/factura_gas.pdf
+file_type=pdf
+
+### Extraer Y Guardar en un paso
+POST {{baseUrl}}/tickets/extract-and-create
+Content-Type: multipart/form-data
+
+< ./test-files/factura_gas.pdf
+file_type=pdf
+company_id={{companyId}}
+
+### Listar Tickets de una empresa
+GET {{baseUrl}}/tickets/?company_id={{companyId}}&skip=0&limit=50
+
+### Obtener Ticket
+GET {{baseUrl}}/tickets/{{ticketId}}
+
+### Actualizar Ticket
+PATCH {{baseUrl}}/tickets/{{ticketId}}
+Content-Type: application/json
+
+{
+  "category": "COMBUSTIBLE",
+  "total_amount": "520.00"
+}
+
+### Eliminar Ticket
+DELETE {{baseUrl}}/tickets/{{ticketId}}
+
+
+### ============================================
+### 3. BANK TRANSACTIONS - Movimientos Bancarios
+### ============================================
+
+### Crear Movimiento Manual
+POST {{baseUrl}}/bank-transactions/
+Content-Type: application/json
+
+{
+  "company_id": "{{companyId}}",
+  "transaction_date": "2025-01-15",
+  "amount": "-500.00",
+  "description": "PAGO GAS PROVEEDOR SA DE CV",
+  "reference": "REF001234"
+}
+
+### Preview CSV Import (no guarda)
+POST {{baseUrl}}/bank-transactions/import-csv
+Content-Type: multipart/form-data
+
+< ./test-files/movimientos_banco.csv
+date_column=fecha
+amount_column=importe
+description_column=concepto
+reference_column=referencia
+date_format=%d/%m/%Y
+decimal_separator=.
+thousands_separator=,
+encoding=utf-8
+separator=,
+
+### Importar CSV Y Guardar
+POST {{baseUrl}}/bank-transactions/import-csv-and-create
+Content-Type: multipart/form-data
+
+< ./test-files/movimientos_banco.csv
+date_column=fecha
+amount_column=importe
+description_column=concepto
+reference_column=referencia
+date_format=%d/%m/%Y
+decimal_separator=.
+thousands_separator=,
+encoding=utf-8
+separator=,
+company_id={{companyId}}
+
+### Listar Movimientos
+GET {{baseUrl}}/bank-transactions/?company_id={{companyId}}&skip=0&limit=50
+
+### Obtener Movimiento
+GET {{baseUrl}}/bank-transactions/{{bankTxId}}
+
+### Actualizar Movimiento
+PATCH {{baseUrl}}/bank-transactions/{{bankTxId}}
+Content-Type: application/json
+
+{
+  "is_reconciled": true
+}
+
+### Eliminar Movimiento
+DELETE {{baseUrl}}/bank-transactions/{{bankTxId}}
+
+
+### ============================================
+### 4. RECONCILIATIONS - Motor de Conciliación
+### ============================================
+
+### Ejecutar Conciliación Automática
+POST {{baseUrl}}/reconciliations/run
+Content-Type: application/json
+
+{
+  "company_id": "{{companyId}}",
+  "date_from": "2025-01-01",
+  "date_to": "2025-01-31",
+  "amount_tolerance": "0.01",
+  "date_tolerance_days": 3
+}
+
+### Listar Conciliaciones
+GET {{baseUrl}}/reconciliations/?company_id={{companyId}}&skip=0&limit=50
+
+### Obtener Conciliación
+GET {{baseUrl}}/reconciliations/{{reconId}}
+
+### Crear Conciliación Manual
+POST {{baseUrl}}/reconciliations/
+Content-Type: application/json
+
+{
+  "ticket_id": "{{ticketId}}",
+  "bank_transaction_id": "{{bankTxId}}",
+  "match_status": "PERFECT"
+}
+
+### Eliminar Conciliación (desmarca banco)
+DELETE {{baseUrl}}/reconciliations/{{reconId}}
+
+### Exportar Excel Estándar
+GET {{baseUrl}}/reconciliations/export/excel?company_id={{companyId}}&date_from=2025-01-01&date_to=2025-01-31&only_reconciled=true
+
+### Exportar CONTPAQI (México)
+GET {{baseUrl}}/reconciliations/export/contpaqi?company_id={{companyId}}&date_from=2025-01-01&date_to=2025-01-31&only_reconciled=true
+
+### Exportar Genérico Personalizado
+GET {{baseUrl}}/reconciliations/export/generic?company_id={{companyId}}&columns=Fecha,Proveedor,Total,Estatus%20Conciliacion
+
+### Crear Plantilla de Mapeo Contable (CONTPAQI)
+POST {{baseUrl}}/reconciliations/mappings
+Content-Type: application/json
+
+{
+  "company_id": "{{companyId}}",
+  "software_name": "CONTPAQI_PERSONALIZADO",
+  "column_mappings": {
+    "Fecha": "Fecha",
+    "Concepto": "Concepto",
+    "RFC": "RFC",
+    "Nombre": "Proveedor",
+    "Importe": "Subtotal",
+    "IVA": "IVA",
+    "Total": "Total",
+    "Cuenta": "6000",
+    "Referencia": "Referencia Banco",
+    "TipoComprobante": "I",
+    "Serie": "A",
+    "Folio": "001",
+    "Moneda": "MXN",
+    "TipoCambio": "1.0000",
+    "MetodoPago": "PUE",
+    "UsoCFDI": "G03"
+  }
+}
+
+### Listar Plantillas
+GET {{baseUrl}}/reconciliations/mappings?company_id={{companyId}}
+
+### Obtener Plantilla
+GET {{baseUrl}}/reconciliations/mappings/{{mappingId}}
+
+
+### ============================================
+### 5. HEALTH CHECK
+### ============================================
+
+GET http://localhost:8000/health
