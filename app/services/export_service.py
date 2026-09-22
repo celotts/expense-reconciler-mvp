@@ -1,16 +1,17 @@
 import io
 from datetime import date
 from decimal import Decimal
-from typing import List, Dict, Any, Optional
+from typing import Any
 from uuid import UUID
+
 import pandas as pd
-from sqlalchemy import select, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.ticket import TicketModel
+
+from app.models.accounting_mapping import AccountingMappingModel
 from app.models.bank_transaction import BankTransactionModel
 from app.models.reconciliation import ReconciliationModel
-from app.models.accounting_mapping import AccountingMappingModel
-
+from app.models.ticket import TicketModel
 
 CONTPAQI_COLUMNS = [
     "Fecha",
@@ -51,9 +52,9 @@ EXCEL_STANDARD_COLUMNS = [
 async def export_to_excel(
     db: AsyncSession,
     company_id: UUID,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
-    only_reconciled: bool = True
+    date_from: date | None = None,
+    date_to: date | None = None,
+    only_reconciled: bool = True,
 ) -> bytes:
     """
     Export reconciled data to standard Excel format.
@@ -87,10 +88,10 @@ async def export_to_excel(
 async def export_to_contpaqi(
     db: AsyncSession,
     company_id: UUID,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     only_reconciled: bool = True,
-    mapping_id: Optional[UUID] = None
+    mapping_id: UUID | None = None,
 ) -> bytes:
     """
     Export reconciled data to CONTPAQI-compatible format.
@@ -136,11 +137,11 @@ async def export_to_contpaqi(
 async def export_generic(
     db: AsyncSession,
     company_id: UUID,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     only_reconciled: bool = True,
-    columns: Optional[List[str]] = None,
-    column_mapping: Optional[Dict[str, str]] = None
+    columns: list[str] | None = None,
+    column_mapping: dict[str, str] | None = None,
 ) -> bytes:
     """
     Export reconciled data with custom column selection and mapping.
@@ -181,10 +182,10 @@ async def export_generic(
 async def _get_reconciliation_data(
     db: AsyncSession,
     company_id: UUID,
-    date_from: Optional[date],
-    date_to: Optional[date],
-    only_reconciled: bool
-) -> List[List[Any]]:
+    date_from: date | None,
+    date_to: date | None,
+    only_reconciled: bool,
+) -> list[list[Any]]:
     """Get joined reconciliation data from database."""
     query = select(
         TicketModel.expense_date,
@@ -218,33 +219,37 @@ async def _get_reconciliation_data(
     
     data = []
     for row in rows:
-        amount_diff = abs(row.total_amount - 
-            BankTransactionModel.__table__.c.amount if False else Decimal("0"))
+        amount_diff = abs(
+            row.total_amount - BankTransactionModel.__table__.c.amount
+            if False
+            else Decimal(0)
+        )
         date_diff = abs((row.expense_date - row.transaction_date).days)
-        
-        data.append([
-            row.expense_date.strftime("%d/%m/%Y"),
-            row.provider_name,
-            row.provider_tax_id or "",
-            row.category or "",
-            float(row.total_amount - (row.tax_amount or Decimal("0"))),
-            float(row.tax_amount or Decimal("0")),
-            float(row.total_amount),
-            row.transaction_date.strftime("%d/%m/%Y"),
-            row.description,
-            row.reference or "",
-            row.match_status,
-            f"{amount_diff:.2f}",
-            date_diff
-        ])
+
+        data.append(
+            [
+                row.expense_date.strftime("%d/%m/%Y"),
+                row.provider_name,
+                row.provider_tax_id or "",
+                row.category or "",
+                float(row.total_amount - (row.tax_amount or Decimal(0))),
+                float(row.tax_amount or Decimal(0)),
+                float(row.total_amount),
+                row.transaction_date.strftime("%d/%m/%Y"),
+                row.description,
+                row.reference or "",
+                row.match_status,
+                f"{amount_diff:.2f}",
+                date_diff,
+            ]
+        )
     
     return data
 
 
 def _transform_to_contpaqi(
-    data: List[List[Any]],
-    mapping: Optional[AccountingMappingModel]
-) -> List[List[Any]]:
+    data: list[list[Any]], mapping: AccountingMappingModel | None
+) -> list[list[Any]]:
     """
     Transform standard data to CONTPAQI format.
     

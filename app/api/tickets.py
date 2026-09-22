@@ -1,15 +1,57 @@
-from typing import List
+from datetime import date
+from decimal import Decimal
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
-from app.models.ticket import TicketModel
 from app.models.company import CompanyModel
-from app.schemas.ticket import TicketCreate, TicketUpdate, TicketResponse
-from app.services.parser_service import extract_ticket_data, TicketExtractionResult
+from app.models.ticket import TicketModel
+from app.schemas.ticket import TicketCreate, TicketResponse, TicketUpdate
+from app.services.parser_service import TicketExtractionResult, extract_ticket_data
+from app.services.ai_extractor import ExtractedInvoice, ai_extractor
 
 router = APIRouter(tags=["Tickets"])
+
+
+def _extracted_invoice_to_result(extracted: ExtractedInvoice) -> TicketExtractionResult:
+    """Map AI-extracted invoice to the API result schema."""
+    return TicketExtractionResult(
+        provider_name=extracted.provider_name,
+        provider_tax_id=extracted.provider_tax_id,
+        total_amount=extracted.total if extracted.total is not None else Decimal("0.00"),
+        tax_amount=extracted.tax_amount if extracted.tax_amount is not None else Decimal("0.00"),
+        expense_date=extracted.invoice_date or date.today(),
+        category=None,
+        raw_text=extracted.raw_text,
+    )
+
+
+async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtractionResult:
+    """Extract ticket data, routing images through the AI vision extractor."""
+    if file_type == "image":
+        try:
+            extracted = await ai_extractor.extract_from_image(content, mime_type="image/jpeg")
+            result = _extracted_invoice_to_result(extracted)
+            if extracted.provider_name == "ERROR_PARSING" or result.total_amount == Decimal("0.00"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                        "AI image extraction failed after retries: the model returned invalid JSON. "
+                        f"Check API/Ollama logs. Raw response: {extracted.raw_text[:500]}"
+                    ),
+                )
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"AI image extraction failed: {e!s}",
+            )
+    return extract_ticket_data(content, file_type=file_type)
 
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
@@ -42,12 +84,11 @@ async def extract_ticket(
     """Extract ticket data from uploaded file (PDF/Image)."""
     content = await file.read()
     try:
-        result = extract_ticket_data(content, file_type=file_type)
-        return result
+        return await _extract_from_upload(content, file_type)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to extract ticket data: {str(e)}"
+            detail=f"Failed to extract ticket data: {e!s}",
         )
 
 
@@ -70,11 +111,13 @@ async def extract_and_create_ticket(
     
     content = await file.read()
     try:
-        extracted = extract_ticket_data(content, file_type=file_type)
+        extracted = await _extract_from_upload(content, file_type)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to extract ticket data: {str(e)}"
+            detail=f"Failed to extract ticket data: {e!s}",
         )
     
     ticket = TicketModel(
@@ -93,13 +136,13 @@ async def extract_and_create_ticket(
     return ticket
 
 
-@router.get("/", response_model=List[TicketResponse])
+@router.get("/", response_model=list[TicketResponse])
 async def list_tickets(
     company_id: UUID | None = None,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-) -> List[TicketModel]:
+    db: AsyncSession = Depends(get_db),
+) -> list[TicketModel]:
     """List tickets with optional company filter."""
     query = select(TicketModel)
     if company_id:

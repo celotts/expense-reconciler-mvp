@@ -1,15 +1,15 @@
-from uuid import UUID
-from datetime import datetime, date
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
-from pydantic import BaseModel, Field, ConfigDict
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BankTransactionBase(BaseModel):
     transaction_date: date
     amount: Decimal = Field(..., max_digits=12, decimal_places=2)
     description: str = Field(..., min_length=1)
-    reference: Optional[str] = Field(None, max_length=100)
+    reference: str | None = Field(None, max_length=100)
 
 
 class BankTransactionCreate(BankTransactionBase):
@@ -17,11 +17,11 @@ class BankTransactionCreate(BankTransactionBase):
 
 
 class BankTransactionUpdate(BaseModel):
-    transaction_date: Optional[date] = None
-    amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2)
-    description: Optional[str] = Field(None, min_length=1)
-    reference: Optional[str] = Field(None, max_length=100)
-    is_reconciled: Optional[bool] = None
+    transaction_date: date | None = None
+    amount: Decimal | None = Field(None, max_digits=12, decimal_places=2)
+    description: str | None = Field(None, min_length=1)
+    reference: str | None = Field(None, max_length=100)
+    is_reconciled: bool | None = None
 
 
 class BankTransactionResponse(BankTransactionBase):

@@ -1,12 +1,13 @@
-from uuid import UUID
 from datetime import datetime
-from typing import Dict, Any
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AccountingMappingBase(BaseModel):
     software_name: str = Field(..., min_length=1, max_length=100)
-    column_mappings: Dict[str, Any]
+    column_mappings: dict[str, Any]
 
 
 class AccountingMappingCreate(AccountingMappingBase):

@@ -1,16 +1,15 @@
-from datetime import date
 from decimal import Decimal
-from typing import List, Optional, Tuple
-from uuid import UUID
-from sqlalchemy import select, and_, func
+
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.ticket import TicketModel
+
 from app.models.bank_transaction import BankTransactionModel
 from app.models.reconciliation import ReconciliationModel
+from app.models.ticket import TicketModel
 from app.schemas.reconciliation import (
+    ReconciliationMatchDetail,
     ReconciliationRunRequest,
     ReconciliationRunResponse,
-    ReconciliationMatchDetail
 )
 
 
@@ -51,8 +50,8 @@ async def run_reconciliation(
     """
     tickets = await _get_unreconciled_tickets(db, request)
     bank_transactions = await _get_unreconciled_bank_transactions(db, request)
-    
-    matches: List[ReconciliationResult] = []
+
+    matches: list[ReconciliationResult] = []
     matched_ticket_ids = set()
     matched_bank_ids = set()
     
@@ -76,9 +75,8 @@ async def run_reconciliation(
 
 
 async def _get_unreconciled_tickets(
-    db: AsyncSession,
-    request: ReconciliationRunRequest
-) -> List[TicketModel]:
+    db: AsyncSession, request: ReconciliationRunRequest
+) -> list[TicketModel]:
     """Get tickets that haven't been reconciled yet."""
     query = select(TicketModel).where(TicketModel.company_id == request.company_id)
     
@@ -95,9 +93,8 @@ async def _get_unreconciled_tickets(
 
 
 async def _get_unreconciled_bank_transactions(
-    db: AsyncSession,
-    request: ReconciliationRunRequest
-) -> List[BankTransactionModel]:
+    db: AsyncSession, request: ReconciliationRunRequest
+) -> list[BankTransactionModel]:
     """Get bank transactions that haven't been reconciled yet."""
     query = select(BankTransactionModel).where(
         and_(
@@ -117,10 +114,10 @@ async def _get_unreconciled_bank_transactions(
 
 def _find_best_match(
     ticket: TicketModel,
-    bank_transactions: List[BankTransactionModel],
+    bank_transactions: list[BankTransactionModel],
     amount_tolerance: Decimal,
-    date_tolerance_days: int
-) -> Optional[Tuple[BankTransactionModel, str, Decimal, int]]:
+    date_tolerance_days: int,
+) -> tuple[BankTransactionModel, str, Decimal, int] | None:
     """
     Find the best matching bank transaction for a ticket.
     
@@ -151,10 +148,13 @@ def _find_best_match(
         return None
     
     bank_tx, amount_diff, date_diff = best_match
-    
-    if amount_diff == Decimal("0") and date_diff <= date_tolerance_days:
-        match_status = "PERFECT"
-    elif amount_diff <= amount_tolerance and date_diff <= date_tolerance_days:
+
+    if (
+        amount_diff == Decimal(0)
+        and date_diff <= date_tolerance_days
+        or amount_diff <= amount_tolerance
+        and date_diff <= date_tolerance_days
+    ):
         match_status = "PERFECT"
     elif amount_diff <= amount_tolerance:
         match_status = "MANUAL"
@@ -165,8 +165,7 @@ def _find_best_match(
 
 
 async def _save_reconciliations(
-    db: AsyncSession,
-    matches: List[ReconciliationResult]
+    db: AsyncSession, matches: list[ReconciliationResult]
 ) -> None:
     """Save reconciliation results to database."""
     for match in matches:
@@ -183,11 +182,11 @@ async def _save_reconciliations(
 
 
 def _build_response(
-    tickets: List[TicketModel],
-    bank_transactions: List[BankTransactionModel],
-    matches: List[ReconciliationResult],
+    tickets: list[TicketModel],
+    bank_transactions: list[BankTransactionModel],
+    matches: list[ReconciliationResult],
     matched_ticket_ids: set,
-    matched_bank_ids: set
+    matched_bank_ids: set,
 ) -> ReconciliationRunResponse:
     """Build the response object."""
     perfect = sum(1 for m in matches if m.match_status == "PERFECT")
