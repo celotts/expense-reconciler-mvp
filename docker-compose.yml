@@ -19,6 +19,26 @@ services:
     networks:
       - expense_network
 
+  # Ollama (Local LLM) - Opcional: descomenta si quieres correrlo en Docker
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: expense_ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0
+  #   networks:
+  #     - expense_network
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
   expense-api:
     build:
       context: .
@@ -60,6 +80,7 @@ services:
 
 volumes:
   pgvector_expense_data:
+  # ollama_data:
 
 networks:
   expense_network:

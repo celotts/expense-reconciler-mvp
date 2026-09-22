@@ -9,6 +9,14 @@ pandas>=2.2.1
 pdfplumber>=0.11.0
 openpyxl>=3.1.2
 
+# AI / ML dependencies
+openai>=1.30.0
+tiktoken>=0.7.0
+sentence-transformers>=3.0.0
+torch>=2.3.0
+scikit-learn>=1.4.0
+rapidfuzz>=3.8.0
+
 # Test dependencies
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
