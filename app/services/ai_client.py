@@ -1,18 +1,15 @@
 """
 AI Client Service - Unified interface for OpenAI / Azure OpenAI / Ollama / Local embeddings
 """
-import os
-import json
-import asyncio
-import httpx
-from typing import List, Dict, Any, Optional, Literal
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
-from openai import AsyncOpenAI, AsyncAzureOpenAI
-from sentence_transformers import SentenceTransformer
+import httpx
 import torch
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 from rapidfuzz import fuzz, process
+from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
 
@@ -36,9 +33,9 @@ class AIClient:
     """Unified client for OpenAI, Azure OpenAI, and local models"""
 
     def __init__(self):
-        self._openai_client: Optional[AsyncOpenAI] = None
-        self._azure_client: Optional[AsyncAzureOpenAI] = None
-        self._local_embedding_model: Optional[SentenceTransformer] = None
+        self._openai_client: AsyncOpenAI | None = None
+        self._azure_client: AsyncAzureOpenAI | None = None
+        self._local_embedding_model: SentenceTransformer | None = None
         self._provider = self._detect_provider()
 
     def _detect_provider(self) -> AIProvider:
@@ -84,17 +81,17 @@ class AIClient:
         if not hasattr(self, '_ollama_client') or self._ollama_client is None:
             self._ollama_client = httpx.AsyncClient(
                 base_url=settings.OLLAMA_BASE_URL,
-                timeout=httpx.Timeout(120.0, connect=10.0)
+                timeout=httpx.Timeout(settings.OLLAMA_TIMEOUT, connect=10.0)
             )
         return self._ollama_client
 
     async def chat_completion(
         self,
-        messages: List[Dict[str, str]],
-        model: Optional[str] = None,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
-        response_format: Optional[Dict] = None,
+        response_format: dict | None = None,
     ) -> AIResponse:
         """Chat completion using configured provider"""
         model = model or settings.OPENAI_MODEL
@@ -139,34 +136,65 @@ class AIClient:
 
     async def _ollama_chat_completion(
         self,
-        messages: List[Dict[str, str]],
-        model: Optional[str],
+        messages: list[dict[str, Any]],
+        model: str | None,
         temperature: float,
         max_tokens: int,
-        response_format: Optional[Dict],
+        response_format: dict | None,
     ) -> AIResponse:
-        """Chat completion using Ollama local LLM"""
+        """Chat completion using Ollama local LLM, with vision (base64 image) support."""
         model = model or settings.OLLAMA_MODEL
-        
+
+        ollama_messages = []
+        for msg in messages:
+            content = msg.get("content", "")
+            images: list[str] = []
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if "base64," in url:
+                            images.append(url.split("base64,", 1)[1])
+                content = "\n".join(text_parts)
+            elif isinstance(content, str):
+                content = content
+            else:
+                content = str(content)
+            ollama_msg: dict[str, Any] = {
+                "role": msg.get("role", "user"),
+                "content": content,
+            }
+            if images:
+                ollama_msg["images"] = images
+            ollama_messages.append(ollama_msg)
+
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": ollama_messages,
             "stream": False,
+            "keep_alive": "30m",
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
             },
         }
-        
+
         if response_format and response_format.get("type") == "json_object":
-            payload["format"] = "json"
+            # gemma + format:json produces broken output; the parser handles
+            # fenced JSON without forcing ollama's strict format.
+            pass
 
         response = await self.ollama_client.post("/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
-        
+
         content = data.get("message", {}).get("content", "")
-        
+
         return AIResponse(
             content=content,
             tokens_used=data.get("eval_count", 0) + data.get("prompt_eval_count", 0),
@@ -174,7 +202,7 @@ class AIClient:
             provider=AIProvider.OLLAMA,
         )
 
-    async def create_embedding(self, text: str) -> List[float]:
+    async def create_embedding(self, text: str) -> list[float]:
         """Create embedding using configured provider"""
         if self._provider == AIProvider.AZURE and settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT:
             response = await self.azure_client.embeddings.create(
@@ -194,7 +222,7 @@ class AIClient:
         embedding = self.local_embedding_model.encode(text, convert_to_tensor=False)
         return embedding.tolist()
 
-    async def create_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+    async def create_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
         """Create embeddings for multiple texts efficiently"""
         if self._provider == AIProvider.AZURE and settings.AZURE_OPENAI_EMBEDDING_DEPLOYMENT:
             response = await self.azure_client.embeddings.create(
@@ -219,7 +247,7 @@ class VendorNormalizer:
     """Normalize vendor names using fuzzy matching"""
 
     def __init__(self):
-        self.known_vendors: Dict[str, str] = {}  # normalized -> canonical
+        self.known_vendors: dict[str, str] = {}  # normalized -> canonical
         self._load_common_vendors()
 
     def _load_common_vendors(self):

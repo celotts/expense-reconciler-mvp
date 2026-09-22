@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, TIMESTAMP
+
+from sqlalchemy import TIMESTAMP, Column, String
 from sqlalchemy.dialects.postgresql import UUID
+
 from app.core.database import Base
 
 

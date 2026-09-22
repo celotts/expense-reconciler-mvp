@@ -1,13 +1,18 @@
-from typing import List
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
 from app.models.bank_transaction import BankTransactionModel
 from app.models.company import CompanyModel
-from app.schemas.bank_transaction import BankTransactionCreate, BankTransactionUpdate, BankTransactionResponse
-from app.services.parser_service import parse_bank_csv, BankTransactionRow
+from app.schemas.bank_transaction import (
+    BankTransactionCreate,
+    BankTransactionResponse,
+    BankTransactionUpdate,
+)
+from app.services.parser_service import BankTransactionRow, parse_bank_csv
 
 router = APIRouter(tags=["Bank Transactions"])
 
@@ -34,7 +39,7 @@ async def create_bank_transaction(
     return transaction
 
 
-@router.post("/import-csv", response_model=List[BankTransactionRow])
+@router.post("/import-csv", response_model=list[BankTransactionRow])
 async def import_bank_csv_preview(
     file: UploadFile = File(...),
     date_column: str = Form("fecha"),
@@ -44,8 +49,8 @@ async def import_bank_csv_preview(
     date_format: str = Form("%d/%m/%Y"),
     decimal_separator: str = Form(","),
     thousands_separator: str = Form("."),
-    encoding: str = Form("utf-8")
-) -> List[BankTransactionRow]:
+    encoding: str = Form("utf-8"),
+) -> list[BankTransactionRow]:
     """Preview CSV import without saving to database."""
     content = await file.read()
     try:
@@ -64,11 +69,15 @@ async def import_bank_csv_preview(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse CSV: {str(e)}"
+            detail=f"Failed to parse CSV: {e!s}",
         )
 
 
-@router.post("/import-csv-and-create", response_model=List[BankTransactionResponse], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/import-csv-and-create",
+    response_model=list[BankTransactionResponse],
+    status_code=status.HTTP_201_CREATED,
+)
 async def import_bank_csv_and_create(
     file: UploadFile = File(...),
     company_id: UUID = Form(...),
@@ -80,8 +89,8 @@ async def import_bank_csv_and_create(
     decimal_separator: str = Form(","),
     thousands_separator: str = Form("."),
     encoding: str = Form("utf-8"),
-    db: AsyncSession = Depends(get_db)
-) -> List[BankTransactionModel]:
+    db: AsyncSession = Depends(get_db),
+) -> list[BankTransactionModel]:
     """Parse CSV and create bank transactions in database."""
     company_result = await db.execute(
         select(CompanyModel).where(CompanyModel.id == company_id)
@@ -108,7 +117,7 @@ async def import_bank_csv_and_create(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse CSV: {str(e)}"
+            detail=f"Failed to parse CSV: {e!s}",
         )
     
     transactions = []
@@ -130,13 +139,13 @@ async def import_bank_csv_and_create(
     return transactions
 
 
-@router.get("/", response_model=List[BankTransactionResponse])
+@router.get("/", response_model=list[BankTransactionResponse])
 async def list_bank_transactions(
     company_id: UUID | None = None,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-) -> List[BankTransactionModel]:
+    db: AsyncSession = Depends(get_db),
+) -> list[BankTransactionModel]:
     """List bank transactions with optional company filter."""
     query = select(BankTransactionModel)
     if company_id:

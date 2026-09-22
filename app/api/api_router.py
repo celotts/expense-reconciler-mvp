@@ -1,8 +1,9 @@
 from fastapi import APIRouter
-from app.api.companies import router as companies_router
-from app.api.tickets import router as tickets_router
+
 from app.api.bank_transactions import router as bank_transactions_router
+from app.api.companies import router as companies_router
 from app.api.reconciliations import router as reconciliations_router
+from app.api.tickets import router as tickets_router
 
 api_router = APIRouter()
 

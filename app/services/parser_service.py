@@ -1,25 +1,26 @@
 import io
 from datetime import date
 from decimal import Decimal
-from typing import List, Dict, Any, Optional
+from typing import Any
+
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class BankTransactionRow(BaseModel):
     transaction_date: date
     amount: Decimal
     description: str
-    reference: Optional[str] = None
+    reference: str | None = None
 
 
 class TicketExtractionResult(BaseModel):
     provider_name: str
-    provider_tax_id: Optional[str] = None
+    provider_tax_id: str | None = None
     total_amount: Decimal
     tax_amount: Decimal = Decimal("0.00")
     expense_date: date
-    category: Optional[str] = None
+    category: str | None = None
     raw_text: str
 
 
@@ -33,8 +34,8 @@ def parse_bank_csv(
     decimal_separator: str = ",",
     thousands_separator: str = ".",
     encoding: str = "utf-8",
-    separator: str = ","
-) -> List[BankTransactionRow]:
+    separator: str = ",",
+) -> list[BankTransactionRow]:
     """
     Parse a CSV file containing bank transactions.
     
@@ -85,7 +86,7 @@ def parse_bank_csv(
                 reference=reference
             ))
         except Exception as e:
-            raise ValueError(f"Error parsing row: {row.to_dict()}. Error: {str(e)}")
+            raise ValueError(f"Error parsing row: {row.to_dict()}. Error: {e!s}")
     
     return transactions
 
@@ -93,7 +94,7 @@ def parse_bank_csv(
 def extract_ticket_data(
     file_content: bytes,
     file_type: str = "pdf",
-    extraction_config: Optional[Dict[str, Any]] = None
+    extraction_config: dict[str, Any] | None = None,
 ) -> TicketExtractionResult:
     """
     Extract structured data from a ticket/receipt file (PDF, image, or text).
