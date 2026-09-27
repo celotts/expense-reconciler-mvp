@@ -1,6 +1,7 @@
 import re
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -112,9 +113,67 @@ class TicketUpdate(BaseModel):
         return self
 
 
-class TicketResponse(TicketBase):
+class TicketResponse(BaseModel):
+    """Forma de LECTURA de un ticket.
+
+    No hereda de TicketBase a proposito. Los validadores de TicketBase son de
+    escritura: un ticket no puede CREARSE con total 0 ni con proveedor
+    "Unknown Provider". Pero un ticket PENDIENTE existe precisamente porque
+    tiene esos datos rotos: es la foto de un papel que la IA no pudo leer.
+
+    Si esta clase heredara los validadores de entrada, la cola de revision
+    reventaria con un 500 al intentar devolver justamente los tickets que
+    existen para revision. El error sale de nuevo: un ticket ilegible es
+    invisible, que es el unico resultado inaceptable.
+    """
+
     id: UUID
     company_id: UUID
+    provider_name: str
+    provider_tax_id: str | None = None
+    total_amount: Decimal
+    tax_amount: Decimal
+    expense_date: date
+    category: str | None = None
+    raw_text: str | None = None
     created_at: datetime
+    confidence: Decimal | None = None
+    confidence_source: str | None = None
+    extraction_status: str
+    source_type: str | None = None
+    source_file: str | None = None
+    validation_errors: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    review_notes: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TicketReviewRequest(BaseModel):
+    """Accion de revision humana sobre un ticket en cola.
+
+    Aprobar exige datos validos. Es la contraparte del gate: si el humano
+    confirma, los checks se vuelven a correr para que no entre a conciliacion
+    algo que el gate habia bloqueado.
+    """
+
+    action: Literal["approve", "reject", "request_info"]
+    notes: str | None = Field(None, max_length=2000)
+    # Correcciones aplicadas durante la revision (opcional).
+    provider_name: str | None = Field(None, min_length=1, max_length=150)
+    provider_tax_id: str | None = Field(None, max_length=50)
+    total_amount: Decimal | None = Field(None, gt=0, max_digits=12, decimal_places=2)
+    tax_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    expense_date: date | None = None
+    category: str | None = Field(None, max_length=100)
+
+
+class TicketReviewQueueResponse(BaseModel):
+    """Cola de revision agrupada por estado, para la pantalla de pendientes."""
+
+    company_id: UUID | None = None
+    total_open: int
+    por_estado: dict[str, int]
+    antiguedad_promedio_dias: float | None = None
+    tickets: list[TicketResponse]

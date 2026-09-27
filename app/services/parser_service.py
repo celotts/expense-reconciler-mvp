@@ -50,6 +50,12 @@ class TicketExtractionResult(BaseModel):
     expense_date: date
     category: str | None = None
     raw_text: str
+    # El parser por reglas no tiene modelo de confianza: no estima. Se deja
+    # None y el gate lo trata como confianza media-baja, que es lo honesto.
+    confidence: float | None = None
+    # Subtotal del documento, si el documento lo trae. Permite verificar
+    # subtotal + IVA == total en el gate, que es el check mas barato que hay.
+    subtotal: Decimal | None = None
 
 
 def parse_bank_csv(

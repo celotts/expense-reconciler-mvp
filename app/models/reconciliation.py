@@ -1,11 +1,11 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy import TIMESTAMP, Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.core.time import utcnow
 
 
 class ReconciliationModel(Base):
@@ -15,7 +15,7 @@ class ReconciliationModel(Base):
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("tickets.id", ondelete="SET NULL"), nullable=True)
     bank_transaction_id = Column(UUID(as_uuid=True), ForeignKey("bank_transactions.id", ondelete="SET NULL"), nullable=True)
     match_status = Column(String(50), nullable=False)
-    matched_at = Column(TIMESTAMP(timezone=True), default=datetime.utcnow)
+    matched_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
     ticket = relationship("TicketModel", back_populates="reconciliations")
     bank_transaction = relationship("BankTransactionModel", back_populates="reconciliations")

@@ -61,6 +61,13 @@ logs/
 *.sqlite
 *.db
 
+# El .gitignore global de este equipo ignora *.sql, pero el esquema y las
+# migraciones SI son parte del proyecto. Sin db/init.sql no hay forma de
+# levantar el stack en una maquina nueva, y sin db/migrations/ no hay forma de
+# actualizar una base que ya existe. Se versionan a proposito.
+!db/
+!db/**/*.sql
+
 # Frontend
 front/node_modules/
 front/dist/

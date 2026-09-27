@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -15,6 +14,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.core.time import utcnow
 
 
 class BankTransactionModel(Base):
@@ -27,7 +27,7 @@ class BankTransactionModel(Base):
     description = Column(Text, nullable=False)
     reference = Column(String(100), nullable=True)
     is_reconciled = Column(Boolean, default=False)
-    created_at = Column(TIMESTAMP(timezone=True), default=datetime.utcnow)
+    created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
     company = relationship("CompanyModel", backref="bank_transactions")
     reconciliations = relationship("ReconciliationModel", back_populates="bank_transaction")
