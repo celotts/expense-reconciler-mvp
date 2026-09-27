@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { companiesApi, type Company, type CompanyCreate, type CompanyUpdate } from '../services/api';
+import { companiesApi, type Company, type CompanyCreate } from '../services/api';
 import { 
-  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState 
+  Button, Input, Modal, Table, Card, Loading, EmptyState 
 } from '../components/ui';
 
 export function Companies() {
@@ -75,8 +75,8 @@ export function Companies() {
     { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
     { key: 'actions', header: 'Acciones', render: (c: Company) => (
       <div className="flex gap-2">
-        <Button variant="ghost" size="sm" onClick={() => openEditModal(c)}>Editar</Button>
-        <Button variant="danger" size="sm" onClick={() => handleDelete(c.id)}>Eliminar</Button>
+        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
+        <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}>Eliminar</Button>
       </div>
     )},
   ];
@@ -108,17 +108,7 @@ export function Companies() {
           />
         ) : (
           <Table
-            columns={[
-              { key: 'name', header: 'Nombre', render: (c: Company) => <span className="font-medium">{c.name}</span> },
-              { key: 'tax_id', header: 'RFC', render: (c: Company) => <code className="text-sm bg-gray-100 px-2 py-1 rounded">{c.tax_id}</code> },
-              { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
-              { key: 'actions', header: 'Acciones', render: (c: Company) => (
-                <div className="flex gap-2">
-                  <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
-                  <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}>Eliminar</Button>
-                </div>
-              )},
-            ]}
+            columns={columns}
             data={companies}
             keyField="id"
           />

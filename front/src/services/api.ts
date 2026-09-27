@@ -1,5 +1,14 @@
 // API Service Layer
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+import type {
+  Company, CompanyCreate, CompanyUpdate,
+  Ticket, TicketCreate, TicketUpdate,
+  BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
+  TicketExtractionResult,
+  Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse,
+  AccountingMapping, AccountingMappingCreate
+} from '../types/api';
+
+const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
 async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
