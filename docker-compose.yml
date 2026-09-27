@@ -19,25 +19,17 @@ services:
     networks:
       - expense_network
 
-  # Ollama (Local LLM) - Opcional: descomenta si quieres correrlo en Docker
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: expense_ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   environment:
-  #     - OLLAMA_HOST=0.0.0.0
-  #   networks:
-  #     - expense_network
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [gpu]
+  ollama:
+    image: ollama/ollama:latest
+    container_name: expense_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - expense_network
 
   expense-api:
     build:
@@ -58,21 +50,18 @@ services:
     depends_on:
       postgres-reconciler:
         condition: service_healthy
+      ollama:
+        condition: service_started
     networks:
       - expense_network
 
   expense-front:
     build:
       context: .
-      dockerfile: front/Dockerfile
+      dockerfile: front/Dockerfile.prod
     container_name: expense_front_service
     ports:
-      - "5173:5173"
-    volumes:
-      - ./front:/app
-      - /app/node_modules
-    environment:
-      - VITE_API_URL=http://localhost:8000/api/v1
+      - "3000:80"
     depends_on:
       - expense-api
     networks:
@@ -80,7 +69,8 @@ services:
 
 volumes:
   pgvector_expense_data:
-  # ollama_data:
+  ollama_data:
+
 
 networks:
   expense_network:

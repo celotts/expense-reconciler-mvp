@@ -42,7 +42,7 @@ class ExtractedInvoice:
     extraction_method: str = "llm"
 
 
-# System prompt for invoice extraction
+# System prompt for invoice extraction (text-based)
 INVOICE_EXTRACTION_PROMPT = """
 Eres un experto en extracción de datos de facturas fiscales mexicanas (CFDI 4.0) y tickets de compra.
 Extrae TODA la información estructurada posible del documento proporcionado.
@@ -62,6 +62,50 @@ Para CFDI agrega si están visibles: provider_address, receiver_name, receiver_t
 Para TICKETS SIMPLES (no CFDI): omite campos CFDI y usa payment_method "EFECTIVO", "TARJETA" o "TRANSFERENCIA".
 
 Devuelve SOLO JSON válido. Sin markdown, sin explicaciones, sin campos adicionales.
+"""
+
+# Vision-specific prompt - more explicit about JSON-only output
+VISION_EXTRACTION_PROMPT = """
+Eres un experto en extracción de datos de facturas fiscales mexicanas (CFDI 4.0) y tickets de compra a partir de imágenes.
+Analiza la imagen y extrae TODA la información estructurada posible.
+
+REGLAS CRÍTICAS - DEBES SEGUIRLAS EXACTAMENTE:
+1. SOLO devuelve JSON válido. NO agregues texto explicativo, NO uses markdown, NO agregues comentarios.
+2. Montos: Siempre en formato decimal con 2 decimales (ej: 1500.00, no "1,500.00")
+4. RFC: Formato exacto mexicano (12-13 chars: 3-4 letras + 6 dígitos + 3 homoclave)
+5. Montos negativos NO existen en facturas (solo en notas de crédito)
+6. IVA en México es 16% general, 8% frontera, 0% exento
+7. Si no encuentras un dato, usa null (NO inventes, NO uses valores de ejemplo)
+
+CAMPOS REQUERIDOS EN EL JSON:
+- provider_name: nombre del proveedor/emisor (string o null)
+- provider_tax_id: RFC del emisor (string o null)
+- provider_address: dirección del emisor (string o null)
+- receiver_name: nombre del receptor (string o null)
+- receiver_tax_id: RFC del receptor (string o null)
+- invoice_number: número de factura (string o null)
+- invoice_series: serie de factura (string o null)
+- invoice_date: fecha de factura YYYY-MM-DD (string o null)
+- due_date: fecha de vencimiento YYYY-MM-DD (string o null)
+- currency: moneda (default "MXN")
+- exchange_rate: tipo de cambio (number o null)
+- subtotal: subtotal sin impuestos (number)
+- tax_amount: total de impuestos (number)
+- tax_breakdown: array de objetos con rate y amount
+- total: total con impuestos (number)
+- payment_method: "EFECTIVO" | "TARJETA" | "TRANSFERENCIA" | null
+- payment_terms: condiciones de pago (string o null)
+- items: array de objetos con description, quantity, unit_price, total, tax_rate, tax_amount
+- raw_text: todo el texto visible en la imagen
+- confidence: 0.0 a 1.0
+- extraction_method: "vision"
+
+IMPORTANTE: 
+- Devuelve SOLO el JSON, nada más.
+- NO uses ```json``` ni markdown.
+- NO agregues texto antes o después del JSON.
+- Si no ves un campo en la imagen, pon null.
+- NO copies valores de ejemplo - extrae los datos REALES de la imagen.
 """
 
 
@@ -86,7 +130,7 @@ class AIExtractor:
     def _vision_model(self) -> str:
         """Model used for vision extraction."""
         if self._provider == "ollama":
-            return settings.OLLAMA_MODEL
+            return settings.OLLAMA_VISION_MODEL
         return "gpt-4o"
 
     async def extract_from_pdf(self, pdf_bytes: bytes) -> ExtractedInvoice:
@@ -219,7 +263,7 @@ class AIExtractor:
                 messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": INVOICE_EXTRACTION_PROMPT},
+                        {"type": "text", "text": VISION_EXTRACTION_PROMPT},
                         {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}", "detail": "high"}},
                     ]
                 }],

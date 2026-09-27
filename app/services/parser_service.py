@@ -1,10 +1,38 @@
 import io
+import re
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel
+
+# Mexican RFC: 3-4 letters (persona fisica/moral), 6 digits (YYMMDD), 3 alnum
+# (homoclave). The letter group is LAZY so a 3-letter RFC like WAL910101XXX
+# matches as a whole instead of swallowing 4 letters and shifting the groups.
+RFC_LABEL_RE = re.compile(
+    r"(?:rfc|nit|tax\s*id)\s*[:]?\s*([A-Z&Ñ]{3,4}?\d{6}[A-Z0-9]{3})\b",
+    re.IGNORECASE,
+)
+
+# Line labels that describe a field, not the emitting business. A line starting
+# with one of these is metadata, never a provider name.
+# NOTE: only labels that are unambiguously field names belong here. Words like
+# "tienda", "caja" or "consumidor" are common parts of real Mexican business
+# names ("TIENDA GENERICA", "LA CASA DE LAS CAJAS") and must not be excluded.
+FIELD_LABEL_RE = re.compile(
+    r"^(?:rfc|nit|tax\s*id|fecha|hora|folio|serie|no\.?|factura|subtotal|total"
+    r"|iva|impuesto|importe|monto|art[ií]culos?|concepto|cantidad|descripci[oó]n"
+    r"|tel[eé]fono|tel\.?|direcci[oó]n|domicilio|referencia|metodo\s*de\s*pago)\b",
+    re.IGNORECASE,
+)
+
+# Explicit issuer labels used by CFDI-style layouts. The business name is the
+# VALUE of the line, not the whole line.
+ISSUER_LABEL_RE = re.compile(
+    r"^(?:emisor|proveedor|raz[oó]n\s*social|nombre(?:\s*comercial)?)\s*[:]\s*(.+)$",
+    re.IGNORECASE,
+)
 
 
 class BankTransactionRow(BaseModel):
@@ -164,7 +192,7 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     category = None
     
     import re
-    
+
     def parse_mexican_number(num_str: str) -> Decimal:
         """Convert Mexican format '1,234.56' to Decimal."""
         cleaned = num_str.replace("$", "").replace("€", "").replace(" ", "")
@@ -180,68 +208,97 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         elif "," in cleaned:
             cleaned = cleaned.replace(",", "")
         return Decimal(cleaned)
-    
-    # First pass: identify emitter (provider) - usually in first 10 lines
-    for i, line in enumerate(lines[:15]):
-        # Look for RFC of emitter
-        rfc_match = re.search(r"(?:rfc|nit|tax id)[\s:]*([A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3})", line, re.IGNORECASE)
+
+    def is_provider_candidate(line: str) -> bool:
+        """True if a line plausibly names the business that issued the receipt."""
+        # Metadata line ("FECHA: 20/02/2025", "RFC: WAL...", "IVA (16%): ...")
+        if FIELD_LABEL_RE.match(line):
+            return False
+        # Boilerplate document headers, anywhere in the line
+        skip_patterns = ["factura electrónica", "factura electronica", "cfdi", "comprobante", "recibo"]
+        if any(p in line.lower() for p in skip_patterns):
+            return False
+        # Too short to be a business name
+        if len(line) < 5:
+            return False
+        # A bare number is an amount, not a name
+        if re.match(r"^[\s$€]*[\d.,]+$", line):
+            return False
+        # A colon in the middle means it is a "LABEL: value" row
+        if ":" in line:
+            return False
+        # Must contain a run of 3+ capital letters (company-name heuristic)
+        return bool(re.search(r"[A-Z]{3,}", line))
+
+    # First pass: identify emitter (provider). It is usually the first non-empty
+    # line, so the scan starts at i == 0 and stops at the first plausible name.
+    for line in lines[:15]:
+        rfc_match = RFC_LABEL_RE.search(line)
         if rfc_match and provider_tax_id is None:
             provider_tax_id = rfc_match.group(1)
-        
-        # Look for provider name (skip headers like "FACTURA ELECTRÓNICA")
-        if provider_name == "Unknown Provider" and i > 0:
-            # Skip common headers
-            skip_patterns = ["factura", "electrónica", "cfdi", "ticket", "comprobante", "recibo"]
-            if not any(p in line.lower() for p in skip_patterns) and len(line) > 5:
-                # Check if it looks like a company name (has spaces, reasonable length)
-                if re.search(r"[A-Z]{3,}", line) and not re.match(r"^\d", line):
-                    provider_name = line
-    
+
+        if provider_name != "Unknown Provider":
+            continue
+
+        # CFDI layouts label the emitter explicitly: "EMISOR: FARMACIAS DEL SUR"
+        issuer_match = ISSUER_LABEL_RE.match(line)
+        if issuer_match and is_provider_candidate(issuer_match.group(1)):
+            provider_name = issuer_match.group(1).strip()
+            continue
+
+        if is_provider_candidate(line):
+            provider_name = line
+
     # Second pass: extract amounts and dates
     for line in lines:
-        # Total - look for "TOTAL:" specifically (not subtotal)
+        # Total - look for "TOTAL:" specifically (not SUBTOTAL)
         total_match = re.search(r"(?:^|\s)total[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
         if total_match and "subtotal" not in line.lower():
             try:
                 total_amount = parse_mexican_number(total_match.group(1))
-            except Exception:
+            except (InvalidOperation, ValueError):
                 pass
-        
-        # IVA
-        tax_match = re.search(r"(?:iva|tax|impuesto)(?:\s*\(\d+%\))?[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
+
+        # IVA - word-anchored so product names containing "iva"/"tax" don't match
+        tax_match = re.search(r"\b(?:iva|tax|impuesto)\b(?:\s*\(\d+(?:[.,]\d+)?\s*%\))?[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
         if tax_match:
             try:
                 tax_amount = parse_mexican_number(tax_match.group(1))
-            except Exception:
+            except (InvalidOperation, ValueError):
                 pass
-        
+
         # Date - prefer "Fecha Expedicion" or "Fecha:" patterns
         date_match = re.search(r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line, re.IGNORECASE)
         if date_match:
             try:
                 expense_date = pd.to_datetime(date_match.group(1), dayfirst=True).date()
-            except Exception:
+            except (ValueError, TypeError):
                 pass
-        elif re.search(r"\b\d{4}-\d{2}-\d{2}T", line):  # ISO format with time
-            try:
-                expense_date = pd.to_datetime(line.split("T")[0]).date()
-            except Exception:
-                pass
-        
-        # RFC - emitter (first one found in emitter section)
-        rfc_match = re.search(r"(?:rfc|nit|tax id)[\s:]*([A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3})", line, re.IGNORECASE)
+        else:
+            # ISO format: alone, with a time component, or followed by anything.
+            # `(?!\d)` instead of `\b` because "15T10:20" has no word boundary
+            # between the date and the time ("5" and "T" are both word chars).
+            iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})(?!\d)", line)
+            if iso_match:
+                try:
+                    expense_date = pd.to_datetime(iso_match.group(1)).date()
+                except (ValueError, TypeError):
+                    pass
+
+        # RFC - emitter (first one found wins)
+        rfc_match = RFC_LABEL_RE.search(line)
         if rfc_match and provider_tax_id is None:
             provider_tax_id = rfc_match.group(1)
     
     # Fallback: if no total found, try generic total match
     if total_amount == Decimal("0.00"):
         for line in reversed(lines):
-            total_match = re.search(r"(?:total|importe)[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
+            total_match = re.search(r"(?:^|\s)(?:total|importe)[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
             if total_match:
                 try:
                     total_amount = parse_mexican_number(total_match.group(1))
                     break
-                except Exception:
+                except (InvalidOperation, ValueError):
                     pass
     
     return TicketExtractionResult(

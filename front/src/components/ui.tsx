@@ -1,17 +1,21 @@
 // UI Components
-import { useState } from 'react';
 
 // Button
 export function Button({ 
   children, 
   onClick, 
   variant = 'primary', 
+  size = 'md',
   disabled = false, 
   type = 'button',
   className = '',
   ...props 
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost' }) {
-  const base = 'px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost'; size?: 'sm' | 'md' }) {
+  const base = 'rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+  const sizes = {
+    sm: 'px-2.5 py-1.5 text-sm',
+    md: 'px-4 py-2',
+  };
   const variants = {
     primary: 'bg-blue-600 text-white hover:bg-blue-700',
     secondary: 'bg-gray-200 text-gray-800 hover:bg-gray-300',
@@ -23,7 +27,7 @@ export function Button({
       type={type} 
       onClick={onClick} 
       disabled={disabled}
-      className={`${base} ${variants[variant]} ${className}`}
+      className={`${base} ${sizes[size]} ${variants[variant]} ${className}`}
       {...props}
     >
       {children}
@@ -197,26 +201,35 @@ export function EmptyState({ message, icon }: { message: string; icon?: React.Re
   );
 }
 
+// Camera Capture
+export { CameraCapture } from './ui/CameraCapture';
+
 // File Upload
 export function FileUpload({ 
   onChange, 
   accept, 
   multiple = false, 
   className = '',
-  label = 'Seleccionar archivo'
+  label = 'Seleccionar archivo',
+  disabled = false,
+  inputId
 }: { 
   onChange: (files: FileList) => void; 
   accept?: string; 
   multiple?: boolean; 
   className?: string;
   label?: string;
+  disabled?: boolean;
+  inputId?: string;
 }) {
   return (
-    <label className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors ${className}`}>
+    <label htmlFor={inputId} className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors ${disabled ? 'opacity-50 cursor-not-allowed hover:border-gray-300 hover:bg-transparent' : ''} ${className}`}>
       <input 
+        id={inputId}
         type="file" 
         accept={accept} 
         multiple={multiple} 
+        disabled={disabled}
         onChange={e => e.target.files && onChange(e.target.files)} 
         className="sr-only" 
       />
