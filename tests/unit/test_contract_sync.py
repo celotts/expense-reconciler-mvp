@@ -254,3 +254,69 @@ class TestRespuestaDeTicket:
         )
         assert out.ok is False
         assert out.failures, "un rechazo sin motivos no es revisable"
+
+
+class TestLosCamposDelTicketCoinciden:
+    """El conjunto completo de campos, de los dos lados, comparado campo a campo.
+
+    Los tests anteriores comprueban valores sueltos que ya divergieron una vez
+    (el proveedor desconocido). Este comprueba la forma ENTERA, y asi la
+    siguiente divergencia sale sola en vez de cuando alguien mire en pantalla.
+
+    No se comparan campo a campo uno por uno contra una lista escrita a mano:
+    esa lista se desactualiza sin avisar y el test sigue en verde vigilando un
+    contrato viejo. Las dos listas se leen de los archivos.
+    """
+
+    @staticmethod
+    def _campos_del_frontend() -> dict[str, str]:
+        """Los campos declarados en `interface Ticket`, con su tipo textual."""
+        texto = re.sub(r"/\*.*?\*/", "", _leer(TYPES_TS), flags=re.DOTALL)
+        texto = re.sub(r"//[^\n]*", "", texto)
+        m = re.search(r"export interface Ticket\s*\{(.*?)\n\}", texto, re.DOTALL)
+        assert m, "no se encontro `export interface Ticket` en api.ts"
+        campos = {}
+        for linea in m.group(1).split("\n"):
+            declaracion = re.match(
+                r"\s*([a-z_][a-z0-9_]*)\??\s*:\s*(.+?);?\s*$", linea
+            )
+            if declaracion:
+                campos[declaracion.group(1)] = declaracion.group(2)
+        assert campos, "el parser de la interface no encontro ningun campo"
+        return campos
+
+    def test_no_sobra_ni_falta_un_campo(self):
+        front = set(self._campos_del_frontend())
+        back = set(TicketResponse.model_fields)
+
+        assert front == back, (
+            f"divergen.\n"
+            f"  El backend emite y el frontend no declara: {sorted(back - front)}\n"
+            f"  El frontend espera y el backend no emite: {sorted(front - back)}"
+        )
+
+    def test_lo_que_el_backend_puede_dejar_nulo_tambien_se_declara_nulo(self):
+        """Un `T | None` del backend que el frontend tipa sin `| null` miente.
+
+        No revienta al compilar, porque el JSON llega como `any` en la practica.
+        Revienta al pintar: `new Date(null)` no da error, da "Invalid Date", y
+        una fecha invalida en la columna de antiguedad se lee como dato
+        legitimo. La fila con `created_at` nulo es justamente la que mas
+        importa ver, asi que el caso no es teorico.
+        """
+        front = self._campos_del_frontend()
+        mentirosos = []
+        for nombre, tipo in front.items():
+            # `undefined` no sirve: el JSON no lo produce, y ademas distingue
+            # "falta" de "es null", que para esta API es la misma cosa.
+            if "null" in tipo:
+                continue
+            if not str(TicketResponse.model_fields[nombre].annotation).endswith("None"):
+                continue
+            mentirosos.append((nombre, tipo))
+        assert not mentirosos, (
+            "el backend puede devolver NULL y el frontend no lo contempla: "
+            f"{mentirosos}. O se marca `| null` en api.ts, o el backend deja de "
+            "poder devolverlo; lo que no puede ser es que los dos digan cosas "
+            "distintas."
+        )

@@ -1,20 +1,30 @@
 from datetime import date, datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.enums import UNKNOWN_PROVIDER, ExtractionStatus, SourceType
-from app.core.time import utcnow
+from app.core.enums import (
+    UNKNOWN_PROVIDER, ExtractionStatus, SourceType, SpotCheckStatus,
+)
+from app.core.time import dias_desde, utcnow
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
 from app.schemas.ticket import (
-    TicketCreate, TicketResponse, TicketReviewQueueResponse, TicketReviewRequest, TicketUpdate,
+    ExactitudPorOrigenResponse, ReporteExactitudResponse, SpotCheckItemResponse,
+    SpotCheckQueueResponse, SpotCheckRequest, TicketCreate, TicketResponse,
+    TicketReviewQueueResponse, TicketReviewRequest, TicketUpdate,
 )
 from app.services.confidence_gate import (
     compute_source_hash, gate_manual_ticket, gate_ticket,
+)
+from app.services.accuracy_service import (
+    NIVEL_CONFIANZA, ORIGENES_A_REPORTAR, SLO_EXACTITUD, MedidaPorOrigen,
+    Veredicto, en_muestra,
 )
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.parser_service import TicketExtractionResult
@@ -200,6 +210,12 @@ async def _persist_extracted(
         provider_tax_id=extracted.provider_tax_id,
         total_amount=extracted.total_amount,
         tax_amount=extracted.tax_amount,
+        # Se guarda, aunque antes no se guardara. Es el campo con el que el
+        # gate valido que `subtotal + IVA == total`, asi que sin el no se puede
+        # auditar por que el ticket se aprobo. Va como None cuando el
+        # documento no trae subtotal: un 0 seria un dato falso con apariencia
+        # de dato, y haria que la cuenta pareciera cuadrar sin comprobar nada.
+        subtotal=extracted.subtotal,
         category=extracted.category,
         raw_text=extracted.raw_text,
         confidence=decision.persisted_confidence,
@@ -225,6 +241,21 @@ async def _persist_extracted(
         # corrigiendo aqui, con un dia de diferencia.
         expense_date=extracted.expense_date or date.today(),
         validation_errors=decision.validation.as_text(),
+        # Muestreo de exactitud: se marca al insertar, por hash de contenido, y
+        # solo si el gate aprobo solo. Tres condiciones, y cada una importa:
+        #
+        # - Solo AUTO_APROBADO. Un ticket que esta en la cola no se puede medir:
+        #   su exactitud ya la decidio el gate, no el extractor. Y meterlo
+        #   inflaria el promedio con casos que nunca fueron automaticos.
+        # - Solo si tiene hash. La captura manual no es automatismo.
+        # - La decision va por el contenido, no al azar, para que sea
+        #   reproducible y no se pueda elegir la muestra a conveniencia.
+        spot_check_status=(
+            SpotCheckStatus.PENDIENTE.value
+            if decision.status == ExtractionStatus.AUTO_APROBADO
+            and en_muestra(source_hash)
+            else None
+        ),
     )
     db.add(ticket)
     await db.commit()
@@ -379,6 +410,402 @@ async def review_ticket(
     await db.commit()
     await db.refresh(ticket)
     return ticket
+
+
+
+
+# =====================================================================
+# Muestreo de exactitud
+# =====================================================================
+#
+# La cola de revision de arriba responde "que necesita una persona". Esta
+# responde "el automatismo sirve". Son colas distintas y no se mezclan:
+#
+# - La de revision se vacia. Cada ticket que se corrige sale, y lo que sale
+#   desaparece de la vista de pendientes.
+# - La de muestreo no se vacia. Los tickets revisados se quedan para siempre
+#   porque son la evidencia de la exactitud. Un ticket que sale de la muestra
+#   es una medicion que se tira, y medir es lo unico que hace este modulo.
+#
+# Por eso tampoco corrigen el ticket. Una revision humana arregla un gasto; un
+# muestreo solo dice si la extraccion coincidia con el papel. Si el muestreo
+# corrigiera, la exactitud medida dependeria de quien reviso, y dejaria de
+# medir el automatismo.
+
+
+def _campos_incorrectos_de(row: TicketModel) -> list[str]:
+    """Los campos anotados, de una columna de texto separada por comas."""
+    if not row.spot_check_wrong_fields:
+        return []
+    return [c.strip() for c in row.spot_check_wrong_fields.split(",") if c.strip()]
+
+
+@router.get("/spot-check", response_model=SpotCheckQueueResponse)
+async def get_spot_check_queue(
+    db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = None,
+    status_filter: str | None = Query(
+        None,
+        alias="status",
+        description=(
+            "Sin valor: solo lo PENDIENTE, que es el trabajo. "
+            "CORRECTO o INCORRECTO para ver el historico de veredictos."
+        ),
+    ),
+    limit: int = Query(50, ge=1, le=500),
+) -> SpotCheckQueueResponse:
+    """La muestra a revisar, y el conteo de lo ya verificado.
+
+    La lista se filtra SIEMPRE por un estado de la muestra, y por defecto es el
+    PENDIENTE. Ese unico filtro hace las dos cosas:
+
+    - Saca los tickets que NO estan en la muestra. El 95% que no fue elegido
+      tiene `spot_check_status` en NULL, y NULL no es igual a ningun estado, asi
+      que no puede colarse. Sin esto el endpoint devolvia los 10 000 tickets de
+      una empresa para que el revisor descartara a mano los que no tocan.
+
+    - Saca lo ya revisado. Una cola de trabajo es trabajo: con 500 muestreados y
+      400 ya hechos, mezclar los dos deja la primera pagina con 20 cosas que
+      hacer entre 100 filas. Es el mismo criterio que usa la cola de revision,
+      y por la misma razon.
+
+    Antes habia dos filtros, `IS NOT NULL` y el de estado. El primero resulto
+    ser redundante: quitarlo no cambia ninguna consulta, porque
+    `status = 'PENDIENTE'` ya excluye los NULL. Se quito porque un filtro que
+    no hace nada, con un comentario que afirma que es imprescindible, es peor
+    que no tenerlo: el que lo lea creera que la garantia depende de ahi, y
+    cambiara el otro sin avisar. La mutacion que borra el filtro de estado
+    (`scripts/verify_spot_check_mutations.py`) es la que protege la garantia.
+
+    Contrato de los conteos, para que la pantalla no sea ambigua:
+      - `tickets` viene filtrado por estado
+      - `total_pendientes`, `total_revisados`, `aciertos` e `incorrectos` son
+        SIEMPRE globales
+
+    Asi el encabezado no salta de 200 a 3 al filtrar, y se ve de entrada
+    cuantos hay de cada clase. El filtro es para trabajar, no para perder de
+    vista el tamano de la cola.
+    """
+    base = select(TicketModel)
+    if company_id is not None:
+        base = base.where(TicketModel.company_id == company_id)
+    # Sin `status` explicito se trabaja lo pendiente. Un `status` explicito pide
+    # ese estado, que es como se llega al historico de veredictos.
+    base = base.where(
+        TicketModel.spot_check_status == (status_filter or SpotCheckStatus.PENDIENTE.value)
+    )
+
+    rows = (await db.execute(
+        base.order_by(TicketModel.created_at.asc()).limit(limit)
+    )).scalars().all()
+
+    # Los conteos se hacen con una consulta aparte y SIN filtro de estado: el
+    # `total_pendientes` que se muestra arriba de la lista tiene que contar todo
+    # lo pendiente, no solo lo que cabe en `limit`. Con 200 pendientes y
+    # limit=50, la pantalla tiene que decir 200, no 50.
+    async def _contar(estado: str) -> int:
+        return await db.scalar(
+            select(func.count()).select_from(TicketModel)
+            .where(
+                TicketModel.spot_check_status == estado,
+                *([TicketModel.company_id == company_id] if company_id else []),
+            )
+        ) or 0
+
+    pendientes = await _contar(SpotCheckStatus.PENDIENTE.value)
+    aciertos = await _contar(SpotCheckStatus.CORRECTO.value)
+    revisados = aciertos + await _contar(SpotCheckStatus.INCORRECTO.value)
+
+    antiguedad = None
+    if pendientes:
+        mas_viejo = (await db.execute(
+            select(func.min(TicketModel.created_at)).where(
+                TicketModel.spot_check_status == SpotCheckStatus.PENDIENTE.value,
+                *([TicketModel.company_id == company_id] if company_id else []),
+            )
+        )).scalar()
+        if mas_viejo is not None:
+            # `dias_desde` normaliza la zona. La columna esta declarada con
+            # zona horaria, asi que Postgres devuelve el instante con tz y la
+            # resta cruda funciona; pero SQLite no tiene tipos con zona y
+            # entrega el valor naive, y ahi `utcnow() - mas_viejo` revienta con
+            # TypeError. El sintoma era una pantalla en blanco al pedir la
+            # cola, sin error de validacion y sin nada que apuntara al reloj:
+            # el fallo estaba en el almacenamiento y se veía en la
+            # presentacion. Ver `app/core/time.py`.
+            antiguedad = dias_desde(mas_viejo)
+
+    return SpotCheckQueueResponse(
+        company_id=company_id,
+        total_pendientes=pendientes,
+        total_revisados=revisados,
+        aciertos=aciertos,
+        incorrectos=revisados - aciertos,
+        antiguedad_promedio_dias=antiguedad,
+        tickets=[
+            SpotCheckItemResponse(
+                ticket=TicketResponse.model_validate(row),
+                spot_check_status=row.spot_check_status,
+                spot_checked_at=row.spot_checked_at,
+                spot_check_notes=row.spot_check_notes,
+                spot_check_wrong_fields=_campos_incorrectos_de(row),
+            )
+            for row in rows
+        ],
+    )
+
+
+@router.patch("/{ticket_id}/spot-check", response_model=SpotCheckItemResponse)
+async def registrar_veredicto(
+    ticket_id: UUID,
+    payload: SpotCheckRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SpotCheckItemResponse:
+    """Registra si la extraccion coincidia con el papel. No modifica el ticket.
+
+    Un ticket que no estaba en la muestra se puede registrar igual: el sistema
+    no le cierra la puerta a quien ya lo reviso de rebote. Se acepta solo si el
+    ticket es AUTO_APROBADO, que es la unica condicion bajo la que la respuesta
+    mide algo. Un ticket en la cola no se puede "dar por correcto": su estado
+    ya lo decidio el gate.
+    """
+    row = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+
+    if row.extraction_status != ExtractionStatus.AUTO_APROBADO.value:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "solo se puede verificar lo que el sistema aprobo solo. Este "
+                f"ticket esta en {row.extraction_status}, asi que su lectura ya "
+                "la reviso una persona y no mide el automatismo"
+            ),
+        )
+
+    if not payload.correct and not payload.campos_incorrectos:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "marca el ticket como incorrecto pero no dice que campo fallo. "
+                "Sin eso el reporte dice que hay error y no dice que arreglar, "
+                "que es un dato que no sirve para nada"
+            ),
+        )
+
+    row.spot_check_status = (
+        SpotCheckStatus.CORRECTO.value if payload.correct
+        else SpotCheckStatus.INCORRECTO.value
+    )
+    row.spot_checked_at = utcnow()
+    row.spot_check_notes = payload.notes
+    row.spot_check_wrong_fields = (
+        ",".join(payload.campos_incorrectos) if payload.campos_incorrectos else None
+    )
+    await db.commit()
+    await db.refresh(row)
+
+    return SpotCheckItemResponse(
+        ticket=TicketResponse.model_validate(row),
+        spot_check_status=row.spot_check_status,
+        spot_checked_at=row.spot_checked_at,
+        spot_check_notes=row.spot_check_notes,
+        spot_check_wrong_fields=_campos_incorrectos_de(row),
+    )
+
+
+@router.get("/accuracy", response_model=ReporteExactitudResponse)
+async def get_reporte_exactitud(
+    db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = None,
+) -> ReporteExactitudResponse:
+    """Lo que la muestra sostiene sobre el objetivo de exactitud.
+
+    El reporte no devuelve un porcentaje. Devuelve cuantos se revisaron, cuantos
+    acertaron, y el intervalo que esos datos sostienen. Es menos vistoso y es la
+    unica forma de que el numero signifique algo: con 25 revisiones, "96%" tiene
+    un intervalo de [80%, 99%], y publicar el 96% sin el 80% seria afirmar una
+    certeza que nadie midio.
+
+    Y nunca promedia entre metodos de lectura. Un ticket leido con regex y uno
+    leido con un modelo se reportan por separado, porque mezclarlos sube el
+    promedio con el metodo que casi no falla y esconde al que falla.
+    """
+    condiciones = (
+        [TicketModel.company_id == company_id] if company_id is not None else []
+    )
+
+    # Una sola consulta agrupada: el reporte lee toda la evidencia de la
+    # empresa y la cuenta en memoria. Con miles de tickets revisados, trae solo
+    # lo que el indice parcial ix_tickets_spot_check_report cubre.
+    filas = (await db.execute(
+        select(
+            TicketModel.confidence_source,
+            TicketModel.spot_check_status,
+            func.count(),
+        )
+        .where(
+            TicketModel.spot_check_status.is_not(None),
+            *condiciones,
+        )
+        .group_by(TicketModel.confidence_source, TicketModel.spot_check_status)
+    )).all()
+
+    # Los campos que mas fallan, por origen. Es la parte que convierte una
+    # estadistica en una lista de que arreglar.
+    campos = (await db.execute(
+        select(TicketModel.confidence_source, TicketModel.spot_check_wrong_fields)
+        .where(
+            TicketModel.spot_check_status == SpotCheckStatus.INCORRECTO.value,
+            *condiciones,
+        )
+    )).all()
+
+    medidas: dict[str, MedidaPorOrigen] = {}
+    for origen in ORIGENES_A_REPORTAR:
+        medidas[origen] = MedidaPorOrigen(origen=origen)
+    for origen_extra in {f[0] for f in filas if f[0]}:
+        medidas.setdefault(origen_extra, MedidaPorOrigen(origen=origen_extra))
+
+    for origen, estado, cantidad in filas:
+        medida = medidas.setdefault(origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido"))
+        if estado == SpotCheckStatus.PENDIENTE.value:
+            medida.pendientes += cantidad
+        else:
+            medida.revisados += cantidad
+            if estado == SpotCheckStatus.CORRECTO.value:
+                medida.aciertos += cantidad
+            else:
+                medida.incorrectos += cantidad
+
+    for origen, anotados in campos:
+        if not anotados:
+            continue
+        medida = medidas.setdefault(origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido"))
+        for campo in anotados.split(","):
+            campo = campo.strip()
+            if campo:
+                medida.campos_fallidos[campo] = medida.campos_fallidos.get(campo, 0) + 1
+
+    por_origen = [
+        ExactitudPorOrigenResponse(
+            origen=m.origen,
+            revisados=m.revisados,
+            aciertos=m.aciertos,
+            incorrectos=m.incorrectos,
+            pendientes=m.pendientes,
+            exactitud=m.exactitud,
+            intervalo_inferior=(m.limites[0] if m.limites else None),
+            intervalo_superior=(m.limites[1] if m.limites else None),
+            veredicto=m.veredicto,
+            motivo_faltante=m.faltantes.razon,
+            total_revisiones_necesarias=m.faltantes.total_necesario,
+            campo_mas_fallido=(m.campo_mas_fallido[0] if m.campo_mas_fallido else None),
+            conteo_por_campo=m.campos_fallidos,
+        )
+        for m in medidas.values()
+    ]
+
+    return ReporteExactitudResponse(
+        company_id=company_id,
+        objetivo=SLO_EXACTITUD,
+        nivel_confianza=NIVEL_CONFIANZA,
+        veredicto_global=_veredicto_global(por_origen),
+        explicacion=_explicacion_global(por_origen),
+        por_origen=por_origen,
+    )
+
+
+def _veredicto_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
+    """El PEOR veredicto, no el promedio.
+
+    Un sistema con la via de PDF al 100% y la de vision al 90% no cumple el
+    objetivo. Promediar las dos daria algo intermedio y esconderia justo la via
+    que hay que arreglar, que es la que manda.
+    """
+    from app.services.accuracy_service import Veredicto
+
+    veredictos = [m.veredicto for m in por_origen if m.revisados > 0]
+    if not veredictos:
+        return Veredicto.SIN_EVIDENCIA
+    if Veredicto.NO_CUMPLE in veredictos:
+        return Veredicto.NO_CUMPLE
+    if Veredicto.CUMPLE in veredictos and Veredicto.INCONCLUYENTE not in veredictos:
+        return Veredicto.CUMPLE
+    return Veredicto.INCONCLUYENTE
+
+
+def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
+    """El veredicto en palabras, con la accion que corresponde.
+
+    Un veredicto sin texto obliga a quien lo lee a buscar en otro lado de donde
+    salio, y casi siempre termina creyendolo. Peor: "INCONCLUYENTE" sin mas se
+    lee como "algo fallo", y no es lo mismo que "hace falta medir mas".
+    """
+    from app.services.accuracy_service import Motivo, Veredicto
+
+    con_datos = [m for m in por_origen if m.revisados > 0]
+    if not con_datos:
+        return (
+            "No hay ninguna revision de muestreo todavia, asi que no se puede "
+            "afirmar nada sobre la exactitud. El objetivo sigue sin medirse, "
+            "que es distinto de cumplirse."
+        )
+
+    if _veredicto_global(con_datos) == Veredicto.CUMPLE:
+        return (
+            "La evidencia alcanza para afirmar que el automatismo esta por "
+            f"encima de {int(SLO_EXACTITUD * 100)}% en cada via de lectura."
+        )
+
+    if _veredicto_global(con_datos) == Veredicto.NO_CUMPLE:
+        malos = [m for m in con_datos if m.veredicto == Veredicto.NO_CUMPLE]
+        detalle = ", ".join(
+            f"{m.origen} ({m.aciertos}/{m.revisados})" for m in malos
+        )
+        return (
+            f"El automatismo esta por debajo de {int(SLO_EXACTITUD * 100)}% en: "
+            f"{detalle}. Revisar mas no lo arregla: hay que corregir el extractor."
+        )
+
+    lineas = []
+    for m in con_datos:
+        if m.veredicto != Veredicto.INCONCLUYENTE:
+            continue
+        if m.motivo_faltante == Motivo.ACIERTO_EN_LA_LINEA:
+            lineas.append(
+                f"{m.origen}: el acierto medido ({m.aciertos}/{m.revisados}) esta "
+                f"exactamente en {int(SLO_EXACTITUD * 100)}%. Ninguna cantidad de "
+                "revisiones lo sube de ahi, porque el objetivo dice 'mas de' y "
+                "el dato dice 'exactamente'. Hay que mejorar el extractor: "
+                "midiendo mas, el numero se acerca al limite pero nunca lo pasa."
+            )
+        elif m.motivo_faltante == Motivo.ACIERTO_POR_DEBAJO:
+            lineas.append(
+                f"{m.origen}: el acierto medido ({m.aciertos}/{m.revisados}) ya "
+                "esta por debajo del objetivo. Medir mas no lo arregla."
+            )
+        else:
+            falta = m.total_revisiones_necesarias
+            # Los pendientes van al texto, no solo al JSON. El reporte es de lo
+            # que se muestra en pantalla y lo que se copia a un correo, y si
+            # el texto no los menciona, el 96% de hoy se lee como el de
+            # manana. Con 25 revisados y 40 sin tocar, el numero va a cambiar.
+            con_pendientes = (
+                f" Hay {m.pendientes} mas en la muestra sin revisar, asi que el "
+                "numero puede moverse."
+                if m.pendientes
+                else ""
+            )
+            lineas.append(
+                f"{m.origen}: faltan {falta} revisiones en total para poder "
+                f"afirmarlo (llevas {m.revisados}).{con_pendientes}"
+                if falta
+                else f"{m.origen}: falta evidencia para poder afirmar nada."
+            )
+    return " ".join(lineas)
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)

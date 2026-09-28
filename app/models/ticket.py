@@ -49,6 +49,32 @@ class TicketModel(Base):
             f"{_SIN_CERRAR} OR tax_amount <= total_amount",
             name="ck_tickets_tax_lte_total_when_settled",
         ),
+        # Constraints del muestreo (0003).
+        #
+        # Se replican aqui, y no solo en la migracion, por una razon concreta:
+        # una constraint que existe unicamente en el DDL de Postgres no la
+        # ejecuta la suite, porque los tests corren contra SQLite. Si el estado
+        # valido de `spot_check_status` viviera solo en el SQL, la serie podria
+        # pasar 300 tests y fallar al registrar la primera revision en
+        # produccion. Estando en el modelo, un estado mal escrito revienta aqui.
+        CheckConstraint(
+            "spot_check_status IS NULL OR spot_check_status IN "
+            "('PENDIENTE', 'CORRECTO', 'INCORRECTO')",
+            name="ck_tickets_spot_check_values",
+        ),
+        # Un veredicto sin fecha no se puede envejecer, y la antiguedad es lo
+        # que permite medir a que ritmo se acumula la evidencia.
+        CheckConstraint(
+            "spot_check_status IS NULL OR spot_check_status = 'PENDIENTE' "
+            "OR spot_checked_at IS NOT NULL",
+            name="ck_tickets_spot_check_verdict_has_date",
+        ),
+        # Solo se muestrea lo que fue automatico y nadie toco. Un ticket que
+        # una persona aprobo no mide el automatismo.
+        CheckConstraint(
+            "spot_check_status IS NULL OR extraction_status = 'AUTO_APROBADO'",
+            name="ck_tickets_spot_check_only_auto",
+        ),
         # Cola de revision: indice parcial sobre los estados abiertos. El
         # indice solo contiene lo que esta en la cola, asi que no crece con el
         # historico y la consulta de la cola no tiene que ordenar sobre miles de
@@ -62,6 +88,21 @@ class TicketModel(Base):
         # cuando existe: los tickets manuales no tienen hash.
         Index("ix_tickets_source_hash", "source_hash", unique=True,
               postgresql_where=text("source_hash IS NOT NULL")),
+        # Cola de muestreo: parcial sobre PENDIENTE. A diferencia de la cola de
+        # revision, esta no se vacia nunca: los tickets revisados se quedan para
+        # siempre porque son la evidencia. Sin el indice parcial, la cola
+        # ordenaria sobre todo el historico ya revisado.
+        Index(
+            "ix_tickets_spot_check_queue", "company_id", "created_at",
+            postgresql_where=text("spot_check_status = 'PENDIENTE'"),
+        ),
+        # Sostiene la agregacion del reporte de exactitud, que cuenta por
+        # confidence_source. Es indice parcial porque solo las filas con
+        # veredicto participan, y esas son una fraccion del total.
+        Index(
+            "ix_tickets_spot_check_report", "company_id", "confidence_source",
+            postgresql_where=text("spot_check_status IS NOT NULL"),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -70,6 +111,13 @@ class TicketModel(Base):
     provider_tax_id = Column(String(50), nullable=True)
     total_amount = Column(Numeric(12, 2), nullable=False)
     tax_amount = Column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    # Se usaba para validar `subtotal + IVA == total` y para la confianza, y no
+    # se guardaba. Ver db/migrations/0003_spot_check.sql, seccion 1b.
+    #
+    # NULL y no cero: si el comprobante no trae subtotal, no se sabe el
+    # subtotal. Un 0 aqui haria que la cuenta pareciera cuadrar cuando en
+    # realidad no hay nada que comprobar.
+    subtotal = Column(Numeric(12, 2), nullable=True)
     expense_date = Column(Date, nullable=False)
     category = Column(String(100), nullable=True)
     raw_text = Column(Text, nullable=True)
@@ -96,6 +144,20 @@ class TicketModel(Base):
     reviewed_by = Column(String(100), nullable=True)
     reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     review_notes = Column(Text, nullable=True)
+
+    # --- Muestreo de exactitud (0003) -----------------------------------
+    # La diferencia con lo de arriba: la revision humana corrige UN ticket. El
+    # muestreo no corrige nada, produce evidencia sobre si el automatismo
+    # funciona. Por eso no toca los datos del ticket: un muestreo mal hecho no
+    # puede alterar un gasto, solo la medicion de como se leyeron los gastos.
+    #
+    # NULL = fuera de la muestra. Ver SpotCheckStatus en app/core/enums.py.
+    spot_check_status = Column(String(20), nullable=True)
+    spot_checked_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    spot_check_notes = Column(Text, nullable=True)
+    # Que campos estaban mal, no solo que estaban mal. "96% correcto" no dice
+    # que arreglar; "el 3% que falla es casi todo la fecha" si.
+    spot_check_wrong_fields = Column(Text, nullable=True)
 
     company = relationship("CompanyModel", backref="tickets")
     reconciliations = relationship("ReconciliationModel", back_populates="ticket")

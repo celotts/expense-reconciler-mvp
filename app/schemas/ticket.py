@@ -136,6 +136,11 @@ class TicketResponse(BaseModel):
     provider_tax_id: str | None = None
     total_amount: Decimal
     tax_amount: Decimal
+    # Va en la respuesta, no solo en la tabla, por una razon util: sin el, el
+    # muestreo pregunta si el subtotal se leyo bien y no hay con que comparar.
+    # El revisor tendria que buscarlo dentro de `raw_text`, que en la ruta de
+    # vision es lo que devolvio el modelo y no siempre lo trae.
+    subtotal: Decimal | None = None
     expense_date: date
     category: str | None = None
     raw_text: str | None = None
@@ -185,3 +190,114 @@ class TicketReviewQueueResponse(BaseModel):
     por_estado: dict[str, int]
     antiguedad_promedio_dias: float | None = None
     tickets: list[TicketResponse]
+
+# Campos que, si estan mal, hacen que un ticket este mal leido.
+#
+# No se agrega `category` a proposito: nada de la conciliacion depende de el, y
+# un ticket con la categoria equivocada entra a conciliar igual. Meterlo en la
+# cuenta haria que "acierto" significara algo mas estricto de lo que el sistema
+# promete, y una metrica mas estricta que la promesa es una metrica que nunca
+# pasa.
+CAMPOS_VERIFICABLES = (
+    "provider_name",
+    "provider_tax_id",
+    "total_amount",
+    "tax_amount",
+    "expense_date",
+    "subtotal",
+)
+
+
+class SpotCheckRequest(BaseModel):
+    """Veredicto de una revision de muestreo.
+
+    A diferencia de la revision humana, esto NO corrige el ticket. Solo dice si
+    la extraccion coincidia con el papel, y que campos no coincidieron. Que el
+    muestreo no pueda alterar un gasto es deliberado: si una muestra mal
+    hecha cambiara el total de un comprobante, la exactitud medida dependeria
+    de quien reviso, y la metrica dejaria de medir el automatismo.
+    """
+
+    # La lista de campos la valida el servicio, no el schema, porque tiene que
+    # ser la MISMA lista que usa el reporte para contar. Si el schema aceptara
+    # cualquier texto, alguien podria anotar "fecha y total" y el reporte
+    # contaria un campo que no existe en la cuenta.
+    correct: bool
+    campos_incorrectos: list[Literal[
+        "provider_name", "provider_tax_id", "total_amount",
+        "tax_amount", "expense_date", "subtotal",
+    ]] = Field(default_factory=list)
+    notes: str | None = Field(None, max_length=2000)
+
+
+class SpotCheckItemResponse(BaseModel):
+    """Un ticket esperando veredicto, o ya verificado."""
+
+    ticket: TicketResponse
+    spot_check_status: str
+    spot_checked_at: datetime | None = None
+    spot_check_notes: str | None = None
+    spot_check_wrong_fields: list[str] = Field(default_factory=list)
+
+
+class SpotCheckQueueResponse(BaseModel):
+    """Muestra a revisar, y lo que ya se verifico.
+
+    `total_pendientes` va aparte de la lista porque la lista se limita, y el
+    numero de lo que falta no. Sin el, una cola de 200 con `limit=50` se ve
+    como si quedaran 50.
+    """
+
+    company_id: UUID | None = None
+    total_pendientes: int
+    total_revisados: int
+    aciertos: int
+    incorrectos: int
+    antiguedad_promedio_dias: float | None = None
+    tickets: list[SpotCheckItemResponse]
+
+
+class ExactitudPorOrigenResponse(BaseModel):
+    """Como leyo el sistema cada via de captura, con lo que la muestra sostiene.
+
+    El intervalo va SIEMPRE, y `revisados` va siempre. Un porcentaje sin las
+    dos cosas al lado no significa nada: 96% de 25 y 96% de 5000 son el mismo
+    numero con consecuencias opuestas.
+    """
+
+    origen: str
+    revisados: int
+    aciertos: int
+    incorrectos: int
+    pendientes: int
+    # None cuando no hay evidencia. La ausencia de un numero NO es un cero:
+    # significa que nadie miró, no que se falló todo.
+    exactitud: float | None = None
+    intervalo_inferior: float | None = None
+    intervalo_superior: float | None = None
+    veredicto: str
+    # Por que no se puede afirmar aun, o que falta para poder hacerlo. Viene
+    # como texto porque la accion depende de la razon: faltante se resuelve
+    # revisando, por debajo del objetivo se resuelve arreglando el extractor.
+    motivo_faltante: str
+    total_revisiones_necesarias: int | None = None
+    campo_mas_fallido: str | None = None
+    conteo_por_campo: dict[str, int] = Field(default_factory=dict)
+
+
+class ReporteExactitudResponse(BaseModel):
+    """El numero que respalda el objetivo, con lo que le falta para sostenerse.
+
+    `veredicto_global` es el PEOR de los origenes, no el promedio. Un sistema
+    que falla en una via de captura no cumple el objetivo aunque la otra sea
+    perfecta, y promediar las dos esconderia justamente la que hay que arreglar.
+    """
+
+    company_id: UUID | None = None
+    objetivo: float
+    nivel_confianza: float
+    veredicto_global: str
+    # El detalle de por que, en texto. Un veredicto sin explicacion obliga a
+    # quien lo lee a buscar en otro lado de donde saiu.
+    explicacion: str
+    por_origen: list[ExactitudPorOrigenResponse]

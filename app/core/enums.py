@@ -95,3 +95,38 @@ SETTLED_STATUSES = (
     ExtractionStatus.AUTO_APROBADO,
     ExtractionStatus.APROBADO,
 )
+
+
+class SpotCheckStatus(str, Enum):
+    """Veredicto de una revision de muestreo.
+
+    No existe un valor para "fuera de la muestra": esa fila tiene
+    `spot_check_status` en NULL. La mayoria de los tickets no se muestrean, y
+    darles un valor tipo "NO" haria que el indice de la cola creciera con todo
+    el historico y que "no fue elegido" fuera indistinguible de "elegido y sin
+    revisar".
+
+    La lista tiene que coincidir con la constraint `ck_tickets_spot_check_values`
+    de db/migrations/0003_spot_check.sql. Si divergen, se escribe un estado
+    nuevo en Python y la base lo rechaza al registrar la revision, en
+    produccion. tests/unit/test_spot_check.py compara las dos listas.
+    """
+
+    PENDIENTE = "PENDIENTE"    # elegido por muestreo, sin revisar
+    CORRECTO = "CORRECTO"      # la extraccion coincide con el papel
+    INCORRECTO = "INCORRECTO"  # algo no coincide; se anotan los campos
+
+
+# Fraccion de los tickets auto-aprobados que se mandan a revisar para poder
+# medir la exactitud.
+#
+# Es un parametro y no un numero enterrado porque la tasa correcta depende del
+# volumen, que todavia no se conoce. La eleccion no es gratuita en ningun
+# sentido: subirla da evidencia antes y cuesta mas revisions; bajarla abarata
+# y alarga el tiempo hasta poder afirmar el 96%.
+#
+# Lo que NO se debe hacer es subirla para "ver mas errores". Con 25 revisiones
+# ya se detecta una caida grande, que es lo que un muestreo sirve. Lo que exige
+# muestra grande es AFIRMAR un numero, y para eso el reporte dice cuantos
+# faltan en vez de dejar que se reporte un porcentaje sin respaldo.
+SPOT_CHECK_RATE = 0.05

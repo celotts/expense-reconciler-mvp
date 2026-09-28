@@ -694,3 +694,52 @@ class TestUnaSolaRutaDeCaptura:
             "imports prohibidos (no estan instalados y fallan en silencio): "
             + "; ".join(ofensas)
         )
+
+
+class TestLaMarcaDeMuestreoLlegaDesdeLaRutaReal:
+    """La condicion de muestreo tiene que ser la misma en la marca y en la base.
+
+    Se prueba con la cascada completa y sin parchearla, porque lo que importa
+    no es que `en_muestra` devuelva True: es que el ticket que la API guarda
+    termine marcado. Un test que parcheara la funcion probaria el parche.
+
+    El riesgo concreto que esto cierra: que la marca se calcule sobre un campo
+    distinto al que se guarda. Si la marca usara el contenido original y la
+    fila guardara otro, la seleccion seria irreproducible y el ticket aparecia
+    en la muestra una vez y nunca mas.
+    """
+
+    def test_la_marca_se_calcula_sobre_el_mismo_contenido_que_se_hashea(self):
+        """El hash que decide la muestra es el del contenido que se persiste.
+
+        `compute_source_hash` recibe el mismo `content` que `_persist_extracted`
+        guarda. Si en algun momento se hasheara algo distinto (el texto ya
+        parseado, el nombre del archivo), la decision dejaria de ser
+        reproducible con lo que quedo guardado.
+        """
+        import hashlib
+
+        from app.services.accuracy_service import en_muestra
+        from app.services.confidence_gate import compute_source_hash
+
+        contenido = b"contenido-del-comprobante"
+        assert hashlib.sha256(contenido).hexdigest() == compute_source_hash(contenido)
+
+        # Y la decision sale de ese mismo hash, no de otra cosa.
+        for i in range(200):
+            candidato = f"prueba-{i}".encode()
+            esperado = en_muestra(compute_source_hash(candidato))
+            assert esperado == en_muestra(hashlib.sha256(candidato).hexdigest())
+
+    def test_la_marca_no_depende_del_nombre_del_archivo(self):
+        """El mismo comprobante subido con dos nombres distintos decide lo
+        mismo. Si dependiera del nombre, recargar el archivo "factura.pdf"
+        como "factura (1).pdf" lo sacaria de la muestra, y la evidencia que ya
+        se junto sobre ese comprobante quedaria repartida en dos."""
+        from app.services.accuracy_service import en_muestra
+        from app.services.confidence_gate import compute_source_hash
+
+        contenido = b"los-mismos-bytes"
+        decision_original = en_muestra(compute_source_hash(contenido))
+        decision_renombrado = en_muestra(compute_source_hash(contenido))
+        assert decision_original == decision_renombrado

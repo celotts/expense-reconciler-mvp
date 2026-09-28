@@ -38,10 +38,20 @@ export interface Ticket {
   provider_tax_id: string | null;
   total_amount: string;
   tax_amount: string;
+  /** Antes no se guardaba. Va en la respuesta porque el muestreo lo necesita:
+   *  sin el, la pregunta "¿el subtotal se leyó bien?" no tiene con qué
+   *  responderse. `null` cuando el comprobante no lo trae, nunca "0.00": un
+   *  cero haría que la cuenta `subtotal + IVA == total` pareciera cuadrar. */
+  subtotal: string | null;
   expense_date: string;
   category: string | null;
   raw_text: string | null;
-  created_at: string;
+  /** `null` es real, no un descuido: la columna admite NULL y un ticket sin
+   *  fecha de creacion tiene que poder existir, porque es justamente el que
+   *  mas importa ver (no se puede calcular su antiguedad). Pintar `null` como
+   *  fecha da "Invalid Date", que se lee como un dato y no como una falta, asi
+   *  que quien lo use tiene que decidir que mostrar, no confiar en el tipo. */
+  created_at: string | null;
   // Trazabilidad de la extraccion. `confidence` es null en captura manual: no
   // hay confianza que medir, y un 0.000 contaminaria el promedio de la IA.
   confidence: string | null;
