@@ -7,7 +7,8 @@ import type {
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse,
-  AccountingMapping, AccountingMappingCreate
+  AccountingMapping, AccountingMappingCreate,
+  DashboardResponse
 } from '../types/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
@@ -304,6 +305,14 @@ export const reconciliationsApi = {
   getMapping: (id: string) => fetchApi<AccountingMapping>(`/reconciliations/mappings/${id}`),
 };
 
+// Dashboard API
+export const dashboardApi = {
+  get: (companyId?: string) => {
+    const params = companyId ? `?company_id=${companyId}` : '';
+    return fetchApi<DashboardResponse>(`/dashboard/${params}`);
+  },
+};
+
 // Re-export types
 export type { 
   Company, CompanyCreate, CompanyUpdate,
@@ -313,7 +322,8 @@ export type {
   SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,
   SpotCheckField, ExactitudPorOrigen, ReporteExactitud, Veredicto,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse, ReconciliationMatchDetail,
-  AccountingMapping, AccountingMappingCreate
+  AccountingMapping, AccountingMappingCreate,
+  DashboardResponse, PeriodStats
 } from '../types/api';
 
 export type { ExtractionStatus, ConfidenceSource, SourceType } from '../types/api';

@@ -5,11 +5,14 @@ import { BankTransactions } from './pages/BankTransactions';
 import { Reconciliations } from './pages/Reconciliations';
 import { ReviewQueue } from './pages/ReviewQueue';
 import { SpotCheck } from './pages/SpotCheck';
+import { Dashboard } from './pages/Dashboard';
+import { NavegacionProvider, useNavegacion } from './contextos/Navegacion';
 import './App.css';
 
-type Page = 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations';
+type Page = 'dashboard' | 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations';
 
 const navigation = [
+  { key: 'dashboard' as Page, label: 'Inicio', icon: HomeIcon },
   { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon },
   { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon },
   { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon },
@@ -22,6 +25,14 @@ function BuildingIcon({ className = 'w-5 h-5' }: { className?: string }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+    </svg>
+  );
+}
+
+function HomeIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
     </svg>
   );
 }
@@ -58,16 +69,15 @@ function InboxIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
-/** Un sello con palomita: marcar veredicto. Distinto del sobre de la cola de
- *  revision a proposito, porque las dos pantallas se parecen y hacen cosas
- *  distintas: una arregla tickets, la otra produce evidencia. */
 function CheckBadgeIcon({ className = 'w-5 h-5' }: { className?: string }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.745 3.745 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" />
     </svg>
   );
 }
+
+
 
 function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {  return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -84,19 +94,20 @@ function XIcon({ className = 'w-6 h-6' }: { className?: string }) {
   );
 }
 
-export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('companies');
+function AppInner() {
+  const { paginaActual, irA } = useNavegacion();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const renderPage = () => {
-    switch (currentPage) {
+    switch (paginaActual) {
+      case 'dashboard': return <Dashboard />;
       case 'companies': return <Companies />;
       case 'tickets': return <Tickets />;
       case 'review': return <ReviewQueue />;
       case 'spotcheck': return <SpotCheck />;
       case 'bank': return <BankTransactions />;
       case 'reconciliations': return <Reconciliations />;
-      default: return <Companies />;
+      default: return <Dashboard />;
     }
   };
 
@@ -131,9 +142,9 @@ export default function App() {
             {navigation.map(item => (
               <button
                 key={item.key}
-                onClick={() => { setCurrentPage(item.key); setSidebarOpen(false); }}
+                onClick={() => { irA(item.key); setSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  currentPage === item.key
+                  paginaActual === item.key
                     ? 'bg-blue-50 text-blue-700'
                     : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                 }`}
@@ -172,5 +183,13 @@ export default function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <NavegacionProvider>
+      <AppInner />
+    </NavegacionProvider>
   );
 }

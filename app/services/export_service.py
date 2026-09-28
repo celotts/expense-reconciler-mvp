@@ -5,10 +5,12 @@ from typing import Any
 from uuid import UUID
 
 import pandas as pd
+from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import MATCHED_STATUSES
+from app.core.texto import forzar_texto
 from app.models.accounting_mapping import AccountingMappingModel
 from app.models.bank_transaction import BankTransactionModel
 from app.models.reconciliation import ReconciliationModel
@@ -79,9 +81,8 @@ async def export_to_excel(
         df.to_excel(writer, index=False, sheet_name="Conciliacion")
         
         worksheet = writer.sheets["Conciliacion"]
-        for idx, col in enumerate(df.columns):
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.column_dimensions[chr(65 + idx)].width = min(max_len, 50)
+        forzar_texto(worksheet)
+        _ajustar_anchos(worksheet, df)
     
     return output.getvalue()
 
@@ -128,9 +129,8 @@ async def export_to_contpaqi(
         df.to_excel(writer, index=False, sheet_name="Polizas")
         
         worksheet = writer.sheets["Polizas"]
-        for idx, col in enumerate(df.columns):
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.column_dimensions[chr(65 + idx)].width = min(max_len, 50)
+        forzar_texto(worksheet)
+        _ajustar_anchos(worksheet, df)
     
     return output.getvalue()
 
@@ -176,8 +176,41 @@ async def export_generic(
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Export")
-    
+        forzar_texto(writer.sheets["Export"])
+
     return output.getvalue()
+
+
+def _ajustar_anchos(worksheet: Any, df: pd.DataFrame) -> None:
+    """Ancho de cada columna, al contenido mas largo, con un tope.
+
+    Estava en linea duplicada tres veces, con dos defectos que solo aparecen al
+    ejecutar:
+
+    - `chr(65 + idx)` da la letra de columna SOLO hasta la 26. En la 27 sale `[`,
+      que no es un identificador de columna, y el archivo se guardaba con un
+      `<col>` sin nombre. Hoy el archivo mas ancho tiene 16 columnas, asi que no
+      muerde; el dia que se anada una, el fallo sale como un archivo que Excel
+      rehace sin los anchos y sin avisar. `get_column_letter` no tiene ese
+      tope.
+
+    - El ancho se guardaba como `int`. El esquema OOXML lo declara como
+      `double`, y un lector que separe el tipo -- openpyxl, y cualquier
+      verificador que reabra el archivo -- falla con `expected float`. Excel es
+      tolerante y lo abria igual, asi que el defecto pasaba desapercibido: el
+      archivo se veia bien y no se podia volver a leer con herramientas. Salio
+      al escribir un test que reabre lo que genera el exportador.
+    """
+    for idx, col in enumerate(df.columns):
+        try:
+            max_len = int(df[col].astype(str).map(len).max())
+        except (TypeError, ValueError):
+            # Una columna completamente vacia no tiene longitudes que comparar.
+            # Sin esto, `max()` de una serie vacia lanza y se cae el export
+            # entero por una columna que el usuario no lleno.
+            max_len = 0
+        ancho = min(max(max_len, len(str(col))) + 2, 50)
+        worksheet.column_dimensions[get_column_letter(idx + 1)].width = float(ancho)
 
 
 async def _get_reconciliation_data(
@@ -198,6 +231,7 @@ async def _get_reconciliation_data(
         BankTransactionModel.transaction_date,
         BankTransactionModel.description,
         BankTransactionModel.reference,
+        BankTransactionModel.amount,
         ReconciliationModel.match_status
     ).join(
         ReconciliationModel, TicketModel.id == ReconciliationModel.ticket_id
@@ -225,11 +259,23 @@ async def _get_reconciliation_data(
     
     data = []
     for row in rows:
-        amount_diff = abs(
-            row.total_amount - BankTransactionModel.__table__.c.amount
-            if False
-            else Decimal(0)
-        )
+        # La diferencia se calcula con el importe del banco, que hace falta
+        # pedirlo explicitamente en el SELECT de arriba.
+        #
+        # Antes estaba escrito como
+        #     abs(row.total_amount - BankTransactionModel.__table__.c.amount
+        #         if False else Decimal(0))
+        # es decir, una rama muerta que se descartaba siempre: la columna
+        # "Diferencia Monto" valia 0.00 para todas las filas, aunque el gasto y
+        # el banco difirieran en cualquier cantidad. En un archivo de
+        # conciliacion, una columna de diferencia que no diferencia dice
+        # "todo cuadra" cuando puede que nada cuadre, y el contador se la
+        # lleva puesta sin saber que el numero no se computo nunca.
+        #
+        # Se mantiene `Decimal` de punta a punta y se formatea al final. Un
+        # `float` de 1100.10 - 1100.00 da 0.09999999999990905, y eso ahi si se
+        # nota.
+        amount_diff = abs(row.total_amount - row.amount)
         date_diff = abs((row.expense_date - row.transaction_date).days)
 
         data.append(

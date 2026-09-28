@@ -7,6 +7,7 @@ from fastapi import (
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.subida import leer_ticket
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
 from app.core.enums import (
@@ -115,7 +116,7 @@ async def extract_ticket(
     file_type: str = Form("pdf")
 ) -> TicketExtractionResult:
     """Extract ticket data from uploaded file (PDF/Image)."""
-    content = await file.read()
+    content = await leer_ticket(file, file.filename or "")
     try:
         return await _extract_from_upload(content, file_type)
     except Exception as e:
@@ -148,7 +149,7 @@ async def extract_and_create_ticket(
             detail="Company not found"
         )
 
-    content = await file.read()
+    content = await leer_ticket(file, file.filename or "")
     try:
         extracted = await _extract_from_upload(content, file_type)
     except HTTPException:

@@ -296,3 +296,34 @@ export interface AccountingMappingCreate {
   software_name: string;
   column_mappings: Record<string, string>;
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+export interface PeriodStats {
+  tickets_total: number;
+  tickets_pendientes: number;
+  tickets_aprobados: number;
+  tickets_rechazados: number;
+  tickets_auto_aprobados: number;
+  monto_total: string;
+  monto_pendiente: string;
+  bank_transactions: number;
+  reconciliations_perfect: number;
+  reconciliations_manual: number;
+  reconciliations_discrepancy: number;
+}
+
+export interface DashboardResponse {
+  company_id: string | null;
+  company_name: string | null;
+  hoy: PeriodStats;
+  mes_actual: PeriodStats;
+  mes_anterior: PeriodStats;
+  ano_actual: PeriodStats;
+  ano_anterior: PeriodStats;
+  review_queue: Record<string, number>;
+  exactitud: ReporteExactitud | null;
+  totales_acumulados: PeriodStats;
+}

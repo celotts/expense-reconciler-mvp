@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app.api.auth import router as auth_router
 from app.api.bank_transactions import router as bank_transactions_router
 from app.api.companies import router as companies_router
+from app.api.dashboard import router as dashboard_router
 from app.api.reconciliations import router as reconciliations_router
 from app.api.tickets import router as tickets_router
 from app.core.deps import get_current_user
@@ -23,6 +24,12 @@ api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
 # endpoint por endpoint: escrito a mano serian 35 oportunidades de que el
 # endpoint 36 quede abierto y no se note en la revision, porque la ausencia se
 # ve igual que la presencia. Y un endpoint nuevo nace protegido.
+api_router.include_router(
+    dashboard_router,
+    prefix="/dashboard",
+    tags=["Dashboard"],
+    dependencies=[Depends(get_current_user)],
+)
 api_router.include_router(
     companies_router,
     prefix="/companies",

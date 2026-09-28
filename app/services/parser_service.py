@@ -100,6 +100,19 @@ def parse_bank_csv(
     Returns:
         List of BankTransactionRow objects
     """
+    # Allowlist de codificaciones. Python acepta docenas de codecs; algunos
+    # (utf-7, zlib_codec, bz2_codec, rot_13, etc.) pueden abusarse:
+    # - utf-7 convierte +ADw-script+AD4- en <script> -> XSS si se renderiza sin escape.
+    # - zlib_codec/bz2_codec descomprimen en memoria -> bomba de descompresion.
+    # - raw_unicode_escape, unicode_escape interpretan escapes -> confusion.
+    # El CSV bancario viene de exportadores contables: utf-8, latin-1, cp1252
+    # cubren el 99% de los casos reales. El resto se rechaza con mensaje claro.
+    ENCODINGS_PERMITIDOS = {"utf-8", "latin-1", "cp1252", "iso-8859-1"}
+    if encoding.lower() not in ENCODINGS_PERMITIDOS:
+        raise ValueError(
+            f"Codificacion no permitida: {encoding}. Use utf-8, latin-1 o cp1252."
+        )
+
     df = pd.read_csv(
         io.BytesIO(file_content),
         encoding=encoding,
@@ -131,8 +144,13 @@ def parse_bank_csv(
                 description=description,
                 reference=reference
             ))
-        except Exception as e:
-            raise ValueError(f"Error parsing row: {row.to_dict()}. Error: {e!s}")
+        except Exception:
+            # No se refleja el contenido de la fila ni el error interno: el
+            # cliente recibe un mensaje generico y los detalles quedan en el
+            # log del servidor. Si se refleja la fila, un CSV malicioso con
+            # datos largos en cada columna puede hacer que el mensaje de error
+            # sea enorme y filtrar informacion de otras filas.
+            raise ValueError("Error en el formato del CSV: fila invalida")
     
     return transactions
 

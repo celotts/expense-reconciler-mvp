@@ -192,11 +192,24 @@ export function Loading({ message = 'Cargando...' }: { message?: string }) {
 }
 
 // Empty State
-export function EmptyState({ message, icon }: { message: string; icon?: React.ReactNode }) {
+export function EmptyState({ 
+  message, 
+  icon, 
+  action 
+}: { 
+  message: string; 
+  icon?: React.ReactNode;
+  action?: { label: string; onClick: () => void };
+}) {
   return (
     <div className="text-center py-12">
       {icon && <div className="mx-auto mb-4 text-gray-400">{icon}</div>}
-      <p className="text-gray-500">{message}</p>
+      <p className="text-gray-500 mb-4">{message}</p>
+      {action && (
+        <Button onClick={action.onClick} variant="primary">
+          {action.label}
+        </Button>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.subida import leer_csv_bancario
 from app.core.database import get_db
 from app.models.bank_transaction import BankTransactionModel
 from app.models.company import CompanyModel
@@ -52,7 +53,7 @@ async def import_bank_csv_preview(
     encoding: str = Form("utf-8"),
 ) -> list[BankTransactionRow]:
     """Preview CSV import without saving to database."""
-    content = await file.read()
+    content = await leer_csv_bancario(file, file.filename or "")
     try:
         transactions = parse_bank_csv(
             content,
@@ -66,10 +67,12 @@ async def import_bank_csv_preview(
             encoding=encoding
         )
         return transactions
-    except Exception as e:
+    except ValueError as e:
+        # Solo los ValueError propios del parser llegan aqui. Cualquier otra
+        # excepcion (bug) sube como 500 y se registra en el log, no se refleja.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse CSV: {e!s}",
+            detail=str(e),
         )
 
 
@@ -101,7 +104,7 @@ async def import_bank_csv_and_create(
             detail="Company not found"
         )
     
-    content = await file.read()
+    content = await leer_csv_bancario(file, file.filename or "")
     try:
         parsed = parse_bank_csv(
             content,
@@ -114,10 +117,12 @@ async def import_bank_csv_and_create(
             thousands_separator=thousands_separator,
             encoding=encoding
         )
-    except Exception as e:
+    except ValueError as e:
+        # Solo los ValueError propios del parser llegan aqui. Cualquier otra
+        # excepcion (bug) sube como 500 y se registra en el log, no se refleja.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to parse CSV: {e!s}",
+            detail=str(e),
         )
     
     transactions = []

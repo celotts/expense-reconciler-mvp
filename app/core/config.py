@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     OLLAMA_ENABLED: bool = False
     OLLAMA_BASE_URL: str = ""
     OLLAMA_MODEL: str = "llama3.1:8b"
-    OLLAMA_VISION_MODEL: str = "llava:7b"  # Vision-capable model for image extraction
+    OLLAMA_VISION_MODEL: str = "moondream"  # Vision-capable model for image extraction (~1.8GB)
     OLLAMA_TIMEOUT: float = 600.0
 
     # Local embedding fallback (sentence-transformers)

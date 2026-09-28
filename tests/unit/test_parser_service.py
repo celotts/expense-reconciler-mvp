@@ -77,7 +77,7 @@ class TestBankCSVParser:
         csv_content = b"""fecha,importe,concepto
 2025-01-15,-125.50,PAGO
 """
-        with pytest.raises(ValueError, match="Error parsing row"):
+        with pytest.raises(ValueError, match="Error en el formato del CSV"):
             parse_bank_csv(
                 csv_content,
                 date_column="fecha",
