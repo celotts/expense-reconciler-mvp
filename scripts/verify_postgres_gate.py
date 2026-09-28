@@ -24,12 +24,54 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.company import CompanyModel
+from app.models.ticket import TicketModel
 from app.core.enums import SourceType
 from app.api.tickets import _persist_extracted, get_review_queue, review_ticket
 from app.schemas.ticket import TicketReviewRequest
 from app.services.parser_service import TicketExtractionResult
 
-DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/mig_test"
+DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/expense_db"
+
+# La empresa que creo la corrida actual, para poder borrarla aunque el script
+# reviente a mitad. Ver `_limpiar_si_hubo_excepcion`.
+_empresa_de_la_corrida = None
+
+
+def _limpiar_si_hubo_excepcion() -> None:
+    """Borra los datos de prueba aunque `main` falle.
+
+    Este script no limpiebaba nada: cada corrida dejaba una empresa y sus
+    tickets en la base. Como la idempotencia por hash uniquifica el contenido en
+    cada corrida, los conteos no se rompian y el script pasaba en verde mientras
+    la base se llenaba de datos de verificacion. Un verificador que acumula lo
+    que verifica deja de poder verificar: al cabo de un rato cualquier consulta
+    a la base incluye filas de prueba y nadie sabe cuales son.
+    """
+    if _empresa_de_la_corrida is None:
+        return
+
+    async def borrar() -> None:
+        motor = create_async_engine(DSN)
+        try:
+            async with async_sessionmaker(motor, expire_on_commit=False)() as db:
+                await db.execute(
+                    TicketModel.__table__.delete().where(
+                        TicketModel.company_id == _empresa_de_la_corrida
+                    )
+                )
+                await db.execute(
+                    CompanyModel.__table__.delete().where(
+                        CompanyModel.id == _empresa_de_la_corrida
+                    )
+                )
+                await db.commit()
+        finally:
+            await motor.dispose()
+
+    try:
+        asyncio.run(borrar())
+    except Exception as exc:  # noqa: BLE001
+        print(f"  AVISO: no se pudo limpiar la empresa de prueba: {exc}")
 
 fallos: list[str] = []
 
@@ -76,6 +118,8 @@ async def main() -> int:
         await db.commit()
         await db.refresh(empresa)
         cid = empresa.id
+        global _empresa_de_la_corrida
+        _empresa_de_la_corrida = cid
         corrida = uuid4().hex[:8]
 
         print("\n1) Persistencia con el gate contra Postgres real")
@@ -213,4 +257,9 @@ async def main() -> int:
     return 0
 
 
-sys.exit(asyncio.run(main()))
+codigo = 1
+try:
+    codigo = asyncio.run(main())
+finally:
+    _limpiar_si_hubo_excepcion()
+sys.exit(codigo)

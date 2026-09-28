@@ -249,9 +249,28 @@ TOTAL: $89.50
         assert _parse_receipt_text(text).expense_date.month == 1
         assert _parse_receipt_text(text).expense_date.day == 15
 
-    def test_missing_date_defaults_to_today(self):
+    def test_missing_date_stays_missing(self):
+        """Un documento sin fecha NO se fecha con la de hoy.
+
+        Este test antes afirmaba lo contrario (`defaults_to_today`) y el
+        comportamiento era el que acabo de cambiar. Es un cambio de requisito
+        explicito, no un arreglo para hacer pasar un test: la especificacion
+        anterior era el bug.
+
+        Poner la fecha de hoy cuando el documento no trae fecha no es un valor
+        por defecto comodo, es fabricar un dato. El ticket resultante parece un
+        gasto de hoy, indistinguible de uno real, y el cierre mensual lo cuenta
+        en el mes equivocado: un gasto de marzo aparece en septiembre. El
+        producto que se va a usar para reportar cierres no puede hacer eso sin
+        avisar.
+
+        Lo que se guarda en su lugar es la fecha con la que se registro el
+        ticket, y el ticket queda en la cola con `date_missing` a la vista. La
+        diferencia con antes no es el valor guardado, es que ahora se sabe que
+        el valor no es real.
+        """
         text = "TIENDA\nTOTAL: $100.00\n"
-        assert _parse_receipt_text(text).expense_date == date.today()
+        assert _parse_receipt_text(text).expense_date is None
 
 
 class TestAmountExtraction:
@@ -286,3 +305,155 @@ class TestAmountExtraction:
         # Sin \b, el patron matchearia "iva" dentro del nombre de un producto.
         text = "TIENDA\nARTICULOS:\nVITAMINA C 500MG   $45.00\nTOTAL: $45.00\n"
         assert _parse_receipt_text(text).tax_amount == Decimal("0.00")
+
+class TestProveedorEnMinusculasSostenidas:
+    """El parser perdia el proveedor en el formato mas comun que hay.
+
+    La heuristica de proveedor exigia tres mayusculas consecutivas. "Tiendas
+    Ramirez SA de CV" solo tiene "SA" y "CV", asi que no califica: el nombre
+    estaba en la primera linea, a la vista, y el ticket iba a la cola con
+    `provider_missing`.
+
+    No es un caso exotico. Cualquier sistema de facturacion que no arme el
+    ticket en un formato de 80 columnas en mayusculas emite el nombre asi. Con
+    la heuristica vieja, casi todo PDF impreso caia a la cola.
+    """
+
+    @pytest.mark.parametrize("nombre", [
+        "Tiendas Ramirez SA de CV",
+        "Ferreteria del Sur",
+        "Cafe La Esquina",
+        "Panaderia El Trigal",
+        "Hotel Ambos Mundos",
+    ])
+    def test_reconoce_nombre_con_mayuscula_inicial(self, nombre):
+        texto = f"{nombre}\nRFC: TRAM910101XXX\nFECHA: 15/03/2025\nTOTAL: 500.00\n"
+        assert _parse_receipt_text(texto).provider_name == nombre
+
+    def test_no_se_confunde_con_una_linea_de_domicilio(self):
+        """El domicilio va justo debajo del nombre y parece un nombre.
+
+        Acaba en numero, que es la senal de que es una linea de importes o una
+        direccion y no un comercio. Antes podia ganar como proveedor.
+        """
+        texto = (
+            "Tiendas Ramirez SA de CV\n"
+            "Av. Insurgentes Sur 1234\n"
+            "RFC: TRAM910101XXX\n"
+            "TOTAL: 1,000.00\n"
+        )
+        assert _parse_receipt_text(texto).provider_name == "Tiendas Ramirez SA de CV"
+
+    def test_no_toma_una_linea_de_articulo_como_proveedor(self):
+        texto = (
+            "Tiendas Ramirez SA de CV\n"
+            "Cafe en grano 1kg          250.00\n"
+            "Refresco 600ml              35.50\n"
+            "TOTAL: 1,100.00\n"
+        )
+        assert _parse_receipt_text(texto).provider_name == "Tiendas Ramirez SA de CV"
+
+    def test_no_toma_el_encabezado_de_la_tabla_si_es_lo_primero(self):
+        """El encabezado de columnas va antes que el nombre en algunos layouts."""
+        texto = (
+            "DESCRIPCION                IMPORTE\n"
+            "Cafe en grano 1kg          250.00\n"
+            "GRUPO ACME SA DE CV\n"
+            "TOTAL: 1,000.00\n"
+        )
+        assert _parse_receipt_text(texto).provider_name == "GRUPO ACME SA DE CV"
+
+    def test_acepta_nombres_cortos_de_comercios_reales(self):
+        """Cuatro caracteres, no cinco: "OXXO" es de los mas comunes del pais.
+
+        Todo lo demas tiene que pasar antes por los filtros de label, numero y
+        dos puntos, que son los que de verdad descartan el ruido.
+        """
+        texto = "OXXO\nRFC: OXX010101XXX\nTOTAL: 85.50\n"
+        assert _parse_receipt_text(texto).provider_name == "OXXO"
+
+    def test_seguDescartando_lineas_muy_cortas(self):
+        """El corte de longitud no se elimina, se mueve.
+
+        Con cuatro, "AB" (dos) y "1234" (numero) siguen sin calificar. Un corte
+        en cuatro aqui no relaja el filtro: relaja el ultimo nombre legitimo que
+        quedaba fuera.
+        """
+        assert _parse_receipt_text("AB\nTOTAL: 100.00\n").provider_name == "Unknown Provider"
+        assert _parse_receipt_text("1234\nTOTAL: 100.00\n").provider_name == "Unknown Provider"
+
+
+class TestExtraccionDeSubtotal:
+    """El subtotal nunca se extracia, y el campo estaba declarado y documentado.
+
+    `subtotal` se definiio como "el check mas barato que hay" porque
+    `subtotal + IVA == total` se verifica contra la aritmetica interna del
+    propio documento: no necesita comparar contra nada externo. Al no llenarse,
+    `subtotal_plus_tax_mismatch` no podia activarse nunca en la ruta de reglas.
+    Solo el modelo podia activarlo.
+
+    O sea: el camino mas barato y mas exacto era el unico sin verificacion, y
+    sus tickets no tenian manera de comprobarse.
+    """
+
+    def test_extrae_subtotal_y_iva(self):
+        texto = (
+            "TIENDAS RAMIREZ SA DE CV\n"
+            "RFC: TRAM910101XXX\n"
+            "SUBTOTAL 964.00\n"
+            "IVA (16%) 136.00\n"
+            "TOTAL 1,100.00\n"
+        )
+        resultado = _parse_receipt_text(texto)
+        assert resultado.subtotal == Decimal("964.00")
+        assert resultado.tax_amount == Decimal("136.00")
+        assert resultado.total_amount == Decimal("1100.00")
+
+    def test_acepta_subtotal_con_guion(self):
+        texto = "FERRETERIA DEL SUR\nSub-Total: 500.00\nIVA: 80.00\nTotal: 580.00\n"
+        resultado = _parse_receipt_text(texto)
+        assert resultado.subtotal == Decimal("500.00")
+        assert resultado.total_amount == Decimal("580.00")
+
+    def test_subtotal_no_contamina_el_total(self):
+        """El riesgo real de extraer el subtotal es que se confunda con el total."""
+        texto = "TIENDA\nSUBTOTAL: 215.40\nIVA (16%): 34.46\nTOTAL: 249.86\n"
+        resultado = _parse_receipt_text(texto)
+        assert resultado.subtotal == Decimal("215.40")
+        assert resultado.total_amount == Decimal("249.86")
+
+    def test_sin_subtotal_queda_en_none_y_no_en_cero(self):
+        """None y cero no significan lo mismo.
+
+        Con cero, `subtotal + iva == total` daria falso negativo (nunca cuadra)
+        y el ticket caeria a la cola sin motivo. None es la ausencia real.
+        """
+        resultado = _parse_receipt_text("OXXO S.A. DE C.V.\nRFC: OXX010101XXX\nTOTAL: 85.50\n")
+        assert resultado.subtotal is None
+
+    def test_activa_el_check_de_aritmetica(self):
+        """El fin de todo esto: el check ahora puede dispararse."""
+        from app.services.confidence_gate import validate_extraction
+
+        # Con fecha, para que el unico fallo que puede aparecer sea el
+        # aritmetico y el test se lea limpio.
+        coherente = _parse_receipt_text(
+            "TIENDA\nRFC: TRAM910101XXX\nFECHA: 15/03/2025\n"
+            "SUBTOTAL 964.00\nIVA 136.00\nTOTAL 1,100.00\n"
+        )
+        incoherente = _parse_receipt_text(
+            "TIENDA\nRFC: TRAM910101XXX\nFECHA: 15/03/2025\n"
+            "SUBTOTAL 964.00\nIVA 136.00\nTOTAL 1,160.00\n"
+        )
+
+        ok = validate_extraction(
+            coherente.provider_name, coherente.total_amount, coherente.tax_amount,
+            coherente.expense_date, coherente.provider_tax_id, coherente.subtotal,
+        )
+        mal = validate_extraction(
+            incoherente.provider_name, incoherente.total_amount, incoherente.tax_amount,
+            incoherente.expense_date, incoherente.provider_tax_id, incoherente.subtotal,
+        )
+
+        assert ok.failures == []
+        assert any(f.startswith("subtotal_plus_tax_mismatch") for f in mal.failures)

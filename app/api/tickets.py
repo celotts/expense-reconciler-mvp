@@ -1,5 +1,4 @@
 from datetime import date, datetime, timezone
-from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -17,54 +16,40 @@ from app.schemas.ticket import (
 from app.services.confidence_gate import (
     compute_source_hash, gate_manual_ticket, gate_ticket,
 )
-from app.services.parser_service import TicketExtractionResult, extract_ticket_data
-from app.services.ai_extractor import ExtractedInvoice, ai_extractor
+from app.services.capture import ExtractionUnavailable, capture_ticket
+from app.services.parser_service import TicketExtractionResult
+from app.services.ai_extractor import ai_extractor
 
 router = APIRouter(tags=["Tickets"])
 
 
-def _extracted_invoice_to_result(extracted: ExtractedInvoice) -> TicketExtractionResult:
-    """Map AI-extracted invoice to the API result schema.
-
-    `confidence` antes se calculaba y se tiraba. Ahora viaja hasta el gate para
-    decidir el estado del ticket.
-    """
-    return TicketExtractionResult(
-        provider_name=extracted.provider_name,
-        provider_tax_id=extracted.provider_tax_id,
-        total_amount=extracted.total if extracted.total is not None else Decimal("0.00"),
-        tax_amount=extracted.tax_amount if extracted.tax_amount is not None else Decimal("0.00"),
-        expense_date=extracted.invoice_date or date.today(),
-        category=None,
-        raw_text=extracted.raw_text,
-        subtotal=extracted.subtotal,
-        confidence=float(extracted.confidence) if extracted.confidence else None,
-    )
-
-
 async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtractionResult:
-    """Extract ticket data, routing images through the AI vision extractor."""
-    if file_type == "image":
-        try:
-            extracted = await ai_extractor.extract_from_image(content, mime_type="image/jpeg")
-            result = _extracted_invoice_to_result(extracted)
-            if extracted.provider_name == "ERROR_PARSING" or result.total_amount == Decimal("0.00"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                        "AI image extraction failed after retries: the model returned invalid JSON. "
-                        f"Check API/Ollama logs. Raw response: {extracted.raw_text[:500]}"
-                    ),
-                )
-            return result
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"AI image extraction failed: {e!s}",
-            )
-    return extract_ticket_data(content, file_type=file_type)
+    """Unico camino de captura. Toda la politica vive en `capture.capture_ticket`.
+
+    Antes esta funcion decidia: si era imagen la mandaba a la IA, si no la
+    parseaba con regex, y si la IA fallaba devolvia un 500. Eso hacia tres
+    cosas malas a la vez. Perdia el documento (un 500 y el archivo se
+    olvida). Mandaba a la IA los PDF que ya traian el texto. Y no decia de
+    donde habia salido el dato, asi que un parseo de regex se guardaba como
+    `llm`.
+
+    Ahora la cascada esta en un solo sitio y la API solo traduce sus errores.
+    """
+    try:
+        return await capture_ticket(
+            content,
+            file_type,
+            extract_from_image=ai_extractor.extract_from_image,
+            extract_from_text=ai_extractor.extract_from_text,
+        )
+    except ExtractionUnavailable as exc:
+        # El archivo ni se pudo abrir. Si hay una excepcion que registrar, es
+        # porque el cliente mando algo que no es un comprobante; eso si es un
+        # error del cliente y tiene que verse como tal.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No se pudo procesar el archivo: {exc}",
+        )
 
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
@@ -179,14 +164,25 @@ async def _persist_extracted(
     source_file: str | None = None,
 ) -> TicketModel:
     """Gate + persistencia. Unico camino de entrada para datos extraidos."""
+    # El origen lo decide la ruta de captura, no esta funcion. Antes todo se
+    # guardaba como `llm` porque el gate recibia su default, y con eso la
+    # columna `confidence_source` miente sobre de donde salio el dato: un PDF
+    # leido con regex aparecia como lectura de modelo. Sin esa verdad no hay
+    # forma de medir la exactitud de la IA, porque se promedia la IA con un
+    # regex que casi nunca falla.
     decision = gate_ticket(
         provider_name=extracted.provider_name,
         total_amount=extracted.total_amount,
         tax_amount=extracted.tax_amount,
+        # Un documento sin fecha no se fecha con la de hoy: se guarda con la
+        # fecha que se va a resolver en la cola. Fabricar la de hoy esconde un
+        # gasto de marzo en el cierre de septiembre, que es el error que este
+        # producto no puede cometer.
         expense_date=extracted.expense_date,
         provider_tax_id=extracted.provider_tax_id,
-        subtotal=getattr(extracted, "subtotal", None),
-        confidence=getattr(extracted, "confidence", None),
+        subtotal=extracted.subtotal,
+        confidence=extracted.confidence,
+        source=extracted.confidence_source,
     )
     source_hash = compute_source_hash(content)
 
@@ -204,7 +200,6 @@ async def _persist_extracted(
         provider_tax_id=extracted.provider_tax_id,
         total_amount=extracted.total_amount,
         tax_amount=extracted.tax_amount,
-        expense_date=extracted.expense_date,
         category=extracted.category,
         raw_text=extracted.raw_text,
         confidence=decision.persisted_confidence,
@@ -213,6 +208,22 @@ async def _persist_extracted(
         source_type=source_type.value,
         source_file=source_file,
         source_hash=source_hash,
+        # `expense_date` es NOT NULL, asi que un documento sin fecha necesita
+        # un valor. Se guarda el dia local en que se registro, que es la unica
+        # fecha que si se sabe de cierto, y el ticket queda en la cola con
+        # `date_missing` a la vista. El tradeoff: un ticket fechado
+        # provisionalmente, marcado como pendiente de fecha. El que se
+        # descartaba antes era el otro: un ticket con fecha y sin nada que
+        # advertise que la fecha es inventada, que es indistinguible de un
+        # gasto real de ese dia.
+        #
+        # `date.today()` y no `utcnow().date()`. No es indistinto: `utcnow()` es
+        # lo correcto para `created_at`, que es un instante, y lo equivocado
+        # aqui, que es una fecha de negocio. Un servidor en UTC-6 que corre a
+        # las 20:00 del dia 27 ya esta en el dia 28 en UTC, y el ticket
+        # quedaria fechado manana. Eso es el mismo error que se esta
+        # corrigiendo aqui, con un dia de diferencia.
+        expense_date=extracted.expense_date or date.today(),
         validation_errors=decision.validation.as_text(),
     )
     db.add(ticket)
