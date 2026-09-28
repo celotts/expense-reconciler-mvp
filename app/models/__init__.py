@@ -3,6 +3,7 @@ from app.models.ticket import TicketModel
 from app.models.bank_transaction import BankTransactionModel
 from app.models.reconciliation import ReconciliationModel
 from app.models.accounting_mapping import AccountingMappingModel
+from app.models.user import UserModel
 
 __all__ = [
     "CompanyModel",
@@ -10,4 +11,5 @@ __all__ = [
     "BankTransactionModel",
     "ReconciliationModel",
     "AccountingMappingModel",
+    "UserModel",
 ]

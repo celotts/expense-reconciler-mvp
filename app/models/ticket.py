@@ -158,6 +158,15 @@ class TicketModel(Base):
     # Que campos estaban mal, no solo que estaban mal. "96% correcto" no dice
     # que arreglar; "el 3% que falla es casi todo la fecha" si.
     spot_check_wrong_fields = Column(Text, nullable=True)
+    # Quien registro el veredicto. Sale del token, no de un texto fijo: el
+    # reporte de exactitud promedia veredictos de varias personas, y sin saber
+    # cuales, "el sistema es 96% exacto" es un promedio sin dueño.
+    #
+    # Es texto y no llave foranea a proposito: una baja de cuenta es
+    # `is_active = false`, pero si alguien termina borrando la cuenta, el
+    # veredicto que firmo tiene que seguir diciendo quien fue. Con ON DELETE
+    # SET NULL se perderia justo ese dato.
+    spot_checked_by = Column(String(255), nullable=True)
 
     company = relationship("CompanyModel", backref="tickets")
     reconciliations = relationship("ReconciliationModel", back_populates="ticket")

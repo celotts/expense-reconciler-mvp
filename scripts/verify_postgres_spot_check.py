@@ -33,6 +33,7 @@ import asyncio
 import sys
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -86,11 +87,20 @@ async def _limpiar(motor) -> None:
                 text("DELETE FROM companies WHERE name = :n"),
                 {"n": NOMBRE_VERIFICACION},
             )
+            # Las cuentas de verificacion no cuelgan de ninguna empresa, asi que
+            # la limpieza de arriba no las alcanza. Se borran por marcador de
+            # dominio (`@verify.local`) y no por correo exacto: el correo lleva
+            # un uuid, asi que borrarlo por igualdad solo sacaria el de esta
+            # corrida y los de las anteriores se quedarian para siempre.
+            await conn.execute(
+                text("DELETE FROM users WHERE email LIKE '%@verify.local'"),
+            )
         print(f"\n  limpieza: borrado todo lo de {NOMBRE_VERIFICACION!r}")
     except Exception as exc:  # noqa: BLE001
         print(
             f"\n  ATENCION: no se pudo limpiar. Borra a mano:\n"
-            f"    DELETE FROM companies WHERE name = '{NOMBRE_VERIFICACION}';"
+            f"    DELETE FROM companies WHERE name = '{NOMBRE_VERIFICACION}';\n"
+            f"    DELETE FROM users WHERE email LIKE '%@verify.local';"
         )
         print(f"    (el error fue: {exc})")
 
@@ -638,6 +648,8 @@ async def main() -> int:
             # =================================================================
             from app.api.tickets import registrar_veredicto
             from app.schemas.ticket import SpotCheckRequest
+            from app.core.security import hashear_contrasena
+            from app.models.user import UserModel
 
             # El estado de partida se mide AQUI, no antes. La seccion 8
             # registro un veredicto con SQL crudo, asi que el conteo de la 5b
@@ -653,9 +665,35 @@ async def main() -> int:
             )
 
             # Se registra un veredicto de verdad, por la misma funcion que
-            # llama el endpoint.
+            # llama el endpoint. El `usuario` va porque `registrar_veredicto`
+            # guarda en `spot_checked_by` el correo del token, y esa columna
+            # tiene que quedar con el correo de verdad y no con una constante.
+            verificador = UserModel(
+                email=f"muestreo{uuid4().hex[:10]}@verify.local",
+                nombre="Verificación Muestreo",
+                password_hash=hashear_contrasena("contrasena-de-verificacion"),
+            )
+            session.add(verificador)
+            await session.commit()
+            await session.refresh(verificador)
+
             await registrar_veredicto(
-                ticket_id=t1_id, payload=SpotCheckRequest(correct=True), db=session,
+                ticket_id=t1_id,
+                payload=SpotCheckRequest(correct=True),
+                usuario=verificador,
+                db=session,
+            )
+
+            verificado = (
+                await session.execute(
+                    text("SELECT spot_checked_by FROM tickets WHERE id = :tid"),
+                    {"tid": t1_id},
+                )
+            ).scalar_one()
+            comprobar(
+                "el veredicto quedó firmado por el correo del token",
+                verificado == verificador.email,
+                f"spot_checked_by={verificado!r}, esperado={verificador.email!r}",
             )
 
             con_datos = await get_reporte_exactitud(db=session, company_id=empresa_id)

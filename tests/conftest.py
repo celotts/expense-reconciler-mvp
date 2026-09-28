@@ -10,7 +10,10 @@ from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.core.database import get_db, Base
 from app.core.config import settings
+from app.core.deps import get_current_user
+from app.core.security import hashear_contrasena
 from app.models.company import CompanyModel
+from app.models.user import UserModel
 
 
 # Base de datos en memoria para tests
@@ -47,16 +50,66 @@ async def test_company(db_session):
     return company
 
 @pytest.fixture
-async def async_client(db_session):
+async def usuario_de_prueba(db_session):
+    """La cuenta con la que corre la suite.
+
+    Existe como fila de verdad en la base de prueba, no como un objeto
+    manufactured: si los endpoints guardan el correo de quien reviso, el test
+    tiene que poder leer esa columna de la base y compararla con algo. Un
+    `MagicMock` de usuario no serviria para eso.
+    """
+    correo = f"operador{uuid4().hex[:8]}@test.local"
+    usuario = UserModel(
+        email=correo,
+        nombre="Operador de Prueba",
+        password_hash=hashear_contrasena("contrasena-de-prueba"),
+    )
+    db_session.add(usuario)
+    await db_session.commit()
+    await db_session.refresh(usuario)
+    return usuario
+
+
+@pytest.fixture
+async def async_client(db_session, usuario_de_prueba):
     async def override_get_db():
         yield db_session
-    
+
+    async def override_get_current_user():
+        return usuario_de_prueba
+
     app.dependency_overrides[get_db] = override_get_db
-    
+    # El cliente HTTP entra como un usuario ya autenticado, porque casi todos
+    # los tests prueban otra cosa y no el login. Los que SI prueban el login
+    # (tests/unit/test_auth.py) no piden este fixture, o piden
+    # `async_client_sin_autenticar`, y asi se prueba la dependencia de verdad.
+    app.dependency_overrides[get_current_user] = override_get_current_user
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-    
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client_sin_autenticar(db_session):
+    """Cliente con la sesion real: sin token, con token caducado, con token
+    falsificado. Es el unico camino por el que se puede probar la proteccion.
+
+    A diferencia de `async_client`, NO sobrescribe `get_current_user`. Si lo
+    hiziera, todos los tests de seguridad estarian probando el override, que
+    siempre deja pasar, y no el codigo que decide.
+    """
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
     app.dependency_overrides.clear()
 
 @pytest.fixture(scope="session")

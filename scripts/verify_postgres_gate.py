@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
+from app.models.user import UserModel
 from app.core.enums import SourceType
 from app.api.tickets import _persist_extracted, get_review_queue, review_ticket
 from app.schemas.ticket import TicketReviewRequest
@@ -35,6 +36,7 @@ DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/expense
 # La empresa que creo la corrida actual, para poder borrarla aunque el script
 # reviente a mitad. Ver `_limpiar_si_hubo_excepcion`.
 _empresa_de_la_corrida = None
+_correo_de_la_corrida = None
 
 
 def _limpiar_si_hubo_excepcion() -> None:
@@ -47,7 +49,7 @@ def _limpiar_si_hubo_excepcion() -> None:
     que verifica deja de poder verificar: al cabo de un rato cualquier consulta
     a la base incluye filas de prueba y nadie sabe cuales son.
     """
-    if _empresa_de_la_corrida is None:
+    if _empresa_de_la_corrida is None and _correo_de_la_corrida is None:
         return
 
     async def borrar() -> None:
@@ -64,6 +66,12 @@ def _limpiar_si_hubo_excepcion() -> None:
                         CompanyModel.id == _empresa_de_la_corrida
                     )
                 )
+                if _correo_de_la_corrida is not None:
+                    await db.execute(
+                        UserModel.__table__.delete().where(
+                            UserModel.email == _correo_de_la_corrida
+                        )
+                    )
                 await db.commit()
         finally:
             await motor.dispose()
@@ -118,9 +126,25 @@ async def main() -> int:
         await db.commit()
         await db.refresh(empresa)
         cid = empresa.id
-        global _empresa_de_la_corrida
+        global _empresa_de_la_corrida, _correo_de_la_corrida
         _empresa_de_la_corrida = cid
         corrida = uuid4().hex[:8]
+
+        # `review_ticket` escribe en `reviewed_by` el correo del token, así que
+        # hace falta una cuenta de verdad. No un objeto simulado a propósito: si
+        # el endpoint guardara un texto fijo, el simulacro lo taparía, y la
+        # comprobación de más abajo leería ese texto fijo y pasaría.
+        from app.core.security import hashear_contrasena
+
+        _correo_de_la_corrida = f"gate{uuid4().hex[:10]}@verify.local"
+        usuario = UserModel(
+            email=_correo_de_la_corrida,
+            nombre="Verificación Gate",
+            password_hash=hashear_contrasena("contrasena-de-verificacion"),
+        )
+        db.add(usuario)
+        await db.commit()
+        await db.refresh(usuario)
 
         print("\n1) Persistencia con el gate contra Postgres real")
         auto = await _persist_extracted(
@@ -193,6 +217,7 @@ async def main() -> int:
             await review_ticket(
                 ilegible.id,
                 TicketReviewRequest(action="approve"),
+                usuario,
                 db=db,
             )
             check("rechaza aprobar datos rotos", False)
@@ -209,16 +234,24 @@ async def main() -> int:
                 tax_amount=Decimal("20.69"),
                 notes="Leído a mano",
             ),
+            usuario,
             db=db,
         )
         check("queda APROBADO", aprobado.extraction_status == "APROBADO")
         check("limpió los errores", aprobado.validation_errors is None)
         check("guardó reviewed_at", aprobado.reviewed_at is not None)
         check("guardó la nota", aprobado.review_notes == "Leído a mano")
+        check(
+            "reviewed_by es el correo de quien revisó, no un texto fijo",
+            aprobado.reviewed_by == _correo_de_la_corrida,
+        )
 
         print("\n8) Rechazar un ilegible: la cola se puede vaciar")
         await review_ticket(
-            roto.id, TicketReviewRequest(action="reject", notes="ilegible"), db=db
+            roto.id,
+            TicketReviewRequest(action="reject", notes="ilegible"),
+            usuario,
+            db=db,
         )
         cola_final = await get_review_queue(company_id=cid, status=None, limit=100, db=db)
         check("la cola quedó vacía", cola_final.total_open == 0)

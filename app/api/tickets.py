@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import UsuarioActual
 from app.core.enums import (
     UNKNOWN_PROVIDER, ExtractionStatus, SourceType, SpotCheckStatus,
 )
@@ -358,6 +359,7 @@ async def get_review_queue(
 async def review_ticket(
     ticket_id: UUID,
     review_in: TicketReviewRequest,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Revision humana de un ticket en cola.
@@ -404,8 +406,13 @@ async def review_ticket(
         ticket.validation_errors = None
 
     ticket.review_notes = review_in.notes
-    ticket.reviewed_at = datetime.now(timezone.utc)
-    ticket.reviewed_by = "user"  # TODO: inyectar identidad del usuario autenticado
+    ticket.reviewed_at = utcnow()
+    # La identidad sale del token, no de un texto fijo. Antes era la cadena
+    # "user" en todas las revisiones, lo que hacia que la columna no dijera
+    # nada: veinte revisiones de tres personas son indistinguibles. Con esto,
+    # "quien rechazo esto" tiene respuesta, y es la misma que uso el token que
+    # autorizo la peticion.
+    ticket.reviewed_by = usuario.email
 
     await db.commit()
     await db.refresh(ticket)
@@ -559,6 +566,7 @@ async def get_spot_check_queue(
 async def registrar_veredicto(
     ticket_id: UUID,
     payload: SpotCheckRequest,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
 ) -> SpotCheckItemResponse:
     """Registra si la extraccion coincidia con el papel. No modifica el ticket.
@@ -600,6 +608,10 @@ async def registrar_veredicto(
         else SpotCheckStatus.INCORRECTO.value
     )
     row.spot_checked_at = utcnow()
+    # Quien lo registro, no "user". El reporte promedia veredictos de varias
+    # personas: sin esto, "el sistema es 96% exacto" es un promedio sin dueno
+    # y cuando sale mal no hay a quien preguntarle.
+    row.spot_checked_by = usuario.email
     row.spot_check_notes = payload.notes
     row.spot_check_wrong_fields = (
         ",".join(payload.campos_incorrectos) if payload.campos_incorrectos else None

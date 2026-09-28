@@ -10,6 +10,28 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tabla de Cuentas con acceso
+--
+-- Sin autorregistro: las crea scripts/crear_usuario.py, que pide la contrasena
+-- por teclado. Esta tabla es el mismo DDL que emite app/models/user.py, y la
+-- razon de que esten los dos es la misma que la de tickets: una base creada
+-- desde cero y una base migrada tienen que terminar con las mismas reglas.
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email VARCHAR(255) NOT NULL,
+    nombre VARCHAR(120) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TIMESTAMP WITH TIME ZONE
+);
+
+-- Sobre `lower(email)`, no sobre `email`: el login siempre normaliza a
+-- minúsculas antes de buscar, así que un índice sobre la columna tal cual
+-- no evita "Ana@empresa.mx" y "ana@empresa.mx". Ver db/migrations/0004_auth.sql.
+CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (lower(email));
+CREATE INDEX IF NOT EXISTS ix_users_activos ON users (lower(email)) WHERE is_active;
+
 -- Tabla de Tickets Digitalizados / Extraídos
 --
 -- Este archivo SOLO corre la primera vez que Postgres arranca con el volumen
@@ -58,6 +80,9 @@ CREATE TABLE IF NOT EXISTS tickets (
     spot_checked_at TIMESTAMP WITH TIME ZONE,
     spot_check_notes TEXT,
     spot_check_wrong_fields TEXT,
+    -- Quien registró el veredicto, desde el token. Texto y no llave foránea a
+    -- propósito: el veredicto tiene que sobrevivir a la baja de la cuenta.
+    spot_checked_by VARCHAR(255),
 
     -- El subtotal se extraía y se le pasaba al gate para validar
     -- `subtotal + IVA == total`, y no se guardaba: la decisión no era
