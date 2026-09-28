@@ -97,6 +97,36 @@ SETTLED_STATUSES = (
 )
 
 
+class MatchStatus(str, Enum):
+    """Resultado de conciliar un ticket contra un movimiento bancario.
+
+    PERFECT     -> el monto cae dentro de la tolerancia Y la fecha dentro de la
+                   ventana. Es el unico estado que se da por bueno solo.
+    MANUAL      -> el monto cae dentro de la tolerancia pero la fecha se sale de
+                   la ventana, o al reves. Alguien tiene que confirmarlo.
+    DISCREPANCY -> hay un movimiento en la fecha correcta con otro monto.
+                   No se concilia: se reporta para que una persona vea que el
+                   dinero salio por una cantidad distinta.
+
+    El patron del schema (`ReconciliationBase.match_status`) y esta lista tienen
+    que decir lo mismo. Si divergen, la API acepta un estado que el motor nunca
+    produce, o el motor produce uno que la API no puede devolver.
+    """
+
+    PERFECT = "PERFECT"
+    MANUAL = "MANUAL"
+    DISCREPANCY = "DISCREPANCY"
+
+
+# Los estados que cuentan como conciliados. Lo que queda fuera (DISCREPANCY) se
+# exporta aparte, porque mandarlo a CONTPAQI como si estuviera cuadrado seria
+# inventar un cuadre.
+MATCHED_STATUSES = (
+    MatchStatus.PERFECT,
+    MatchStatus.MANUAL,
+)
+
+
 class SpotCheckStatus(str, Enum):
     """Veredicto de una revision de muestreo.
 

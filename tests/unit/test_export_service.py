@@ -182,3 +182,76 @@ class TestExportService:
         assert result[0][3] == "WALMART"  # Nombre
         assert result[0][12] == "MXN"  # Moneda (index 12)
         assert result[0][13] == "1.0000"  # TipoCambio (index 13)
+
+class TestLoQueSeExporta:
+    """`only_reconciled` decide que entra al reporte contable. No estaba
+    probado en ninguna parte, y es justo el filtro que impide que una
+    conciliacion que no cuadra llegue al archivo que se manda a contabilidad.
+    """
+
+    @pytest.fixture
+    async def una_conciliada_y_una_no(self, db_session, test_company):
+        hechas = []
+        for proveedor, estado in (("WALMART", "PERFECT"), ("RENTA", "DISCREPANCY")):
+            ticket = TicketModel(
+                company_id=test_company.id,
+                provider_name=proveedor,
+                total_amount=Decimal("100.00"),
+                expense_date=date(2025, 1, 15),
+            )
+            db_session.add(ticket)
+            await db_session.flush()
+
+            banco = BankTransactionModel(
+                company_id=test_company.id,
+                transaction_date=date(2025, 1, 15),
+                amount=Decimal("-100.00"),
+                description=f"PAGO {proveedor}",
+            )
+            db_session.add(banco)
+            await db_session.flush()
+
+            db_session.add(
+                ReconciliationModel(
+                    ticket_id=ticket.id,
+                    bank_transaction_id=banco.id,
+                    match_status=estado,
+                )
+            )
+            hechas.append((proveedor, estado))
+        await db_session.commit()
+        return hechas
+
+    @pytest.mark.asyncio
+    async def test_por_defecto_solo_sale_lo_conciliado(self, db_session, test_company, una_conciliada_y_una_no):
+        content = await export_to_excel(db_session, test_company.id)
+
+        df = pd.read_excel(BytesIO(content))
+
+        assert len(df) == 1
+        assert df.iloc[0]["Proveedor"] == "WALMART"
+        assert "DISCREPANCY" not in df["Estatus Conciliacion"].tolist()
+
+    @pytest.mark.asyncio
+    async def test_sin_el_filtro_salen_las_dos(self, db_session, test_company, una_conciliada_y_una_no):
+        """Con `only_reconciled=False` la discrepancia si aparece. El filtro es
+        una decision de quien exporta, no un forgets de que existe."""
+        content = await export_to_excel(
+            db_session, test_company.id, only_reconciled=False
+        )
+
+        df = pd.read_excel(BytesIO(content))
+
+        assert len(df) == 2
+        assert "DISCREPANCY" in df["Estatus Conciliacion"].tolist()
+
+    @pytest.mark.asyncio
+    async def test_contpaqi_tampoco_se_lleva_una_discrepancia(self, db_session, test_company, una_conciliada_y_una_no):
+        """CONTPAQI es el archivo que se carga al sistema contable. Ahi una
+        fila sin cuadrar es un descuadre invisible hasta que alguien descubre
+        el mes cerr mal."""
+        content = await export_to_contpaqi(db_session, test_company.id)
+
+        assert isinstance(content, bytes)
+        assert b"DISCREPANCY" not in content
+        assert b"RENTA" not in content

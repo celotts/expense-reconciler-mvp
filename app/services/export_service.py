@@ -8,6 +8,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import MATCHED_STATUSES
 from app.models.accounting_mapping import AccountingMappingModel
 from app.models.bank_transaction import BankTransactionModel
 from app.models.reconciliation import ReconciliationModel
@@ -212,7 +213,12 @@ async def _get_reconciliation_data(
         query = query.where(TicketModel.expense_date <= date_to)
     
     if only_reconciled:
-        query = query.where(ReconciliationModel.match_status.in_(["PERFECT", "MANUAL"]))
+        # Sale de MATCHED_STATUSES y no de una lista escrita aqui. Una
+        # discrepancia no se exporta como si estuviera cuadrada: mandarla a
+        # CONTPAQI con el monto del banco es inventar el cuadre del mes.
+        query = query.where(
+            ReconciliationModel.match_status.in_([s.value for s in MATCHED_STATUSES])
+        )
     
     result = await db.execute(query)
     rows = result.all()

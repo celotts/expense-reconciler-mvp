@@ -5,11 +5,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.enums import MatchStatus
+
+# El patron se arma desde el enum y no se escribe a mano. Estaban las dos
+# copias: el enum y la cadena, y la unica forma de que dejaran de coincidir era
+# que alguien agregara un estado al motor y no al patron. Entonces la API
+# aceptaba un estado que el motor nunca produce. Hay un test que compara este
+# patron contra el enum para que no vuelva a pasar.
+PATRON_MATCH_STATUS = "^(" + "|".join(s.value for s in MatchStatus) + ")$"
+
 
 class ReconciliationBase(BaseModel):
     ticket_id: UUID | None = None
     bank_transaction_id: UUID | None = None
-    match_status: str = Field(..., pattern="^(PERFECT|MANUAL|DISCREPANCY)$")
+    match_status: str = Field(..., pattern=PATRON_MATCH_STATUS)
 
 
 class ReconciliationCreate(ReconciliationBase):
@@ -49,9 +58,14 @@ class ReconciliationMatchDetail(BaseModel):
     bank_description: str
     bank_amount: Decimal
     bank_date: date
-    match_status: str
+    match_status: str = Field(..., pattern=PATRON_MATCH_STATUS)
     amount_diff: Decimal
     date_diff_days: int
+    # Por que se eligio este movimiento y no otro. Sin esto, la fila dice que
+    # se concilio pero no deja reconstruir la decision, y "el motor lo hizo" no
+    # es una razon que se pueda auditar. Es texto para personas, no un numero:
+    # la aritmetica ya esta en amount_diff y date_diff_days.
+    criterio: str
 
 
 class ReconciliationRunResponse(BaseModel):
