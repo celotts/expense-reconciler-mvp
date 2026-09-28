@@ -6,10 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# Reexportada: los schemas son la frontera publica y quien importa de aqui
+# no necesita saber que el contrato vive en core.enums.
+from app.core.enums import UNKNOWN_PROVIDER as UNKNOWN_PROVIDER
+
 # RFC mexicano: 3 letras (moral) o 4 (fisica), 6 digitos (YYMMDD), 3 homoclave
 RFC_REGEX = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$")
 
-UNKNOWN_PROVIDER = "Unknown Provider"
 
 
 class TicketBase(BaseModel):
@@ -29,7 +32,7 @@ class TicketBase(BaseModel):
         name = v.strip()
         if not name:
             raise ValueError("provider_name no puede estar vacio")
-        if name == "Unknown Provider":
+        if name == UNKNOWN_PROVIDER:
             raise ValueError(
                 "La extraccion no identifico al proveedor. Corrigelo antes de guardar."
             )
@@ -80,7 +83,7 @@ class TicketUpdate(BaseModel):
         name = v.strip()
         if not name:
             raise ValueError("provider_name no puede estar vacio")
-        if name == "Unknown Provider":
+        if name == UNKNOWN_PROVIDER:
             raise ValueError(
                 "La extraccion no identifico al proveedor. Corrigelo antes de guardar."
             )
@@ -136,7 +139,12 @@ class TicketResponse(BaseModel):
     expense_date: date
     category: str | None = None
     raw_text: str | None = None
-    created_at: datetime
+    # La columna admite NULL, asi que la respuesta lo admite. Declararla
+    # obligatoria convertia una fila con created_at nulo en un 500 al serializar,
+    # y la fila con created_at nulo es justamente la que uno no quiere perder:
+    # sin fecha de creacion no se puede calcular la antiguedad, y eso lo
+    # vuelve mas importante verla, no menos.
+    created_at: datetime | None = None
     confidence: Decimal | None = None
     confidence_source: str | None = None
     extraction_status: str

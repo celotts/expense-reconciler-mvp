@@ -451,3 +451,53 @@ class TestContratoDeLaCola:
             "source_type", "source_file", "validation_errors",
         ):
             assert campo in data, f"falta {campo} en la respuesta"
+
+
+class TestCadenaDeProveedorDesconocido:
+    """El unico contrato que cruza cuatro archivos y dos lenguajes.
+
+    El parser emite `UNKNOWN_PROVIDER` cuando no lee al emisor, el gate lo
+    reconoce para marcar `provider_missing`, los schemas lo rechazan al escribir
+    y la API lo pone cuando la extraccion viene vacia. Si cualquiera de los
+    cuatro deja de usar la constante, un documento ilegible entra a conciliacion
+    como si estuviera bien leido: el fallo mas caro y mas silencioso del
+    sistema.
+
+    Aqui se comprueba el comportamiento, no la presencia del texto. Comprobar
+    que la API usa la constante no dice nada de que la cadena correcta sea la
+    que llega a la base; esto si.
+    """
+
+    async def test_una_extraccion_sin_proveedor_usa_la_cadena_canonica(
+        self, db_session, test_company
+    ):
+        from app.core.enums import UNKNOWN_PROVIDER
+
+        t = await _persistir(
+            db_session, test_company.id, b"sin-proveedor",
+            provider_name="", total="0", tax="0",
+        )
+        # provider_name="" es lo que devuelve el parser cuando no lee nada.
+        assert t.provider_name == UNKNOWN_PROVIDER
+        assert t.extraction_status == "PENDIENTE"
+        assert "provider_missing" in (t.validation_errors or "")
+
+    async def test_el_gate_no_aprueba_un_proveedor_desconocido(
+        self, db_session, test_company
+    ):
+        """Confianza alta no compra al proveedor equivocado.
+
+        Es el caso donde un modelo se equivoca confiado: dice 0.99 sobre algo
+        que no leyo. Si el gate lo dejara pasar, el ticket entra a conciliacion
+        sin que nadie lo mire.
+        """
+        from app.core.enums import UNKNOWN_PROVIDER
+
+        t = await _persistir(
+            db_session, test_company.id, b"confianza-alta-sin-proveedor",
+            provider_name=UNKNOWN_PROVIDER, total="500.00", tax="69.00",
+            subtotal="431.00", confidence=0.99,
+        )
+        assert t.extraction_status != "AUTO_APROBADO"
+        assert t.extraction_status in ("PENDIENTE", "REQUIERE_REVISION")
+        assert "provider_missing" in (t.validation_errors or "")

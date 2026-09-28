@@ -16,7 +16,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.core.enums import (
-    AUTO_APPROVE_CONFIDENCE, ConfidenceSource, ExtractionStatus, REVIEW_CONFIDENCE,
+    AUTO_APPROVE_CONFIDENCE, UNKNOWN_PROVIDER, ConfidenceSource, ExtractionStatus,
+    REVIEW_CONFIDENCE,
 )
 
 # Tolerancia de 1 centimo para comparar la aritmetica del documento. Los
@@ -101,7 +102,7 @@ def validate_extraction(
     out = ValidationOutcome()
 
     name = (provider_name or "").strip()
-    if not name or name == "Unknown Provider":
+    if not name or name == UNKNOWN_PROVIDER:
         out.failures.append("provider_missing")
     else:
         out.passed.append("provider_present")

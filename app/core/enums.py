@@ -66,6 +66,20 @@ class SourceType(str, Enum):
 AUTO_APPROVE_CONFIDENCE = 0.90
 REVIEW_CONFIDENCE = 0.60
 
+# Lo que el parser escribe cuando no logra leer el emisor.
+#
+# No es un nombre de proveedor: es la ausencia de uno. Y tiene que ser SIEMPRE
+# la misma cadena en el parser, en el gate, en los schemas y en la API, porque
+# cada uno la compara contra algo distinto: si el parser emite una variante y el
+# gate no la reconoce, un ticket ilegible pasa los checks y entra a
+# conciliacion como si estuviera bien leido. Ese es el fallo exacto que el gate
+# existe para evitar, y se reintroduce cambiando una palabra.
+#
+# El frontend tiene su copia en front/src/utils/validation.ts (UNKNOWN_PROVIDER)
+# y la cola de revision la consume desde ahi. Los dos lados tienen que cambiar
+# juntos.
+UNKNOWN_PROVIDER = "Unknown Provider"
+
 # Estados cuyo ticket puede entrar a conciliacion. Para estos, los datos
 # tienen que ser aritmeticamente validos.
 #

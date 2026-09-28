@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.enums import ExtractionStatus, SourceType
+from app.core.enums import UNKNOWN_PROVIDER, ExtractionStatus, SourceType
 from app.core.time import utcnow
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
@@ -200,7 +200,7 @@ async def _persist_extracted(
 
     ticket = TicketModel(
         company_id=company_id,
-        provider_name=extracted.provider_name or "Unknown Provider",
+        provider_name=extracted.provider_name or UNKNOWN_PROVIDER,
         provider_tax_id=extracted.provider_tax_id,
         total_amount=extracted.total_amount,
         tax_amount=extracted.tax_amount,

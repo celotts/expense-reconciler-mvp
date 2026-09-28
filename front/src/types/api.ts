@@ -17,6 +17,20 @@ export interface CompanyUpdate {
   tax_id?: string;
 }
 
+// Estados del ciclo de vida de un ticket. Deben coincidir con
+// app/core/enums.py::ExtractionStatus. Si divergen, la UI muestra estados que
+// el backend nunca produce y la cola aparece vacia sin error visible.
+export type ExtractionStatus =
+  | 'AUTO_APROBADO'
+  | 'REQUIERE_REVISION'
+  | 'PENDIENTE'
+  | 'APROBADO'
+  | 'RECHAZADO';
+
+export type ConfidenceSource = 'manual' | 'llm' | 'rules' | 'llm_validated' | 'pdf_text';
+
+export type SourceType = 'manual' | 'pdf' | 'image' | 'directory' | 'bulk' | 'camera';
+
 export interface Ticket {
   id: string;
   company_id: string;
@@ -28,6 +42,36 @@ export interface Ticket {
   category: string | null;
   raw_text: string | null;
   created_at: string;
+  // Trazabilidad de la extraccion. `confidence` es null en captura manual: no
+  // hay confianza que medir, y un 0.000 contaminaria el promedio de la IA.
+  confidence: string | null;
+  confidence_source: ConfidenceSource | string | null;
+  extraction_status: ExtractionStatus;
+  source_type: SourceType | string | null;
+  source_file: string | null;
+  validation_errors: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+}
+
+export interface TicketReviewQueue {
+  company_id: string | null;
+  total_open: number;
+  /** Conteos globales por estado. No cambian al filtrar, para que el badge no salte. */
+  por_estado: Partial<Record<ExtractionStatus, number>>;
+  antiguedad_promedio_dias: number | null;
+  tickets: Ticket[];
+}
+
+export interface TicketReviewRequest {
+  action: 'approve' | 'reject';
+  provider_name?: string;
+  provider_tax_id?: string;
+  total_amount?: string;
+  tax_amount?: string;
+  expense_date?: string;
+  notes?: string;
 }
 
 export interface TicketCreate {

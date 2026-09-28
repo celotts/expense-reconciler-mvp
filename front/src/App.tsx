@@ -3,13 +3,15 @@ import { Companies } from './pages/Companies';
 import { Tickets } from './pages/Tickets';
 import { BankTransactions } from './pages/BankTransactions';
 import { Reconciliations } from './pages/Reconciliations';
+import { ReviewQueue } from './pages/ReviewQueue';
 import './App.css';
 
-type Page = 'companies' | 'tickets' | 'bank' | 'reconciliations';
+type Page = 'companies' | 'tickets' | 'review' | 'bank' | 'reconciliations';
 
 const navigation = [
   { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon },
   { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon },
+  { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon },
   { key: 'bank' as Page, label: 'Banco', icon: BankIcon },
   { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon },
 ];
@@ -46,8 +48,15 @@ function ArrowPathIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
-function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {
+function InboxIcon({ className = 'w-5 h-5' }: { className?: string }) {
   return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-4l-1 3h-6l-1-3H4" />
+    </svg>
+  );
+}
+
+function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {  return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
     </svg>
@@ -70,6 +79,7 @@ export default function App() {
     switch (currentPage) {
       case 'companies': return <Companies />;
       case 'tickets': return <Tickets />;
+      case 'review': return <ReviewQueue />;
       case 'bank': return <BankTransactions />;
       case 'reconciliations': return <Reconciliations />;
       default: return <Companies />;

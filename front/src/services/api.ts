@@ -1,7 +1,7 @@
 // API Service Layer
 import type {
   Company, CompanyCreate, CompanyUpdate,
-  Ticket, TicketCreate, TicketUpdate,
+  Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse,
@@ -48,9 +48,13 @@ export const companiesApi = {
 
 // Tickets API
 export const ticketsApi = {
-  list: (companyId?: string) => {
-    const params = companyId ? `?company_id=${companyId}` : '';
-    return fetchApi<Ticket[]>(`/tickets/${params}`);
+  list: (companyId?: string, filters?: { onlyOpen?: boolean; extractionStatus?: string }) => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('company_id', companyId);
+    if (filters?.onlyOpen) params.append('only_open', 'true');
+    if (filters?.extractionStatus) params.append('extraction_status', filters.extractionStatus);
+    const qs = params.toString();
+    return fetchApi<Ticket[]>(`/tickets/${qs ? `?${qs}` : ''}`);
   },
   get: (id: string) => fetchApi<Ticket>(`/tickets/${id}`),
   create: (data: TicketCreate) => fetchApi<Ticket>('/tickets/', {
@@ -62,7 +66,24 @@ export const ticketsApi = {
     body: JSON.stringify(data),
   }),
   delete: (id: string) => fetchApi<void>(`/tickets/${id}`, { method: 'DELETE' }),
-  
+
+  // Cola de revision. Los conteos que devuelve son globales aunque se filtre,
+  // para que el encabezado no salte de 40 a 3 al cambiar el filtro.
+  reviewQueue: (companyId?: string, status?: string): Promise<TicketReviewQueue> => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('company_id', companyId);
+    if (status) params.append('status', status);
+    const qs = params.toString();
+    return fetchApi<TicketReviewQueue>(`/tickets/review-queue${qs ? `?${qs}` : ''}`);
+  },
+
+  // `approve` con datos que siguen rotos devuelve 422: la opinion de una
+  // persona no puede saltarse los checks. Hay que corregir y volver a intentar.
+  review: (id: string, data: TicketReviewRequest) => fetchApi<Ticket>(`/tickets/${id}/review`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  }),
+
   // Extract data from file (preview)
   extract: (file: File, fileType: 'pdf' | 'image' | 'text' = 'pdf'): Promise<TicketExtractionResult> => {
     const formData = new FormData();
@@ -248,9 +269,11 @@ export const reconciliationsApi = {
 // Re-export types
 export type { 
   Company, CompanyCreate, CompanyUpdate,
-  Ticket, TicketCreate, TicketUpdate,
+  Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse, ReconciliationMatchDetail,
   AccountingMapping, AccountingMappingCreate
 } from '../types/api';
+
+export type { ExtractionStatus, ConfidenceSource, SourceType } from '../types/api';

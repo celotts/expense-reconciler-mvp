@@ -7,6 +7,8 @@ from typing import Any
 import pandas as pd
 from pydantic import BaseModel
 
+from app.core.enums import UNKNOWN_PROVIDER
+
 # Mexican RFC: 3-4 letters (persona fisica/moral), 6 digits (YYMMDD), 3 alnum
 # (homoclave). The letter group is LAZY so a 3-letter RFC like WAL910101XXX
 # matches as a whole instead of swallowing 4 letters and shifting the groups.
@@ -173,7 +175,7 @@ def _extract_from_pdf(file_content: bytes) -> TicketExtractionResult:
 def _extract_from_image(file_content: bytes) -> TicketExtractionResult:
     """Placeholder for image OCR extraction logic."""
     return TicketExtractionResult(
-        provider_name="Unknown Provider",
+        provider_name=UNKNOWN_PROVIDER,
         provider_tax_id=None,
         total_amount=Decimal("0.00"),
         tax_amount=Decimal("0.00"),
@@ -190,7 +192,7 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     """
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     
-    provider_name = "Unknown Provider"
+    provider_name = UNKNOWN_PROVIDER
     total_amount = Decimal("0.00")
     tax_amount = Decimal("0.00")
     expense_date = date.today()
@@ -243,7 +245,7 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         if rfc_match and provider_tax_id is None:
             provider_tax_id = rfc_match.group(1)
 
-        if provider_name != "Unknown Provider":
+        if provider_name != UNKNOWN_PROVIDER:
             continue
 
         # CFDI layouts label the emitter explicitly: "EMISOR: FARMACIAS DEL SUR"
