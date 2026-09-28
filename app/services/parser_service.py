@@ -142,30 +142,32 @@ def extract_ticket_data(
     file_type: str = "pdf",
     extraction_config: dict[str, Any] | None = None,
 ) -> TicketExtractionResult:
-    """
-    Extract structured data from a ticket/receipt file (PDF, image, or text).
-    
-    This is a placeholder implementation. In production, integrate with:
-    - OCR services (AWS Textract, Google Vision, Azure Form Recognizer)
-    - PDF parsing libraries (pdfplumber, PyMuPDF)
-    - ML models for receipt parsing
-    
-    Args:
-        file_content: Raw bytes of the file
-        file_type: Type of file ('pdf', 'image', 'text')
-        extraction_config: Optional configuration for extraction
-    
-    Returns:
-        TicketExtractionResult with extracted data
+    """Extrae por reglas, sin IA. Solo PDF con capa de texto y texto plano.
+
+    Esta es la parte determinista de la captura, sin modelo. La ruta completa es
+    `app.services.capture.capture_ticket`, que es la que usa la API: decide si
+    un documento necesita modelo y, si lo necesita, lo consulta. Aqui no hay
+    esa decision, y por eso una imagen no se puede resolver.
+
+    Antes esta funcion devolvia para una imagen un ticket de relleno con
+    proveedor "Unknown Provider" y total 0, indistinguible de un comprobante
+    real de cero pesos. Un ticket inventado que se guarda es un gasto falso en
+    la base, y un gasto falso que nadie sabe que es falso sale en el cierre
+    mensual. Que falle de forma visible es mejor que devolver algo plausible.
+
+    `extraction_config` se acepta y se ignora. No hay nada que configurar: la
+    politica de captura esta en `capture.py` y es una sola.
     """
     if file_type == "pdf":
         return _extract_from_pdf(file_content)
-    elif file_type == "image":
-        return _extract_from_image(file_content)
-    elif file_type == "text":
+    if file_type == "text":
         return _parse_receipt_text(file_content.decode("utf-8"))
-    else:
-        raise ValueError(f"Unsupported file type: {file_type}")
+    if file_type == "image":
+        raise ValueError(
+            "una imagen no se extrae por reglas: use "
+            "app.services.capture.capture_ticket, que consulta al modelo"
+        )
+    raise ValueError(f"Unsupported file type: {file_type}")
 
 
 def _extract_from_pdf(file_content: bytes) -> TicketExtractionResult:

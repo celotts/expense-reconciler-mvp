@@ -155,6 +155,46 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         "            max_pages=100,",
         ["tests/unit/test_capture.py::TestPdfEscaneado"],
     ),
+    (
+        "se reintroduce un import tragado de fitz",
+        "app/services/parser_service.py",
+        "def extract_pdf_text(file_content: bytes) -> str:",
+        "def extract_pdf_text(file_content: bytes) -> str:\n    import fitz  # noqa",
+        ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
+    ),
+    (
+        "se reintroduce la ruta de PDF en la capa de IA",
+        "app/services/ai_extractor.py",
+        '    async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:',
+        "    async def extract_from_pdf(self, pdf_bytes: bytes) -> ExtractedInvoice:\n"
+        '        return await self._extract_from_text("x", "pdf_text")\n\n'
+        "    async def _pdf_to_images(self, pdf_bytes: bytes) -> list:\n        return []\n\n"
+        '    async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:',
+        ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
+    ),
+    (
+        "la imagen vuelve a devolver un ticket de relleno",
+        "app/services/parser_service.py",
+        '    if file_type == "image":\n'
+        "        raise ValueError(\n"
+        '            "una imagen no se extrae por reglas: use "\n'
+        '            "app.services.capture.capture_ticket, que consulta al modelo"\n'
+        "        )",
+        '    if file_type == "image":\n'
+        "        return TicketExtractionResult(\n"
+        '            provider_name=UNKNOWN_PROVIDER, total_amount=Decimal("0.00"),\n'
+        '            raw_text="Image OCR not implemented",\n'
+        "        )",
+        ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
+    ),
+    (
+        "el error de imagen deja de decir donde esta la cascada",
+        "app/services/parser_service.py",
+        '            "una imagen no se extrae por reglas: use "\n'
+        '            "app.services.capture.capture_ticket, que consulta al modelo"',
+        '            "no soportado"',
+        ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
+    ),
 ]
 
 

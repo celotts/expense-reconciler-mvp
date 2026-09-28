@@ -595,3 +595,102 @@ class TestFechaInventada:
         # Sin fecha no se puede estar en la tabla mas alta: la confianza baja.
         # Sin RFC ni subtotal ni fecha: la fila mas baja de la tabla.
         assert resultado.confidence == confianza_por_campos(False, False, False)
+
+
+class TestUnaSolaRutaDeCaptura:
+    """No puede haber dos politicas de captura en el sistema.
+
+    Este archivo empieza con la consecuencia de que las hubiera: un PDF escaneado
+    que nunca llego a mirar la pagina. Dos politicas no fallan de forma visible.
+    La primera que se implemento murio sin que nadie lo notara, porque devolvia
+    lista vacia y se tragaba la excepcion, justo en el punto donde se decide si
+    un documento necesita IA. La segunda funcionaba y nadie la reviso porque no
+    era la que la API llamaba.
+
+    Los tests de esta clase no comprueban comportamiento: comprueban que no
+    vuelva a haber un segundo camino. Son preventivos, y por eso estan
+    escritos como inventario de lo que no debe reaparecer.
+    """
+
+    def test_el_lector_por_reglas_no_finge_que_sabe_leer_una_foto(self):
+        """Una imagen no tiene texto que un regex pueda leer.
+
+        Antes esta funcion devolvia un ticket de relleno: proveedor desconocido,
+        total cero, fecha de hoy. Indistinguible de un comprobante real de cero
+        pesos, y el total cero es justo el que pasa los checks del gate.
+
+        Este test existe porque la rama de imagen estaba rota con un `NameError`
+        y la suite daba 301 verde: nada la llamaba. Un test que cubre el camino
+        principal no cubre los laterales.
+        """
+        from app.services.parser_service import extract_ticket_data
+
+        with pytest.raises(ValueError, match="capture_ticket"):
+            extract_ticket_data(b"\xff\xd8\xfffoto-de-un-ticket", file_type="image")
+
+    def test_el_error_dice_a_donde_ir(self):
+        """Un error que no dice la solucion se convierte en un parche.
+
+        El que tropieza con esto dentro de seis meses no sabe que existe una
+        cascada, y lo mas probable es que escriba un extractor de imagen junto a
+        la funcion que revento.
+        """
+        from app.services.parser_service import extract_ticket_data
+
+        with pytest.raises(ValueError) as exc:
+            extract_ticket_data(b"contenido", file_type="image")
+        # Que nombre el modulo y la funcion, no solo que "no se puede".
+        assert "app.services.capture" in str(exc.value)
+        assert "capture_ticket" in str(exc.value)
+
+    def test_la_capa_de_ia_no_tiene_una_ruta_de_pdf_propia(self):
+        """El PDF se decide en `capture.py`, no en el extractor.
+
+        `extract_from_pdf` hacia su propia politica: probaba texto, y si no
+        habia, renderizaba con `fitz`. Era la misma cascada, escrita dos veces,
+        y la copia nunca funciono. Se boro. Este test esta para que la proxima
+        version no la vuelva a agregar "para el caso del PDF".
+        """
+        from app.services import ai_extractor
+
+        assert not hasattr(ai_extractor.ai_extractor, "extract_from_pdf")
+        assert not hasattr(ai_extractor.ai_extractor, "_pdf_to_images")
+
+    def test_nadie_importa_una_dependencia_que_no_esta_instalada(self):
+        """Guarda contra el fallo que se traga las excepciones.
+
+        `fitz` (PyMuPDF) no esta instalado y no esta en requirements. El import
+        se hacia dentro de un `try/except Exception: pass`, asi que no habia
+        error: habia una lista vacia, en el punto exacto donde se decide si un
+        documento necesita IA. Un `ImportError` tragado no se_debugga nunca,
+        porque no hay nada que debuggear.
+
+        El recorrido es por el arbol de sintaxis, no por el texto: los
+        comentarios que explican por que `fitz` no se usa son legitimos y
+        tienen que poder mencionarlo.
+        """
+        import ast
+
+        raiz = Path(__file__).resolve().parents[2] / "app"
+        assert raiz.is_dir(), f"no se encontro el paquete app en {raiz}"
+
+        _RIESGOSAS = {"fitz", "pymupdf", "pdf2image"}
+        ofensas: list[str] = []
+
+        for archivo in sorted(raiz.rglob("*.py")):
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"), str(archivo))
+            for nodo in ast.walk(arbol):
+                modulos: list[str] = []
+                if isinstance(nodo, ast.Import):
+                    modulos = [a.name for a in nodo.names]
+                elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+                    modulos = [nodo.module]
+                for modulo in modulos:
+                    raiz_modulo = modulo.split(".")[0]
+                    if raiz_modulo in _RIESGOSAS:
+                        ofensas.append(f"{archivo.name}:{nodo.lineno} importa {modulo}")
+
+        assert not ofensas, (
+            "imports prohibidos (no estan instalados y fallan en silencio): "
+            + "; ".join(ofensas)
+        )

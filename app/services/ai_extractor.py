@@ -9,9 +9,6 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from datetime import date
 
-from pdfplumber import open as pdf_open
-from PIL import Image
-
 from app.services.ai_client import ai_client, AIResponse
 from app.core.config import settings
 
@@ -133,26 +130,6 @@ class AIExtractor:
             return settings.OLLAMA_VISION_MODEL
         return "gpt-4o"
 
-    async def extract_from_pdf(self, pdf_bytes: bytes) -> ExtractedInvoice:
-        """Extract from PDF - tries text first, then images"""
-        if not self.enabled:
-            return self._fallback_extraction(pdf_bytes)
-
-        # Try text extraction first (faster, cheaper)
-        text = self._extract_pdf_text(pdf_bytes)
-        if len(text) > 100:
-            try:
-                return await self._extract_from_text(text, "pdf_text")
-            except Exception:
-                pass
-
-        # Fallback to vision (images)
-        images = self._pdf_to_images(pdf_bytes)
-        if images:
-            return await self._extract_from_images(images)
-
-        return self._fallback_extraction(pdf_bytes)
-
     async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:
         """Extract from image (photo of receipt/invoice)"""
         if not self.enabled:
@@ -182,37 +159,6 @@ class AIExtractor:
             return self._fallback_extraction(text.encode())
         return await self._extract_from_text(text, "raw_text")
 
-    def _extract_pdf_text(self, pdf_bytes: bytes) -> str:
-        """Extract text from PDF using pdfplumber"""
-        text_parts = []
-        try:
-            with pdf_open(io.BytesIO(pdf_bytes)) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        text_parts.append(text)
-        except Exception:
-            pass
-        return "\n\n".join(text_parts)
-
-    def _pdf_to_images(self, pdf_bytes: bytes, max_pages: int = 3) -> List[str]:
-        """Convert PDF pages to base64 images"""
-        images = []
-        try:
-            import fitz  # PyMuPDF
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            for i in range(min(len(doc), max_pages)):
-                page = doc[i]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                images.append(base64.b64encode(buf.getvalue()).decode())
-            doc.close()
-        except Exception:
-            pass
-        return images
-
     async def _extract_from_text(self, text: str, source: str) -> ExtractedInvoice:
         """Extract using text-only LLM call, with retries for invalid model output."""
         last_result: Optional[ExtractedInvoice] = None
@@ -233,27 +179,6 @@ class AIExtractor:
                 return result
             last_result = result
         return last_result or self._fallback_extraction(text.encode())
-
-    async def _extract_from_images(self, images: List[str]) -> ExtractedInvoice:
-        """Extract using vision model from images"""
-        content = [
-            {"type": "text", "text": INVOICE_EXTRACTION_PROMPT},
-        ]
-        for img in images:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img}", "detail": "high"}
-            })
-
-        response = await ai_client.chat_completion(
-            messages=[{"role": "user", "content": content}],
-            model=self._vision_model,
-            temperature=settings.AI_TEMPERATURE,
-            max_tokens=settings.AI_MAX_TOKENS,
-            response_format={"type": "json_object"},
-        )
-
-        return self._parse_ai_response(response, "vision")
 
     async def _extract_from_vision(self, b64_image: str, mime_type: str) -> ExtractedInvoice:
         """Extract from single base64 image, with retries for invalid model output."""
