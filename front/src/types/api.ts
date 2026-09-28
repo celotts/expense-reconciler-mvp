@@ -84,6 +84,91 @@ export interface TicketReviewRequest {
   notes?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Muestreo de exactitud
+// ---------------------------------------------------------------------------
+//
+// El veredicto de una revision de muestreo NO corrige el ticket. Solo dice si
+// la extraccion coincidia con el papel. Si la muestra pudiera cambiar un total,
+// la exactitud medida dependeria de quien reviso, y dejaria de medir el
+// automatismo: estariamos midiendo a la persona.
+
+export type SpotCheckStatus = 'PENDIENTE' | 'CORRECTO' | 'INCORRECTO';
+
+/** Los unicos campos que se pueden marcar como mal leidos.
+ *
+ *  `category` NO esta, a proposito. La categoria la pone el usuario cuando
+ *  clasifica el gasto, no la lee la IA del papel: un papel no dice "esto es
+ *  alimento". Marcarla aqui seria medir algo que el sistema no hizo. */
+export type SpotCheckField =
+  | 'provider_name'
+  | 'provider_tax_id'
+  | 'total_amount'
+  | 'tax_amount'
+  | 'expense_date'
+  | 'subtotal';
+
+export interface SpotCheckItem {
+  ticket: Ticket;
+  spot_check_status: SpotCheckStatus;
+  spot_checked_at: string | null;
+  spot_check_notes: string | null;
+  spot_check_wrong_fields: SpotCheckField[];
+}
+
+export interface SpotCheckQueue {
+  company_id: string | null;
+  /** Conteo global, no recortado por el limite de la lista. Una cola de 200
+   *  con `limit=50` tiene que decir 200, no 50. */
+  total_pendientes: number;
+  total_revisados: number;
+  aciertos: number;
+  incorrectos: number;
+  antiguedad_promedio_dias: number | null;
+  tickets: SpotCheckItem[];
+}
+
+export interface SpotCheckRequest {
+  correct: boolean;
+  campos_incorrectos?: SpotCheckField[];
+  notes?: string;
+}
+
+/** Que se puede concluir con la evidencia reunida. Los cuatro se muestran con
+ *  texto y color distintos: "sin evidencia" y "no cumple" no pueden verse
+ *  igual, porque significan cosas opuestas. */
+export type Veredicto = 'SIN_EVIDENCIA' | 'CUMPLE' | 'NO_CUMPLE' | 'INCONCLUYENTE';
+
+export interface ExactitudPorOrigen {
+  origen: string;
+  revisados: number;
+  aciertos: number;
+  incorrectos: number;
+  pendientes: number;
+  /** `null` cuando nadie miró. No es un cero: no mirar no es fallar. */
+  exactitud: number | null;
+  intervalo_inferior: number | null;
+  intervalo_superior: number | null;
+  veredicto: Veredicto;
+  /** Por qué no se puede afirmar aún, o qué falta para poder hacerlo. Viene
+   *  como texto porque la acción depende de la razón. */
+  motivo_faltante: string;
+  total_revisiones_necesarias: number | null;
+  campo_mas_fallido: string | null;
+  conteo_por_campo: Record<string, number>;
+}
+
+export interface ReporteExactitud {
+  company_id: string | null;
+  objetivo: number;
+  nivel_confianza: number;
+  /** El PEOR veredicto por origen, no el promedio. Un sistema que falla en una
+   *  vía de captura no cumple el objetivo aunque la otra sea perfecta. */
+  veredicto_global: Veredicto;
+  explicacion: string;
+  por_origen: ExactitudPorOrigen[];
+}
+
 export interface TicketCreate {
   company_id: string;
   provider_name: string;

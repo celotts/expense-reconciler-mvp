@@ -163,6 +163,55 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         ],
     ),
     # -----------------------------------------------------------------------
+    # El contrato con el frontend
+    # -----------------------------------------------------------------------
+    # Estas no deshacen un bug ya visto: deshacen el modo de fallo silencioso
+    # mas caro que tiene esta funcionalidad, que es que el conteo de la
+    # exactitud salga mejor de lo que es sin que nadie vea un error.
+    (
+        "la pantalla deja de ofrecer un campo que el backend acepta",
+        "front/src/utils/spotcheck.ts",
+        "  { campo: 'subtotal', label: 'Subtotal' },\n",
+        "",
+        ["tests/unit/test_contract_sync.py::TestElMuestreoHablaElMismoIdioma"],
+    ),
+    (
+        "la pantalla ofrece un campo que el backend rechaza",
+        "front/src/utils/spotcheck.ts",
+        "  { campo: 'total_amount', label: 'Total' },\n",
+        "  { campo: 'total_amount', label: 'Total' },\n  { campo: 'category', label: 'Categoria' },\n",
+        ["tests/unit/test_contract_sync.py::TestElMuestreoHablaElMismoIdioma"],
+    ),
+    (
+        "la pantalla anuncia un veredicto que el backend nunca emite",
+        "front/src/types/api.ts",
+        "export type Veredicto = 'SIN_EVIDENCIA' | 'CUMPLE' | 'NO_CUMPLE' | 'INCONCLUYENTE';",
+        "export type Veredicto = 'SIN_EVIDENCIA' | 'CUMPLE' | 'NO_CUMPLE' | 'INCONCLUYENTE' | 'PERFECTO';",
+        ["tests/unit/test_contract_sync.py::TestElMuestreoHablaElMismoIdioma"],
+    ),
+    (
+        "un estado de la muestra desaparece de la pantalla",
+        "front/src/types/api.ts",
+        "export type SpotCheckStatus = 'PENDIENTE' | 'CORRECTO' | 'INCORRECTO';",
+        "export type SpotCheckStatus = 'PENDIENTE' | 'CORRECTO';",
+        ["tests/unit/test_contract_sync.py::TestElMuestreoHablaElMismoIdioma"],
+    ),
+    (
+        "la pantalla deja de declarar un campo del ticket",
+        "front/src/types/api.ts",
+        "  subtotal: string | null;\n",
+        "",
+        ["tests/unit/test_contract_sync.py::TestLosCamposDelTicketCoinciden"],
+    ),
+    (
+        "un campo nullable del backend se tipa sin null en el frontend",
+        "front/src/types/api.ts",
+        "  created_at: string | null;",
+        "  created_at: string;",
+        ["tests/unit/test_contract_sync.py::TestLosCamposDelTicketCoinciden"],
+    ),
+
+    # -----------------------------------------------------------------------
     # La antiguedad: una resta entre zonas distintas
     # -----------------------------------------------------------------------
     (

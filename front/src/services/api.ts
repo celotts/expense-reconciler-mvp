@@ -2,6 +2,8 @@
 import type {
   Company, CompanyCreate, CompanyUpdate,
   Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
+  SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,
+  ReporteExactitud,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse,
@@ -83,6 +85,42 @@ export const ticketsApi = {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
+
+  // -------------------------------------------------------------------------
+  // Muestreo de exactitud
+  // -------------------------------------------------------------------------
+
+  // Sin `status` devuelve solo lo PENDIENTE, que es el trabajo. Los conteos
+  // son globales: no bajan al filtrar, para que el encabezado no salte de 200
+  // a 3 y deje de informar.
+  spotCheckQueue: (
+    companyId?: string,
+    status?: SpotCheckStatus,
+    limit?: number,
+  ): Promise<SpotCheckQueue> => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('company_id', companyId);
+    if (status) params.append('status', status);
+    if (limit) params.append('limit', String(limit));
+    const qs = params.toString();
+    return fetchApi<SpotCheckQueue>(`/tickets/spot-check${qs ? `?${qs}` : ''}`);
+  },
+
+  // Registra el veredicto de la muestra. NO corrige el ticket: solo deja
+  // constancia de si la lectura coincidia con el papel.
+  registrarVeredicto: (id: string, data: SpotCheckRequest) =>
+    fetchApi<SpotCheckItem>(`/tickets/${id}/spot-check`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  // El reporte se pide aparte de la cola. No es un dato derivado que se pueda
+  // calcular en el navegador: el intervalo de confianza y el veredicto los
+  // decide el servidor, con la misma aritmetica que los tests.
+  reporteExactitud: (companyId?: string): Promise<ReporteExactitud> => {
+    const qs = companyId ? `?company_id=${companyId}` : '';
+    return fetchApi<ReporteExactitud>(`/tickets/accuracy${qs}`);
+  },
 
   // Extract data from file (preview)
   extract: (file: File, fileType: 'pdf' | 'image' | 'text' = 'pdf'): Promise<TicketExtractionResult> => {
@@ -272,6 +310,8 @@ export type {
   Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
+  SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,
+  SpotCheckField, ExactitudPorOrigen, ReporteExactitud, Veredicto,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse, ReconciliationMatchDetail,
   AccountingMapping, AccountingMappingCreate
 } from '../types/api';

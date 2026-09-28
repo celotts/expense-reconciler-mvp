@@ -27,6 +27,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 VALIDATION_TS = RAIZ / "front" / "src" / "utils" / "validation.ts"
 EXTRACTION_TS = RAIZ / "front" / "src" / "utils" / "extraction.ts"
 TYPES_TS = RAIZ / "front" / "src" / "types" / "api.ts"
+SPOTCHECK_TS = RAIZ / "front" / "src" / "utils" / "spotcheck.ts"
 
 
 def _leer(path: Path) -> str:
@@ -254,6 +255,94 @@ class TestRespuestaDeTicket:
         )
         assert out.ok is False
         assert out.failures, "un rechazo sin motivos no es revisable"
+
+
+class TestElMuestreoHablaElMismoIdioma:
+    """Los enums y la lista de campos del muestreo, de los dos lados.
+
+    Aqui la divergencia no es cosmetics: cada una rompe el conteo de la
+    exactitud en silencio.
+
+    - Un veredicto que el backend emite y el frontend no conoce se pinta como
+      desconocido, lo cual esta bien, pero un veredicto que el frontend
+      RECONOCE y el backend nunca emite hace que una pantalla anuncie un
+      resultado que nadie midio.
+    - Un campo que el frontend ofrece y el backend rechaza se pierde con un
+      422 en el momento de marcarlo: el revisor dejo todo el trabajo hecho y
+      no se guardo.
+    - Un campo que el backend acepta y el frontend no ofrece nunca se puede
+      marcar como mal leido, y el reporte lo subcuenta en silencio. Este es el
+      peor de los tres, porque no da ningun error: la exactitud sale un poco
+      mejor de lo que es.
+    """
+
+    def test_los_estados_de_la_muestra_coinciden(self):
+        from app.core.enums import SpotCheckStatus
+
+        texto = _leer(TYPES_TS)
+        m = re.search(r"export type SpotCheckStatus\s*=(.*?);", texto, re.DOTALL)
+        assert m, "no se encontro `export type SpotCheckStatus` en api.ts"
+        front = set(re.findall(r"'([A-Z_]+)'", m.group(1)))
+        back = {s.value for s in SpotCheckStatus}
+        assert front == back, (
+            f"divergen. Solo en frontend: {front - back}. Solo en backend: {back - front}."
+        )
+
+    def test_los_veredictos_coinciden(self):
+        from app.services.accuracy_service import Veredicto
+
+        texto = _leer(TYPES_TS)
+        m = re.search(r"export type Veredicto\s*=(.*?);", texto, re.DOTALL)
+        assert m, "no se encontro `export type Veredicto` en api.ts"
+        front = set(re.findall(r"'([A-Z_]+)'", m.group(1)))
+        back = {
+            v for v in vars(Veredicto).values()
+            if isinstance(v, str) and v.isupper()
+        }
+        assert front == back, (
+            f"divergen. Solo en frontend: {front - back}. Solo en backend: {back - front}. "
+            f"Un veredicto que solo existe en el frontend se anuncia como un "
+            f"resultado que nadie midio."
+        )
+
+    def test_los_campos_marcables_son_los_mismos_y_en_el_mismo_conjunto(self):
+        """La lista que ofrece la pantalla es la que acepta el backend.
+
+        Se compara el CONJUNTO y no el orden: el orden es presentacion, y el
+        backend no lo usa. Lo que no puede diferir es el conjunto, porque cada
+        campo que se cuela o se va rompe el conteo del reporte.
+        """
+        from app.schemas.ticket import CAMPOS_VERIFICABLES
+
+        texto = _leer(SPOTCHECK_TS)
+        m = re.search(r"CAMPOS_MUESTRABLES[^=]*=\s*\[(.*?)\];", texto, re.DOTALL)
+        assert m, "no se encontro `CAMPOS_MUESTRABLES` en spotcheck.ts"
+        front = set(re.findall(r"campo:\s*'([a-z_]+)'", m.group(1)))
+        back = set(CAMPOS_VERIFICABLES)
+        assert front == back, (
+            f"divergen.\n"
+            f"  La pantalla ofrece y el backend rechaza: {sorted(front - back)}\n"
+            f"  El backend acepta y la pantalla no ofrece: {sorted(back - front)}\n"
+            f"El primero se pierde con un 422 al marcar. El segundo no da ningun "
+            f"error: el campo nunca se puede marcar mal leido y la exactitud sale "
+            f"un poco mejor de lo que es."
+        )
+
+    def test_categoria_no_se_puede_marcar_ni_aunque_se_agregue_al_frente(self):
+        """La categoria no la lee la IA: la elige una persona.
+
+        Un papel no dice "esto es alimento". Si `category` apareciera en la
+        lista, el muestreo mediria una decision humana con la metrica del
+        automatismo, y el numero de exactitud dejaria de significar lo que dice.
+        Este test falla si alguien la agrega a `CAMPOS_VERIFICABLES` sin
+        pensar que es "un campo mas". Lo es, y no debe estar.
+        """
+        from app.schemas.ticket import CAMPOS_VERIFICABLES
+
+        assert "category" not in CAMPOS_VERIFICABLES, (
+            "`category` no viene del documento: la elige quien clasifica el gasto. "
+            "Marcarla haria que la exactitud mida a una persona y no al extractor."
+        )
 
 
 class TestLosCamposDelTicketCoinciden:
