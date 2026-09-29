@@ -6,7 +6,10 @@ import { Reconciliations } from './pages/Reconciliations';
 import { ReviewQueue } from './pages/ReviewQueue';
 import { SpotCheck } from './pages/SpotCheck';
 import { Dashboard } from './pages/Dashboard';
+import { Login } from './pages/Login';
 import { NavegacionProvider, useNavegacion } from './contextos/Navegacion';
+import { SesionProvider, useSesion } from './contextos/Sesion';
+import { Loading } from './components/ui';
 import './App.css';
 
 type Page = 'dashboard' | 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations';
@@ -95,14 +98,17 @@ function XIcon({ className = 'w-6 h-6' }: { className?: string }) {
 }
 
 function AppInner() {
-  const { paginaActual, irA } = useNavegacion();
+  const { paginaActual, irA, filtroTickets } = useNavegacion();
+  const { usuario, cerrarSesion } = useSesion();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const renderPage = () => {
     switch (paginaActual) {
       case 'dashboard': return <Dashboard />;
       case 'companies': return <Companies />;
-      case 'tickets': return <Tickets />;
+      // El filtro viene del tablero: al pulsar la barra gris de "sin clasificar"
+      // se abre esta pantalla ya filtrada, no la lista completa.
+      case 'tickets': return <Tickets filtroInicial={filtroTickets ?? 'todos'} />;
       case 'review': return <ReviewQueue />;
       case 'spotcheck': return <SpotCheck />;
       case 'bank': return <BankTransactions />;
@@ -157,7 +163,17 @@ function AppInner() {
 
           {/* Footer */}
           <div className="p-4 border-t">
-            <p className="text-xs text-gray-500 text-center">
+            <div className="mb-2">
+              <p className="text-sm font-medium text-gray-800 truncate">{usuario?.nombre}</p>
+              <p className="text-xs text-gray-500 truncate">{usuario?.email}</p>
+            </div>
+            <button
+              onClick={cerrarSesion}
+              className="w-full text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg py-1.5 transition-colors"
+            >
+              Salir
+            </button>
+            <p className="text-xs text-gray-400 text-center mt-3">
               Expense Reconciler MVP v0.1.0
             </p>
           </div>
@@ -186,10 +202,37 @@ function AppInner() {
   );
 }
 
-export default function App() {
+/** La puerta. Se decide aqui, antes de montar ninguna pantalla.
+ *
+ *  El orden importa y no es negociable: primero `cargando`, despues
+ *  `usuario === null`, y solo al final la aplicacion. Al reves, durante el
+ *  arranque se veria la aplicacion entera un instante y luego saltaria el
+ *  login, que es un parpadeo que hace pensar que algo se rompio. Ademas, con la
+ *  aplicacion montada sin sesion, las pantallas lanzan sus peticiones al vacio
+ *  y llenan la consola de 401 antes de que el login aparezca.
+ *
+ *  La comprobacion no se hace aqui sino en `SesionProvider`, y por eso este
+ *  componente no tiene un `useEffect` de arranque: si la hiciera, el usuario se
+ *  comprobaria dos veces y la segunda podria dar un resultado distinto del
+ *  primero (el token caduca entremedias) y la app quedaria en un estado que
+ *  nadie ha pedido. */
+function Puerta() {
+  const { usuario, cargando, aviso, entro } = useSesion();
+
+  if (cargando) return <Loading message="Comprobando sesion..." />;
+  if (!usuario) return <Login onEntro={entro} aviso={aviso} />;
+
   return (
     <NavegacionProvider>
       <AppInner />
     </NavegacionProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <SesionProvider>
+      <Puerta />
+    </SesionProvider>
   );
 }

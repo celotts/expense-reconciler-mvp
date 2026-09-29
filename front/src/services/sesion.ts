@@ -199,8 +199,29 @@ function almacenReal(): AlmacenToken {
   } catch {
     // Memoria del proceso: se pierde al recargar, que es un annoyance, pero
     // mejor que la pantalla en blanco.
+    return respaldoEnMemoria();
+  }
+}
+
+/** El almacen de memoria. Se crea UNA vez y se comparte.
+ *
+ *  Esto parece un detalle y es la diferencia entre que el login funcione o no.
+ *  `almacenReal` se llama en cada operacion, asi que si `respaldoEnMemoria`
+ *  declarase su `let temporal` dentro de la funcion, cada llamada tendria su
+ *  propia variable: escribir el token pondria el valor en una copia que se
+ *  pierde al terminar la llamada, y leerlo devolveria `null` de una variable
+ *  nueva. El resultado es que el token se guarda y desaparece en el acto, cada
+ *  peticion sale sin el, el servidor responde 401, y el usuario vuelve al
+ *  login. Para siempre.
+ *
+ *  Es justo el escenario para el que existe este respaldo --Safari en modo
+ *  privado, un iPad de empresa-- y ahi no habria forma de entrar nunca. */
+let respaldo: AlmacenToken | null = null;
+
+function respaldoEnMemoria(): AlmacenToken {
+  if (respaldo === null) {
     let temporal: string | null = null;
-    return {
+    respaldo = {
       leer: () => temporal,
       escribir: (v) => {
         temporal = v;
@@ -210,6 +231,7 @@ function almacenReal(): AlmacenToken {
       },
     };
   }
+  return respaldo;
 }
 
 const almacenPorDefecto: AlmacenToken = {
@@ -289,3 +311,56 @@ export const RUTA_LOGIN = '#/login';
 export function rutaAlVencer(): string {
   return RUTA_LOGIN;
 }
+
+// ---------------------------------------------------------------------------
+// Avisar a la puerta
+// ---------------------------------------------------------------------------
+//
+// Que la sesion caduche no lo descubre la pantalla que la peticion hizo: lo
+// descubre `api.ts`, que es quien recibe el 401. Pero el login no vive en cada
+// pantalla, vive en una sola, y para que aparezca hace falta que el 401 llegue
+// hasta alli.
+//
+// Un evento global es la manera de hacerlo sin dos atajos que no me gustan:
+//
+//   - Que `api.ts` lance el error y que cada pantalla lo capture para avisar:
+//     son 7 pantallas, y la octava se olvida. El aviso se pierde y el usuario
+//     ve un error de red en vez de "vuelve a entrar".
+//   - Que `api.ts` escriba en un estado global de React: eso obliga a `api.ts`
+//     a importar React, y este modulo (y `api.ts`) dejan de poder probarse sin
+//     navegador, que es justo lo que `sesion.ts` quiere evitar.
+//
+// El aviso va en un `Set` y no en un array: dos pantallas montadas a la vez
+// reciben los dos, y el que se da de baja sale del Set con su fonction de
+// cancelar. Un `Set` sin borrar es una fuga de memoria y un aviso duplicado en
+// la segunda visita a la pantalla.
+//
+// Sigue sin importar React ni tocar `fetch`, que es la linea que este modulo se
+// puso desde el principio.
+
+type OyenteCaducidad = (aviso: AvisoSesion) => void;
+
+const oyentes = new Set<OyenteCaducidad>();
+
+/** Se suscribe a la caducidad. Devuelve como cancelar.
+ *
+ *  Cancelar es tan importante como suscribirse: un `useEffect` que se
+ *  suscribe y no se da de baja en la limpieza monta dos oyentes la segunda vez
+ *  que se renderiza la pantalla, y el aviso aparece duplicado. */
+export function alCaducar(oyente: OyenteCaducidad): () => void {
+  oyentes.add(oyente);
+  return () => {
+    oyentes.delete(oyente);
+  };
+}
+
+/** Avisa a todos los que estan escuchando. Lo llama `api.ts` en un 401. */
+export function notificarCaducidad(transaccionIntentada: boolean): void {
+  // Se copia antes de iterar: un oyente podria darse de baja desde dentro del
+  // aviso (que es justo lo que hace la puerta, al cambiar de pantalla), y
+  // mutar un Set mientras se recorre lo salta.
+  for (const oyente of Array.from(oyentes)) {
+    oyente(avisoPorCaducidad(transaccionIntentada));
+  }
+}
+

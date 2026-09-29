@@ -23,3 +23,7 @@ pytest>=8.0.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
 aiosqlite>=0.19.0
+# Genera los PDF de muestra que usan los tests de captura (reglas vs modelo).
+# Vive aqui y no en un requirements de desarrollo porque el CI corre los tests
+# con esta misma lista: si se separa, el CI falla con ModuleNotFoundError.
+fpdf2>=2.7.9

@@ -1,5 +1,34 @@
 // API Types matching backend schemas
 
+// ---------------------------------------------------------------------------
+// Sesion
+// ---------------------------------------------------------------------------
+//
+// El `nombre` y el `is_active` vienen del servidor y no se adivinan: el nombre
+// que se pinta arriba sale de aqui, y una cuenta dada de baja tiene que dejar de
+// poder entrar aunque su token siga siendo criptograficamente valido.
+
+export interface Usuario {
+  id: string;
+  email: string;
+  nombre: string;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+/** Lo que devuelve `POST /auth/login`.
+ *
+ *  `expires_in` son SEGUNDOS, no una fecha. El servidor lo manda asi a proposito
+ *  para que el cliente sume y sepa cuando va a pasar, en vez de interpretar una
+ *  fecha absoluta con la zona horaria del navegador. */
+export interface RespuestaToken {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  user: Usuario;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -300,30 +329,9 @@ export interface AccountingMappingCreate {
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
-
-export interface PeriodStats {
-  tickets_total: number;
-  tickets_pendientes: number;
-  tickets_aprobados: number;
-  tickets_rechazados: number;
-  tickets_auto_aprobados: number;
-  monto_total: string;
-  monto_pendiente: string;
-  bank_transactions: number;
-  reconciliations_perfect: number;
-  reconciliations_manual: number;
-  reconciliations_discrepancy: number;
-}
-
-export interface DashboardResponse {
-  company_id: string | null;
-  company_name: string | null;
-  hoy: PeriodStats;
-  mes_actual: PeriodStats;
-  mes_anterior: PeriodStats;
-  ano_actual: PeriodStats;
-  ano_anterior: PeriodStats;
-  review_queue: Record<string, number>;
-  exactitud: ReporteExactitud | null;
-  totales_acumulados: PeriodStats;
-}
+//
+// Las formas del dashboard viven en `types/dashboard.ts`, no aqui. Se movieron
+// cuando se reescribio la pantalla: la version anterior metia en este archivo un
+// `PeriodStats` con doce campos que la pantalla nueva ya no pide, y dejarlo
+// описaba un API que no existe. Un tipo que describe una respuesta vieja hace
+// que un cambio en el servidor parezca un bug en el cliente.

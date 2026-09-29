@@ -319,7 +319,15 @@ async def compute_accuracy_report(
     Extraído del endpoint `/tickets/accuracy` para que el dashboard pueda
     reutilizar la misma lógica sin duplicar código.
     """
-    from app.models.ticket import TicketModel, SpotCheckStatus
+    # `SpotCheckStatus` viene de `app.core.enums`, NO de `app.models.ticket`. El
+    # enum vive en `enums.py` junto a los demas estados del dominio, y el modelo
+    # solo guarda la columna como `String`. Importarlo de aqui fallaba con
+    # ImportError, y como el endpoint del dashboard se traga las excepciones
+    # para no tumbar el tablero entero, el sintoma era que la exactitud salia
+    # `None` sin ninguna pista de por que: un bloque de codigo que nunca habia
+    # podido ejecutarse.
+    from app.core.enums import SpotCheckStatus
+    from app.models.ticket import TicketModel
     from app.schemas.ticket import (
         ReporteExactitudResponse, ExactitudPorOrigenResponse,
     )

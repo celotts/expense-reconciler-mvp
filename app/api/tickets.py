@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import (
     APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status,
 )
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.subida import leer_ticket
@@ -17,6 +17,7 @@ from app.core.time import dias_desde, utcnow
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
 from app.schemas.ticket import (
+    ClasificarLoteRequest, ClasificarLoteResponse,
     ExactitudPorOrigenResponse, ReporteExactitudResponse, SpotCheckItemResponse,
     SpotCheckQueueResponse, SpotCheckRequest, TicketCreate, TicketResponse,
     TicketReviewQueueResponse, TicketReviewRequest, TicketUpdate,
@@ -270,11 +271,22 @@ async def list_tickets(
     company_id: UUID | None = None,
     extraction_status: str | None = None,
     only_open: bool = False,
+    sin_categoria: bool = False,
+    con_categoria: bool = False,
+    categoria: str | None = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ) -> list[TicketModel]:
-    """List tickets with optional company filter and review-state filter."""
+    """List tickets with optional company filter and review-state filter.
+
+    `sin_categoria` y `con_categoria` son las dos caras de la misma pregunta, que
+    es la que hace el tablero con la barra gris. Se ponen los tres filtros
+    excluyentes de forma explicita en vez de confiar en el orden en que llegan:
+    `categoria` manda sobre los otros dos (es el mas especifico), y si vienen
+    `sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto
+    que cumpla las dos, y devolver vacio seria un fallo silencioso.
+    """
     query = select(TicketModel)
     if company_id:
         query = query.where(TicketModel.company_id == company_id)
@@ -285,6 +297,33 @@ async def list_tickets(
         ]))
     elif extraction_status:
         query = query.where(TicketModel.extraction_status == extraction_status)
+
+    if categoria:
+        query = query.where(TicketModel.category == categoria)
+    elif sin_categoria and con_categoria:
+        # Las dos a la vez: no hay conjunto que cumpla las dos. Se anulan y se
+        # devuelve la lista completa, que es lo honesto ("no me dijiste que
+        # filtrara") en vez de devolver vacio ("no hay nada").
+        pass
+    elif sin_categoria:
+        # Solo lo que esta en blanco de verdad. Un `category = ''` (cadena
+        # vacia) se cuela si se filtra por `IS NULL` unicamente, y un ticket con
+        # la cadena vacia se ve igual de "sin clasificar" que uno con `NULL`,
+        # pero en la base son filas distintas.
+        query = query.where(
+            or_(
+                TicketModel.category.is_(None),
+                func.trim(TicketModel.category) == "",
+            )
+        )
+    elif con_categoria:
+        query = query.where(
+            and_(
+                TicketModel.category.is_not(None),
+                func.trim(TicketModel.category) != "",
+            )
+        )
+
     query = query.offset(skip).limit(limit).order_by(TicketModel.expense_date.desc())
     result = await db.execute(query)
     return list(result.scalars().all())
@@ -354,6 +393,46 @@ async def get_review_queue(
         antiguedad_promedio_dias=avg_age,
         tickets=[TicketResponse.model_validate(r) for r in rows],
     )
+
+
+@router.patch("/categoria", response_model=ClasificarLoteResponse)
+async def clasificar_lote(
+    datos: ClasificarLoteRequest,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> ClasificarLoteResponse:
+    """Pone la misma categoria a varios tickets de una vez.
+
+    **No cambia `extraction_status` ni toca la cola de revision.** Clasificar es
+    un dato del gasto, no una validacion de la lectura: un ticket puede estar
+    AUTO_APROBADO y no tener categoria, y clasificarlo no lo convierte en
+    revisado ni al reves. Mezclar las dos cosas haria que "ya lo clasifique"
+    pareciera una entrada mas en la cola, y el trabajo de verdad se perderia de
+    vista.
+
+    **Un `UPDATE` con `IN (...)`, no un bucle de PATCH.** Con 200 tickets son 200
+    viajes de ida y vuelta, y cada uno abre su propia transaccion. Ademas un
+    bucle que falla en el ticket 150 deja los 149 anteriores escritos y el 150 sin
+    hacer, y el cliente no puede saber cuales. Con un solo `UPDATE` es todo o
+    nada.
+
+    `None` desclasifica: deja la categoria en NULL y el ticket vuelve a la barra
+    gris. Es lo que permite corregir una clasificacion equivocada.
+    """
+    ids = list(dict.fromkeys(datos.ticket_ids))  # sin repetidos, y conservando orden
+
+    resultado = await db.execute(
+        update(TicketModel)
+        .where(TicketModel.id.in_(ids))
+        .values(category=datos.category)
+        # `synchronize_session=False` porque no hay objetos de ticket cargados en
+        # la sesion: sin esto SQLAlchemy intenta refrescarlos uno por uno y con
+        # 500 filas eso es trabajo que no se usa para nada.
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+
+    return ClasificarLoteResponse(actualizados=resultado.rowcount, pedidos=len(ids))
 
 
 @router.patch("/{ticket_id}/review", response_model=TicketResponse)

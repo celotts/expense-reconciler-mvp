@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult } from '../services/api';
 import { companiesApi, type Company } from '../services/api';
+import type { Categoria } from '../types/dashboard';
 import { 
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload, CameraCapture 
 } from '../components/ui';
@@ -8,17 +9,42 @@ import {
   validateTicketForm, hasErrors, normalizeTicketForm,
   type TicketFormErrors, UNKNOWN_PROVIDER,
 } from '../utils/validation';
+import { dinero } from '../utils/format';
 
-export function Tickets() {
+/** Como se filtra esta pantalla.
+ *
+ *  `sinClasificar` existe por el camino que llega desde el tablero: la barra
+ *  gris a la que se le da clic. Es un filtro mas y no una pantalla aparte, y a
+ *  proposito: clasificar un ticket es editarlo, y tener dos pantallas para lo
+ *  mismo obliga a mantener dos listas, dos tablas y dos caminos para el mismo
+ *  PATCH. */
+type Filtro = 'todos' | 'sinClasificar' | 'clasificados';
+
+export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCompany, setSelectedCompany] = useState<string>('');
+  const [filtro, setFiltro] = useState<Filtro>(filtroInicial ?? 'todos');
+  // Que se abre en la pantalla que se acaba de llegar. Se sincroniza con
+  // `filtroInicial` para que el clic en la barra gris del tablero abra aqui en
+  // modo "sin clasificar" y no en la lista completa, que es lo que pasaria si
+  // solo se usara el estado inicial: seLee una vez y nunca mas.
+  useEffect(() => {
+    if (filtroInicial) setFiltro(filtroInicial);
+  }, [filtroInicial]);
+
+  // Seleccion multiple para clasificar en lote.
+  const [seleccionados, setSeleccionados] = useState<Set<string>>(new Set());
+  const [clasificando, setClasificando] = useState(false);
+  const [categoriaLote, setCategoriaLote] = useState('');
+
   const [showModal, setShowModal] = useState(false);
   const [editingTicket, setEditingTicket] = useState<Ticket | null>(null);
-  const [formData, setFormData] = useState<TicketCreate>({ 
-    company_id: '', provider_name: '', total_amount: '', expense_date: '' 
+  const [formData, setFormData] = useState<TicketCreate>({
+    company_id: '', provider_name: '', total_amount: '', expense_date: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [extracting, setExtracting] = useState(false);
@@ -34,12 +60,24 @@ export function Tickets() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [companiesData, ticketsData] = await Promise.all([
+      // El filtro se pide al servidor y no se filtra en el navegador. Filtrar en
+      // el cliente significaria traer los 500 tickets para descartar 400, y con
+      // el limite del endpoint (100 por pagina) la cuenta seria falsa: "no hay
+      // sin clasificar" cuando en realidad no salio en la primera pagina.
+      const [empresasData, ticketsData, categoriasData] = await Promise.all([
         companiesApi.list(),
-        selectedCompany ? ticketsApi.list(selectedCompany) : Promise.resolve([])
+        selectedCompany
+          ? ticketsApi.list(selectedCompany, {
+              sinCategoria: filtro === 'sinClasificar',
+              conCategoria: filtro === 'clasificados',
+              limit: 500,
+            })
+          : Promise.resolve([] as Ticket[]),
+        ticketsApi.categorias(),
       ]);
-      setCompanies(companiesData);
+      setCompanies(empresasData);
       setTickets(ticketsData);
+      setCategorias(categoriasData);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al cargar datos');
@@ -50,7 +88,71 @@ export function Tickets() {
 
   useEffect(() => {
     loadData();
-  }, [selectedCompany]);
+  }, [selectedCompany, filtro]);
+
+  // Al cambiar de filtro o de empresa, la seleccion se vacia. Sin esto, se
+  // seleccionan cinco tickets en "sin clasificar", se cambia a "clasificados" y
+  // la barra dice "5 seleccionados" sobre tickets que ya no estan en pantalla:
+  // se clasifican cinco cosas que la persona no vio, y el resultado no se puede
+  // explicar.
+  useEffect(() => {
+    setSeleccionados(new Set());
+  }, [selectedCompany, filtro]);
+
+  const alternarSeleccion = (id: string) => {
+    setSeleccionados((prev) => {
+      const siguiente = new Set(prev);
+      if (siguiente.has(id)) siguiente.delete(id);
+      else siguiente.add(id);
+      return siguiente;
+    });
+  };
+
+  const alternarTodos = () => {
+    setSeleccionados((prev) =>
+      prev.size === tickets.length ? new Set() : new Set(tickets.map((t) => t.id)),
+    );
+  };
+
+  /** Clasifica lo seleccionado de golpe.
+   *
+   *  Se manda la categoria y nada mas: el endpoint no toca el estado de
+   *  extraccion ni mete nada en la cola. Clasificar es un dato del gasto, no una
+   *  aprobacion, y si se mezclaran las dos cosas "ya lo clasifique" pareceria
+   *  una entrada mas de trabajo pendiente. */
+  const clasificarSeleccion = async () => {
+    if (seleccionados.size === 0) return;
+    const ids = Array.from(seleccionados);
+    // Cadena vacia = desclasificar. Se permite a proposito: corregir una
+    // clasificacion equivocada tiene que ser tan facil como poner la correcta,
+    // y si no hay salida, la gente deja de clasificar por miedo a equivocarse.
+    const destino = categoriaLote.trim() === '' ? null : categoriaLote.trim();
+
+    try {
+      setClasificando(true);
+      setError(null);
+      const r = await ticketsApi.clasificarLote(ids, destino);
+      // Si el servidor toco menos de los pedidos, se dice. Puede pasar sin que
+      // haya un fallo: alguien borro un ticket entre que se abrio la pantalla
+      // y se envio el PATCH. Decir "clasificados 200" cuando fueron 198 deja a
+      // la persona creyendo que hay dos que se le quedaron, y no hay forma de
+      // saber cuales.
+      if (r.actualizados < r.pedidos) {
+        setError(
+          `Se clasificaron ${r.actualizados} de ${r.pedidos}: ` +
+          `${r.pedidos - r.actualizados} ya no existían.`,
+        );
+      }
+      setSeleccionados(new Set());
+      setCategoriaLote('');
+      await loadData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No se pudo clasificar');
+    } finally {
+      setClasificando(false);
+    }
+  };
+
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -188,12 +290,26 @@ export function Tickets() {
   };
 
   const columns = [
+    {
+      key: 'seleccion',
+      header: '',
+      render: (t: Ticket) => (
+        <input
+          type="checkbox"
+          checked={seleccionados.has(t.id)}
+          onChange={() => alternarSeleccion(t.id)}
+          onClick={(e) => e.stopPropagation()}
+          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          aria-label={`Seleccionar ${t.provider_name}`}
+        />
+      ),
+    },
     { key: 'provider_name', header: 'Proveedor', render: (t: Ticket) => <span className="font-medium">{t.provider_name}</span> },
     { key: 'provider_tax_id', header: 'RFC Proveedor', render: (t: Ticket) => t.provider_tax_id ? <code className="text-sm">{t.provider_tax_id}</code> : <span className="text-gray-400">-</span> },
-    { key: 'total_amount', header: 'Total', render: (t: Ticket) => <span className="font-medium text-green-700">${Number(t.total_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-    { key: 'tax_amount', header: 'IVA', render: (t: Ticket) => <span className="text-gray-600">${Number(t.tax_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
+    { key: 'total_amount', header: 'Total', render: (t: Ticket) => <span className="font-medium text-green-700">{dinero(t.total_amount)}</span> },
+    { key: 'tax_amount', header: 'IVA', render: (t: Ticket) => <span className="text-gray-600">{dinero(t.tax_amount)}</span> },
     { key: 'expense_date', header: 'Fecha', render: (t: Ticket) => new Date(t.expense_date).toLocaleDateString('es-MX') },
-    { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-gray-400">-</span> },
+    { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-amber-500 text-xs">sin clasificar</span> },
     { key: 'actions', header: 'Acciones', render: (t: Ticket) => (
       <div className="flex gap-2">
         <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
@@ -201,6 +317,18 @@ export function Tickets() {
       </div>
     )},
   ];
+
+  // Cuanto dinero esta seleccionado. Con solo el conteo, alguien puede clasificar
+  // veinte comprobantes de 50 pesos sin saber que son 1,000. El monto va
+  // porque la pregunta "que estoy a punto de cambiar" es de dinero.
+  const montoSeleccionado = useMemo(
+    () => tickets
+      .filter((t) => seleccionados.has(t.id))
+      .reduce((a, t) => a + Number(t.total_amount || 0), 0),
+    [tickets, seleccionados],
+  );
+
+  const sinClasificarCount = tickets.filter((t) => !t.category || t.category.trim() === '').length;
 
   return (
     <div className="p-6 space-y-6">
@@ -223,7 +351,7 @@ export function Tickets() {
         </div>
       </div>
 
-      <Card className="p-4">
+      <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
@@ -236,6 +364,33 @@ export function Tickets() {
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
             </select>
           </div>
+
+          {/* El filtro de clasificacion. Es lo que hace que la barra gris del
+              tablero sea accionable en vez de decorativa. */}
+          <div className="min-w-[240px]">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Mostrar</label>
+            <div className="flex rounded-lg overflow-hidden border border-gray-300">
+              {([
+                { k: 'todos', l: 'Todos' },
+                { k: 'sinClasificar', l: 'Sin clasificar' },
+                { k: 'clasificados', l: 'Clasificados' },
+              ] as const).map((o, i) => (
+                <button
+                  key={o.k}
+                  onClick={() => setFiltro(o.k)}
+                  className={`px-3 py-2 text-sm transition-colors ${
+                    i > 0 ? 'border-l border-gray-300' : ''
+                  } ${
+                    filtro === o.k
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </Card>
 
@@ -246,21 +401,81 @@ export function Tickets() {
         </div>
       )}
 
+      {/* La barra de lote. Solo aparece con algo seleccionado, porque una barra
+          vacia con un desplegable de categorias es ruido en la pantalla de todos
+          los dias. */}
+      {seleccionados.size > 0 && (
+        <div className="sticky top-0 z-20 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+          <div>
+            <p className="text-sm font-medium text-blue-900">
+              {seleccionados.size} {seleccionados.size === 1 ? 'ticket seleccionado' : 'tickets seleccionados'}
+            </p>
+            <p className="text-xs text-blue-700">
+              {dinero(montoSeleccionado)} en total
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={categoriaLote}
+              onChange={e => setCategoriaLote(e.target.value)}
+              className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+            >
+              <option value="">Sin clasificar (quitar categoría)</option>
+              {categorias.map(c => (
+                <option key={c.clave} value={c.clave}>{c.etiqueta}</option>
+              ))}
+            </select>
+            <Button onClick={clasificarSeleccion} disabled={clasificando}>
+              {clasificando ? 'Clasificando...' : 'Aplicar a seleccionados'}
+            </Button>
+            <Button variant="ghost" onClick={() => setSeleccionados(new Set())}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+
       {selectedCompany ? (
         <Card>
           {loading ? (
             <Loading message="Cargando tickets..." />
           ) : tickets.length === 0 ? (
-            <EmptyState 
-              message="No hay tickets. Crea uno manualmente o extrae datos de un PDF."
-              icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>}
+            <EmptyState
+              message={
+                filtro === 'sinClasificar'
+                  ? 'No queda nada sin clasificar. Todo el gasto de esta empresa está en una categoría.'
+                  : filtro === 'clasificados'
+                    ? 'Ninguno de los tickets de esta empresa está clasificado todavía.'
+                    : 'No hay tickets. Crea uno manualmente o extrae datos de un PDF.'
+              }
+              action={
+                filtro !== 'todos' ? { label: 'Ver todos', onClick: () => setFiltro('todos') } : undefined
+              }
             />
           ) : (
-            <Table
-              columns={columns}
-              data={tickets}
-              keyField="id"
-            />
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={seleccionados.size > 0 && seleccionados.size === tickets.length}
+                    onChange={alternarTodos}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  Seleccionar todos ({tickets.length})
+                </label>
+                {filtro === 'sinClasificar' && sinClasificarCount > 0 && (
+                  <span className="text-xs text-amber-600">
+                    {sinClasificarCount} sin categoría
+                  </span>
+                )}
+              </div>
+              <Table
+                columns={columns}
+                data={tickets}
+                keyField="id"
+              />
+            </>
           )}
         </Card>
       ) : (

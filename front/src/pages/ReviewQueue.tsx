@@ -110,7 +110,7 @@ export function ReviewQueue() {
         {loading ? (
           <Loading message="Cargando cola de revisión..." />
         ) : tickets.length === 0 ? (
-          <Card className="p-8">
+          <Card>
             <EmptyState
               message={error
                 ? 'No se pudo leer la cola. Revisa el mensaje arriba.'
@@ -166,7 +166,7 @@ export function Resumen({
 }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">En cola</p>
         <p className={`text-3xl font-bold mt-1 ${totalAbiertos > 0 ? 'text-red-600' : 'text-green-600'}`}>
           {totalAbiertos}
@@ -244,7 +244,7 @@ export function TicketEnCola({
   };
 
   return (
-    <Card className="p-4">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -422,7 +422,7 @@ export function DialogoDescartar({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <Card className="w-full max-w-md p-6">
+      <Card className="w-full max-w-md">
         <h2 className="text-lg font-bold text-gray-900">Descartar documento</h2>
         <p className="mt-1 text-sm text-gray-600">
           Sale de la cola y no entra a conciliación. No se borra: queda registrado como rechazado.

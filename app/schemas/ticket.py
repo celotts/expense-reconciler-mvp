@@ -116,6 +116,45 @@ class TicketUpdate(BaseModel):
         return self
 
 
+class ClasificarLoteRequest(BaseModel):
+    """Clasificar varios tickets de golpe.
+
+    Existe porque la alternativa no es mas comoda, es inviable: la barra gris del
+    tablero puede ser de 200 tickets, y a uno por uno son 200 peticiones y 200
+    esperas. Quien tiene esa barra abierta no esta eligiendo categoria por
+    categoria, esta reconociendo que veinte comprobantes de la ferreteria son
+    HERRAMIENTAS, y eso es una sola decision.
+
+    Acepta cadena vacia para **desclasificar**. Un ticket mal clasificado es
+    peor que uno sin clasificar: el primero se suma a un rubro que no es el suyo
+    sin que nada lo señale, y sin esta via de salida el error de captura no se
+    puede corregir nunca.
+    """
+
+    ticket_ids: list[UUID] = Field(..., min_length=1, max_length=500)
+    category: str | None = Field(None, max_length=100)
+
+    @field_validator("category")
+    @classmethod
+    def _limpia(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        limpio = v.strip()
+        # Cadena vacia y solo espacios significan lo mismo: "no lo se". Se
+        # guarda como NULL y no como '', para que el filtro `sin_categoria` del
+        # listado los encuentre sin tener que buscar las dos formas.
+        return limpio or None
+
+
+class ClasificarLoteResponse(BaseModel):
+    actualizados: int
+    # cuantos se pedian y cuantos se tocaron. `pedidos` != `actualizados` no es un
+    # error: un id que no existe simplemente no se cuenta, y en un lote de 200
+    # que uno haya sido borrado entre la pantalla y el envio es lo normal. Lo que
+    # no se hace es mentir diciendo "200" cuando se tocaron 198.
+    pedidos: int
+
+
 class TicketResponse(BaseModel):
     """Forma de LECTURA de un ticket.
 

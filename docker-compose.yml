@@ -60,7 +60,19 @@ services:
       # embeddings (~470MB) cada vez que se recrea el contenedor.
       - hf_cache:/opt/hf-cache
     env_file:
-      - .env.dev
+      # El orden importa: con la misma variable en los dos archivos gana el
+      # ULTIMO, asi que .env.local pisa a .env.dev. Es lo que permite tener
+      # SECRET_KEY fuera del repo sin renombrar nada de lo que ya existe.
+      #
+      # `required: false` para que un clone nuevo, que no tiene .env.local, siga
+      # levantando en vez de reventar con un error de "no such file". Sin el
+      # secreto, config.py genera uno efimero y avisa: molesto (cada reinicio
+      # cierra las sesiones) pero no roto, que es justo el criterio para no
+      # impedir el arranque.
+      - path: .env.dev
+        required: true
+      - path: .env.local
+        required: false
     environment:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@postgres-reconciler:5432/expense_db

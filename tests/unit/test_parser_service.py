@@ -98,6 +98,142 @@ class TestBankCSVParser:
         assert transactions == []
 
 
+class TestElImporteNoSeCorrompe:
+    """El importe que entra es el importe que se guarda.
+
+    Estos tests existen por un bug que era peor que un fallo: no daba error, se
+    guardaba el numero equivocado. Delegar la conversion de la columna en los
+    argumentos `thousands`/`decimal` de `read_csv` funciona solo cuando coinciden
+    con lo que pandas asume por omision, y los bancos usan las dos convenciones.
+    Con la mexicana (coma decimal, punto de miles) un importe de 890.00 se
+    guardaba como 89000.00: cien veces mas caro, sin un 400, sin un aviso, y
+    con una conciliacion que parecia correcta porque todos los tickets aparecian
+    en discrepancia y no habia forma de saber por que.
+    """
+
+    def test_importe_con_punto_no_se_toma_como_miles(self):
+        """El caso que corrompia importes. Sin miles, el punto es decimal."""
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,890.00,GASOLINA,REF1
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert txs[0].amount == Decimal("890.00")
+
+    def test_importe_con_miles_se_lee_como_importe(self):
+        """Con miles declarados, el grupo se quita en vez de_DECIMALIZARSE."""
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,"1,234.56",MATERIAL,REF1
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert txs[0].amount == Decimal("1234.56")
+
+    def test_importe_mexicano_con_puntos_de_miles(self):
+        csv_content = b"""fecha;importe;concepto
+20/09/2026;1.234,56;MATERIAL
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+            separator=";",
+        )
+        assert txs[0].amount == Decimal("1234.56")
+
+    def test_importe_con_simbolo_de_moneda(self):
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,"$1,234.56",MATERIAL,REF1
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert txs[0].amount == Decimal("1234.56")
+
+    def test_solo_miles_sin_decimal(self):
+        """Tres digitos exactos son grupo de miles, no tres decimales."""
+        csv_content = b"""fecha;importe;concepto
+20/09/2026;1,234;RENTA
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+            separator=";",
+        )
+        assert txs[0].amount == Decimal("1234")
+
+    def test_importe_con_menos_de_dos_digitos_es_decimal(self):
+        csv_content = b"""fecha;importe;concepto
+20/09/2026;1,23;IMPUESTO
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+            separator=";",
+        )
+        assert txs[0].amount == Decimal("1.23")
+
+    def test_importe_no_numerico_rechaza_la_fila(self):
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,N/D,PAGO,REF1
+"""
+        with pytest.raises(ValueError, match="Error en el formato del CSV"):
+            parse_bank_csv(
+                csv_content,
+                date_format="%d/%m/%Y",
+                decimal_separator=",",
+                thousands_separator=".",
+            )
+
+    def test_importe_vacio_rechaza_la_fila(self):
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,,PAGO,REF1
+"""
+        with pytest.raises(ValueError, match="Error en el formato del CSV"):
+            parse_bank_csv(
+                csv_content,
+                date_format="%d/%m/%Y",
+                decimal_separator=",",
+                thousands_separator=".",
+            )
+
+    def test_la_suma_de_los_importes_no_deriva(self):
+        """La razon de usar `Decimal`: cien tickets de 0.10 deben sumar 10.00.
+
+        Con `float`, esta asercion falla. Con `Decimal` pasa, y es la que
+        protege la conciliacion: si el total de la columna de importes tiene un
+        peso de diferencia, todos los tickets de ese lote caen en discrepancia.
+        """
+        filas = "\n".join(
+            f"20/09/2026,0.10,PAGO {i},R{i}" for i in range(100)
+        )
+        csv_content = f"fecha,importe,concepto,referencia\n{filas}\n".encode()
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert len(txs) == 100
+        assert sum(t.amount for t in txs) == Decimal("10.00")
+
+
 class TestTicketExtraction:
     def test_parse_receipt_text_extracts_key_fields(self, sample_ticket_text):
         result = _parse_receipt_text(sample_ticket_text)

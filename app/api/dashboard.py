@@ -1,230 +1,335 @@
-"""Dashboard: estadísticas agregadas por período para la página principal.
+"""El dashboard.
 
-Diseño
-------
+Que es y que no es
+-----------------
+El dashboard responde tres preguntas, en este orden, y solo a estas:
 
-El dashboard no es un catálogo, es un **resumen ejecutivo**. La persona que
-abre la app quiere saber de un vistazo:
+  1. **Cuanto gasté y como va contra el mes pasado.** Con la diferencia ya
+     calculada. El trabajo de comparar dos meses lo hacia la persona, en la
+     cabeza, con las dos cifras delante: un dashboard que obliga a restar no ha
+     ahorrado nada del trabajo de mirar.
+  2. **En que se va la platita.** El reparto por categoria con montos y con la
+     parte de cada una. Es la pregunta que se hace al abrir la aplicacion, y la
+     que antes no se podia contestar.
+  3. **Que tengo que hacer ahora.** La cola de revision, el banco sin conciliar y
+     el veredicto de exactitud.
 
-1. ¿Cuánto proceso HOY? (tickets, monto, qué falta por revisar)
-2. ¿Cómo va el MES actual vs el anterior? (tendencia)
-3. ¿Cómo va el AÑO actual vs el anterior? (visión anual)
-4. ¿Qué hay en la cola de revisión AHORA? (acción inmediata)
-5. ¿Cumple el objetivo de exactitud? (SLO 96%)
+Que NO hace, a proposito
+-----------------------
+**No repite el mismo bloque cinco veces.** La version anterior pintaba seis
+tarjetas identicas --hoy, mes, mes anterior, anio, anio anterior, totales-- con
+los mismos doce numeros en cada una, distinguidas solo por el rango de fechas.
+Sesenta y pico cifras, de las cuales la mayoria eran el mismo dato con otra
+etiqueta. Un tablero con mucho numero no es un tablero con mucha informacion: es
+uno en el que no se sabe donde mirar, y por eso se vuelve a leer entero cada
+vez que se abre.
 
-Los datos se calculan en SQL con `func.count`/`func.sum` y filtros de fecha
-en `created_at` (que es cuando el ticket entró al sistema, no `expense_date`,
-porque el dashboard mide **actividad del sistema**, no contabilidad).
+**No compara un mes contra "hace 30 dias".** Toda comparacion va contra el mes
+completo anterior. Un mes que apenas va por el dia 3, comparado con 30 dias
+siftos, siempre da una subida, y un tablero que sube solo porque el mes esta
+incompleto es peor que uno que no dice nada.
 
-Si se pasa `company_id`, todo se filtra a esa empresa. Si no, es global
-(todas las empresas del usuario). Como no hay multi-tenancy real, "global"
-significa "todo lo que hay en la base".
-
-La exactitud solo se calcula si hay empresa seleccionada, porque mezclar
-empresas distintas en el mismo reporte de exactitud no tiene sentido
-estadístico.
+**No pone el porcentaje de cada barra sin el monto.** El porcentaje responde
+"en que proportion", que es la pregunta secundaria. La principal es "cuanto", y
+una grafica que solo dice 34.2% obliga a ir a otra pantalla a mirar la cifra. Las
+dos van juntas siempre.
 """
 
-from datetime import datetime, timezone, timedelta
+from __future__ import annotations
+
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_current_user
+from app.core.deps import UsuarioActual
 from app.models.company import CompanyModel
-from app.models.ticket import TicketModel, ExtractionStatus
-from app.models.bank_transaction import BankTransactionModel
-from app.models.reconciliation import ReconciliationModel
-from app.core.enums import MatchStatus
-from app.schemas.ticket import ReporteExactitudResponse
+from app.services import analitica, hallazgos
 from app.services.accuracy_service import compute_accuracy_report
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
-class PeriodStats(BaseModel):
-    """Estadísticas para un período específico."""
-    tickets_total: int = 0
-    tickets_pendientes: int = 0
-    tickets_aprobados: int = 0
-    tickets_rechazados: int = 0
-    tickets_auto_aprobados: int = 0
-    monto_total: Decimal = Field(default=Decimal("0"))
-    monto_pendiente: Decimal = Field(default=Decimal("0"))
-    bank_transactions: int = 0
-    reconciliations_perfect: int = 0
-    reconciliations_manual: int = 0
-    reconciliations_discrepancy: int = 0
+# ---------------------------------------------------------------------------
+# Formas de la respuesta
+# ---------------------------------------------------------------------------
+
+
+class ResumenPeriodo(BaseModel):
+    """El mes que se esta mirando y el mes anterior, con su diferencia.
+
+    `variacion_pct` es `null` cuando el mes anterior no tiene gasto, y eso NO es
+    un error: es el primer dia de cualquier negocio. Un porcentaje calculable
+    solo cuando hay base de comparacion evita el "+Infinity%" que sale al
+    dividir entre cero, y evita que la pantalla tenga que decidir que inventar.
+    """
+
+    desde: datetime
+    hasta: datetime
+    monto: Decimal
+    monto_anterior: Decimal
+    tickets: int
+    tickets_anterior: int
+    variacion_pct: Optional[float] = None
+    delta_absoluto: Decimal = Decimal("0")
+    # El mes anterior por su nombre, para que el encabezado diga "contra agosto"
+    # y no "contra el periodo anterior". Un periodo anterior no se puede
+    # interpretar; "agosto" si.
+    etiqueta_anterior: str = ""
+    # El nombre completo, para el texto del encabezado. "ago" en un eje de
+    # barras no da problema; "de ago" en una frase se lee "de hace" y es
+    # exactamente lo que paso.
+    nombre_anterior: str = ""
+    # Que tan completo esta el mes que se mira, de 0 a 1.
+    #
+    # Sin esto, un tablero abierto el dia 2 del mes dice "el gasto cayo 90%" y el
+    # numero es aritmeticamente correcto y practicamente una mentira: se compara
+    # un mes de dos dias contra uno de treinta. Con el avance, la pantalla puede
+    # poner "van 2 de 30 dias" al lado del porcentaje, y quien lo lee entiende
+    # que comparar todavia no significa nada. Es la diferencia entre un tablero
+    # que informa y uno que impresiona.
+    dias_transcurridos: int = 0
+    dias_del_mes: int = 0
+    # True cuando el mes que se mira no ha terminado. El servidor lo dice y no lo
+    # deduce el cliente: si las dos copias de la regla de "que dia es hoy" no
+    # coinciden, el tablero se contradice solo.
+    mes_en_curso: bool = False
+    # La parte del mes anterior que corresponde a los mismos dias transcurridos.
+    # Es la unica comparacion que vale mientras el mes no acaba, y por eso se
+    # calcula en el servidor, donde estan las dos ventanas.
+    monto_anterior_a_la_fecha: Decimal = Decimal("0")
+    variacion_pct_a_la_fecha: Optional[float] = None
+
+
+class CategoriaGasto(BaseModel):
+    clave: str
+    etiqueta: str
+    monto: Decimal
+    tickets: int
+    porcentaje: float
+    variable: bool
+    sin_clasificar: bool = False
+
+
+class MesGasto(BaseModel):
+    anio: int
+    mes: int
+    etiqueta: str
+    nombre: str
+    monto: Decimal
+    tickets: int
+
+
+class Hallazgo(BaseModel):
+    """Una conclusion sobre los datos, con su tono.
+
+    El backend decide QUE paso y no COMO se cuenta: la parte que decide se puede
+    probar, y una conclusion equivocada en un tablero no se ve, se nota cuando
+    alguien pregunta. La redaccion vive en el front, donde es mas barato
+    cambiarla.
+    """
+
+    tipo: str
+    titulo: str
+    detalle: str
+    tono: str = "neutro"
+
+
+class ProveedorGasto(BaseModel):
+    proveedor: str
+    monto: Decimal
+    tickets: int
+
+
+class MesConCategorias(BaseModel):
+    """Un mes con su reparto, para comparar meses y no solo totales.
+
+    Es la pieza que responde "por que subio". La `tendencia` de doce meses dice
+    que en abril se gasto mas; esto dice en que se gasto ese mas, que es la
+    pregunta que sigue inmediatamente.
+    """
+    anio: int
+    mes: int
+    # Corto para la columna, largo para el encabezado. Ver `analitica.nombre_mes`:
+    # "ago" en un eje es claro y en una frase se lee "hace".
+    etiqueta: str
+    nombre: str
+    monto: Decimal
+    tickets: int
+    por_categoria: list[CategoriaGasto] = Field(default_factory=list)
+
+
+class Banco(BaseModel):
+    total: int
+    conciliados: int
+    sin_conciliar: int
+    monto_total: Decimal
+    porcentaje: float
+
+
+class SinClasificar(BaseModel):
+    """El trabajo pendiente de clasificacion, en todo el historico.
+
+    Va aparte de `por_categoria` y sin filtro de fecha a proposito. El reparto
+    del mes dice "de este mes, cuanto no esta clasificado"; esto dice "cuanto
+    tienes encima", que es lo que hace que la cifra sea accionable. Con los dos
+    juntos se ve el origen (este mes) y el total (todo lo pendiente)."""
+
+    tickets: int
+    monto: Decimal
 
 
 class DashboardResponse(BaseModel):
-    """Respuesta completa del dashboard."""
     company_id: Optional[UUID] = None
     company_name: Optional[str] = None
-    
-    hoy: PeriodStats
-    mes_actual: PeriodStats
-    mes_anterior: PeriodStats
-    ano_actual: PeriodStats
-    ano_anterior: PeriodStats
-    
-    review_queue: dict = Field(default_factory=dict)
+    mes: ResumenPeriodo
+    por_categoria: list[CategoriaGasto] = Field(default_factory=list)
+    sin_clasificar: SinClasificar = Field(
+        default_factory=lambda: SinClasificar(tickets=0, monto=Decimal("0"))
+    )
+    # Los ultimos tres meses, cada uno con su reparto. Es la vista que dice por
+    # que cambio el gasto, no solo cuanto.
+    comparativo: list[MesConCategorias] = Field(default_factory=list)
+    # Lo que se puede concluir de la serie de meses, en orden de importancia.
+    # Vacio significa "no hay datos suficientes", y eso tambien es una respuesta.
+    hallazgos: list[Hallazgo] = Field(default_factory=list)
+    # Doce meses, con los vacios incluidos. Un hueco en la serie tiene que verse
+    # como un hueco; quitarlo hace que la linea de tiempo mienta sobre cuando
+    # hubo actividad.
+    tendencia: list[MesGasto] = Field(default_factory=list)
+    top_proveedores: list[ProveedorGasto] = Field(default_factory=list)
+    por_estado: dict[str, int] = Field(default_factory=dict)
+    por_estado_conciliacion: dict[str, int] = Field(default_factory=dict)
+    banco: Banco
+    cola_revision: dict[str, int] = Field(default_factory=dict)
+    # Si la empresa no tiene NADA (ni tickets, ni movimientos), el frontend lo
+    # dice con esas palabras. "Sin datos" con tres movimientos bancarios en la
+    # tabla es un tablero que no explica lo que ve.
+    hay_datos: bool = True
     exactitud: Optional[dict] = None
-    totales_acumulados: PeriodStats
+    # El gasto de todo el historico, para tener una cifra de referencia y no
+    # solo el mes. No es "otra tarjeta de periodos": es el denominador contra el
+    # que se lee el mes.
+    total_historico: Decimal = Decimal("0")
+    tickets_historico: int = 0
 
 
-def _period_bounds(periodo: str, company_id: Optional[UUID]) -> tuple[datetime, datetime]:
-    """Devuelve (desde, hasta) en UTC para el período pedido."""
-    ahora = datetime.now(timezone.utc)
-    
-    if periodo == "hoy":
-        desde = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-        hasta = desde + timedelta(days=1)
-    elif periodo == "mes_actual":
-        desde = ahora.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if ahora.month == 12:
-            hasta = ahora.replace(year=ahora.year + 1, month=1, day=1)
-        else:
-            hasta = ahora.replace(month=ahora.month + 1, day=1)
-    elif periodo == "mes_anterior":
-        if ahora.month == 1:
-            desde = ahora.replace(year=ahora.year - 1, month=12, day=1)
-        else:
-            desde = ahora.replace(month=ahora.month - 1, day=1)
-        desde = desde.replace(hour=0, minute=0, second=0, microsecond=0)
-        hasta = ahora.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    elif periodo == "ano_actual":
-        desde = ahora.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        hasta = ahora.replace(year=ahora.year + 1, month=1, day=1)
-    elif periodo == "ano_anterior":
-        desde = ahora.replace(year=ahora.year - 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        hasta = ahora.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-    else:
-        raise ValueError(f"Período desconocido: {periodo}")
-    
-    return desde, hasta
+async def _resumen_mes(
+    db: AsyncSession, company_id: Optional[UUID], ahora: datetime
+) -> "ResumenPeriodo":
+    """El mes actual con su comparacion, incluyendo si el mes ya termino.
 
+    La comparacion trae DOS numeros a proposito:
 
-async def _compute_period_stats(
-    db: AsyncSession,
-    company_id: Optional[UUID],
-    desde: datetime,
-    hasta: datetime,
-) -> PeriodStats:
-    """Calcula estadísticas para un rango de fechas."""
-    company_filter = [TicketModel.company_id == company_id] if company_id else []
-    
-    # Tickets en el período
-    ticket_q = select(
-        func.count(TicketModel.id).label("total"),
-        func.sum(TicketModel.total_amount).label("monto_total"),
-        func.count(TicketModel.id).filter(TicketModel.extraction_status == ExtractionStatus.PENDIENTE.value).label("pendientes"),
-        func.count(TicketModel.id).filter(TicketModel.extraction_status == ExtractionStatus.APROBADO.value).label("aprobados"),
-        func.count(TicketModel.id).filter(TicketModel.extraction_status == ExtractionStatus.RECHAZADO.value).label("rechazados"),
-        func.count(TicketModel.id).filter(TicketModel.extraction_status == ExtractionStatus.AUTO_APROBADO.value).label("auto_aprobados"),
-        func.sum(TicketModel.total_amount).filter(TicketModel.extraction_status == ExtractionStatus.PENDIENTE.value).label("monto_pendiente"),
-    ).where(
-        and_(
-            TicketModel.created_at >= desde,
-            TicketModel.created_at < hasta,
-            *company_filter
-        )
+      - contra el mes anterior **completo**, que es la cifra que se usa cuando el
+        mes ya acabo;
+      - contra el mes anterior **hasta el dia de hoy**, que es la unica que
+        significa algo mientras el mes va a medias.
+
+    Publicar solo la primera es el error clasico de estos tableros: el dia 3 de
+    cada mes todos los negocios parecen quebrando, porque el mes entero se
+    compara contra tres dias. Publicar solo la segunda es el error opuesto: en un
+    mes ya cerrado se comparan treinta dias contra treinta, pero el dia 29 el
+    tablero deja de moverse y nadie sabe por que.
+    """
+    mes_desde, mes_hasta = analitica.mes_actual(ahora)
+    ant_desde, _ = analitica.mes_anterior(ahora)
+
+    cifra = await analitica.cifra_periodo(db, company_id, ahora=ahora)
+    monto_a_la_fecha = await analitica.comparacion_a_la_fecha(db, company_id, ahora=ahora)
+
+    dias_totales = analitica.dias_del_mes(ahora.year, ahora.month)
+    dias_transcurridos = min(ahora.day, dias_totales)
+    en_curso = ahora < mes_hasta
+
+    variacion_a_la_fecha = (
+        float((cifra.monto - monto_a_la_fecha) / monto_a_la_fecha * 100)
+        if monto_a_la_fecha != 0
+        else None
     )
-    ticket_result = (await db.execute(ticket_q)).one()
-    
-    # Movimientos bancarios en el período
-    bank_filter = [BankTransactionModel.company_id == company_id] if company_id else []
-    bank_q = select(func.count(BankTransactionModel.id)).where(
-        and_(
-            BankTransactionModel.created_at >= desde,
-            BankTransactionModel.created_at < hasta,
-            *bank_filter
-        )
+
+    return ResumenPeriodo(
+        desde=mes_desde,
+        hasta=mes_hasta,
+        monto=cifra.monto,
+        monto_anterior=cifra.monto_anterior,
+        tickets=cifra.tickets,
+        tickets_anterior=cifra.tickets_anterior,
+        variacion_pct=cifra.variacion_pct,
+        delta_absoluto=cifra.delta_absoluto,
+        etiqueta_anterior=analitica.nombre_mes(ant_desde.month),
+        nombre_anterior=analitica.nombre_mes_largo(ant_desde.month),
+        dias_transcurridos=dias_transcurridos,
+        dias_del_mes=dias_totales,
+        mes_en_curso=en_curso,
+        monto_anterior_a_la_fecha=monto_a_la_fecha,
+        variacion_pct_a_la_fecha=variacion_a_la_fecha,
     )
-    bank_count = (await db.execute(bank_q)).scalar() or 0
-    
-    # Conciliaciones en el período (por ticket creado en el período)
-    recon_q = select(
-        ReconciliationModel.match_status,
-        func.count(ReconciliationModel.id)
-    ).join(
-        TicketModel, ReconciliationModel.ticket_id == TicketModel.id
-    ).where(
-        and_(
-            TicketModel.created_at >= desde,
-            TicketModel.created_at < hasta,
-            *company_filter
-        )
-    ).group_by(ReconciliationModel.match_status)
-    recon_results = (await db.execute(recon_q)).all()
-    
-    recon_counts = {status: count for status, count in recon_results}
-    
-    return PeriodStats(
-        tickets_total=ticket_result.total or 0,
-        tickets_pendientes=ticket_result.pendientes or 0,
-        tickets_aprobados=ticket_result.aprobados or 0,
-        tickets_rechazados=ticket_result.rechazados or 0,
-        tickets_auto_aprobados=ticket_result.auto_aprobados or 0,
-        monto_total=ticket_result.monto_total or Decimal("0"),
-        monto_pendiente=ticket_result.monto_pendiente or Decimal("0"),
-        bank_transactions=bank_count,
-        reconciliations_perfect=recon_counts.get(MatchStatus.PERFECT.value, 0),
-        reconciliations_manual=recon_counts.get(MatchStatus.MANUAL.value, 0),
-        reconciliations_discrepancy=recon_counts.get(MatchStatus.DISCREPANCY.value, 0),
-    )
+
+
+# ---------------------------------------------------------------------------
+# El endpoint
+# ---------------------------------------------------------------------------
 
 
 @router.get("/", response_model=DashboardResponse)
 async def get_dashboard(
+    usuario: UsuarioActual,
     company_id: Optional[UUID] = Query(None, description="Filtrar por empresa"),
+    meses: int = Query(12, ge=1, le=36, description="Meses de la tendencia"),
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user),
 ) -> DashboardResponse:
-    """Dashboard con estadísticas por período y métricas clave."""
-    
+    """El tablero.
+
+    `usuario` se declara y no se usa: la proteccion la pone el router entero en
+    `api_router.py`, no este endpoint. Se deja para que quede a la vista que
+    aqui no hay puerta, y no porque sirva de algo.
+    """
     company_name = None
     if company_id:
         company = await db.get(CompanyModel, company_id)
         company_name = company.name if company else None
-    
-    periodos = ["hoy", "mes_actual", "mes_anterior", "ano_actual", "ano_anterior"]
-    stats = {}
-    for p in periodos:
-        desde, hasta = _period_bounds(p, company_id)
-        stats[p] = await _compute_period_stats(db, company_id, desde, hasta)
-    
-    # Totales acumulados
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    far_future = datetime(2100, 1, 1, tzinfo=timezone.utc)
-    totales = await _compute_period_stats(db, company_id, epoch, far_future)
-    
-    # Cola de revisión
-    review_filter = [TicketModel.company_id == company_id] if company_id else []
-    review_q = select(
-        TicketModel.extraction_status,
-        func.count(TicketModel.id)
-    ).where(
-        and_(
-            TicketModel.extraction_status.in_([
-                ExtractionStatus.PENDIENTE.value,
-                ExtractionStatus.RECHAZADO.value
-            ]),
-            *review_filter
-        )
-    ).group_by(TicketModel.extraction_status)
-    review_results = (await db.execute(review_q)).all()
-    review_queue = {status: count for status, count in review_results}
-    
-    # Exactitud (solo si hay empresa)
+
+    ahora = analitica.utcnow()
+    # El mes ya comparado lo pide el servicio: las dos ventanas se calculan
+    # juntas para que un cambio de dia a mitad no compare meses distintos.
+    cifra = await analitica.cifra_periodo(db, company_id, ahora=ahora)
+    mes_desde, mes_hasta = analitica.mes_actual(ahora)
+    ant_desde, _ = analitica.mes_anterior(ahora)
+
+    tendencia = await analitica.tendencia_mensual(db, company_id, meses=meses, ahora=ahora)
+    # El total historico usa la ventana mas amplia de la serie, no "todo": si
+    # alguien pide 3 meses de tendencia, el historico tambien es de 3 meses. Un
+    # "total" que no corresponde al rango dibujado hace que las barras no
+    # cuadren con el pie de la pagina.
+    total_historico = sum((m["monto"] for m in tendencia), Decimal("0"))
+    tickets_historico = sum(m["tickets"] for m in tendencia)
+
+    banco = await analitica.estado_del_banco(db, company_id)
+    por_estado = await analitica.por_estado(db, company_id)
+    por_estado_conc = await analitica.por_estado_conciliacion(db, company_id)
+
+    # La cola de revision son los estados que todavia piden a una persona. Se
+    # deriva de la lista de `enums.OPEN_STATUSES` y no de una copia escrita
+    # aqui: si el motor de captura empieza a producir un estado nuevo y esta
+    # lista no lo sabe, el dashboard dira que la cola esta vacia mientras hay
+    # trabajo esperando, que es el peor fallo posible en este numero.
+    from app.core.enums import OPEN_STATUSES
+
+    cola = {e.value: por_estado.get(e.value, 0) for e in OPEN_STATUSES}
+    cola = {k: v for k, v in cola.items() if v}
+
     exactitud = None
     if company_id:
+        # El reporte de exactitud no tiene nada que ver con el gasto por
+        # categoria y puede fallar por sus propios motivos. Que falle no puede
+        # tumbar el dashboard entero, asi que se degrada a `null` y la pantalla
+        # lo trata como "no hay veredicto", no como "error".
         try:
             report = await compute_accuracy_report(db, company_id)
             exactitud = {
@@ -234,6 +339,7 @@ async def get_dashboard(
                 "por_origen": [
                     {
                         "origen": o.origen,
+                        "revisados": o.revisados,
                         "aciertos": o.aciertos,
                         "incorrectos": o.incorrectos,
                         "pendientes": o.pendientes,
@@ -241,22 +347,46 @@ async def get_dashboard(
                         "intervalo_inferior": o.intervalo_inferior,
                         "intervalo_superior": o.intervalo_superior,
                         "veredicto": o.veredicto,
+                        "motivo_faltante": o.motivo_faltante,
+                        "total_revisiones_necesarias": o.total_revisiones_necesarias,
+                        "campo_mas_fallido": o.campo_mas_fallido,
                     }
                     for o in report.por_origen
-                ]
+                ],
             }
         except Exception:
             exactitud = None
-    
+
+    resumen_mes = await _resumen_mes(db, company_id, ahora)
+
     return DashboardResponse(
         company_id=company_id,
         company_name=company_name,
-        hoy=stats["hoy"],
-        mes_actual=stats["mes_actual"],
-        mes_anterior=stats["mes_anterior"],
-        ano_actual=stats["ano_actual"],
-        ano_anterior=stats["ano_anterior"],
-        review_queue=review_queue,
+        mes=resumen_mes,
+        por_categoria=await analitica.por_categoria(db, company_id, mes_desde, mes_hasta, cifra.monto),
+        comparativo=await analitica.comparativo_mensual(db, company_id, meses=3, ahora=ahora),
+        hallazgos=[
+            Hallazgo(**h)
+            for h in hallazgos.hallazgos_tendencia(
+                tendencia,
+                mes_en_curso=resumen_mes.mes_en_curso,
+                monto_mes_en_curso=resumen_mes.monto,
+                variacion_a_la_fecha=resumen_mes.variacion_pct_a_la_fecha,
+                nombre_anterior=resumen_mes.nombre_anterior,
+            )
+        ],
+        tendencia=tendencia,
+        top_proveedores=await analitica.top_proveedores(db, company_id, mes_desde, mes_hasta),
+        por_estado=por_estado,
+        por_estado_conciliacion=por_estado_conc,
+        banco=Banco(**banco),
+        cola_revision=cola,
+        sin_clasificar=SinClasificar(**await analitica.pendientes_de_clasificar(db, company_id)),
+        # "Hay datos" significa hay ALGO que mirar: un ticket o un movimiento. Con
+        # cero de los dos, la pantalla esta de veras vacia y hay que decirlo, no
+        # dejar seis tarjetas en cero que parecen un tablero que no carga.
+        hay_datos=(tickets_historico > 0 or banco["total"] > 0),
         exactitud=exactitud,
-        totales_acumulados=totales,
+        total_historico=total_historico,
+        tickets_historico=tickets_historico,
     )

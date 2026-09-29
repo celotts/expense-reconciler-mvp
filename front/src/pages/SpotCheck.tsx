@@ -140,7 +140,7 @@ export function SpotCheck() {
         {loading ? (
           <Loading message="Cargando muestra..." />
         ) : !cola || cola.tickets.length === 0 ? (
-          <Card className="p-8">
+          <Card>
             <EmptyState
               message={error
                 ? 'No se pudo leer la muestra. Revisa el mensaje arriba.'
@@ -178,7 +178,7 @@ export function PanelEvidencia({ reporte }: { reporte: ReporteExactitud }) {
   const [detalle, setDetalle] = useState(false);
 
   return (
-    <Card className="p-5">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -286,7 +286,7 @@ export function ResumenMuestra({
 }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Sin revisar</p>
         <p className={`text-3xl font-bold mt-1 ${pendientes > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
           {pendientes}
@@ -303,18 +303,18 @@ export function ResumenMuestra({
         )}
       </Card>
 
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Ya revisados</p>
         <p className="text-3xl font-bold mt-1 text-gray-900">{revisados}</p>
         <p className="text-xs text-gray-500 mt-1">Quedan registrados para siempre</p>
       </Card>
 
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Coincidieron</p>
         <p className="text-3xl font-bold mt-1 text-green-600">{aciertos}</p>
       </Card>
 
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">No coincidieron</p>
         <p className={`text-3xl font-bold mt-1 ${incorrectos > 0 ? 'text-red-600' : 'text-gray-400'}`}>
           {incorrectos}
@@ -371,7 +371,7 @@ export function TarjetaMuestra({
     setCampos(v => v.includes(c) ? v.filter(x => x !== c) : [...v, c]);
 
   return (
-    <Card className="p-4">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">

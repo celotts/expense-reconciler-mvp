@@ -112,9 +112,23 @@ export function Modal({ isOpen, onClose, title, children, className = '' }: {
 }
 
 // Card
+//
+// El padding va AQUI y no en quien lo usa. Antes no lo tenia, y cada pantalla
+// que se acordaba le ponia el suyo: 16 de los 36 usos no se acordaban, y
+// quedaban con las letras pegadas al borde.
+//
+// Y no se deja que quien lo use lo cambie con un `p-4` en su `className`, porque
+// `p-4` y `p-5` tienen la misma especificidad en Tailwind y gana la que
+// aparezca despues en la hoja de estilos generada, no la que va despues en el
+// atributo `class`. O sea: no se puede saber de antemano. Con el padding aqui y
+// nadie mas tocando el, el borde del cuadro es el mismo en las siete
+// pantallas y cambiarlo es cambiar una linea.
+//
+// Para un cuadro que de verdad necesite mas aire, se envuelve en un `div` con
+// padding, no se le pasa al `Card`.
 export function Card({ children, className = '', ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 ${className}`} {...props}>
+    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 p-5 ${className}`} {...props}>
       {children}
     </div>
   );

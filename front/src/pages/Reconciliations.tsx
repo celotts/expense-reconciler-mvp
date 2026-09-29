@@ -157,7 +157,7 @@ export function Reconciliations() {
         </div>
       </div>
 
-      <Card className="p-4">
+      <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>

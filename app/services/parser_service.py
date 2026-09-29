@@ -44,6 +44,138 @@ class BankTransactionRow(BaseModel):
     reference: str | None = None
 
 
+# Un importe solo puede llevar digitos, un signo y separadores. Se acepta tambien
+# el simbolo de la moneda porque algunos exportadores lo meten en la celda
+# ("$1,234.56"), y quitarlo es mejor que rechazar la fila: el importe se puede
+# leer sin problema, lo unico que sobra es la marca.
+_MONEDA = "€$£¥"
+_NO_NUMERO = re.compile(r"[^0-9.,+-]")
+
+
+def _grupos_de_miles(entero: str, sep: str) -> str | None:
+    """El entero sin sus separadores de miles, o `None` si no encaja.
+
+    Encaja cuando, al partir por `sep`, el primer grupo mide de una a tres
+    digitos y TODOS los demas miden exactamente tres. Esa es la unica prueba
+    fiable: "1,234" son mil doscientos, y "1,23" no lo son. El tamano total del
+    numero no ayuda, porque "89.000" y "89.00" ocupan lo mismo en pantalla y
+    significan cosas distintas.
+    """
+    if sep not in entero:
+        return entero
+    grupos = entero.split(sep)
+    if not grupos[0] or not 1 <= len(grupos[0]) <= 3:
+        return None
+    if not all(len(g) == 3 for g in grupos[1:]):
+        return None
+    return "".join(grupos)
+
+
+def _como_decimal(texto: str, sep: str) -> str | None:
+    """Lee `texto` tomando `sep` como decimal. `None` si no cuadra."""
+    entero, _, frac = texto.rpartition(sep)
+    if not entero or not frac or not frac.isdigit():
+        return None
+    entero_limpio = _grupos_de_miles(entero, "." if sep == "," else ",")
+    if entero_limpio is None or not entero_limpio.isdigit():
+        return None
+    return f"{entero_limpio}.{frac}"
+
+
+def _a_decimal(valor: object, decimal_separator: str, thousands_separator: str) -> Decimal:
+    """Convierte el importe de un CSV a `Decimal`.
+
+    Se hace a mano y no delegando en pandas porque los separadores que usan
+    muchos bancos son los INVERSOS de los que pandas asume por omision, y
+    delegar salia mal de dos maneras: rechazar filas que si se podian leer y,
+    peor, guardar un importe cien veces mayor sin avisar. Ver la nota en
+    `parse_bank_csv`.
+
+    **El orden de los intentos es lo que hace que esto funcione.** "1,234.56" es
+    ambiguo: con convencion mexicana (coma decimal) no es un numero valido, y con
+    convencion anglosajona son mil doscientos con cincuenta y seis. Se prueba en
+    este orden, que da la misma respuesta en los dos casos:
+
+      1. El separador DECLARADO como decimal, con uno o dos digitos detras.
+      2. El otro, como decimal, con uno o dos digitos detras.
+      3. El separador DECLARADO como miles, si los grupos miden tres.
+      4. El otro, como miles.
+      5. El declarado como decimal con mas de dos digitos: "0.0001" es un
+         importe legitimo y rechazarlo seria peor que aceptarlo.
+
+    El declarado va primero para que un archivo que SI sigue la convencion que
+    pidio el usuario no se lea con la contraria. Y el paso 3 va antes que el 5
+    porque "1,234" con coma declarada son mil doscientos treinta y cuatro, no uno
+    con doscientos treinta y cuatro milimas: tres digitos exactos es grupo de
+    miles.
+
+    `Decimal` y no `float` por la razon de siempre: 0.1 + 0.2 tiene que dar 0.3
+    en una conciliacion. Con punto flotante, el total de mil tickets acaba en un
+    peso de diferencia que nadie sabe de donde salio.
+    """
+    if valor is None:
+        raise ValueError("importe vacio")
+
+    crudo = str(valor).strip()
+    if not crudo:
+        raise ValueError("importe vacio")
+
+    # Se quita lo que no aporta al numero: "$", "MXN", espacios internos.
+    limpio = _NO_NUMERO.sub("", crudo.replace(_MONEDA, ""))
+
+    if not limpio or limpio in {"+", "-", ".", ","}:
+        raise ValueError(f"importe no numerico: {crudo!r}")
+
+    negativo = limpio.startswith("-")
+    if limpio[0] in "+-":
+        limpio = limpio[1:]
+
+    otro = "," if decimal_separator == "." else "."
+    # (separador, True) = leerlo como miles; (separador, False) = como decimal.
+    intentos = [
+        (decimal_separator, False),
+        (otro, False),
+        (decimal_separator, True),
+        (otro, True),
+    ]
+
+    largo: str | None = None
+    resultado: str | None = None
+
+    for sep, es_miles in intentos:
+        if es_miles:
+            if sep not in limpio:
+                continue
+            entero = _grupos_de_miles(limpio, sep)
+            if entero is not None and entero.isdigit():
+                return Decimal(entero) * (-1 if negativo else 1)
+            continue
+
+        leido = _como_decimal(limpio, sep)
+        if leido is None:
+            continue
+        if len(leido.split(".")[1]) <= 2:
+            resultado = leido
+            break
+        # Un decimal largo solo entra si al final no sirvio ninguna otra.
+        largo = leido
+
+    if resultado is None and limpio.isdigit():
+        resultado = limpio
+    if resultado is None:
+        resultado = largo
+
+    if resultado is None:
+        raise ValueError(f"importe no numerico: {crudo!r}")
+
+    try:
+        numero = Decimal(resultado)
+    except InvalidOperation as exc:
+        raise ValueError(f"importe no numerico: {crudo!r}") from exc
+
+    return -numero if negativo else numero
+
+
 class TicketExtractionResult(BaseModel):
     provider_name: str
     provider_tax_id: str | None = None
@@ -113,28 +245,46 @@ def parse_bank_csv(
             f"Codificacion no permitida: {encoding}. Use utf-8, latin-1 o cp1252."
         )
 
+    # `dtype=str` y SIN `thousands`/`decimal`: la conversion del importe se hace
+    # abajo, a mano, con los separadores que pidio el usuario.
+    #
+    # Delegarlo en pandas no funciona, y falla de dos maneras distintas segun
+    # cual de los dos argumentos este invertido:
+    #
+    #   - Con `decimal=","` y un importe CON separador de miles ("1,234.56"),
+    #     pandas infiere la columna como texto, no la convierte, y aqui arrive
+    #     como la cadena "1,234.56". `Decimal("1,234.56")` es invalido y la
+    #     fila se rechaza con "fila invalida", sin decir cual.
+    #   - Con `decimal=","` y un importe SIN miles ("890.00"), pandas aplica el
+    #     `.` como separador de miles y guarda 89000.00: cien veces el importe
+    #     real, sin error ni aviso.
+    #
+    # El segundo es el que importa. Un banco que reporta 890.00 y una conciliacion
+    # que guarda 89,000.00 no producen un 400: producen una conciliacion
+    # "correcta" con todos los tickets en discrepancia y ningun indicio de por
+    # que. Leer como texto y convertir aqui hace que el separador que pidio el
+    # usuario sea el unico que cuenta, y que la aritmetica sea la de `Decimal`.
     df = pd.read_csv(
         io.BytesIO(file_content),
         encoding=encoding,
-        thousands=thousands_separator,
-        decimal=decimal_separator,
-        sep=separator
+        sep=separator,
+        dtype=str,
+        keep_default_na=False,
+        na_values=[""],
     )
-    
+
     df.columns = df.columns.str.strip().str.lower()
-    
+
     required_columns = {date_column, amount_column, description_column}
     missing = required_columns - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
-    
+
     transactions = []
     for _, row in df.iterrows():
         try:
             transaction_date = pd.to_datetime(row[date_column], format=date_format).date()
-            # pandas already handles decimal/thousands separators when reading
-            # row[amount_column] is already a float, so convert directly
-            amount = Decimal(str(row[amount_column]))
+            amount = _a_decimal(row[amount_column], decimal_separator, thousands_separator)
             description = str(row[description_column]).strip()
             reference = str(row[reference_column]).strip() if reference_column in df.columns and pd.notna(row[reference_column]) else None
             
