@@ -271,7 +271,7 @@ El endpoint `GET /api/v1/dashboard` es la **vista de aterrizaje** del frontend. 
 ## Tests
 
 ```bash
-# Todos (545 tests - incluye seguridad + regresión)
+# Todos (637 tests - incluye seguridad + regresión)
 python3 -m pytest tests/ -q
 
 # Unitarios
@@ -282,14 +282,27 @@ python3 -m pytest tests/integration/ -q
 
 # Solo seguridad (inyección fórmula, DoS subida, codecs, forjar veredicto)
 python3 -m pytest tests/unit/test_subida.py tests/unit/test_csv_security.py tests/integration/test_export_injection.py tests/integration/test_veredicto_forjado.py -v
+
+# El comprobante original (guardar, servir, y el content-type del cliente)
+python3 -m pytest tests/integration/test_documentos.py tests/integration/test_documento_api.py -v
 ```
 
 ### Verificación por mutación (cada defensa tiene test que muere si se quita)
 ```bash
-# Fórmula XLSX: quitar forzar_texto → falla
-# DoS subida: quitar límite → falla  
-# Codecs: quitar allowlist → falla
-# Veredicto: extra='allow' → TypeError multiple values
+python3 scripts/verify_capture_mutations.py    # 26 mutaciones, la ruta de captura
+python3 scripts/verify_export_mutations.py    # inyección de fórmulas
+python3 scripts/verify_auth_mutations.py      # auth y forja de veredictos
+```
+
+### Verificación contra Postgres real
+SQLite no es Postgres en tres cosas que importan: ignora las llaves foráneas
+por omisión (un `ON DELETE CASCADE` no se ejecuta), acepta un `BYTEA` de 12 MB
+sin quejarse (el TOAST de Postgres sí), e ignora los índices `postgresql_where`
+del modelo. Un test en verde sobre SQLite no dice nada sobre esas tres.
+
+```bash
+python3 scripts/verify_postgres_capture.py     # idempotencia por empresa, tope de raw_text
+python3 scripts/verify_postgres_documentos.py  # bytes intactos, CASCADE, UNIQUE
 ```
 
 ---
@@ -305,7 +318,29 @@ python3 -m pytest tests/unit/test_subida.py tests/unit/test_csv_security.py test
 ## Próximos Pasos
 
 1. **Alembic** para migraciones de BD
-2. ✅ **Auth/JWT** (HS256 + scrypt, sin deps nuevas, rate limit, 545 tests)
-3. **OCR real** (AWS Textract, Azure Form Recognizer)
-4. ✅ **Frontend** (React + Vite + Tailwind, hash router pendiente, Dashboard landing)
-5. **Empaquetado** como app de escritorio (PyInstaller/Tauri)
+2. ✅ **Auth/JWT** (HS256 + scrypt, sin deps nuevas, rate limit)
+3. ✅ **Comprobante original guardado** (0006) — sin esto el muestreo de
+   exactitud se hacía a ciegas: se contrastaba la transcripción del modelo
+   contra sí misma
+4. **OCR real** (AWS Textract, Azure Form Recognizer)
+5. ✅ **Frontend** (React + Vite + Tailwind, hash router pendiente, Dashboard landing)
+6. **Empaquetado** como app de escritorio (PyInstaller/Tauri)
+
+### Lo que sigue faltando en la captura
+
+Lo que está pendiente y **no** está resuelto por lo de arriba:
+
+- **HEIC/TIFF de iPhone.** `subida.py` justifica los 10 MB con fotos de
+  iPhone, pero PIL sin `pillow-heif` no abre un HEIC, y el front solo acepta
+  `.pdf,.png,.jpg,.jpeg`.
+- **PDF cifrado con contraseña**: cae a visión y sale como "ilegible", sin decir
+  que el problema es la contraseña.
+- **Varios archivos por subida**: `file: UploadFile` es uno solo.
+- **Carga masiva.** `SourceType.BULK`/`DIRECTORY` existen en el enum y no hay
+  endpoint. La idempotencia por hash ya está, pero nada la llama en lote.
+- **Campos del CFDI que se extraen y se tiran** (`invoice_number`,
+  `invoice_series`, `currency`, `exchange_rate`, `payment_method`, `items`): el
+  modelo los lee y el export de CONTPAQI los manda vacíos con un tipo de cambio
+  inventado (`export_service.py:321-325`).
+- **`VendorNormalizer` sin usar**: "Oxxo", "OXXO" y "OXXO EXPRESS" son tres
+  proveedores en la tabla, y el dashboard los cuenta por separado.

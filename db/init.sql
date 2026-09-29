@@ -164,12 +164,53 @@ CREATE INDEX IF NOT EXISTS ix_tickets_review_queue
     ON tickets (extraction_status, company_id)
     WHERE extraction_status IN ('REQUIERE_REVISION', 'PENDIENTE');
 
--- Carga masiva idempotente: reintentar un lote no duplica gastos. Único solo
--- cuando existe el hash, porque los tickets manuales no lo tienen y varios
+-- Carga masiva idempotente: reintentar un lote no duplica gastos.
+--
+-- El índice va sobre (company_id, source_hash) y no solo sobre source_hash.
+-- El hash es el SHA-256 del archivo y no lleva empresa dentro, así que el mismo
+-- comprobante en dos empresas da el mismo hash. Con unicidad solo por hash,
+-- una de las dos empresas se queda sin poder registrar el gasto, y el índice
+-- además convertía en error lo que es un caso legítimo. Ver
+-- db/migrations/0005_source_hash_por_empresa.sql.
+--
+-- Único solo cuando existe, porque los tickets manuales no tienen hash y varios
 -- NULL en la misma columna no pueden violar unicidad.
 CREATE UNIQUE INDEX IF NOT EXISTS ix_tickets_source_hash
-    ON tickets (source_hash)
+    ON tickets (company_id, source_hash)
     WHERE source_hash IS NOT NULL;
+
+-- El comprobante original de cada ticket (0006).
+--
+-- Antes esto no existía y los bytes se perdían al terminar la lectura. De la
+-- subida solo quedaban el nombre, el hash y el texto que el sistema había
+-- extraído, que es lo que hace imposible el muestreo de exactitud: la pregunta
+-- "¿la extracción coincidió con el papel?" necesita el papel.
+--
+-- Va aquí replicado por la misma razón que las constraints de tickets: una
+-- base creada desde cero y una migrada tienen que terminar iguales.
+--
+-- El CASCADE es lo que hace que borrar un ticket borre su comprobante. Con el
+-- archivo en disco, ese borrado sería una tarea aparte que nadie recuerda.
+CREATE TABLE IF NOT EXISTS ticket_documents (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    -- UNIQUE y llave foránea a la vez: un ticket tiene un documento o ninguno,
+    -- nunca dos, y nunca un documento sin ticket.
+    ticket_id UUID NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+    contenido BYTEA NOT NULL,
+    -- Lo declara el cliente y NO se usa tal cual para servirlo: el endpoint
+    -- responde desde una lista cerrada de tipos que el navegador no puede
+    -- ejecutar. Ver app/models/ticket_document.py.
+    content_type VARCHAR(120),
+    nombre_archivo VARCHAR(500),
+    tamano INTEGER NOT NULL,
+    -- El mismo hash que tickets.source_hash, para verificar los bytes guardados
+    -- sin volver a pedir el archivo.
+    sha256 VARCHAR(64),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_ticket_documents_ticket
+    ON ticket_documents (ticket_id);
 
 -- Muestreo de exactitud (0003). Dos índices parciales, y la diferencia importa:
 --

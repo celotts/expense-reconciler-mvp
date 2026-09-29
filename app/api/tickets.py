@@ -2,7 +2,8 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status,
+    APIRouter, Depends, File, Form, HTTPException, Query, Response,
+    UploadFile, status,
 )
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,9 @@ from app.services.accuracy_service import (
     Veredicto, en_muestra,
 )
 from app.services.capture import ExtractionUnavailable, capture_ticket
+from app.services.document_service import (
+    documento_de_ticket, guardar_documento, reemplazar_documento,
+)
 from app.services.parser_service import TicketExtractionResult
 from app.services.ai_extractor import ai_extractor
 
@@ -165,6 +169,7 @@ async def extract_and_create_ticket(
         db, company_id, extracted, content,
         source_type=SourceType(file_type) if file_type in {t.value for t in SourceType} else SourceType.IMAGE,
         source_file=file.filename,
+        content_type=file.content_type,
     )
 
 
@@ -175,8 +180,14 @@ async def _persist_extracted(
     content: bytes,
     source_type: SourceType,
     source_file: str | None = None,
+    content_type: str | None = None,
 ) -> TicketModel:
-    """Gate + persistencia. Unico camino de entrada para datos extraidos."""
+    """Gate + persistencia. Unico camino de entrada para datos extraidos.
+
+    `content` es el archivo original y `extracted` lo que se entendio de el. Los
+    dos se guardan, y son cosas distintas: el segundo sin el primero no se puede
+    revisar ni auditar. Ver `app/services/document_service.py`.
+    """
     # El origen lo decide la ruta de captura, no esta funcion. Antes todo se
     # guardaba como `llm` porque el gate recibia su default, y con eso la
     # columna `confidence_source` miente sobre de donde salio el dato: un PDF
@@ -200,8 +211,21 @@ async def _persist_extracted(
     source_hash = compute_source_hash(content)
 
     # Idempotencia de carga masiva: el mismo archivo no crea dos tickets.
+    #
+    # El filtro por `company_id` no es un refinamiento, es la garantia de que
+    # el hash significa algo. `source_hash` es el SHA-256 del archivo y no lleva
+    # empresa dentro, asi que el mismo comprobante subido por dos empresas es
+    # el mismo hash. Buscando solo por hash, la segunda empresa se encontraba
+    # con el ticket de la primera y lo devolvia: el gasto no se registraba para
+    # ella y ademas le mostraba un ticket ajeno, de otra empresa. El indice
+    # unico global (ix_tickets_source_hash) convertia ademas el caso contrario -
+    # dos empresas con el mismo archivo, que es legitimo - en un IntegrityError.
+    # Por eso la unica columna del indice ahora es `(company_id, source_hash)`.
     existing = await db.execute(
-        select(TicketModel).where(TicketModel.source_hash == source_hash)
+        select(TicketModel).where(
+            TicketModel.source_hash == source_hash,
+            TicketModel.company_id == company_id,
+        )
     )
     dup = existing.scalar_one_or_none()
     if dup is not None:
@@ -261,6 +285,26 @@ async def _persist_extracted(
         ),
     )
     db.add(ticket)
+    await db.flush()
+
+    # El documento va antes del commit, en la misma transaccion.
+    #
+    # El orden importa y no es cosmetico. Un `commit` aqui seguido de un guardado
+    # del documento dejaria una ventana en la que el ticket existe y el papel
+    # no, y en esa ventana un ticket de la cola aparece sin nada que revisar sin
+    # que se pueda distinguir de "nunca se subio". Con el guardado antes, el
+    # ticket llega con su documento o no llega ninguno de los dos.
+    #
+    # Y si el guardado falla, el ticket NO se pierde: `guardar_documento` usa un
+    # savepoint y devuelve False. Perder un gasto que se leyo bien por un
+    # problema de almacenamiento seria peor que un gasto sin comprobante
+    # adjunto, que ademas queda visible.
+    await guardar_documento(
+        db, ticket, content,
+        content_type=content_type,
+        nombre_archivo=source_file,
+    )
+
     await db.commit()
     await db.refresh(ticket)
     return ticket
@@ -898,6 +942,163 @@ def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
                 else f"{m.origen}: falta evidencia para poder afirmar nada."
             )
     return " ".join(lineas)
+
+
+# =====================================================================
+# El documento original
+# =====================================================================
+#
+# Sin esto, las dos pantallas que existen para revisar un documento --
+# la cola de revision y el muestreo de exactitud -- dicen "contrasta contra el
+# documento original" sin que haya documento. Ver el docstring de
+# `app/models/ticket_document.py` para que se rompia y por que esto lo arregla.
+
+
+@router.get("/{ticket_id}/documento", response_class=Response)
+async def get_documento(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Los bytes del comprobante, tal como los subio la persona.
+
+    Es lo que hace posible el muestreo: la pregunta "¿la extraccion coincidio con
+    el papel?" solo tiene respuesta si hay papel. Y es lo que hace auditable un
+    veredicto meses despues, cuando el papel ya no esta en la carpeta de
+    quien lo subio.
+
+    El `Content-Type` sale de una lista cerrada y no de lo que declaro el
+    cliente. Ver `app.models.ticket_document.content_type_servible`: servir
+    `text/html` con bytes sin revisar seria XSS desde el propio dominio, con
+    sesion iniciada, disparado por alguien de confianza de la empresa.
+    """
+    # El ticket primero. Sin el, el `404` seria indistinguible del "no hay
+    # documento", y quien llama no podria saber si se equivoco en el id o si el
+    # ticket es de captura manual.
+    ticket = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+        )
+
+    documento = await documento_de_ticket(db, ticket_id)
+    if documento is None:
+        # 404 y no 204. Un `204` parece un exito, y el cliente lo trata como
+        # "no hay nada que ver", que es exactamente el bug que se quiere evitar.
+        # El mensaje distingue las dos causas, que piden cosas distintas: un
+        # ticket tecleado a mano no tiene documento y no deberia, uno de una
+        # captura antigua si deberia y se puede reintentar.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Este ticket no tiene documento guardado. "
+                + (
+                    "Es de captura manual, asi que no hay ningun archivo que revisar."
+                    if ticket.source_type == SourceType.MANUAL.value
+                    else "Vuelve a subir el comprobante para poder revisarlo."
+                )
+            ),
+        )
+
+    return Response(
+        content=documento.contenido,
+        media_type=documento.content_type_servible,
+        headers={
+            # `inline` y no `attachment`: el objetivo es que el revisor pueda
+            # VER el papel, que es lo que hace el muestreo posible. Con
+            # `attachment` tendria que descargarlo, abrirlo en otro programa, y
+            # volver: en un celular, en una pantalla de la cola, es el camino que
+            # hace que la gente termine revisando a ciegas.
+            "Content-Disposition": (
+                f'inline; filename="{_nombre_seguro(documento.nombre_archivo)}"'
+            ),
+            # El nombre que el navegador propone al guardar. Va aparte porque
+            # `filename*` es la forma estandar y la que entiende el rango de
+            # caracteres no ASCII, que es justo el caso de un archivo con
+            # acentos.
+            "Access-Control-Expose-Headers": "Content-Disposition",
+            # Cache privado y en el navegador, nunca en un proxy compartido: el
+            # documento es un comprobante fiscal de una empresa concreta.
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
+@router.put("/{ticket_id}/documento", response_model=TicketResponse)
+async def put_documento(
+    ticket_id: UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> TicketModel:
+    """Reemplaza el documento de un ticket que ya existe.
+
+    Es lo que hace recuperable un documento que no se pudo leer. Un PDF que no
+    llego a leerse porque el extractor estaba apagado queda ilegible para
+    siempre aunque manana se encienda: los bytes se habian perdido con el
+    `request`. Con este endpoint, el mismo archivo se vuelve a subir sobre el
+    ticket que ya existe y el documento queda disponible para que alguien lo
+    revise o para que se reextraiga.
+
+    No crea un ticket nuevo ni cambia los datos que ya se extrajeron. Reextraer
+    es otra operacion y otra decision: la lectura guardada es la que se sometio
+    a muestreo, y cambiarla en silencio haria que el veredicto registrado no
+    correspondiera a lo que el sistema leyo.
+
+    El `PUT` y no el `POST` porque el recurso es el documento de ESE ticket y
+    queda exactamente uno: es un reemplazo, no un agregado. Con `POST` el
+    cliente no tendria forma de saber si el segundo archivo se sumo o se
+    sustituyo, y de las dos respuestas solo una es la que se quiere.
+    """
+    ticket = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+        )
+
+    # El mismo lector con el mismo tope que la subida original. No se reusa la
+    # constante aqui: si el tope de la subida subiera y este no, la diferencia
+    # seria un endpoint que acepta archivos que el otro rechaza, y el que
+    # fallaria seria el que no parece tener limite.
+    contenido = await leer_ticket(file, file.filename or "")
+
+    guardado = await reemplazar_documento(
+        db, ticket_id, contenido,
+        content_type=file.content_type,
+        nombre_archivo=file.filename,
+    )
+    if not guardado:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "No se pudo guardar el documento. El ticket sigue como estaba, "
+                "con los datos que ya tenia."
+            ),
+        )
+
+    await db.commit()
+    await db.refresh(ticket)
+    return ticket
+
+
+def _nombre_seguro(nombre: str | None) -> str:
+    """El nombre del archivo, sin caracteres que rompan la cabecera HTTP.
+
+    Va dentro de `Content-Disposition`, que es una cabecera de texto: un nombre
+    con comillas, salto de linea o backslash la rompe, y con una respuesta mal
+    formada el navegador muestra un error en vez del documento. Se sustituye
+    en vez de rechazar: el nombre es informacion, el documento es el dato, y
+    perder el documento por un caracter raro en el nombre seria disparar a lo
+    que no importa.
+    """
+    if not nombre:
+        return "comprobante"
+    limpio = "".join(
+        c if c.isprintable() and c not in '"\\' else "_" for c in nombre
+    ).strip()
+    return limpio[:200] or "comprobante"
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)

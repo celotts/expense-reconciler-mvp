@@ -84,9 +84,19 @@ class TicketModel(Base):
             "extraction_status", "company_id",
             postgresql_where=text(_SIN_ABRIR),
         ),
-        # Recepcion de lotes idempotente por hash de contenido. Unico solo
-        # cuando existe: los tickets manuales no tienen hash.
-        Index("ix_tickets_source_hash", "source_hash", unique=True,
+        # Recepcion de lotes idempotente por hash de contenido.
+        #
+        # `company_id` va en el indice y no es decorativo. El hash es el
+        # SHA-256 del archivo, y el mismo comprobante puede rightfulmente
+        # existir en dos empresas: es el mismo papel, y cada una lo gasto por su
+        # cuenta. Unico sobre `source_hash` solo, el sistema decidia que solo
+        # una de las dos puede tenerlo, y el indice era el que resolvia a favor
+        # de la primera. Ver db/migrations/0005_source_hash_por_empresa.sql.
+        #
+        # Sigue siendo unico solo cuando existe, por la misma razon de antes:
+        # los tickets manuales no tienen hash y varios NULL en la misma columna
+        # no pueden violar unicidad.
+        Index("ix_tickets_source_hash", "company_id", "source_hash", unique=True,
               postgresql_where=text("source_hash IS NOT NULL")),
         # Cola de muestreo: parcial sobre PENDIENTE. A diferencia de la cola de
         # revision, esta no se vacia nunca: los tickets revisados se quedan para
@@ -171,6 +181,38 @@ class TicketModel(Base):
     company = relationship("CompanyModel", backref="tickets")
     reconciliations = relationship("ReconciliationModel", back_populates="ticket")
 
+    # El documento original, cuando se subio un archivo. `uselist=False` porque
+    # es uno o ninguno, y `single_parent` con el CASCADE de la llave foranea
+    # hace que borrar el ticket borre el archivo sin pedirlo: si no, la
+    # relationship intentaria poner en NULL la llave foranea que no admite NULL
+    # y el borrado fallaria con un error que no tiene nada que ver con lo que
+    # la persona estaba haciendo.
+    #
+    # `lazy="selectin"` y no el default: la cola de revision y el muestreo
+    # necesitan saber si el documento existe para CADA fila que muestran, y con
+    # la carga perezosa eso seria una consulta por ticket. Con la lista de
+    # tickets de una pantalla son dos consultas, no doscientas.
+    documento = relationship(
+        "TicketDocumentModel",
+        back_populates="ticket",
+        uselist=False,
+        cascade="all, delete-orphan",
+        single_parent=True,
+        lazy="selectin",
+    )
+
     @property
     def is_open_for_review(self) -> bool:
         return ExtractionStatus(self.extraction_status).is_open
+
+    @property
+    def tiene_documento(self) -> bool:
+        """Si el comprobante original esta guardado.
+
+        Vive en el modelo y no se arma en cada schema porque hay dos
+        consumidores que lo necesitan y los dos lo piden de forma distinta:
+        la respuesta de la API (para pintar el enlace) y la fila de la cola (para
+        decidir si mostrar el aviso de "no hay documento"). Una propiedad en el
+        modelo tiene una sola definicion, y por lo tanto una sola verdad.
+        """
+        return self.documento is not None

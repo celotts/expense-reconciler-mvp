@@ -88,6 +88,26 @@ export interface Ticket {
   extraction_status: ExtractionStatus;
   source_type: SourceType | string | null;
   source_file: string | null;
+  /** Si el comprobante original quedo guardado, y donde ir a verlo.
+   *
+   *  Sin esto, la cola de revision y el muestreo dicen "contrasta contra el
+   *  documento original" sin que haya documento: el sistema lo leia y lo
+   *  tiraba. Con esto, la pregunta del muestreo ("¿coincidio con el papel?")
+   *  tiene con que responderse.
+   *
+   *  `tiene_documento: false` NO es un fallo del sistema. Es lo normal en
+   *  captura manual, que no viene de un archivo, y tambien lo que queda de una
+   *  captura anterior a que existiera el almacenamiento. Son dos causas que
+   *  piden cosas distintas y ninguna es "el sistema esta roto", asi que la
+   *  pantalla debe poder distinguirlas en vez de tratar `false` como error. */
+  tiene_documento: boolean;
+  /** Relativo y sin host a proposito: el front y la API pueden no estar en el
+   *  mismo origen, y un host aqui seria una URL que funciona hoy y se rompe
+   *  al primer proxy. `null` cuando `tiene_documento` es `false`. */
+  documento_url: string | null;
+  /** Bytes. Permite avisar el peso antes de descargar, que en un celular con
+   *  datos es la diferencia entre abrir el comprobante y no abrirlo. */
+  documento_tamano: number | null;
   validation_errors: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;

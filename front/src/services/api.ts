@@ -100,6 +100,41 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
   return response.json();
 }
 
+/** El comprobante original de un ticket, como Blob.
+ *
+ *  Va aparte de `fetchApi` por la misma razon que `fetchArchivo`: el resultado
+ *  son bytes, no JSON, y `response.json()` sobre un PDF revienta.
+ *
+ *  Devuelve un Blob y no una URL, a proposito. La URL que da el backend es
+ *  relativa y sin token, asi que no se puede poner en un `<img src>` ni en un
+ *  `iframe`: el endpoint exige cabecera `Authorization` y un `src` no la manda.
+ *  Con un `<img src={documento_url}>` el revisor ve un recuadro vacio y no sabe
+ *  si el documento no esta o si la peticion fallo, que son dos cosas que se
+ *  comprueban de forma distinta.
+ *
+ *  El backend decide el `Content-Type` que devuelve, y siempre es de una lista
+ *  cerrada de tipos que el navegador no puede ejecutar. Por eso el Blob se puede
+ *  mostrar sin miedo: lo que el backend decided servir no es codigo. Ver
+ *  `app/models/ticket_document.py`. */
+export async function fetchDocumento(ticketId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento`, {
+    headers: { ...cabeceraDeAutorizacion() },
+  });
+
+  if (response.status === 401) {
+    notificarCaducidad(false);
+    throw new SesionVencida(false);
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    const detalle = error && typeof error.detail === 'string' ? error.detail : null;
+    throw new Error(detalle || `Error ${response.status}`);
+  }
+
+  return response.blob();
+}
+
 /** La descarga de un archivo, que no es JSON.
  *
  *  Va aparte de `fetchApi` porque el resultado es un `Blob` y no un objeto, y
@@ -254,6 +289,29 @@ export const ticketsApi = {
     // ver si el cuerpo es un FormData. Ponerlo aqui a mano lo rompe.
     return fetchApi<TicketExtractionResult>('/tickets/extract', {
       method: 'POST',
+      body: formData,
+    });
+  },
+
+  /** El comprobante original, como Blob.
+   *
+   *  Devuelve bytes y no una URL porque el endpoint pide token: un `<img src>`
+   *  contra la URL del backend se veria vacio, sin error visible, y el revisor
+   *  no distinguiria "el documento no esta" de "la peticion fallo". */
+  documento: (ticketId: string): Promise<Blob> => fetchDocumento(ticketId),
+
+  /** Vuelve a subir el comprobante de un ticket que ya existe.
+   *
+   *  Es lo que hace recuperable un documento que no se pudo leer: los bytes se
+   *  pueden volver a subir sobre el ticket que ya esta, y no se crea un gasto
+   *  nuevo. */
+  subirDocumento: (ticketId: string, file: File): Promise<Ticket> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    // Sin `headers`: el `Content-Type` del multipart lo pone `fetchApi` segun
+    // vea que el cuerpo es un FormData. Ponerlo aqui a mano rompe el boundary.
+    return fetchApi<Ticket>(`/tickets/${ticketId}/documento`, {
+      method: 'PUT',
       body: formData,
     });
   },

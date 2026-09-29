@@ -5,6 +5,7 @@ import {
   STATUS_ORDEN, explainValidationErrors, confidenceLabel, sourceLabel,
   statusMeta, nombreProvisorLegible,
 } from '../utils/extraction';
+import { VerDocumento } from '../components/TicketDocumento';
 
 /**
  * Cola de revision: todo lo que el sistema NO se atrevio a dar por bueno.
@@ -301,6 +302,8 @@ export function TicketEnCola({
                   de auto-aprobación. Revísalo igual.
                 </p>
               )}
+
+              <VerDocumento ticket={ticket} />
             </>
           )}
 
@@ -356,6 +359,13 @@ export function EditorTicket({
 
   return (
     <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+      {/* El papel va ANTES que el formulario, no despues. "Corrige contra el
+          documento original" es la instruccion de esta pantalla, y si el
+          documento se abre despues de que alguien ya escribio el total, la
+          correccion se hizo sin mirarlo. Ver el papel es la parte que cuesta;
+          corregir despues es lo rapido. */}
+      <VerDocumento ticket={ticket} />
+
       <p className="text-xs text-gray-600">
         Corrige contra el documento original y pulsa <strong>Aprobar y guardar</strong>. El sistema
         vuelve a validar: si los números siguen sin cuadrar, no deja pasar el ticket.

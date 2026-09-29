@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
 
@@ -176,6 +176,54 @@ def _a_decimal(valor: object, decimal_separator: str, thousands_separator: str) 
     return -numero if negativo else numero
 
 
+# Cuanto `raw_text` se guarda antes de recortar.
+#
+# No es un capricho de tamano. `raw_text` va a la columna `tickets.raw_text` tal
+# cual, sin tope en la base, y un PDF de Conditions Generales de 200 paginas
+# deja varios MB en una fila. Medido: un archivo de 3 MB de texto entraba
+# completo. Eso no se rompe en la lectura, se rompe en el dia que se listan 100
+# tickets para la cola de revision y la consulta se arrastra cada uno con su
+# documento entero.
+#
+# Se recorta cabeza Y cola, no solo la cabeza, por una razon concreta: en un
+# comprobante los datos que se revisan estan en los dos extremos. El proveedor
+# esta arriba, y el total, el IVA y la fecha de emision casi siempre estan
+# ABAJO, en el bloque de sumas. Un recorte por cabeza guardaria el nombre del
+# comercio y tiraria las cifras, que es justo lo que el revisor necesita
+# contrastar contra el papel.
+RAW_TEXT_MAX_CHARS = 20_000
+_RAW_TEXT_POR_LATIL = 12_000
+
+
+def recortar_raw_text(texto: str) -> str:
+    """Deja el texto en un tamano guardable, sin perder los dos extremos.
+
+    El recorte se marca en el propio texto, y no se marca nada cuando no hubo
+    recorte. Dos razones:
+
+    - Un recorte silencioso hace que el campo parezca completo. El revisor
+      busca "TOTAL 1,100.00" en el `raw_text`, no lo encuentra, y anota que el
+      total no aparece, cuando lo que paso es que se quedo fuera de la ventana.
+    - Marcarlo solo cuando recorta es lo que hace que este texto sea buscable:
+      `raw_text LIKE '%truncado%'` cuenta los documentos de los que no se guardo
+      todo, sin agregar otra columna.
+
+    El texto ya recortado no lleva marca. Volver a recortar un texto que ya
+    esta dentro del tope no debe ensuciarlo con un aviso de algo que no paso.
+    """
+    if len(texto) <= RAW_TEXT_MAX_CHARS:
+        return texto
+
+    cola = RAW_TEXT_MAX_CHARS - _RAW_TEXT_POR_LATIL
+    se_omitieron = len(texto) - RAW_TEXT_MAX_CHARS
+    return (
+        texto[:_RAW_TEXT_POR_LATIL]
+        + f"\n[... {se_omitieron} caracteres omitidos: "
+          f"raw_text se guarda con tope de {RAW_TEXT_MAX_CHARS} ...]\n"
+        + texto[-cola:]
+    )
+
+
 class TicketExtractionResult(BaseModel):
     provider_name: str
     provider_tax_id: str | None = None
@@ -200,6 +248,20 @@ class TicketExtractionResult(BaseModel):
     # donde salio el dato. Sin esa verdad no se puede medir la exactitud de la
     # IA: se estaria promediando la IA con un regex que casi nunca falla.
     confidence_source: ConfidenceSource = ConfidenceSource.LLM
+
+    @field_validator("raw_text")
+    @classmethod
+    def _topa_raw_text(cls, v: str) -> str:
+        """El tope vive aqui y no en quien arma el resultado.
+
+        Es el mismo argumento que el de `app/core/subida.py`: un control puesto
+        en cada lugar que arma el texto se puede olvidar, y el que se olvide no
+        falla, guarda el documento entero y nadie se entera hasta que listar 100
+        tickets para la cola se arrastra. En el validador no hay forma de
+        saltarselo: todo `TicketExtractionResult` que exista paso por aqui, lo
+        arme el parser de reglas o el modelo.
+        """
+        return recortar_raw_text(v)
 
 
 def parse_bank_csv(
@@ -404,17 +466,22 @@ def render_pdf_pages(
         documento.close()
 
 
-    return TicketExtractionResult(
-        provider_name=UNKNOWN_PROVIDER,
-        provider_tax_id=None,
-        total_amount=Decimal("0.00"),
-        tax_amount=Decimal("0.00"),
-        # Sin OCR todavia. La fecha se queda en None en vez de ponerse la de
-        # hoy: un ticket sin leer no puede afirmar que se gasto hoy.
-        expense_date=None,
-        category=None,
-        raw_text="[Image OCR not implemented]"
-    )
+# Antes de este punto de la historia habia aqui un `return` con un
+# `TicketExtractionResult` de relleno y `raw_text="[Image OCR not implemented]"`,
+# inalcanzable por quedar despues del `finally`. Se borro por dos razones, y las
+# dos son sobre leer el codigo:
+#
+# - Decia que la imagen no se podia leer, cuando la verdad es que las paginas
+#   renderizadas salen aqui y quien las mira es la cascada de `capture.py`. Un
+#   comentario que afirma lo contrario del comportamiento es peor que nada.
+# - Era la clase de codigo que hace que un bug pase desapercibido. La excepcion
+#   de `render_pdf_pages` se traga en `capture._vision_pdf` y se convierte en un
+#   motivo de cola; ese `return` era la version written de lo mismo, pero sin
+#   llegar a loguearse nunca.
+#
+# Si alguna vez vuelve a hacer falta un resultado vacio, el lugar es
+# `app.services.capture._ilegible`, que si construye uno, y lo marca con el
+# motivo real.
 
 
 def _parse_receipt_text(text: str) -> TicketExtractionResult:

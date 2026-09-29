@@ -188,6 +188,73 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
     ),
     (
+        "la idempotencia vuelve a ignorar la empresa",
+        "app/api/tickets.py",
+        "        select(TicketModel).where(\n"
+        "            TicketModel.source_hash == source_hash,\n"
+        "            TicketModel.company_id == company_id,\n"
+        "        )",
+        "        select(TicketModel).where(TicketModel.source_hash == source_hash)",
+        ["tests/integration/test_capture_pipeline.py::TestElMismoArchivoEnDosEmpresas"],
+    ),
+    (
+        "el indice unico vuelve a ser global y no por empresa",
+        "app/models/ticket.py",
+        '        Index("ix_tickets_source_hash", "company_id", "source_hash", unique=True,',
+        '        Index("ix_tickets_source_hash", "source_hash", unique=True,',
+        ["tests/integration/test_capture_pipeline.py::TestElMismoArchivoEnDosEmpresas"],
+    ),
+    (
+        "el tope de raw_text desaparece",
+        "app/services/parser_service.py",
+        '        return recortar_raw_text(v)',
+        "        return v",
+        ["tests/integration/test_capture_pipeline.py::TestElTopeDeRawText"],
+    ),
+    (
+        "el recorte se hace solo por la cabeza y pierde el total",
+        "app/services/parser_service.py",
+        "        + texto[-cola:]",
+        "        + ''",
+        ["tests/integration/test_capture_pipeline.py::TestElTopeDeRawText"],
+    ),
+    (
+        "el recorte deja de avisar que hubo recorte",
+        "app/services/parser_service.py",
+        '    if len(texto) <= RAW_TEXT_MAX_CHARS:\n        return texto',
+        "    return texto[:RAW_TEXT_MAX_CHARS]",
+        ["tests/integration/test_capture_pipeline.py::TestElTopeDeRawText"],
+    ),
+    (
+        "el comprobante deja de guardarse con el ticket",
+        "app/api/tickets.py",
+        "    await guardar_documento(\n"
+        "        db, ticket, content,\n"
+        "        content_type=content_type,\n"
+        "        nombre_archivo=source_file,\n"
+        "    )",
+        "    await guardar_documento(\n"
+        "        db, ticket, b'',\n"
+        "        content_type=content_type,\n"
+        "        nombre_archivo=source_file,\n"
+        "    )",
+        ["tests/integration/test_documentos.py"],
+    ),
+    (
+        "un content-type del cliente se sirve tal cual",
+        "app/models/ticket_document.py",
+        "    if limpio in CONTENT_TYPES_SERVIBLES:\n        return limpio",
+        "    return limpio or CONTENT_TYPE_POR_DEFECTO",
+        ["tests/integration/test_documento_api.py::TestElContentTypeNoLoDecideElCliente"],
+    ),
+    (
+        "el svg vuelve a servirse como imagen",
+        "app/models/ticket_document.py",
+        '    "image/png",',
+        '    "image/png",\n    "image/svg+xml",',
+        ["tests/integration/test_documento_api.py::TestElContentTypeNoLoDecideElCliente"],
+    ),
+    (
         "el error de imagen deja de decir donde esta la cascada",
         "app/services/parser_service.py",
         '            "una imagen no se extrae por reglas: use "\n'

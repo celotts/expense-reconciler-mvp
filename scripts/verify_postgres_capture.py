@@ -16,7 +16,13 @@ que solo se puede comprobar con Postgres:
      que distingue "fechado hoy" de "registrado hoy".
   3. Que el PDF impreso se auto-apruebe con la confianza de la evidencia, y no
      con la de un modelo.
-  4. Que el hash de contenido deduplique en Postgres y no solo en SQLite.
+  4. Que el hash de contenido deduplique en Postgres y no solo en SQLite, y
+     que deduplique DENTRO de una empresa sin mezclar empresas: el hash es el
+     SHA-256 del archivo y no lleva empresa dentro, asi que buscar solo por
+     hash hacia que la segunda empresa que subia el mismo comprobante recibiera
+     el ticket de la primera.
+  5. Que el tope de `raw_text` llegue a cumplir en la columna, no solo en
+     memoria: un PDF de 100 paginas deja varios MB si no se recorta.
 
 No usa la IA: la ruta que se verifica aqui es la determinista, y para la parte
 de vision basta con comprobar que el PDF escaneado se renderiza a imagen, que es
@@ -52,14 +58,21 @@ from app.core.enums import (  # noqa: E402
 from app.models.company import CompanyModel  # noqa: E402
 from app.models.ticket import TicketModel  # noqa: E402
 from app.services.capture import confianza_por_campos, capture_ticket  # noqa: E402
+from app.services.confidence_gate import compute_source_hash  # noqa: E402
 
 DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/expense_db"
 
 fallos: list[str] = []
 
-# Empresa que creo la corrida actual. Vive aqui para que la limpieza pueda
-# correr aunque `main` reviente a mitad: ver `_limpiar_si_hubo_excepcion`.
-_empresa_de_la_corrida: uuid.UUID | None = None
+# Empresas que creo la corrida actual. Es una LISTA y no una sola empresa
+# porque la comprobacion 4b crea una segunda a proposito: verificar que el
+# mismo comprobante puede vivir en dos empresas necesita dos. Con una variable
+# sola, la segunda empresa se escapaba de la limpieza y la siguiente corrida
+# encontra una empresa de mas.
+#
+# Vive aqui para que la limpieza pueda correr aunque `main` reviente a mitad:
+# ver `_limpiar_si_hubo_excepcion`.
+_empresas_de_la_corrida: list[uuid.UUID] = []
 
 
 def _limpiar_si_hubo_excepcion() -> None:
@@ -75,23 +88,24 @@ def _limpiar_si_hubo_excepcion() -> None:
     propias y 1 vieja. Por eso la limpieza va en un `finally` y no al final del
     camino feliz.
     """
-    if _empresa_de_la_corrida is None:
+    if not _empresas_de_la_corrida:
         return
 
     async def borrar() -> None:
         motor = create_async_engine(DSN)
         try:
             async with async_sessionmaker(motor, expire_on_commit=False)() as db:
-                await db.execute(
-                    TicketModel.__table__.delete().where(
-                        TicketModel.company_id == _empresa_de_la_corrida
+                for empresa_id in _empresas_de_la_corrida:
+                    await db.execute(
+                        TicketModel.__table__.delete().where(
+                            TicketModel.company_id == empresa_id
+                        )
                     )
-                )
-                await db.execute(
-                    CompanyModel.__table__.delete().where(
-                        CompanyModel.id == _empresa_de_la_corrida
+                    await db.execute(
+                        CompanyModel.__table__.delete().where(
+                            CompanyModel.id == empresa_id
+                        )
                     )
-                )
                 await db.commit()
         finally:
             await motor.dispose()
@@ -159,8 +173,7 @@ async def main() -> int:
     sesiones = async_sessionmaker(motor, expire_on_commit=False)
     empresa_id = uuid.uuid4()
 
-    global _empresa_de_la_corrida
-    _empresa_de_la_corrida = empresa_id
+    _empresas_de_la_corrida.append(empresa_id)
 
     async with sesiones() as db:
         db.add(CompanyModel(
@@ -253,6 +266,124 @@ async def main() -> int:
               f"{[t.source_file for t in total]})")
         check("siguen siendo 3 filas, no 4", len(total) == 3)
 
+        # --- 4b. El mismo archivo en OTRA empresa ---------------------------
+        # Lo que se rompió aquí no era un duplicado: era una fuga. El hash es el
+        # SHA-256 del archivo y no lleva empresa dentro, así que buscando solo
+        # por hash la segunda empresa encontraba el ticket de la primera y lo
+        # devolvía. El gasto no se guardaba para ella y de paso veía un ticket
+        # ajeno.
+        #
+        # Esto solo se puede comprobar en Postgres. En SQLite el índice único
+        # del modelo no se crea (es DDL de Postgres) y el INSERT de la segunda
+        # empresa pasa, comprobando nada.
+        print("\n4b. El mismo comprobante en otra empresa (lo que se fugaba)")
+        otra_id = uuid.uuid4()
+        _empresas_de_la_corrida.append(otra_id)
+        db.add(CompanyModel(
+            id=otra_id,
+            name=f"Verificacion captura B {otra_id.hex[:6]}",
+            tax_id=f"VB{otra_id.hex[:9].upper()}",
+        ))
+        await db.commit()
+
+        # El mismo archivo, misma extraccion, otra empresa. Es un caso legitimo:
+        # el mismo papel, dos cuentas distintas.
+        en_otra = await _persist_extracted(
+            db, otra_id, extracted, contenido, SourceType.PDF, "impreso.pdf"
+        )
+        check(
+            "la segunda empresa SI puede registrar su propio ticket",
+            en_otra.id != ticket.id,
+        )
+        fila_otra = (await db.execute(
+            select(TicketModel).where(TicketModel.id == en_otra.id)
+        )).scalar_one()
+        check("y el ticket guardado es de la segunda empresa", fila_otra.company_id == otra_id)
+        check(
+            "y no se le devuelve el ticket de la primera",
+            fila_otra.company_id != empresa_id,
+        )
+
+        # Y el indice tiene que sujetar la unicidad DENTRO de la empresa, que es
+        # lo que evita el gasto duplicado. Se fuerza con un INSERT que no pasa
+        # por `_persist_extracted` a proposito: esa funcion ya filtra, asi que
+        # con ella no se puede comprobar que la base loImpida.
+        hash_del_archivo = compute_source_hash(contenido)
+        duplicado_intra = False
+        try:
+            db.add(TicketModel(
+                company_id=otra_id,
+                provider_name="Duplicado forzado",
+                total_amount=Decimal("1.00"),
+                expense_date=date(2025, 3, 15),
+                source_hash=hash_del_archivo,
+            ))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            duplicado_intra = True
+        check(
+            "el indice unico (company_id, source_hash) impide el duplicado en la misma empresa",
+            duplicado_intra,
+        )
+
+        # Idempotencia dentro de la segunda empresa: tambien se comporta bien.
+        repetido_otra = await _persist_extracted(
+            db, otra_id, extracted, contenido, SourceType.PDF, "impreso.pdf"
+        )
+        check(
+            "y dentro de la segunda empresa la idempotencia sigue funcionando",
+            repetido_otra.id == en_otra.id,
+        )
+
+        # --- 4c. El tope de raw_text -----------------------------------------
+        # Un PDF de 100 paginas deja varios MB en una fila. El recorte vive en
+        # el validador de `TicketExtractionResult`, asi que aqui se comprueba lo
+        # que importa: que a la base llegue recortado, con las dos puntas.
+        print("\n4c. El tope de raw_text")
+        from app.services.parser_service import (
+            RAW_TEXT_MAX_CHARS, recortar_raw_text,
+        )
+
+        enorme = "PROVEEDOR EN LA PRIMERA LINEA\n" + ("relleno " * 60_000) + \
+                  "\nTOTAL 1,100.00"
+        recortado = recortar_raw_text(enorme)
+        check(
+            "un texto enorme no llega entero a la columna",
+            len(recortado) <= RAW_TEXT_MAX_CHARS + 200,
+        )
+        check("el recorte se marca en el texto", "caracteres omitidos" in recortado)
+        check("y se conserva la cabeza (el proveedor)", "PROVEEDOR EN LA PRIMERA" in recortado)
+        check(
+            "y se conserva la cola (el total), que es donde esta el dato que se revisa",
+            "TOTAL 1,100.00" in recortado,
+        )
+        check(
+            "un texto corto no se marca, porque no se recorto",
+            recortar_raw_text("TOTAL 100.00") == "TOTAL 100.00",
+        )
+
+        ticket_enorme = await _persist_extracted(
+            db, empresa_id,
+            await capture_ticket(enorme.encode(), "text"),
+            enorme.encode(), SourceType.PDF, "enorme.txt",
+        )
+        fila_enorme = (await db.execute(
+            select(TicketModel).where(TicketModel.id == ticket_enorme.id)
+        )).scalar_one()
+        check(
+            "y lo que llega a Postgres ya viene recortado, no en memoria",
+            len(fila_enorme.raw_text or "") <= RAW_TEXT_MAX_CHARS + 200,
+        )
+        check(
+            "el total del documento sigue disponible para el revisor",
+            "TOTAL 1,100.00" in (fila_enorme.raw_text or ""),
+        )
+        await db.execute(
+            TicketModel.__table__.delete().where(TicketModel.id == ticket_enorme.id)
+        )
+        await db.commit()
+
         # --- 5. PDF escaneado: renderiza a imagen ----------------------------
         print("\n5. PDF escaneado (sin capa de texto)")
         from app.services.parser_service import extract_pdf_text, render_pdf_pages
@@ -274,12 +405,19 @@ async def main() -> int:
             check("la cola explica por que esta ahi", "date_missing" in (en_cola[0].validation_errors or ""))
 
         # --- limpieza ---------------------------------------------------------
-        await db.execute(
-            TicketModel.__table__.delete().where(TicketModel.company_id == empresa_id)
-        )
-        await db.execute(
-            CompanyModel.__table__.delete().where(CompanyModel.id == empresa_id)
-        )
+        # Las dos empresas, no solo la primera: la 4b creo la segunda y dejarla
+        # haria que la siguiente corrida mezclara filas.
+        for id_para_borrar in (empresa_id, otra_id):
+            await db.execute(
+                TicketModel.__table__.delete().where(
+                    TicketModel.company_id == id_para_borrar
+                )
+            )
+            await db.execute(
+                CompanyModel.__table__.delete().where(
+                    CompanyModel.id == id_para_borrar
+                )
+            )
         await db.commit()
 
     await motor.dispose()

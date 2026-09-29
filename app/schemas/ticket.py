@@ -194,12 +194,95 @@ class TicketResponse(BaseModel):
     extraction_status: str
     source_type: str | None = None
     source_file: str | None = None
+    # Si el comprobante original esta guardado, y cuanto pesa.
+    #
+    # Sin esto, la UI no puede distinguir tres cosas que se ven igual en una
+    # tabla: un ticket de captura manual (que no tiene documento y no deberia),
+    # un ticket de una captura antigua (que deberia tenerlo y se puede volver a
+    # subir), y uno al que se le pudo archivar mal. Con el booleano, la pantalla
+    # puede decir "no hay documento" sin que el revisor crea que el sistema
+    # fallo, que es la lectura que hace que se dejen de confiar en la cola.
+    #
+    # `documento_url` va relativo a proposito, sin el host: el front y la API se
+    # sirven en el mismo origen en desarrollo y pueden no estarlo en produccion.
+    # Un host hardcodeado aqui seria una URL que funciona hoy y se rompe el dia
+    # que se pongan detras de un proxy.
+    tiene_documento: bool = False
+    documento_url: str | None = None
+    documento_tamano: int | None = None
     validation_errors: str | None = None
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     review_notes: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derivar_documento(cls, datos):
+        """Lee la relacion del ticket y arma los tres campos del documento.
+
+        Va en `before` y no en `after` por una razon mecanica: la relacion
+        `documento` del modelo NO es un campo de este schema, asi que en
+        `after` ya no esta disponible - se leyo del ORM pero no quedo en el
+        schema. En `before` todavia esta, porque `datos` es el objeto del ORM
+        o el diccionario que se esta validando.
+
+        Se deriva en el schema y no en cada endpoint porque la regla es una sola
+        y repetirla en la cola, en el muestreo, en el listado y en el detalle son
+        cuatro oportunidades de que una se olvide. Una pantalla que no pone el
+        enlace cuando el documento existe es una pantalla donde el revisor
+        revisa a ciegas, y no lo va a delatar ninguna prueba de la API: la API
+        responde bien.
+
+        Y la URL va con el id en la ruta y sin query params para que un
+        `<img src>` o un `window.open` funcionen sin Javascript: la imagen del
+        comprobante tiene que poder abrirse con un clic y nada mas.
+        """
+        documento = (
+            datos.get("documento") if isinstance(datos, dict)
+            else getattr(datos, "documento", None)
+        )
+        if documento is None:
+            return datos
+
+        # Se copian los campos DECLARADOS de este schema, no los de `datos`.
+        # `datos` es un TicketModel (una clase de SQLAlchemy, sin `model_fields`)
+        # o un diccionario, y usar las columnas de cualquiera de los dos meteria
+        # en la respuesta cosas que no estan declaradas aqui, que es como un
+        # `from_attributes` empieza a filtrar columnas por accidente.
+        #
+        # Y se copia en vez de sustituir por un dict nuevo con los tres campos,
+        # porque el `id` viene de ahi: si se construyera un dict con solo
+        # `tiene_documento` y `documento_tamano`, la URL saldria vacia y el
+        # enlace no existiria. Falla en silencio, que es la peor forma.
+        if isinstance(datos, dict):
+            enriched = dict(datos)
+        else:
+            enriched = {
+                campo: getattr(datos, campo, None)
+                for campo in cls.model_fields  # type: ignore[attr-defined]
+            }
+
+        # La URL se arma aqui y no en un validador `after` por una razon concreta:
+        # en `before` el `id` todavia esta a mano, y en `after` habria que
+        # reasignar un campo ya construido, que Pydantic v2 no hace sin
+        # `object.__setattr__`. Con eso, el `documento_url` se queda en None sin
+        # avisar: el schema valida, la respuesta sale con el campo en blanco y
+        # el enlace no existe. Es el fallo mas dificil de ver de los tres, y el
+        # unico que necesita un test que mire el campo, no el endpoint.
+        #
+        # El prefijo `/api/v1` va aqui, no sale de `settings`: el schema no
+        # deberia importar la configuracion para armar una URL, y si el prefijo
+        # cambiara, la respuesta y el router tendrian que cambiar juntos, que es
+        # justo lo que hace este string.
+        enriched["tiene_documento"] = True
+        enriched["documento_tamano"] = documento.tamano
+        if enriched.get("id") is not None:
+            enriched["documento_url"] = (
+                f"/api/v1/tickets/{enriched['id']}/documento"
+            )
+        return enriched
 
 
 class TicketReviewRequest(BaseModel):

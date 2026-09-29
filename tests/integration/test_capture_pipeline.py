@@ -158,6 +158,161 @@ class TestLoQueSeGuardaDicenLaVerdad:
         assert primero.id == segundo.id
 
 
+class TestElMismoArchivoEnDosEmpresas:
+    """El hash de contenido es único DENTRO de una empresa, no en todo el sistema.
+
+    `source_hash` es el SHA-256 del archivo. No lleva empresa dentro, asi que el
+    mismo comprobante da el mismo hash en cualquier empresa, y el mismo papel
+    puede rightfulmente estar en dos cuentas distintas.
+
+    Buscando solo por hash, la segunda empresa que lo subia se encontraba con
+    el ticket de la primera y lo devolvia tal cual. Eso no era un duplicado: era
+    una fuga. El gasto no se guardaba para la segunda empresa, y de paso se le
+    mostraba un ticket ajeno.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cada_empresa_registra_su_propio_ticket(
+        self, db_session, test_company
+    ):
+        from uuid import uuid4
+
+        from app.models.company import CompanyModel
+
+        otra = CompanyModel(
+            name="Segunda Empresa", tax_id=f"SEG{uuid4().hex[:9].upper()}",
+        )
+        db_session.add(otra)
+        await db_session.commit()
+        await db_session.refresh(otra)
+
+        contenido = _texto_ticket().encode()
+        extracted = await capture_ticket(contenido, "text")
+
+        primero = await _persistir(
+            db_session, test_company.id, extracted, contenido, "text",
+        )
+        segundo = await _persistir(
+            db_session, otra.id, extracted, contenido, "text",
+        )
+
+        # Antes: los dos eran el MISMO ticket, y el de la segunda empresa
+        # apuntaba a la primera.
+        assert primero.id != segundo.id
+        assert segundo.company_id == otra.id
+
+    @pytest.mark.asyncio
+    async def test_dentro_de_la_misma_empresa_si_deduplica(
+        self, db_session, test_company
+    ):
+        """El otro lado de la garantia: repetir NO crea un gasto repetido.
+
+        Corregir la fuga no puede costar el otro comportamiento. El indice paso de
+        `source_hash` a `(company_id, source_hash)`, y lo que protege ahora es
+        que el mismo archivo no se registre dos veces en la misma cuenta.
+        """
+        contenido = _texto_ticket().encode()
+        extracted = await capture_ticket(contenido, "text")
+
+        primero = await _persistir(
+            db_session, test_company.id, extracted, contenido, "text",
+        )
+        segundo = await _persistir(
+            db_session, test_company.id, extracted, contenido, "text",
+        )
+        assert primero.id == segundo.id
+
+
+class TestElTopeDeRawText:
+    """`raw_text` no es un vertedero: va a una columna y se lista en la cola.
+
+    Sin tope, un PDF de condiciones generales deja varios MB en una fila, y el
+    sintoma no aparece al escribir sino al=listar cien tickets para revisar.
+    Medido antes del arreglo: 3 MB de texto en una sola fila.
+    """
+
+    def test_un_texto_normal_no_se_toca(self):
+        from app.services.parser_service import recortar_raw_text
+
+        texto = "TOTAL 1,100.00"
+        # Sin marca: un texto que no se recorta no puede decir que se recorta.
+        # Un "truncado" aqui haria que la busqueda de documentos incompletos
+        # contara todos.
+        assert recortar_raw_text(texto) == texto
+
+    def test_se_conserva_la_cabeza_y_la_cola(self):
+        """Las dos puntas, y no solo la cabeza.
+
+        En un comprobante el proveedor esta arriba y el total, el IVA y la fecha
+        de emision casi siempre abajo, en el bloque de sumas. Un recorte por
+        cabeza guardaria el nombre del comercio y tiraria las cifras, que es
+        justo lo que el revisor necesita contrastar contra el papel.
+        """
+        from app.services.parser_service import (
+            RAW_TEXT_MAX_CHARS, recortar_raw_text,
+        )
+
+        enorme = "PROVEEDOR DE EJEMPLO SA DE CV\n" + ("linea " * 40_000) + \
+                  "\nTOTAL 1,100.00"
+
+        recortado = recortar_raw_text(enorme)
+
+        assert len(recortado) < len(enorme)
+        assert "PROVEEDOR DE EJEMPLO" in recortado
+        assert "TOTAL 1,100.00" in recortado
+        assert len(recortado) <= RAW_TEXT_MAX_CHARS + 200
+
+    def test_el_recorte_avisa_que_hubo_recorte(self):
+        """Un recorte silencioso hace que el campo parezca completo.
+
+        El revisor busca "TOTAL 1,100.00" en el `raw_text`, no lo encuentra, y
+        anota que el total no aparece en el documento, cuando lo que paso es que
+        se quedo fuera de la ventana. Sin la marca, el dato pareceria faltar.
+        """
+        from app.services.parser_service import recortar_raw_text
+
+        recortado = recortar_raw_text("x" * 100_000)
+        assert "omitidos" in recortado
+
+    def test_el_tope_no_se_puede_saltarse_por_la_puerta_de_atras(self):
+        """El recorte esta en el validador, no en quien arma el resultado.
+
+        Mismo argumento que el de `app/core/subida.py`: un control en cada
+        lugar que arma el texto se puede olvidar, y el que se olvide no falla.
+        Aqui se comprueba que un `TicketExtractionResult` construido a mano, sin
+        pasar por el parser, tambien queda recortado.
+        """
+        from app.services.parser_service import (
+            RAW_TEXT_MAX_CHARS, TicketExtractionResult,
+        )
+
+        resultado = TicketExtractionResult(
+            provider_name="X SA DE CV",
+            total_amount=Decimal("100.00"),
+            raw_text="y" * 500_000,
+        )
+        assert len(resultado.raw_text) <= RAW_TEXT_MAX_CHARS + 200
+
+    @pytest.mark.asyncio
+    async def test_lo_que_llega_a_la_base_ya_va_recortado(
+        self, db_session, test_company
+    ):
+        from app.services.parser_service import RAW_TEXT_MAX_CHARS
+
+        contenido = (
+            b"TIENDAS RAMIREZ SA DE CV\n"
+            b"RFC: TRAM910101XXX\n"
+            b"TOTAL 1,100.00\n"
+        ) + b"linea de relleno\n" * 60_000
+
+        extracted = await capture_ticket(contenido, "text")
+        ticket = await _persistir(
+            db_session, test_company.id, extracted, contenido, "text",
+        )
+
+        assert len(ticket.raw_text or "") <= RAW_TEXT_MAX_CHARS + 200
+
+
 class TestFechaInventadaEnLaFila:
     """La fecha es lo que decide a que mes pertenece un gasto.
 
