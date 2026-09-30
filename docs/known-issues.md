@@ -247,6 +247,42 @@ applies_mapping` afirmaba `result[0][13] == "1.0000"` con `mapping=None`. Un tes
 pasa porque el código tiene el bug. Los índices de ese test también iban escritos a
 mano y uno estaba corrido; ahora salen de `CONTPAQI_COLUMNS`.
 
+### 19. La fecha inventada depende de la zona horaria y el test no lo ve
+
+`verify_capture_mutations.py` corre 26 mutaciones sobre la ruta de captura y **una sobrevive**:
+
+```
+- una fecha ausente se reemplaza por la fecha UTC
+```
+
+La mutación cambia `app/api/tickets.py`:
+
+```python
+expense_date=extracted.expense_date or date.today(),    # hora local
+expense_date=extracted.expense_date or utcnow().date(),  # UTC
+```
+
+Las dos expresiones dan la misma fecha durante la mayor parte del día, así que
+`TestFechaInventadaEnLaFila` no puede distinguirlas: **el test pasa por casualidad del
+reloj, no por criterio**. Solo fallaría en las horas pegadas a medianoche, en un huso
+horario al oeste de UTC, o el día que cambie el huso.
+
+No es hipotético lo que se protege. Cuando la lectura no trae fecha, el sistema **fabrica
+una** para que el ticket exista, y esa fecha entra al cierre mensual: es justo el caso que
+`parser_service.py:498` ya marca como prohibido. Fabricar una fecha es una decisión
+deliberada y auditable; fabricarla **en UTC en vez de en hora local** desplaza el
+comprobante al día siguiente —o al anterior— y eso cambia en qué periodo cae el gasto. Un
+ticket de las 23:30 en México se guarda con la fecha de mañana y desaparece de donde el
+contador lo buscó.
+
+**Estado:** verificado, sin corregir. La mutación sobrevive desde antes de este commit; se
+comprobó revirtiendo el cambio de imports de `ai_client.py` y reproduce idéntico.
+
+**Arreglo (cuando se retome):** que el test no dependa del reloj. O bien fijar la zona
+horaria del proceso en el test (`TZ=America/Mexico_City` más `time.tzset()`), o bien
+parchear `date.today` para que devuelva un valor conocido. Un test que depende de la hora
+del día no es un test: pasa o falla según cuándo se corra.
+
 ### 17. El cliente elegía la ruta de lectura — ✅ CORREGIDO
 `file_type` llegaba como campo `Form` y se usaba literal para elegir el escalón de
 la cascada (`capture.py:289-297`). Con un token válido, quien llama decidía por dónde
