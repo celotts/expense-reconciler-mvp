@@ -125,6 +125,34 @@ def forzar_texto(worksheet: Any) -> None:
     es lo que decide si openpyxl escribe un `<f>` (formula) o un `<v>` con
     `t="s"` (cadena). Ponerlo a mano DESPUES de asignar el valor es lo unico
     que funciona: si se hiciera antes, la asignacion lo volveria a calcular.
+
+    Que parte de esto sostiene la seguridad y cual no
+    -----------------------------------------------
+
+    LO QUE SOSTIENE: `celda.data_type = "s"`, y solo esa linea. Verificado: con
+    `"f"` en su lugar openpyxl escribe `<f>1+1</f>` en el XML y cuatro tests
+    mueren.
+
+    LO QUE NO SOSTIENE NADA, y conviene decirlo para que nadie lo lea como si
+    lo hiciera. Medido:
+
+    - `es_formula_peligrosa(celda.value)` en la guarda. openpyxl marca
+      `data_type="f"` UNICAMENTE si el valor empieza por `=`. `@SUM(1+1)`,
+      `+1+1`, `-1+1` y un tabulador seguido de `=` salen como `data_type="s"`:
+      openpyxl ya los escribe como cadena y Excel no los ejecuta. Y lo que si
+      marca con `"f"` lo agarra la otra mitad de la guarda. Quitarla no rompe
+      nada.
+
+    - `isinstance(celda.value, str)`. Poner `data_type="s"` en una celda
+      numerica NO cambia lo que openpyxl escribe: el tipo se decide por el valor
+      de Python al guardar, no por el atributo. Los importes siguen siendo
+      numeros. Quitarla tampoco rompe nada.
+
+    Las dos se quedan por un motivo honesto: son el filtro completo de la lista
+    de caracteres, y ese filtro es el que protege `neutralizar_formula` del
+    lado del CSV. Si manana se toca una capa y se rompe la otra, esto avisa.
+    `scripts/verify_export_mutations.py` mide la linea que si importa y no
+    pretende que estas otras dos defiendan algo.
     """
     for fila in worksheet.iter_rows():
         for celda in fila:

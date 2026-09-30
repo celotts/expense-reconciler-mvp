@@ -222,6 +222,31 @@ responde `200`.
 que estuvo versionado está comprometido aunque lo borres, y la única salida es **rotarlo**.
 Por eso la plantilla (`.env.example`) sí se versiona y el valor real nunca.
 
+### 18. El export CONTPAQI inventaba datos que nadie le dio — ✅ CORREGIDO
+`export_service.py` escribia en todas las filas, sin preguntar: `TipoComprobante="I"`,
+`Moneda="MXN"`, `TipoCambio="1.0000"`, `MetodoPago="PUE"`, `UsoCFDI="G03"`, y
+`Serie`/`Folio`/`Cuenta` vacías. Nada de eso venía de leer el comprobante: eran
+literales en un diccionario.
+
+El problema no es que fueran defaults, es que **un default escrito en una celda deja
+de ser un default y pasa a ser una afirmación**. Un comprobante en USD salía con
+`Moneda=MXN` y `TipoCambio=1.0000`, sin marca de error, y el contador lo subía a
+CONTPAQI creyéndolo. Para un contador, una celda vacía dice "no lo sé" y se corrige
+a mano; una celda con `1.0000` dice "lo sé", y eso no se ve ni se corrige.
+
+Es la regla 11 del contrato —lo que no se pudo calcular se declara, no se rellena—
+aplicada a la exportación.
+
+**El camino para llenarlas sigue igual:** `AccountingMapping`, que es la decisión
+del contador y queda registrada en el mapeo. Lo que se quitó es que el sistema lo
+decidiera por él. Hay un test que lo comprueba (`test_con_mapping_las_columnas_siguen_
+aceptando_valores`), porque quitar el default no puede quitar la capacidad.
+
+**Y el test que ya existía afirmaba el defecto:** `test_transform_to_contpaqi_
+applies_mapping` afirmaba `result[0][13] == "1.0000"` con `mapping=None`. Un test que
+pasa porque el código tiene el bug. Los índices de ese test también iban escritos a
+mano y uno estaba corrido; ahora salen de `CONTPAQI_COLUMNS`.
+
 ### 17. El cliente elegía la ruta de lectura — ✅ CORREGIDO
 `file_type` llegaba como campo `Form` y se usaba literal para elegir el escalón de
 la cascada (`capture.py:289-297`). Con un token válido, quien llama decidía por dónde

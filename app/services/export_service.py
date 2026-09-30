@@ -315,15 +315,36 @@ def _transform_to_contpaqi(
         "Importe": ("Subtotal", True),
         "IVA": ("IVA", True),
         "Total": ("Total", True),
-        "Cuenta": ("", False),
         "Referencia": ("Referencia Banco", True),
-        "TipoComprobante": ("I", False),
+        # Las ocho columnas siguientes NO tienen de donde sacarse.
+        #
+        # Antes cada una traia un literal fijo que se escribia en TODAS las
+        # filas: TipoComprobante="I", Moneda="MXN", TipoCambio="1.0000",
+        # MetodoPago="PUE", UsoCFDI="G03", y Cuenta/Serie/Folio vacias. El
+        # problema no es que fueran un default: es que un default escrito en una
+        # celda deja de ser un default y pasa a ser una afirmacion. Un
+        # comprobante en USD salia con Moneda=MXN y TipoCambio=1.0000, sin
+        # marca de error, y el contador lo subia a CONTPAQI creyendolo.
+        #
+        # Para un contador, una celda vacia dice "no lo se" y una celda con
+        # 1.0000 dice "se que es 1.0000". La primera se corrige a mano; la
+        # segunda no se ve. Es la regla 11 del contrato —lo que no se pudo
+        # calcular se declara, no se rellena— aplicada a la exportacion.
+        #
+        # "Cuenta" tampoco: depende del catalogo contable y del regimen, y
+        # poner una cuenta al azar es peor que no ponerla.
+        #
+        # Cuando el contador si las quiera, el camino es `AccountingMapping`,
+        # que es el mecanismo de siempre y sigue funcionando igual: ahi poner
+        # TipoCambio es una decision suya, documentada y revisable.
+        "Cuenta": ("", False),
+        "TipoComprobante": ("", False),
         "Serie": ("", False),
         "Folio": ("", False),
-        "Moneda": ("MXN", False),
-        "TipoCambio": ("1.0000", False),
-        "MetodoPago": ("PUE", False),
-        "UsoCFDI": ("G03", False)
+        "Moneda": ("", False),
+        "TipoCambio": ("", False),
+        "MetodoPago": ("", False),
+        "UsoCFDI": ("", False),
     }
     
     if mapping and mapping.column_mappings:

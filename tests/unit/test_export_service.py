@@ -171,7 +171,7 @@ class TestExportService:
             ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO", 215.40, 34.46, 249.86,
              "15/01/2025", "PAGO WALMART", "REF123", "PERFECT", "0.00", 0]
         ]
-        
+
         # Sin mapping - usa defaults
         result = _transform_to_contpaqi(sample_data, None)
         assert len(result) == 1
@@ -180,8 +180,77 @@ class TestExportService:
         assert result[0][1] == "SUPERMERCADO"  # Concepto (categoría)
         assert result[0][2] == "WAL910101XXX"  # RFC
         assert result[0][3] == "WALMART"  # Nombre
-        assert result[0][12] == "MXN"  # Moneda (index 12)
-        assert result[0][13] == "1.0000"  # TipoCambio (index 13)
+
+    @pytest.mark.parametrize(
+        "columna",
+        [
+            "TipoComprobante",
+            "Serie",
+            "Folio",
+            "Moneda",
+            "TipoCambio",
+            "MetodoPago",
+            "UsoCFDI",
+        ],
+    )
+    def test_sin_mapping_no_se_inventa_ninguna_celda(self, columna):
+        """Sin mapping configurado, estas columnas van VACIAS. No inventadas.
+
+        El defecto que esto cierra: cada una traia un literal fijo
+        (`Moneda="MXN"`, `TipoCambio="1.0000"`, `TipoComprobante="I"`) que se
+        escribia en todas las filas. Un comprobante en USD salia con tipo de
+        cambio 1.0000 y sin marca de error, y el contador lo subia a CONTPAQI
+        creyendolo.
+
+        Para un contador una celda vacia dice "no lo se" y se corrige a mano.
+        Una celda con 1.0000 dice "lo se", y eso no se ve ni se corrige.
+
+        El indice sale de `CONTPAQI_COLUMNS`, no de un numero escrito aqui: la
+        primera version de este test los llevo escritos a mano, uno corrido, y
+        el parametro se comio el valor de `Referencia` (`"REF123"`) sin que se
+        notara. Un indice fijo en un test sobre columnas ordenadas es una
+        bomba de reloj.
+        """
+        from app.services.export_service import CONTPAQI_COLUMNS
+
+        indice = CONTPAQI_COLUMNS.index(columna)
+        fila = ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO",
+                215.40, 34.46, 249.86, "15/01/2025", "PAGO WALMART", "REF123",
+                "PERFECT", "0.00", 0]
+        result = _transform_to_contpaqi([fila], None)
+        assert result[0][indice] == "", (
+            f"{columna} salio como {result[0][indice]!r} sin que nadie lo haya "
+            "configurado. El sistema esta afirmando algo que no lee de "
+            "ningun lado."
+        )
+
+    def test_con_mapping_las_columnas_siguen_aceptando_valores(self):
+        """Quitar el default NO quita la capacidad de llenarlas.
+
+        El camino para poner TipoCambio o Serie es `AccountingMapping`, que es
+        una decision del contador y queda registrada en el mapeo. Lo que se
+        quito es que el sistema lo decidiera por el.
+        """
+        from app.services.export_service import CONTPAQI_COLUMNS
+
+        fila = ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO",
+                215.40, 34.46, 249.86, "15/01/2025", "PAGO WALMART", "REF123",
+                "PERFECT", "0.00", 0]
+        mapping = AccountingMappingModel(
+            company_id=uuid4(),
+            software_name="CONTPAQI",
+            column_mappings={
+                "TipoComprobante": "E",
+                "Moneda": "USD",
+                "TipoCambio": "17.5230",
+                "Cuenta": "6000",
+            },
+        )
+        result = _transform_to_contpaqi([fila], mapping)
+        assert result[0][CONTPAQI_COLUMNS.index("Cuenta")] == "6000"
+        assert result[0][CONTPAQI_COLUMNS.index("TipoComprobante")] == "E"
+        assert result[0][CONTPAQI_COLUMNS.index("Moneda")] == "USD"
+        assert result[0][CONTPAQI_COLUMNS.index("TipoCambio")] == "17.5230"
 
 class TestLoQueSeExporta:
     """`only_reconciled` decide que entra al reporte contable. No estaba

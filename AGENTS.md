@@ -32,7 +32,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Auth | `app/core/security.py` (scrypt + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **709** — 494 unit, 215 integration |
+| Tests | **738** — 523 unit, 215 integration |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations`
@@ -73,7 +73,7 @@ make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
 python3 -m pytest tests/ -q                          # todo
-python3 -m pytest tests/unit -q                      # 494
+python3 -m pytest tests/unit -q                      # 523
 python3 -m pytest tests/integration -q               # 215
 ```
 
