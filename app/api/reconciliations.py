@@ -64,27 +64,6 @@ async def list_reconciliations(
     return list(result.scalars().all())
 
 
-@router.get("/{reconciliation_id}", response_model=ReconciliationResponse)
-async def get_reconciliation(
-    reconciliation_id: UUID,
-    db: AsyncSession = Depends(get_db)
-) -> ReconciliationModel:
-    """Get a reconciliation by ID."""
-    result = await db.execute(
-        select(ReconciliationModel)
-        .options(
-            selectinload(ReconciliationModel.ticket),
-            selectinload(ReconciliationModel.bank_transaction)
-        )
-        .where(ReconciliationModel.id == reconciliation_id)
-    )
-    reconciliation = result.scalar_one_or_none()
-    if not reconciliation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Reconciliation not found"
-        )
-    return reconciliation
 
 
 @router.post("/", response_model=ReconciliationResponse, status_code=status.HTTP_201_CREATED)
@@ -260,3 +239,43 @@ async def get_accounting_mapping(
             detail="Accounting mapping not found"
         )
     return mapping
+
+
+# Esta ruta va AL FINAL a proposito, despues de /mappings y /export/*.
+#
+# Starlette resuelve las rutas en orden de declaracion y gana el primer match.
+# Un("/{reconciliation_id}") declarado antes se traga los paths literales de un
+# solo segmento: "GET /mappings" llegaba aqui, el UUID "mappings" no parseaba, y
+# la respuesta era 422 en vez de la lista de mapeos.
+#
+# Nota: /export/excel, /export/contpaqi, /export/generic y /mappings/{id} NO se
+# veian afectados. Son dos o mas segmentos de path, y un placeholder de un solo
+# segmento no compite con ellos. Solo "GET /mappings" (un segmento) colisionaba.
+#
+# Antes el test no lo Notaba porque afirmaba `len(respuesta.json()) == 1`, y el
+# {"detail": [...]} de un 422 tambien cumple len == 1. Un test de API exige el
+# codigo de estado explicito; afirmar sobre la forma de la respuesta puede
+# darle el visto bueno a un error.
+#
+# Al anadir una ruta literal nueva, declarala ANTES de esta.
+@router.get("/{reconciliation_id}", response_model=ReconciliationResponse)
+async def get_reconciliation(
+    reconciliation_id: UUID,
+    db: AsyncSession = Depends(get_db)
+) -> ReconciliationModel:
+    """Get a reconciliation by ID."""
+    result = await db.execute(
+        select(ReconciliationModel)
+        .options(
+            selectinload(ReconciliationModel.ticket),
+            selectinload(ReconciliationModel.bank_transaction)
+        )
+        .where(ReconciliationModel.id == reconciliation_id)
+    )
+    reconciliation = result.scalar_one_or_none()
+    if not reconciliation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Reconciliation not found"
+        )
+    return reconciliation
