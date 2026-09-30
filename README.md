@@ -222,6 +222,13 @@ GET /api/v1/reconciliations/export/generic?company_id=...&columns=Fecha,Proveedo
 | **Bank Transactions** | `/api/v1/bank-transactions` | CRUD + `/import-csv` + `/import-csv-and-create` |
 | **Reconciliations** | `/api/v1/reconciliations` | `/run`, CRUD, `/export/*`, `/mappings` |
 
+> **El informe de cierre mensual aún no existe** (es la Fase 1 de
+> `docs/contrato-producto.md` §4). Lo que sí está listo es el estado que lo hace
+> posible: `cierres_periodo` registra qué periodo se cerró, quién lo marcó
+> (`user_id` desde el token), qué había pendiente en ese momento y la huella del
+> informe que vio. Sin ese estado, un periodo con pendientes no se puede cerrar,
+> y eso no es un defecto: es la regla R3.
+
 ---
 
 ## Dashboard (Página Principal)
