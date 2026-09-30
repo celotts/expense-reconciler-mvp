@@ -707,12 +707,29 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                 onChange={files => {
                   const file = files[0];
                   if (!file) return;
-                  const isImage = file.type.startsWith('image/') || /\.(png|jpe?g)$/i.test(file.name);
-                  handleExtract(file, isImage ? 'image' : 'pdf');
+                  // El `file_type` ya no decide nada: el backend deduce el
+                  // formato de los bytes (`app/core/archivo_real.py`). Se sigue
+                  // mandando por compatibilidad con la API, asi que se manda la
+                  // extension del archivo y no una heuristica al vuelo.
+                  //
+                  // La heuristica anterior era `file.type.startsWith('image/') ||
+                  // /\.(png|jpe?g)$/i`, y ese regex no cubria ni `.heic` ni
+                  // `.tiff`: un TIFF que el selector de ARRIBA ya aceptaba
+                  // salia etiquetado como `pdf`. Inofensivo con el backend de
+                  // hoy, y exactamente el residuo del bug que cerro el commit
+                  // del sniffing. Si alguien "limpia" el backend y vuelve a
+                  // usar lo declarado, el front reintroduce el problema sin que
+                  // nada lo delate.
+                  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+                  const esImagen = file.type.startsWith('image/')
+                    || ['heic', 'heif', 'tif', 'tiff', 'png', 'jpg', 'jpeg'].includes(ext);
+                  handleExtract(file, esImagen ? 'image' : 'pdf');
                 }}
                 label="Arrastrar PDF o imagen de factura"
               />
-              <p className="text-sm text-gray-500 text-center">Formatos soportados: PDF, PNG, JPG (máx 10MB)</p>
+              <p className="text-sm text-gray-500 text-center">
+                PDF, PNG, JPG, HEIC y TIFF (máx 10MB)
+              </p>
             </>
           ) : showCamera ? (
             <CameraCapture 

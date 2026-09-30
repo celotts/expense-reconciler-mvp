@@ -231,6 +231,54 @@ function explicar(codigo: string): ValidationProblem {
             + 'automatica. Revisalo desde cero contra el documento.',
         };
       }
+      /* Los fallos del modelo viajan como FRASE en espanol, no como codigo.
+       *
+       * `capture.motivo_de_fallo_del_modelo` devuelve `FALLOS_DEL_MODELO[clave]`,
+       * o sea el TEXTO, no la clave. Escrito a proposito: "el proveedor no se
+       * pudo leer" y "el extractor esta apagado" producen el mismo ticket, sin
+       * proveedor y en la cola, pero piden cosas opuestas -al primero se le busca
+       * otro escalon de lectura, al segundo se le enciende el extractor. Si los
+       * dos se reportan igual, el segundo se manifiesta como "muchos tickets
+       * raros" y nadie lo reconoce como una configuracion apagada.
+       *
+       * El coste es que esta pantalla traduce DOS vocabularios: codigos para los
+       * checks del gate y frases para los fallos del modelo. Los tres de abajo
+       * caian en `sinConocer`, que le decia al contador "Motivo no reconocido por
+       * esta version de la pantalla" sobre cosas que el backend si emite y que el
+       * contador si puede arreglar.
+       *
+       * Se comparan por FRAGMENTO y no contra la frase entera a proposito: la
+       * redaccion del backend puede cambiar sin que esta pantalla se entere, y
+       * un texto que no casa es un "no reconocido" que no ayuda a nadie.
+       *
+       * El `default` de mas abajo NO se quita. Sigue siendo lo correcto para lo
+       * desconocido de verdad, y por eso estos tres se nombran en vez de dejar
+       * que el default los cubra. */
+      if (codigo.includes('no se pudo decodificar')) {
+        return {
+          code: codigo,
+          message: 'El archivo no se pudo abrir como imagen. Puede ser un HEIC que necesita '
+            + 'convertirse, un escaneo danado, o un formato que el sistema no sabe leer. '
+            + 'Abre el comprobante y vuelve a subirlo como PDF o como foto.',
+        };
+      }
+      if (codigo.includes('no se pudo interpretar')) {
+        return {
+          code: codigo,
+          message: 'La IA leyo el documento pero su respuesta no se pudo interpretar. '
+            + 'Suele ser el modelo apagado o sin descargar. Revisa el documento y, si '
+            + 'tienes los datos, escribelos a mano.',
+        };
+      }
+      if (codigo.includes('apagado') || codigo.includes('no respondio')) {
+        return {
+          code: codigo,
+          message: 'El extractor de IA esta apagado o no respondio, asi que el documento '
+            + 'no se leyo. Es una configuracion, no un problema del comprobante: enciendela '
+            + 'y vuelve a subirlo.',
+        };
+      }
+
       return sinConocer(codigo);
   }
 }

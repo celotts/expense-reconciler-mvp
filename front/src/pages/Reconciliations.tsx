@@ -308,6 +308,34 @@ export function Reconciliations() {
           {exportFormat === 'generic' && (
             <Input label="Columnas (separadas por coma)" value={exportParams.columns} onChange={e => setExportParams({...exportParams, columns: e.target.value})} placeholder="Fecha,Proveedor,Total,Estatus Conciliacion" />
           )}
+          {exportFormat === 'contpaqi' && (
+            /* Esto no es un aviso decorativo: es la diferencia entre un archivo
+             * utilizable y uno que el contador no puede subir. Sin plantilla, las
+             * ocho columnas que CONTPAQI necesita (TipoComprobante, Serie, Folio,
+             * Moneda, TipoCambio, MetodoPago, UsoCFDI, Cuenta) salen VACIAS.
+             *
+             * Antes salian con literales fijos del backend — Moneda="MXN",
+             * TipoCambio="1.0000" — que un contador decia al verlos y leia como
+             * "el sistema lo determino". Para un comprobante en USD eso es falso,
+             * y sin marca de error. Ahora la celda vacia dice "no lo se", que es
+             * verdad y se corrige a mano. El archivo no se importa igual sin
+             * plantilla, y por eso se dice ANTES de descargar y no despues. */
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-sm text-amber-900">
+                <strong>Sin plantilla, el archivo sale incompleto.</strong> Las columnas de
+                tipo de comprobante, serie, folio, moneda, tipo de cambio, metodo de pago, uso
+                CFDI y cuenta van vacias: el sistema no las inventa, porque un valor inventado
+                en una celda se ve igual que uno real.
+              </p>
+              <button
+                type="button"
+                onClick={() => { setShowExportModal(false); setExportLoading(false); setShowMappingModal(true); }}
+                className="mt-2 text-sm text-amber-900 underline"
+              >
+                Crear una plantilla de mapeo
+              </button>
+            </div>
+          )}
           <div className="flex justify-end gap-3 pt-4 border-t">
             <Button variant="secondary" type="button" onClick={() => { setShowExportModal(false); setExportLoading(false); }}>Cancelar</Button>
             <Button type="submit" disabled={exportLoading}>{exportLoading ? 'Exportando...' : 'Descargar'}</Button>
