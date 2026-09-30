@@ -92,9 +92,14 @@ test-files/*.pdf
 .ipynb_checkpoints
 
 # Environment files
+# Estos NUNCA se versionan: contienen SECRET_KEY y el password de la base.
+# La plantilla que si se versiona es .env.example
 .env
 .env.local
 .env.*.local
+.env.dev
+.env.*.dev
+!.env.example
 
 # IDE specific
 *.sublime-project

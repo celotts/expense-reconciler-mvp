@@ -134,12 +134,30 @@ siga cabiendo en la VM.
 > `docker compose exec ollama ollama list`.
 
 ### Variables de entorno (`.env.dev`)
+
+Copia la plantilla y rellénala. **Nunca escribas una contraseña en este README.** Este repositorio
+fue público con una `SECRET_KEY` y una contraseña de base de datos escritas en archivos
+versionados, y ambas quedaron en el historial: borrarlas del archivo no las borra de ahí. La
+plantilla que sí se versiona es `.env.example`.
+
+```bash
+cp .env.example .env        # para docker compose (POSTGRES_PASSWORD)
+cp .env.example .env.dev    # para la app
+```
+
 ```env
+# .env.dev — ver .env.example para la lista completa
 PROJECT_NAME="Expense Reconciler MVP"
-DATABASE_URL=postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@postgres-reconciler:5432/expense_db
+POSTGRES_PASSWORD=<tu-password>
+DATABASE_URL=postgresql+asyncpg://postgres:<tu-password>@postgres-reconciler:5432/expense_db
 API_V1_STR="/api/v1"
 CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 ```
+
+> `SECRET_KEY` **no** tiene valor por defecto. Si no la defines, `app/core/config.py:76` genera
+> una clave efímera y avisa: molesto (cada reinicio cierra las sesiones) pero no roto. Genera
+> una real con `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. Sin ella,
+> cualquier token firmado con la clave de otro despliegue sería válido aquí.
 
 ---
 

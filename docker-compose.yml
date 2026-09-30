@@ -9,7 +9,11 @@ services:
     environment:
       POSTGRES_DB: expense_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: CAMBIA_ESTA_PASSWORD
+      # La contraseña NO vive aquí. Este archivo estuvo versionado en un repo
+      # publico con la contraseña escrita, y quitarla del archivo no la quita del
+      # historial: la clave que hay que rotar es la del password, no la del YAML.
+      # Sale de `.env` (gitignored). La plantilla es `.env.example`.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}
     ports:
       - "5434:5432"
     volumes:
@@ -75,7 +79,7 @@ services:
         required: false
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@postgres-reconciler:5432/expense_db
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}@postgres-reconciler:5432/expense_db
       - HF_HOME=/opt/hf-cache
     depends_on:
       postgres-reconciler:
