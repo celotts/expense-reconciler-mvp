@@ -3,13 +3,29 @@ AI Client Service - Unified interface for OpenAI / Azure OpenAI / Ollama / Local
 """
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-import torch
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from rapidfuzz import fuzz, process
-from sentence_transformers import SentenceTransformer
+
+# `torch` y `sentence_transformers` se importan DENTRO de la propiedad que los
+# usa, no aqui arriba. Medido: `import sentence_transformers` cuesta 3.83s y
+# `import torch` 0.68s, y este modulo esta en la cadena de vivos de la API
+# (main.py -> api_router -> tickets -> ai_extractor -> ai_client), asi que el
+# coste se pagaba en cada arranque del contenedor.
+#
+# No es "limpiar imports": la razon es que `create_embedding()` no tiene un solo
+# caller y `vector_search.py` vive en `app/modules/expenses/`, que no esta
+# montado en `api_router`. Este archivo es la ruta de la IA que SI corre
+# (extraccion de comprobantes) y no deberia arrastrar las dependencias de una
+# busqueda vectorial que nadie ejecuta.
+#
+# El typing del atributo queda como cadena para no necesitar el import:
+# `from __future__ import annotations` no ayuda en anotaciones de atributo
+# evaluadas en tiempo de ejecucion, asi que se cita el nombre y ya.
+if TYPE_CHECKING:  # pragma: no cover - solo para el editor
+    from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
 
@@ -35,7 +51,7 @@ class AIClient:
     def __init__(self):
         self._openai_client: AsyncOpenAI | None = None
         self._azure_client: AsyncAzureOpenAI | None = None
-        self._local_embedding_model: SentenceTransformer | None = None
+        self._local_embedding_model: "SentenceTransformer | None" = None
         self._provider = self._detect_provider()
 
     def _detect_provider(self) -> AIProvider:
@@ -68,8 +84,14 @@ class AIClient:
         return self._azure_client
 
     @property
-    def local_embedding_model(self) -> SentenceTransformer:
+    def local_embedding_model(self) -> "SentenceTransformer":
+        # Import perezoso, con el motivo escrito en el import de arriba. Este es
+        # el UNICO sitio del repo que necesita torch, y solo se llega aqui
+        # llamando a create_embedding(), que no tiene callers.
         if self._local_embedding_model is None:
+            import torch
+            from sentence_transformers import SentenceTransformer
+
             self._local_embedding_model = SentenceTransformer(
                 settings.LOCAL_EMBEDDING_MODEL,
                 device="cuda" if torch.cuda.is_available() else "cpu"
