@@ -1,0 +1,75 @@
+// Este archivo se versiona a proposito, y con el riesgo que implica. Conviene
+// saber cual es antes de tocarlo.
+//
+// QUE PUEDE HACER UN settings.json DE VS CODE
+//
+// VS Code carga este archivo al abrir la carpeta y le CREE. No pide permiso. Y
+// hay ajustes que ejecutan cosas o desvian datos sin que el usuario pulse nada:
+//
+//   "terminal.integrated.profiles"        reemplaza la terminal por un comando
+//   "terminal.integrated.env.LD_PRELOAD"  carga una biblioteca al arrancar
+//   "python.analysis.extraPaths"          cambia de donde se resuelve "import x"
+//   "python.pythonPath"                   ejecuta otro interprete
+//   "http.proxy"                          manda el trafico a otro sitio
+//   "git.path" / "mergeTool"              ejecuta binarios
+//   "security.workspace.trust.enabled"    apaga la pregunta de confianza
+//
+// Son DECLARACIONES, no codigo, asi que un review se las pasa por alto, y llegan
+// en un commit que parece una nota de formato. Por eso este archivo silencia
+// solo dos reglas, y por eso `tests/unit/test_vscode_settings.py` falla si
+// aparece cualquiera de las claves de arriba: la confianza se verifica, no se
+// supone.
+//
+// Si alguna vez hace falta una de esas claves, no se anade aqui. Va en tu
+// configuracion de usuario, que es donde todo lo tuyo es solo tuyo.
+//
+// ---------------------------------------------------------------------------
+//
+// SILENCIADAS: dos, y solo dos. Cada una con su razon y con lo que la compensa.
+//
+{
+  "python.analysis.typeCheckingMode": "basic",
+
+  "python.analysis.diagnosticSeverityOverrides": {
+    // Las dependencias viven en la imagen de Docker (requirements.txt), no en el
+    // interprete que abre el editor. Sin esto, TODOS los imports de fastapi,
+    // sqlalchemy y pydantic salen como "no resoluble" y el panel deja de ser
+    // util. Un import que no resuelve es el unico error que este ajuste del
+    // interprete no es capas de distinguir de uno real.
+    "reportMissingImports": "none",
+
+    // Los 164 de esta regla son el mismo artefacto: SQLAlchemy 2.0 devuelve
+    // Column[Decimal] de Column(...) y pyright cree que eso se pasa tal cual a
+    // un parametro Decimal. Se ve igual en los 31 de ColumnElement[bool] hacia
+    // "condicion" y en los 16 de Column[UUID] hacia "company_id". Ninguno es un
+    // defecto: en tiempo de ejecucion el descriptor resuelve al valor.
+    //
+    // LO QUE ESTO DEJA DE CAZAR, y por que no importa aqui: un float pasado
+    // donde va un Decimal. Es el bug que AGENTS.md prohibe explicitamente, asi
+    // que silenciar esta regla lo dejaria sin red de type-checking. La red que
+    // si existe es un test, no el type-checker: el criterio A6 de
+    // docs/contrato-producto.md pide un grep que falle si aparece un float en
+    // una ruta de calculo. Un test que muere es mas fuerte que un aviso, y
+    // ademas corre en los 655 tests y no solo cuando el editor esta abierto.
+    "reportArgumentType": "none"
+  },
+
+  // Lo que NO se silencia, a proposito, porque aqui si hay senal:
+  //
+  //   reportUndefinedVariable      -> NameErrors de verdad. Dio con
+  //     "select"/"and_" sin importar en app/modules/expenses/pipeline.py:224-225
+  //     y con SourceType.AUTO, que no existe en el enum.
+  //   reportAttributeAccessIssue   -> mismo caso: ahi aparece el SourceType.AUTO
+  //     de crud.py:136.
+  //   reportOptionalMemberAccess   -> desreferencia de None. Es la clase de bug
+  //     que mas caro sale en produccion y mas cara es de reproducir.
+  //   reportCallIssue / reportReturnType / reportOptionalCall
+  //
+  // Si el panel se vuelve a llenar, el sitio para relajar mas reglas es este
+  // archivo, no el codigo.
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/node_modules": true,
+    "**/.pytest_cache": true
+  }
+}

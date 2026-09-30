@@ -34,7 +34,26 @@ venv.bak/
 
 # IDE
 .idea/
-.vscode/
+
+# .vscode/ se versiona, pero SOLO con dos archivos. No con la carpeta entera.
+#
+# Razon: un settings.json versionado se vuelve de confianza por estar ahi, y en
+# VS Code un archivo de settings puede ejecutar codigo sin que el usuario lo
+# note. "terminal.integrated.profiles" redefine la terminal, "python.analysis
+# .extraPaths" cambia de donde se resuelve un modulo, "http.proxy" desvía el
+# trafico y "security.workspace.trust.enabled: false" desactiva la pregunta de
+# confianza del workspace. Son ajustes, no scripts, y por eso no los delata un
+# review de codigo.
+#
+# Por eso el resto sigue ignorado: anadir un launch.json o un extensions.json
+# tiene que ser un acto deliberado, no algo que llega con un "git add .".
+#
+# `tests/unit/test_vscode_settings.py` falla si aparece cualquiera de esas claves
+# en los dos archivos que si se versionan.
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+
 *.swp
 *.swo
 *~

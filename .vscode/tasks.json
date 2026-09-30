@@ -1,0 +1,96 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "make: build",
+      "type": "shell",
+      "command": "make build",
+      "group": "build",
+      "detail": "Construye imágenes Docker (api + front)",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: up",
+      "type": "shell",
+      "command": "make up",
+      "group": "build",
+      "detail": "Levanta contenedores en background (-d)",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: down",
+      "type": "shell",
+      "command": "make down",
+      "group": "build",
+      "detail": "Para y elimina contenedores",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: logs",
+      "type": "shell",
+      "command": "make logs",
+      "group": "build",
+      "detail": "Sigue logs en tiempo real (-f)",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: clean",
+      "type": "shell",
+      "command": "make clean",
+      "group": "build",
+      "detail": "Para todo y elimina volúmenes (borra BD)",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: restart",
+      "type": "shell",
+      "command": "make down && make up",
+      "group": "build",
+      "detail": "Reinicia completo (down + up)",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: build-up",
+      "type": "shell",
+      "command": "make build && make up",
+      "group": "build",
+      "detail": "Build + up en un comando",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    }
+  ]
+}

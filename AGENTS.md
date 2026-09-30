@@ -32,7 +32,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Auth | `app/core/security.py` (scrypt + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **655** — 453 unit, 202 integration |
+| Tests | **673** — 471 unit, 202 integration |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations`
@@ -73,7 +73,7 @@ make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
 python3 -m pytest tests/ -q                          # todo
-python3 -m pytest tests/unit -q                      # 453
+python3 -m pytest tests/unit -q                      # 471
 python3 -m pytest tests/integration -q               # 202
 ```
 
@@ -87,7 +87,29 @@ python3 scripts/verify_export_mutations.py      # inyección de fórmulas
 python3 scripts/verify_auth_mutations.py        # auth + forja de veredictos
 python3 scripts/verify_reconciliation_mutations.py
 python3 scripts/verify_spot_check_mutations.py
+python3 scripts/verify_vscode_mutations.py      # 18 mutaciones: superficie de confianza
 ```
+
+### El `.vscode/` se versiona, y no es inocuo
+`settings.json` y `tasks.json` están en el repo; el resto de la carpeta sigue ignorado.
+**Un `settings.json` versionado ejecuta cosas:** `terminal.integrated.profiles` redefine la
+terminal, `python.analysis.extraPaths` secuestra la resolución de un módulo, `http.proxy`
+desvía el tráfico y `security.workspace.trust.enabled: false` apaga la pregunta de confianza.
+Son *declaraciones*, no scripts, así que un review se las pasa por alto.
+
+Lo que se calla son **dos reglas, y solo dos**: `reportMissingImports` (las dependencias viven
+en la imagen de Docker) y `reportArgumentType` (los 164 avisos son el artefacto `Column[X]`
+de SQLAlchemy 2.0). La segunda deja de cazar un `float` donde va un `Decimal`, que es el bug
+que estas mismas reglas prohiben; la red que lo cubre es el criterio A6 del contrato, un test
+que corre en los 673 y no solo con el editor abierto. **No añadas una tercera sin medirla.**
+
+Dos detalles que no son detalles:
+- **Si `git status` no lista `.vscode/settings.json`, no lo arregles con `git add -f`.** Eso
+  funciona una vez y el siguiente `git add .` lo pierde. La causa es `~/.gitignore_global` con
+  `.vscode/` (la carpeta) en vez de `.vscode/*` (el contenido): git no baja a un directorio
+  excluido, así que la `!` del repo es letra muerta. `test_git_no_lo_ignora` lo detecta.
+- **Toda regla silenciada necesita su comentario pegado a la línea.** Sin eso, callar una regla
+  es un cambio de una línea que nadie cuestiona.
 
 ### Verificación contra Postgres real
 SQLite no es Postgres: ignora FKs por omisión, acepta `BYTEA` de 12 MB sin quejarse,

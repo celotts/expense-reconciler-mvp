@@ -164,6 +164,27 @@ cuenta para la medición (falso negativo de exactitud). La señal es el clic, no
 Arreglarlo exigiría comparar la extracción contra lo guardado **en el backend**, donde se puede
 comparar el `Decimal` ya parseado y no el string que escribió el usuario.
 
+### 16. `.vscode/` ignorado por configuracion global — ✅ CORREGIDO
+El `.gitignore` del repo decia `!.vscode/settings.json` y sus tests de texto daban verde,
+pero `git status` no mostraba el archivo. **La documentacion afirmaba una cosa y git hacia
+otra** — el mismo modo de fallo que el punto 15, y el que este repo viene pagando en
+consecuencia.
+
+Causa: `~/.gitignore_global` (linea 5) tenia `.vscode/`, la CARPETA. Git no baja a un
+directorio excluido, asi que ninguna `!` declarada abajo puede re-incluir un archivo dentro.
+La unica forma de meterlo era `git add -f`, que funciona una vez y el siguiente `git add .`
+lo pierde en silencio.
+
+Arreglo: `.vscode/*` en vez de `.vscode/`. Se conserva la intencion (los repos que no lo
+exentan siguen ignorando todo lo de ahi) y se abre la puerta a que un repo opte por versionar
+archivos concretos.
+
+La parte que importa: **los tests que leian el texto del `.gitignore` no lo habrian detectado
+nunca**, porque afirmaban algo que era cierto sobre el archivo y falso sobre la realidad. Por
+eso `test_git_no_lo_ignora` pregunta a `git check-ignore` en vez de leer el `.gitignore`, y por
+eso la mutacion esta en `scripts/verify_vscode_mutations.py` (no automatizable: tocar el
+`.gitignore` global es de la maquina, no del repo).
+
 ### 15. Credenciales expuestas en un repositorio público — ✅ CORREGIDO
 **Qué pasó.** El repo estuvo público con `.env.dev` versionado desde el commit inicial. Ahí
 vivían las dos credenciales del stack:
