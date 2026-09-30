@@ -10,6 +10,7 @@ import {
   type TicketFormErrors, UNKNOWN_PROVIDER,
 } from '../utils/validation';
 import { dinero } from '../utils/format';
+import { VeredictoTicket } from '../components/VeredictoTicket';
 
 /** Como se filtra esta pantalla.
  *
@@ -56,6 +57,25 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
   const [deleteTarget, setDeleteTarget] = useState<Ticket | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [formErrors, setFormErrors] = useState<TicketFormErrors>({});
+  // El archivo original del que salio la extraccion.
+  //
+  // Antes se perdia: handleExtract hacia la peticion de preview y luego soltaba
+  // el File. El ticket se creaba despues por POST /tickets/, que es captura
+  // manual y no guarda comprobante. Resultado: por la UI ningun ticket tenia el
+  // original, y el muestreo de exactitud no tenia contra que contrastar.
+  //
+  // Se retiene aqui y se adjunta despues de crear, para no quitar el paso de
+  // revision: el usuario confirma y corrige lo que leyó la IA antes de que exista
+  // como registro contable.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [avisoDocumento, setAvisoDocumento] = useState<string | null>(null);
+  // Aviso de que editar cambia el significado del ticket. Sin el, elegir
+  // "revisar y editar" parece la version menos completa de la misma accion.
+  const [avisoEdicionManual, setAvisoEdicionManual] = useState<string | null>(null);
+  // El veredicto del gate tras aceptar una lectura, para enseñarlo de inmediato.
+  // Antes de esto el usuario creaba un ticket automatico y no se enteraba de que
+  // habia pasado por el gate, ni de si habiaauto-aprobado o no.
+  const [ultimoVeredicto, setUltimoVeredicto] = useState<Ticket | null>(null);
 
   const loadData = async () => {
     try {
@@ -167,7 +187,24 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       if (editingTicket) {
         await ticketsApi.update(editingTicket.id, normalized);
       } else {
-        await ticketsApi.create(normalized);
+        const creado = await ticketsApi.create(normalized);
+
+        // El comprobante original se sube DESPUES de crear, y su fallo no
+        // deshace el ticket. El backend guarda la fila y los bytes con un
+        // SAVEPOINT separado justamente para esto: perder el archivo es
+        // recuperable (se vuelve a subir con PUT /tickets/{id}/documento),
+        // perder el gasto no lo es.
+        if (pendingFile) {
+          try {
+            await ticketsApi.subirDocumento(creado.id, pendingFile);
+            setAvisoDocumento(null);
+          } catch (e) {
+            setAvisoDocumento(
+              'El ticket se guardó, pero el comprobante original no se pudo adjuntar. ' +
+              'Vuelve a subirlo desde la ficha del ticket.'
+            );
+          }
+        }
       }
       setShowModal(false);
       resetForm();
@@ -191,6 +228,9 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     });
     setEditingTicket(null);
     setFormErrors({});
+    // Sin esto, el comprobante del ticket anterior se adjuntaria al siguiente.
+    setPendingFile(null);
+    setExtractionResult(null);
   };
 
   const openCreateModal = () => {
@@ -235,9 +275,13 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     try {
       setExtracting(true);
       setError(null);
+      setAvisoDocumento(null);
       const result = await ticketsApi.extract(file, fileType);
       setExtractionResult(result);
       setExtractionWarnings(collectExtractionWarnings(result));
+      // Se retiene el archivo para adjuntarlo al ticket cuando el usuario
+      // confirme. El endpoint de preview no persiste nada.
+      setPendingFile(file);
       setShowExtractModal(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al extraer datos');
@@ -272,7 +316,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     return warnings;
   };
 
-  const useExtractedData = () => {
+  const abrirFormularioConExtraccion = () => {
     if (!extractionResult) return;
     setFormErrors({});
     setFormData({
@@ -287,6 +331,78 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     });
     setShowExtractModal(false);
     setShowModal(true);
+  };
+
+  /** Cierra el modal de extraccion dejando la pantalla como estaba. */
+  const cerrarExtraccion = () => {
+    setShowExtractModal(false);
+    setShowCamera(false);
+    setExtractionResult(null);
+    setExtractionWarnings([]);
+  };
+
+  /**
+   * Via 1: el usuario ACEPTA la lectura tal cual.
+   *
+   * Pasa por `POST /tickets/extract-and-create`, que corre el confidence gate de
+   * verdad: el ticket nace con `confidence`, `confidence_source` y el veredicto
+   * que la evidencia sostiene, y si sale AUTO_APROBADO entra al muestreo del 5%.
+   * Eso es lo que hace medible el SLO de exactitud por el camino que la gente
+   * usa, que antes no pasaba por aqui.
+   *
+   * Se elige con un boton explicito, no comparando el formulario contra la
+   * extraccion. Un diff de strings se rompe por cosas que no son correccion:
+   * "4094.80" contra "4094.8", una fecha con otro formato, un rfc con espacios.
+   * Ademas el usuario tiene que saber que esta eligiendo, porque las dos vias
+   * ended en tickets con significado distinto.
+   *
+   * Si esta via falla (4xx), se degrada a la manual en vez de dejar al usuario
+   * sin ticket: un ticket guardado con su comprobante vale mas que una lectura
+   * perfecta que se perdio.
+   */
+  const aceptarLecturaDeIA = async () => {
+    if (!pendingFile || !selectedCompany) return;
+    const file = pendingFile;
+    const fileType: 'pdf' | 'image' = file.type.startsWith('image/') || /\.(png|jpe?g)$/i.test(file.name)
+      ? 'image' : 'pdf';
+    try {
+      setSubmitting(true);
+      setError(null);
+      setAvisoDocumento(null);
+      const creado = await ticketsApi.extractAndCreate(file, selectedCompany, fileType);
+      setUltimoVeredicto(creado);
+      cerrarExtraccion();
+      setShowModal(false);
+      resetForm();
+      await loadData();
+    } catch (e) {
+      // No se pierde la lectura: se vuelve a la via manual con el formulario
+      // ya lleno, que es exactamente lo que el usuario iba a hacer.
+      setError(
+        'No se pudo guardar la lectura automática (' +
+        (e instanceof Error ? e.message : 'error desconocido') +
+        '). Se.abre el formulario para que la revises y la guardes a mano.'
+      );
+      abrirFormularioConExtraccion();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /**
+   * Via 2: el usuario quiere EDITAR antes de guardar.
+   *
+   * Se registra como captura manual a proposito. Si una persona corrige a la IA,
+   * el resultado ya no es lectura automatica, y contarlo como si lo fuera
+   * inflaria la exactitud medida con datos que el sistema no leyo solo. El
+   * formulario lo dice, para que no parezca un fallo.
+   */
+  const editarAntesDeGuardar = () => {
+    setAvisoEdicionManual(
+      'Vas a corregir estos datos, así que el ticket se guardará como captura manual ' +
+      'y no contará para la medición de exactitud de la IA.'
+    );
+    abrirFormularioConExtraccion();
   };
 
   const columns = [
@@ -401,6 +517,39 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
         </div>
       )}
 
+      {/* Distinto del error: el ticket SI se guardo. Por eso va en ambar y no en
+          rojo, y por eso no se limpia con el error. */}
+      {avisoDocumento && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center justify-between">
+          <span>{avisoDocumento}</span>
+          <Button variant="ghost" size="sm" onClick={() => setAvisoDocumento(null)}>×</Button>
+        </div>
+      )}
+
+      {/* Que va a pasar con la medicion, dicho antes de que pase y no despues. */}
+      {avisoEdicionManual && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center justify-between">
+          <span>{avisoEdicionManual}</span>
+          <Button variant="ghost" size="sm" onClick={() => setAvisoEdicionManual(null)}>×</Button>
+        </div>
+      )}
+
+      {/* El veredicto del gate, apenas se acepta una lectura. Antes de esto se
+          creaba un ticket automatico sin que nadie se enterara de si habia
+          pasado la verificacion o no. */}
+      {ultimoVeredicto && (
+        <div className="space-y-2">
+          <VeredictoTicket ticket={ultimoVeredicto} />
+          <button
+            type="button"
+            onClick={() => setUltimoVeredicto(null)}
+            className="text-sm text-gray-500 hover:text-gray-700 underline"
+          >
+            Entendido
+          </button>
+        </div>
+      )}
+
       {/* La barra de lote. Solo aparece con algo seleccionado, porque una barra
           vacia con un desplegable de categorias es ruido en la pantalla de todos
           los dias. */}
@@ -490,6 +639,9 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       {/* Modal Crear/Editar Ticket */}
       <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); }} title={editingTicket ? 'Editar Ticket' : 'Nuevo Ticket'}>
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          {/* El veredicto de como se leyo este ticket. Solo al editar uno que ya
+              existe: al crear, todavia no hay nada que veredicto. */}
+          {editingTicket && <VeredictoTicket ticket={editingTicket} />}
           <div className="grid grid-cols-2 gap-4">
             <Input
               label="Empresa" disabled
@@ -595,9 +747,28 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                       <div><span className="text-gray-500">Categoría:</span> <span>{extractionResult.category || '-'}</span></div>
                     </div>
                   </div>
+                  {/* Las dos vias. La separacion no es estetica: guardar por
+                      `extract-and-create` hace que el ticket pase por el gate y
+                      entre al muestreo, y guardar por el formulario lo deja como
+                      captura manual. Elegir sin entender la diferencia seria elegir
+                      al azar, asi que se explica antes de elegir. */}
+                  <div className="bg-blue-50 border border-blue-200 text-blue-900 px-4 py-3 rounded-lg text-sm">
+                    <p className="font-medium mb-1">¿Los datos están correctos?</p>
+                    <p>
+                      Si sí, se guardan con la verificación de la IA activada: el sistema
+                      comprueba que la aritmética del comprobante cuadre y, si la lectura
+                      es segura, la aprueba sin que nadie la revise (y entra al muestreo
+                      para poder medirla). Si corriges algo, se guarda como captura manual.
+                    </p>
+                  </div>
                   <div className="flex gap-3 justify-end">
-                    <Button variant="secondary" onClick={() => { setExtractionResult(null); setExtractionWarnings([]); }}>Nueva extracción</Button>
-                    <Button onClick={useExtractedData}>Continuar con estos datos</Button>
+                    <Button variant="ghost" onClick={() => { setExtractionResult(null); setExtractionWarnings([]); }}>Nueva extracción</Button>
+                    <Button variant="secondary" onClick={editarAntesDeGuardar}>
+                      Revisar y corregir
+                    </Button>
+                    <Button onClick={aceptarLecturaDeIA} disabled={submitting || !pendingFile}>
+                      {submitting ? 'Verificando...' : 'Aceptar y verificar con IA'}
+                    </Button>
                   </div>
                 </>
               )}
