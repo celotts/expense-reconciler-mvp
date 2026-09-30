@@ -5,6 +5,7 @@ from app.models.reconciliation import ReconciliationModel
 from app.models.accounting_mapping import AccountingMappingModel
 from app.models.ticket_document import TicketDocumentModel
 from app.models.user import UserModel
+from app.models.cierre_periodo import CierrePeriodoModel
 
 __all__ = [
     "CompanyModel",
@@ -14,4 +15,5 @@ __all__ = [
     "ReconciliationModel",
     "AccountingMappingModel",
     "UserModel",
+    "CierrePeriodoModel",
 ]

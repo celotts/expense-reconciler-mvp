@@ -229,3 +229,67 @@ CREATE INDEX IF NOT EXISTS ix_tickets_spot_check_queue
 CREATE INDEX IF NOT EXISTS ix_tickets_spot_check_report
     ON tickets (company_id, confidence_source)
     WHERE spot_check_status IS NOT NULL;
+
+-- =====================================================================
+-- El periodo que alguien firmo como cerrado (0007)
+-- =====================================================================
+--
+-- Esto es lo que le faltaba a R3 del contrato (docs/contrato-producto.md:176).
+-- La regla dice que el informe no puede declarar cerrado un periodo con
+-- pendientes, "salvo que el contador lo marque explicitamente (y entonces el
+-- informe registra que lo fue)". La excepcion era la parte que no existia: el
+-- informe podia negarse, pero no habia donde registrar que alguien lo cerro a
+-- sabiendas. Sin esta fila, R3 se cumple a medias.
+--
+-- Una fila por (empresa, periodo). NO es un historico de reaperturas: se
+-- sobrescribe. Congelar el informe y guardar el log de cierres es D5, y D5 es
+-- Fase 4.
+--
+-- `cerrado_por` es texto y no llave foranea a proposito, por el mismo motivo que
+-- `tickets.spot_checked_by`: el cierre tiene que sobrevivir a la baja de la cuenta.
+-- Una firma que se borra sola no es una firma.
+CREATE TABLE IF NOT EXISTS cierres_periodo (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+
+    -- 'YYYY-MM', y no DATE. Un DATE (el dia 1) obligaria al informe a decidir si
+    -- significa "enero" o "enero a partir del dia 1", y en un cierre fiscal son
+    -- dos cosas distintas.
+    periodo VARCHAR(7) NOT NULL,
+
+    -- Quien lo cerro, desde el token. Texto, no FK.
+    cerrado_por VARCHAR(255) NOT NULL,
+    cerrado_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Que estaba pendiente cuando se cerro. JSONB y no tres columnas porque se
+    -- muestra en el informe y no se agrega. NULL = no se sabe, y el informe lo
+    -- dice en vez de rellenarlo con cero.
+    pendientes_al_cerrar JSONB,
+
+    -- SHA-256 en hex de la serializacion canonica del informe al cerrarlo. Es lo
+    -- que detecta que los datos se movieron despues de la firma. NULL = se cerro
+    -- sin huella, no "la huella esta vacia".
+    huella VARCHAR(64),
+
+    -- La regex del contrato. Aqui si se puede usar `~` porque esto es Postgres;
+    -- en el modelo va la version portable, que es lo que corre en los tests sobre
+    -- SQLite. Ver app/models/cierre_periodo.py.
+    CONSTRAINT ck_cierres_periodo_formato
+        CHECK (periodo ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+
+    -- Un cierre con fecha futura es una intencion, no un hecho.
+    CONSTRAINT ck_cierres_periodo_sello_sano
+        CHECK (cerrado_at <= now()),
+
+    -- 64 hex minusculas, que es lo que produce hashlib.sha256().hexdigest().
+    -- Sin esto, una huella mal formada nunca coincidiria al comparar, que es un
+    -- fallo silencioso: siempre "cerrado con otra informacion".
+    CONSTRAINT ck_cierres_periodo_huella_hex
+        CHECK (huella IS NULL OR huella ~ '^[0-9a-f]{64}$')
+);
+
+-- UNIQUE (company_id, periodo) y no PK compuesta, porque el grano del informe es
+-- (empresa, periodo): dos cierres del mismo periodo serian ambiguos. Tambien es el
+-- acceso principal, que siempre pregunta por un par concreto.
+CREATE UNIQUE INDEX IF NOT EXISTS ix_cierres_periodo_unico
+    ON cierres_periodo (company_id, periodo);
