@@ -66,13 +66,13 @@ expense-reconciler-mvp/
 ├── db/
 │   └── init.sql                # Schema + indexes (incl. users, lower(email))
 ├── tests/
-│   ├── unit/                   # 22 tests
-│   └── integration/            # 36 tests
+│   ├── unit/                   # 453 tests
+│   └── integration/            # 202 tests
 ├── docker-compose.yml
 ├── Dockerfile
 ├── requirements.txt
 ├── pytest.ini
-├── agent.md                    # Agent definition
+├── AGENTS.md                   # Contexto operativo para agentes (se carga solo)
 ├── memory.md                   # Project memory
 ├── skill.md                    # Reusable patterns
 └── README.md                   # This file
@@ -106,7 +106,7 @@ en vez de dejar que la máquina entre en swap.
 
 | Servicio | Cuota RAM | CPUs | En reposo |
 |---|---|---|---|
-| `expense-api` | 1.75 GB | 4 | ~430 MB (511 MB con embeddings cargados) |
+| `expense-api` | 1.75 GB | 4 | ~430 MB |
 | `ollama` | 4 GB | 4 | ~2.4 GB con ambos modelos cargados |
 | `postgres-reconciler` | 768 MB | 1 | ~25 MB |
 | `expense-front` | 256 MB | 0.5 | ~7 MB |
@@ -289,7 +289,7 @@ El endpoint `GET /api/v1/dashboard` es la **vista de aterrizaje** del frontend. 
 ## Tests
 
 ```bash
-# Todos (637 tests - incluye seguridad + regresión)
+# Todos (655 tests - incluye seguridad + regresión)
 python3 -m pytest tests/ -q
 
 # Unitarios
