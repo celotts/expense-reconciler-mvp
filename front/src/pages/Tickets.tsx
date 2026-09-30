@@ -703,7 +703,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
               </div>
               <FileUpload 
                 inputId="ticket-file-input"
-                accept=".pdf,.png,.jpg,.jpeg" 
+                accept=".pdf,.png,.jpg,.jpeg,.heic,.heif,.tif,.tiff"
                 onChange={files => {
                   const file = files[0];
                   if (!file) return;

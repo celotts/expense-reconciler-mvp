@@ -12,6 +12,50 @@ from datetime import date
 from app.services.ai_client import ai_client, AIResponse
 from app.core.config import settings
 
+# HEIC/HEIF: el producto se define por "la foto del telefono" y un iPhone
+# produce HEIC, asi que sin esto el primer usuario no puede subir su
+# comprobante. `pillow-heif` trae la libreria nativa en su propia wheel (no
+# hace falta `apt-get`), y `register_heif_opener` engancha el decodificador de
+# PIL para que `Image.open` acepte el formato como si fuera cualquier otro.
+#
+# Es opcional a proposito: si la dependencia no esta, el import falla y se sigue
+# funcionando sin HEIC, que es como estaba antes. Un `try/except ImportError` de
+# mas de un segundo en el arranque de un modulo que no se usa en cada request.
+try:  # pragma: no cover - depende del entorno
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    _HEIC_DISPONIBLE = True
+except ImportError:  # pragma: no cover
+    _HEIC_DISPONIBLE = False
+
+
+def _a_jpeg(image_bytes: bytes) -> bytes | None:
+    """Decodifica, reescala y pasa a JPEG. `None` si no se puede.
+
+    El reescalado a 1600 px no es cosmetico: los modelos de vision locales
+    (`moondream`) tardan mucho menos con la imagen pequena, y el total de un
+    comprobante se lee igual a 1600 que a 4000.
+
+    Devolver `None` en vez de un except silencioso es el punto de esta funcion.
+    El llamador necesita distinguir "no pude abrirlo" de "no habia nada que
+    abrir", y solo el segundo es una imagen valida de 0 bytes.
+    """
+    try:
+        from PIL import Image as PILImage
+
+        img = PILImage.open(io.BytesIO(image_bytes))
+        img = img.convert("RGB")
+        max_w = 1600
+        if img.width > max_w:
+            new_h = int(img.height * max_w / img.width)
+            img = img.resize((max_w, new_h), PILImage.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return None
+
 
 @dataclass
 class ExtractedInvoice:
@@ -131,26 +175,31 @@ class AIExtractor:
         return "gpt-4o"
 
     async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:
-        """Extract from image (photo of receipt/invoice)"""
+        """Extract from image (photo of receipt/invoice)
+
+        El `mime_type` de entrada ya no decide nada: el formato sale de los
+        bytes, en `app/core/archivo_real.py`, y llega aqui ya normalizado. Este
+        metodo solo tiene que abrirlo, reescalar y convertir a JPEG.
+
+        Un archivo que no se puede decodificar NO se manda al modelo. Antes
+        caia en un `except: pass` y los bytes crudos iban a `base64` declarados
+        `image/jpeg`: para un HEIC es un byte stream que vision no descodifica,
+        y lo que salia era basura con forma de lectura. Ahora devuelve
+        `IMAGEN_ILEGIBLE`, que `capture.FALLOS_DEL_MODELO` traduce a un motivo
+        de cola que dice la verdad.
+        """
         if not self.enabled:
             return self._fallback_extraction(image_bytes)
 
-        # Downscale large images before sending: speeds up local vision models a lot
-        try:
-            from PIL import Image as PILImage
-            pil_img = PILImage.open(io.BytesIO(image_bytes))
-            pil_img = pil_img.convert("RGB")
-            max_w = 1600
-            if pil_img.width > max_w:
-                new_h = int(pil_img.height * max_w / pil_img.width)
-                pil_img = pil_img.resize((max_w, new_h), PILImage.LANCZOS)
-            buf = io.BytesIO()
-            pil_img.save(buf, format="JPEG", quality=85)
-            image_bytes = buf.getvalue()
-        except Exception:
-            pass
+        jpeg = _a_jpeg(image_bytes)
+        if jpeg is None:
+            return ExtractedInvoice(
+                provider_name="IMAGEN_ILEGIBLE",
+                confidence=0.0,
+                raw_text="",
+            )
 
-        b64 = base64.b64encode(image_bytes).decode()
+        b64 = base64.b64encode(jpeg).decode()
         return await self._extract_from_vision(b64, "image/jpeg")
 
     async def extract_from_text(self, text: str) -> ExtractedInvoice:

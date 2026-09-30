@@ -32,7 +32,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Auth | `app/core/security.py` (scrypt + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **673** — 471 unit, 202 integration |
+| Tests | **709** — 494 unit, 215 integration |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations`
@@ -73,8 +73,8 @@ make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
 python3 -m pytest tests/ -q                          # todo
-python3 -m pytest tests/unit -q                      # 471
-python3 -m pytest tests/integration -q               # 202
+python3 -m pytest tests/unit -q                      # 494
+python3 -m pytest tests/integration -q               # 215
 ```
 
 ### Verificación por mutación — correr tras tocar defensa
@@ -141,7 +141,13 @@ costumbre — el porqué está en el comentario junto al código.
    Las dos capas son necesarias: `extra='ignore'` evita el `TypeError` por argumento duplicado,
    el orden es la barrera conceptual. Cliente puede mandar `confidence`/`extraction_status`: se ignoran.
 
-3. **Un PDF con texto no toca el modelo.**
+3. **Un PDF con texto no toca el modelo.** Y ahora además: **el `file_type` del
+   cliente no elige la ruta de lectura.** El formato sale de los bytes
+   (`app/core/archivo_real.py`, lista cerrada de firmas) y lo declarado solo se
+   acepta si coincide. Antes, mandar `file_type=image` con un PDF lo mandaba a
+   visión y devolvía `confidence_source=llm`, que es el origen con el que agrupa
+   el reporte de exactitud. **No lo vuelvas a usar como selector de cascada.**
+   `docs/known-issues.md` §17 tiene la medición.
    Si las reglas devuelven algo útil (`provider_name` real y `total > 0`), se devuelve eso y no
    se llama al LLM. Mutación: `verify_capture_mutations.py:36-48`.
 

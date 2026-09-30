@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime, timezone
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from fastapi import (
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.archivo_real import resolver_tipo
 from app.core.subida import leer_ticket
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
@@ -39,8 +41,15 @@ from app.services.ai_extractor import ai_extractor
 
 router = APIRouter(tags=["Tickets"])
 
+# Cuando el `file_type` declarado no coincide con los bytes, el motivo va aqui.
+# No es un 400: el documento es valido y se procesa igual, pero el log deja
+# constancia de quien esta etiquetando mal sus subidas.
+logger = logging.getLogger(__name__)
 
-async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtractionResult:
+
+async def _extract_from_upload(
+    content: bytes, file_type: str
+) -> TicketExtractionResult:
     """Unico camino de captura. Toda la politica vive en `capture.capture_ticket`.
 
     Antes esta funcion decidia: si era imagen la mandaba a la IA, si no la
@@ -51,6 +60,10 @@ async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtracti
     `llm`.
 
     Ahora la cascada esta en un solo sitio y la API solo traduce sus errores.
+
+    El `file_type` que llega aqui ya no es el que declaro el cliente: lo
+    dedujo `_tipo_real_del_archivo` de los bytes. Ver el docstring de ahi para
+    por que. Esta funcion no vuelve a decidir nada sobre el formato.
     """
     try:
         return await capture_ticket(
@@ -67,6 +80,26 @@ async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtracti
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se pudo procesar el archivo: {exc}",
         )
+
+
+def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
+    """Deduce el formato de los BYTES y descarta el que declaro el cliente.
+
+    Por que no puede ser el declarado: `file_type` decide el escalon de la
+    cascada, y con el la regla 3 de `AGENTS.md` ("un PDF con texto no toca el
+    modelo") la salta quien llama. Medido: el mismo PDF con `file_type=image`
+    entra por vision, sale con `confidence_source=llm` y total 0.00, y esa
+    lectura contaminaria el reporte de exactitud, que agrupa por origen.
+
+    Cuando los bytes y lo declarado no coinciden, gana el sniffing y se deja
+    rastro en el log. No es un 400: el documento es valido, lo que estaba mal
+    era la etiqueta, y rechazar el comprobante de un contador porque su
+    cliente mando `image` en vez de `pdf` seria un fallo nuestro.
+    """
+    formato, motivo = resolver_tipo(contenido, declarado)
+    if motivo:
+        logger.warning("Tipo de archivo corregido: %s", motivo)
+    return formato
 
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
@@ -120,10 +153,15 @@ async def extract_ticket(
     file: UploadFile = File(...),
     file_type: str = Form("pdf")
 ) -> TicketExtractionResult:
-    """Extract ticket data from uploaded file (PDF/Image)."""
+    """Extract ticket data from uploaded file (PDF/Image).
+
+    `file_type` se acepta por compatibilidad, pero no decide nada: el formato
+    sale de los bytes. Ver `_tipo_real_del_archivo`.
+    """
     content = await leer_ticket(file, file.filename or "")
+    tipo_real = _tipo_real_del_archivo(content, file_type)
     try:
-        return await _extract_from_upload(content, file_type)
+        return await _extract_from_upload(content, tipo_real)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -155,8 +193,9 @@ async def extract_and_create_ticket(
         )
 
     content = await leer_ticket(file, file.filename or "")
+    tipo_real = _tipo_real_del_archivo(content, file_type)
     try:
-        extracted = await _extract_from_upload(content, file_type)
+        extracted = await _extract_from_upload(content, tipo_real)
     except HTTPException:
         raise
     except Exception as e:
@@ -167,7 +206,17 @@ async def extract_and_create_ticket(
 
     return await _persist_extracted(
         db, company_id, extracted, content,
-        source_type=SourceType(file_type) if file_type in {t.value for t in SourceType} else SourceType.IMAGE,
+        # El `source_type` tambien sale de los bytes, no de la etiqueta del
+        # cliente. Antes, ademas, un `text` caia al fallback y se guardaba como
+        # "image": `text` no existe en el enum `SourceType`
+        # (`docs/known-issues.md` §11). El fallback se mantiene explicito para
+        # no cambiar el esquema en este commit; lo que si cambia es que el
+        # valor de entrada ya no lo elige el cliente.
+        source_type=(
+            SourceType(tipo_real)
+            if tipo_real in {t.value for t in SourceType}
+            else SourceType.IMAGE
+        ),
         source_file=file.filename,
         content_type=file.content_type,
     )

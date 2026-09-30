@@ -84,12 +84,20 @@ Y **12 campos que sí se extraen se tiran** (`invoice_number`, `invoice_series`,
 `tax_breakdown`, `payment_terms`). Un comprobante en USD sale con tipo de cambio 1.0000,
 **sin marca de error**. Para un contador, un tipo de cambio falso es peor que un campo vacío.
 
-### 6. HEIC/TIFF no soportados — irónico para "fotos de iPhone"
-El producto se define por Digitalizar tickets con la cámara del teléfono, pero:
-- `pillow-heif` no está en `requirements.txt` → PIL no abre HEIC.
-- El front solo acepta `.pdf,.png,.jpg,.jpeg` (`Tickets.tsx:554`).
-- Peor: si un HEIC llega por otro camino, `ai_extractor.py:140-151` lo pasa por
-  `base64` y lo **declara `image/jpeg`** a un modelo que no lo decodifica → basura silenciosa.
+### 6. HEIC no soportado — ✅ CORREGIDO (el front sigue sin aceptarlo)
+`pillow-heif` ya está en `requirements.txt` y el opener registrado en
+`ai_extractor.py`, así que la foto de un iPhone entra y se decodifica. La wheel trae
+la librería nativa: no hace falta `apt-get`, y verificado en aarch64.
+
+Lo grave no era que no funcionara, sino **cómo fallaba**: el decode estaba en un
+`except: pass` (`ai_extractor.py:140-151`), así que los bytes crudos de un HEIC iban
+a `base64` **declarados `image/jpeg`** a un modelo que no los descodifica. Basura
+que podía volver con apariencia de lectura.
+
+Ahora `_a_jpeg()` devuelve `None` y sale `IMAGEN_ILEGIBLE`, que está en
+`FALLOS_DEL_MODELO` (`capture.py:81`): el ticket va a la cola **con el motivo real**
+en vez de con un `Unknown Provider` de pantalla. Sigue faltando que el front acepte
+`.heic` en su `accept`.
 
 ### 7. PDF cifrado se pierde como "ilegible"
 `pdfplumber` y `pypdfium2` fallan sin contraseña → `capture.py:381` devuelve
@@ -214,9 +222,54 @@ responde `200`.
 que estuvo versionado está comprometido aunque lo borres, y la única salida es **rotarlo**.
 Por eso la plantilla (`.env.example`) sí se versiona y el valor real nunca.
 
+### 17. El cliente elegía la ruta de lectura — ✅ CORREGIDO
+`file_type` llegaba como campo `Form` y se usaba literal para elegir el escalón de
+la cascada (`capture.py:289-297`). Con un token válido, quien llama decidía por dónde
+se leía el documento. Medido con el mismo PDF de las dos formas:
+
+```
+file_type=pdf   ->  pdf_text  ->  0.97  ->  PAPELERIA Y SUMINISTROS  ->  4094.80
+file_type=image ->  llm       ->  None  ->  Unknown Provider        ->  0.00
+```
+
+Las tres consecuencias, en orden de gravedad:
+
+1. **By-pass de la regla 3 de `AGENTS.md`.** "Un PDF con texto no toca el modelo" es
+   la barrera conceptual más importante del sistema y la salta quien llama.
+2. **Contaminación de la medición.** El ticket entra con `confidence_source=llm`, y el
+   reporte de exactitud agrupa por origen (`accuracy_service.py:346-357`). Una lectura
+   que no fue lectura falseando la evidencia del SLO.
+3. **Amplificador de DoS.** Forzar visión sobre 10 MB obliga a renderizar, reescalar e
+   inferir. Con un token válido, es lo más barato que hay para quemar la máquina.
+
+**Arreglo:** `app/core/archivo_real.py` deduce el formato de los bytes con lista cerrada
+de firmas, y el `file_type` del cliente solo se acepta si *coincide*. Es el mismo patrón
+que ya existe dos veces en el repo por el mismo motivo: `ENCODINGS_PERMITIDOS` y
+`content_type_servible()`.
+
+**No es un 4xx, y esa es la parte importante:** el documento es válido, lo que estaba mal
+era la etiqueta. Un contador no puede perder su comprobante porque su cliente mandó
+`image` en vez de `pdf`; se procesa igual con el formato deducido, y el motivo queda en
+el log.
+
+**El otro extremo también se cerró.** Mandar `pdf` con algo que no es un PDF ya no llega
+al modelo: por rules, `render_pdf_pages` falla y sale "ilegible"; por imagen, `_a_jpeg()`
+devuelve `None` y sale `IMAGEN_ILEGIBLE` en vez de reenviar los bytes declarados
+`image/jpeg`.
+
+**Verificado por mutación:** 8 mutaciones, 8 mueren. Tres de ellas sobrevivieron a la
+primera ronda y por qué:
+- Dos tests llamaban a la función en vez de al endpoint. Una defensa bien escrita y no
+  conectada deja todo en verde; por eso los tests de cableado van por HTTP.
+- El test de `source_type` comparaba dos POST del mismo archivo a la misma empresa, y la
+  idempotencia por `(company_id, source_hash)` devolvía el mismo ticket. Comparaba dos
+  veces lo mismo sin mirar nada.
+
 ---
 
 ## Arreglados en el pasado (no reabrir)
+- **El cliente elegía la ruta de lectura** (`file_type` sin validar) — punto 17.
+- **HEIC** con nombre de fallo en vez de basura silenciosa — punto 6.
 - **Credenciales en el repo público** — `SECRET_KEY` y password de Postgres en `.env.dev`,
   `docker-compose.yml`, el README y 5 scripts de verificación, visibles desde el commit inicial.
   Rotadas, sacadas del código y del historial. Ver §15.

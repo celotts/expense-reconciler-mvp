@@ -81,6 +81,12 @@ SENTINELS_SIN_PROVEEDOR = frozenset({"UNKNOWN", "ERROR_PARSING", "AI_DISABLED"})
 FALLOS_DEL_MODELO = {
     "ERROR_PARSING": "el modelo devolvio una respuesta que no se pudo interpretar",
     "AI_DISABLED": "el extractor de IA esta apagado o no respondio",
+    # El archivo llego como imagen pero no se pudo decodificar. Antes este caso
+    # caia en un `except: pass` y los bytes crudos se mandaban al modelo
+    # declarados `image/jpeg`: basura que el modelo podia devolver con
+    # apariencia de lectura. Con nombre propio, el ticket va a la cola con el
+    # motivo real en vez de con un "Unknown Provider" de pantalla.
+    "IMAGEN_ILEGIBLE": "el archivo es una imagen que no se pudo decodificar",
 }
 
 # Debajo de esto no hay documento que leer, solo ruido de escaner. Por debajo
