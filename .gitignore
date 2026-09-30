@@ -94,6 +94,15 @@ front/build/
 front/.vite/
 front/*.local
 
+# El .gitignore global de este equipo ignora package-lock.json, pero el lockfile
+# SI es parte del proyecto: front/Dockerfile y front/Dockerfile.prod instalan
+# con `npm ci`, y `npm ci` sin lockfile aborta con EUSAGE ("can only install
+# with an existing package-lock.json"). Sin esto el build del front funciona en
+# la maquina donde alguien lo tiene en disco y falla en cualquier clone limpio.
+# Las reglas del repo ganan sobre las del global, asi que esto no es decorativo:
+# se comprobo quitando el archivo.
+!front/package-lock.json
+
 # Docker
 .docker/
 
