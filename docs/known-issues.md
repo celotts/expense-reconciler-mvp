@@ -127,6 +127,50 @@ confuso mañana.
 `file_type=text` funciona en la cascada (`capture.py:292`) pero al persistir cae al fallback
 y se guarda como `source_type="image"` (`tests/integration/test_capture_pipeline.py:102-116`).
 
+### 18. El escáner de carpeta: lo que todavía no está resuelto
+`feature/tickets-ocr-api` añadió el escáner y el registro por archivo. Estos cuatro puntos
+son deuda real, no pendientes teoricos:
+
+- **El lock de escaneo es de proceso, no de base.** `scan_service.py` usa un
+  `asyncio.Lock`: dos escaneos en el mismo proceso se serializan, dos en procesos
+  distintos no, y compiten por el `UNIQUE` de `relative_path`. El proyecto corre un
+  solo contenedor, así que hoy no importa; con dos workers hay que poner
+  `INSERT ... ON CONFLICT DO NOTHING` con reintento, o un advisory lock de Postgres.
+- **`ScanStatus` no tiene un valor "desactualizado".** Un archivo `PROCESADO` cuyo
+  contenido cambió y cuyo ticket tiene correcciones humanas queda `PROCESADO` con el
+  aviso en `last_error`, y `GET /scan/stats` lo cuenta aparte. Es un parche: un
+  cuarto estado sería más honesto y merece su propia migración.
+- **Los symlinks se saltan sin aviso.** Un comprobante enlazado desde otra carpeta no
+  se procesa y no aparece ni como `ERROR` ni como `NO_SOPORTADO`. Es la decisión
+  conservadora (un symlink es la forma más corta de leer fuera de la carpeta), pero
+  el operador no ve por qué su archivo no apareció. Registrar cada symlink
+  saltado ensuciaría el registro en macOS, donde Finder los crea por todas partes.
+- **El tope por corrida no tiene prueba de integración.** La lógica es un `break`
+  con un contador y el campo `omitidos_por_tope` está en la respuesta, pero no hay
+  un test que ponga 3 archivos, el tope en 2 y compruebe que queda 1.
+
+### 19. `easyocr` está soportado pero no instalado, y su confianza no está normalizada
+`ocr.py:_leer_easyocr` existe y `GET /scan/ocr` lo reporta como no disponible con su
+instrucción, pero `easyocr` **no** está en `requirements.txt`: arrastra torch (~2 GB) y
+descarga ~100 MB de pesos la primera vez, y el repositorio ya tiene una regla sobre no
+arrastrar torch al arrancar. Igual con `opencv-python` (el preprocesado usa solo Pillow)
+y `pdf2image` (el repo ya usa `pypdfium2`, que además llega con pdfplumber).
+
+Riesgo concreto sin reproducir: EasyOCR devuelve la confianza por línea en `[0, 1]`
+pero hay versiones que la devuelven en `[0, 100]`, y el código la usa tal cual, así que
+`confianza_media` podría valer `87.0`. **No afecta al gate** (esa confianza la calcula
+`confianza_por_campos_ocr` a partir de la evidencia), así que el daño es acotado a un
+campo informativo. Cuando se agregue easyocr, normalizar por el máximo observado.
+
+### 20. `TICKETS_INPUT_DIR` por omisión es una ruta de una máquina concreta
+`config.py` usa `/Users/carloslott/Documents/Tickets_app`, que es lo que pide el
+enunciado. En cualquier otra máquina, en el contenedor o en la de otra persona hay que
+cambiar la variable, y la app no falla: **crea la carpeta**. En un servidor eso
+significaría crear `/Users/carloslott/...` como root. `GET /api/v1/scan/config` expone
+la ruta efectiva para poder confirmarlo sin correr un escaneo, y `docker-compose.yml`
+la sobrescribe a `/tickets` porque el `.env.dev` del host no aplica dentro del
+contenedor. Es aceptable para "una máquina, un contador" y no para un despliegue real.
+
 ---
 
 ## 🟡 Deuda / data quality

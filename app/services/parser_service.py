@@ -638,13 +638,45 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
                 pass
 
         # Date - prefer "Fecha Expedicion" or "Fecha:" patterns
-        date_match = re.search(r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line, re.IGNORECASE)
-        if date_match:
+        #
+        # Orden: primero el que empieza por el anio, despues el dia/mes/anio.
+        #
+        # No es un orden arbitrario y los dos patrones no se pisan. El de
+        # dia/mes/anio (`\d{1,2}`) no puede morder "2025/03/15": tendria que
+        # tomar "20" y luego esperar una barra donde hay un "2", y el
+        # retroceso a un solo digito tampoco cuadra. Y el de anio/mes/dia
+        # (`\d{4}`) no puede morder "15/03/2025" porque no hay cuatro digitos
+        # seguidos al inicio. Se pueden probar en cualquier orden, y se prueba
+        # el mas especifico primero para que quede claro cual de los dos
+        # respondio.
+        #
+        # El patron `\d{4}[/-]` existia solo con guiones (ISO). Los tickets de
+        # autocomercio en Mexico imprimen la fecha como "2025/03/15", con
+        # barras, y eso no caia en ninguno de los dos: la fecha se perdia y el
+        # ticket iba a la cola con `date_missing` habiendole leido bien todo lo
+        # demas. Un comprobante con RFC, subtotal, IVA y total, y sin fecha, es
+        # un comprobante que el gate no puede cerrar y una persona tiene que
+        # teclear la fecha a mano.
+        anio_primero = re.search(
+            r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            line,
+            re.IGNORECASE,
+        )
+        if anio_primero:
             try:
-                expense_date = pd.to_datetime(date_match.group(1), dayfirst=True).date()
+                expense_date = pd.to_datetime(anio_primero.group(1)).date()
             except (ValueError, TypeError):
                 pass
-        else:
+
+        if expense_date is None:
+            date_match = re.search(r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line, re.IGNORECASE)
+            if date_match:
+                try:
+                    expense_date = pd.to_datetime(date_match.group(1), dayfirst=True).date()
+                except (ValueError, TypeError):
+                    pass
+
+        if expense_date is None:
             # ISO format: alone, with a time component, or followed by anything.
             # `(?!\d)` instead of `\b` because "15T10:20" has no word boundary
             # between the date and the time ("5" and "T" are both word chars).

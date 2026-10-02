@@ -8,6 +8,7 @@ from app.api.categorias import router as categorias_router
 from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.reconciliations import router as reconciliations_router
+from app.api.scans import router as scan_router
 from app.api.tickets import router as tickets_router
 from app.core.deps import get_current_user
 
@@ -55,6 +56,17 @@ api_router.include_router(
     tickets_router,
     prefix="/tickets",
     tags=["Tickets"],
+    dependencies=[Depends(get_current_user)],
+)
+# El escaner de carpeta. Mismo criterio que los demas: token obligatorio a nivel
+# de router. Que lea el disco no lo hace mas peligroso de lo que ya es el resto
+# de la API, y que necesite token no lo hace mas seguro si se le puede pedir
+# una carpeta por parametro: por eso no hay ningun campo de carpeta en su
+# schema, y la ruta sale de `TICKETS_INPUT_DIR`.
+api_router.include_router(
+    scan_router,
+    prefix="/scan",
+    tags=["Scan"],
     dependencies=[Depends(get_current_user)],
 )
 api_router.include_router(

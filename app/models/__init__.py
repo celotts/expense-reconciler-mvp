@@ -6,6 +6,7 @@ from app.models.accounting_mapping import AccountingMappingModel
 from app.models.ticket_document import TicketDocumentModel
 from app.models.user import UserModel
 from app.models.cierre_periodo import CierrePeriodoModel
+from app.models.scan_file import ScanFileModel, ScanEventModel
 
 __all__ = [
     "CompanyModel",
@@ -16,4 +17,6 @@ __all__ = [
     "AccountingMappingModel",
     "UserModel",
     "CierrePeriodoModel",
+    "ScanFileModel",
+    "ScanEventModel",
 ]

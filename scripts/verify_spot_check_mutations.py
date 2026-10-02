@@ -79,7 +79,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     # -----------------------------------------------------------------------
     (
         "se muestrea tambien lo que el gate dejo en la cola",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "            if decision.status == ExtractionStatus.AUTO_APROBADO\n            and en_muestra(source_hash)",
         "            if en_muestra(source_hash)",
         [
@@ -89,7 +89,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     ),
     (
         "se muestrea la captura manual por tener hash",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "            if decision.status == ExtractionStatus.AUTO_APROBADO\n            and en_muestra(source_hash)",
         "            if en_muestra(source_hash or 'x')",
         ["tests/integration/test_spot_check_api.py::TestLaMarcaLlegaALaFila"],
@@ -155,7 +155,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     # -----------------------------------------------------------------------
     (
         "un subtotal desconocido se guarda como 0.00",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "        subtotal=extracted.subtotal,",
         "        subtotal=extracted.subtotal or Decimal('0.00'),",
         [

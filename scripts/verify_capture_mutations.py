@@ -99,7 +99,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     ),
     (
         "el origen se pierde y todo se guarda como lectura de modelo",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "        source=extracted.confidence_source,",
         "        source=ConfidenceSource.LLM,",
         [
@@ -108,7 +108,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     ),
     (
         "una fecha ausente se reemplaza por la fecha UTC",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "        expense_date=extracted.expense_date or date.today(),",
         "        expense_date=extracted.expense_date or utcnow().date(),",
         [
@@ -117,7 +117,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     ),
     (
         "una fecha ausente se guarda como fecha de hoy sin avisar",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "        expense_date=extracted.expense_date or date.today(),",
         "        expense_date=extracted.expense_date or extracted.expense_date,",
         [
@@ -189,7 +189,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     ),
     (
         "la idempotencia vuelve a ignorar la empresa",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "        select(TicketModel).where(\n"
         "            TicketModel.source_hash == source_hash,\n"
         "            TicketModel.company_id == company_id,\n"
@@ -227,7 +227,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     ),
     (
         "el comprobante deja de guardarse con el ticket",
-        "app/api/tickets.py",
+        "app/services/ticket_persistence.py",
         "    await guardar_documento(\n"
         "        db, ticket, content,\n"
         "        content_type=content_type,\n"

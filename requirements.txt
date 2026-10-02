@@ -6,9 +6,37 @@ pydantic>=2.6.4
 pydantic-settings>=2.2.1
 email-validator>=2.1.0
 python-multipart>=0.0.9
+python-dotenv>=1.0.0
 pandas>=2.2.1
 pdfplumber>=0.11.0
 openpyxl>=3.1.2
+
+# Lectura de imagenes y PDF
+#
+# Pillow y pypdfium2 YA se usaban en el codigo (app/services/parser_service.py
+# y app/services/ai_extractor.py) y llegaban arrastrados por pdfplumber. Se
+# declaran aqui porque un dia pdfplumber cambie sus dependencias y, sin esto,
+# `render_pdf_pages` deja de funcionar con un ImportError en produccion.
+Pillow>=10.0.0
+pypdfium2>=4.30.0
+
+# OCR local
+#
+# pytesseract es solo el ENVOLTORIO de Python: ademas hace falta el binario del
+# sistema, que no se instala con pip.
+#
+#   macOS:    brew install tesseract tesseract-lang
+#   Debian:   apt-get install tesseract-ocr tesseract-ocr-spa
+#
+# El Dockerfile lo instala. Sin el binario, `OCR_ENABLED=true` no falla al
+# arrancar: falla por cada foto, y el operador ve "fallo de OCR" en lugar de
+# "no instalaste tesseract". `GET /api/v1/scan/ocr` dice cual de los dos falta.
+# pytesseract devuelve arrays de numpy y los convierte con `image_to_data`.
+# Llega arrastrado por pandas y torch, pero se declara porque ahora el codigo de
+# captura lo necesita de forma directa.
+numpy>=1.26.0
+
+pytesseract>=0.3.10
 
 # AI / ML dependencies
 openai>=1.30.0

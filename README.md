@@ -159,6 +159,65 @@ CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 > una real con `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. Sin ella,
 > cualquier token firmado con la clave de otro despliegue sería válido aquí.
 
+### Escaner de carpeta (OCR local, sin APIs de pago)
+
+El escáner lee los comprobantes de una carpeta local y los extrae **sin llamar a
+ninguna API de pago**. Las fotos pasan por Tesseract antes de por el modelo, y las
+que Tesseract lee bien no cuestan nada.
+
+La ruta se configura por variable de entorno y **no** se pide por API: no hay endpoint
+ni parámetro que acepte una carpeta, a propósito, porque eso sería lectura arbitraria
+del disco del servidor.
+
+```env
+TICKETS_INPUT_DIR=/Users/carloslott/Documents/Tickets_app
+OCR_ENABLED=true
+```
+
+La carpeta se crea sola si no existe. En Docker el host la monta en solo lectura y
+`TICKETS_HOST_DIR` dice cuál es:
+
+```yaml
+volumes:
+  - ${TICKETS_HOST_DIR}:/tickets:ro
+```
+
+El `Dockerfile` instala el binario de Tesseract con el paquete de español y falla el
+build si falta. Para correrlo fuera de Docker en macOS:
+
+```bash
+brew install tesseract tesseract-lang
+```
+
+Verifica antes de escanear:
+
+```bash
+curl localhost:8000/api/v1/scan/ocr     # ¿qué motores funcionan y por qué no los otros?
+curl localhost:8000/api/v1/scan/config  # ¿de qué carpeta va a leer?
+```
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| `POST` | `/api/v1/scan/` | Escanea. `company_id` es opcional: sin él inventaría y **no** crea tickets |
+| `GET` | `/api/v1/scan/stats` | Conteos por estado, por motor de lectura y antigüedad |
+| `GET` | `/api/v1/scan/files` | El registro de archivos, filtrable y paginado |
+| `GET` | `/api/v1/scan/files/{id}` | Un archivo con todo su historial de cambios |
+| `POST` | `/api/v1/scan/files/{id}/reprocess` | Relee un archivo; el único camino que pisa correcciones humanas |
+| `GET` | `/api/v1/scan/config` | La configuración efectiva (carpeta, topes) |
+| `GET` | `/api/v1/scan/ocr` | Qué motores de OCR funcionan y por qué no los otros |
+
+Tres cosas que conviene saber antes de usarlo:
+
+- **Escanear dos veces no crea dos tickets.** El registro por archivo (`scan_files`)
+  compara el SHA-256 y salta lo que no cambió. Es lo que evita gastar OCR en los
+  mismos 400 comprobantes en cada corrida.
+- **Un ticket corregido a mano no se sobreescribe.** Aunque el archivo cambie, ni con
+  `reprocesar=true`. Perder trabajo humano en silencio es peor que no reprocesar; el
+  único camino que lo hace es `/reprocess`, que es explícito.
+- **Un ticket leído por OCR se auto-aprueba solo con la evidencia completa** (RFC,
+  subtotal y fecha) y si `subtotal + IVA == total` cuadra. Es más conservador que un
+  PDF con texto, y a propósito: el OCR cambia caracteres sin avisar.
+
 ---
 
 ## Flujo de Trabajo Principal

@@ -43,12 +43,36 @@ Es el mismo patron que ya existe dos veces en este repo, por el mismo motivo:
 
 - `ENCODINGS_PERMITIDOS` en `parser_service.py`: allowlist, no denylist.
 - `content_type_servible()` en `models/ticket_document.py:115`: el tipo que se
-  SIRVE no es el que declaro el cliente.
+   SIRVE no es el que declaro el cliente.
 
 Un sniffed que devuelve UNKNOWN cae a la lista de imagenes, que es donde va
 un comprobante escaneado o fotografiado. Es degradar, no fallar: el documento
-se procesa, lo que se pierde es lavia rapida de pdf_text. Preferimos eso a
+se procesa, lo que se pierde es la via rapida de pdf_text. Preferimos eso a
 rechazar el archivo.
+
+ADEMAS: lo usa el escaner de carpeta
+------------------------------------
+
+`app/services/scan_service.py` recorre un directorio y llama a
+`detectar_tipo_real()` en vez de a `resolver_tipo()`. La razon es que el escaner
+no tiene `file_type` del cliente que corregir: cada archivo tiene una extension
+en el disco, y esa extension es tan poca informacion como el campo del
+formulario. Un `ticket.pdf` que es un JPEG tiene que leerse como imagen, y
+`detectar_tipo_real` es la funcion que hace esa pregunta sin llevar ninguna
+declaracion.
+
+Por eso hay DOS funciones y no una: `resolver_tipo` es para cuando hay una
+declaracion que contrastar, `detectar_tipo_real` es para cuando no la hay.
+
+COEXISTENCIA
+------------
+
+Este archivo lo escribio `feature/informe-cierre-mensual` (commit `f1958fa`) y lo
+amplio `feature/tickets-ocr-api` con las dos funciones del escaner. Al integrar
+las dos ramas hubo un conflicto add/add y se resolvio a favor de ESTE archivo,
+que es la version de ellos mas lo del escaner. No quedo una copia del detector
+en otra carpeta: hay un solo `app/core/archivo_real.py`, y un solo
+`tests/unit/test_archivo_real.py`.
 """
 
 from __future__ import annotations
@@ -62,6 +86,13 @@ FORMATO_PDF = "pdf"
 FORMATO_IMAGEN = "image"
 FORMATO_TEXTO = "text"
 FORMATO_DESCONOCIDO = "desconocido"
+
+# Alias con el nombre que usa el escaner. Se declaran y no se renombra el juego
+# entero de `FORMATO_*` porque esa otra rama ya lo usa en mas cosas, y tener dos
+# juegos de nombres para lo mismo seria peor que un alias.
+TIPO_PDF = FORMATO_PDF
+TIPO_IMAGEN = FORMATO_IMAGEN
+TIPO_TEXTO = FORMATO_TEXTO
 
 # Las firmas se leen del principio del archivo. Cada entrada es el prefijo que
 # tiene que aparecer para que el tipo se considere ese, con su desplazamiento.
@@ -84,6 +115,9 @@ _FIRMAS_IMAGEN: tuple[tuple[bytes, int], ...] = (
     (b"BM", 0),                               # BMP
     (b"II*\x00", 0),                          # TIFF little-endian
     (b"MM\x00*", 0),                          # TIFF big-endian
+    (b"8BPS", 0),                             # PSD
+    # WEBP: es un contenedor RIFF, asi que su marca va en el byte 8, no en el 0.
+    (b"WEBP", 8),
     # HEIC / HEIF / AVIF. Toda caja ISO-BMFF empieza con una caja de tamano de
     # 4 bytes y despues el tipo de 4 letras. La entrada se ancla al byte 4 y no
     # al 0 a proposito: el tamano de esa caja cambia con el archivo
@@ -91,8 +125,12 @@ _FIRMAS_IMAGEN: tuple[tuple[bytes, int], ...] = (
     # una posicion FIJA es lo unico que cubre todos los HEIC sin enumerar
     # tamanos que se quedarian cortos al cambiar de telefono.
     (b"ftyp", 4),
-    (b"8BPS", 0),                             # PSD
 )
+
+# Cuantos bytes se miran para decidir. La firma mas larga es la de PNG (8) y la
+# de mayor offset es la de WEBP (8..12), asi que 16 alcanza con margen para las
+# dos y no lee de mas.
+CABECERA = 16
 
 # Texto plano: se decide por el resultado de decodificar, no por firma. Un
 # `.txt` no tiene numero magico y `factura_gas.txt` es un caso de uso real del
@@ -172,3 +210,65 @@ def resolver_tipo(contenido: bytes, declarado: str | None) -> tuple[str, str | N
         "cliente permite saltarse la cascada y contaminar la medicion de "
         "origen."
     )
+
+
+def detectar_tipo_real(contenido: bytes) -> str | None:
+    """El formato por bytes, o `None` si no es de un formato conocido.
+
+    Es `sniff_tipo` sin la degradacion a imagen, y esa diferencia es lo que la
+    hace usable desde el escaner de carpeta.
+
+    `sniff_tipo` degrada a imagen porque, para un endpoint HTTP, perder la via
+    rapida de `pdf_text` es peor que leer de mas. Para el escaner NO: un `.zip`
+    de la carpeta no es una foto borrosa, es un archivo que no se puede leer, y
+    degradarlo a imagen produce un ticket de relleno en la cola de revision. Ahi
+    es mejor `None` y marcar `NO_SOPORTADO`, que es un estado que el operador
+    puede ver y actuar.
+
+    Lo que no se hace nunca es inventar un comprobante: `None` significa "no se
+    sabe", y el escaner lo registra como tal.
+    """
+    if not contenido:
+        return None
+
+    detectado = sniff_tipo(contenido)
+    if detectado.formato == FORMATO_DESCONOCIDO:
+        return None
+    return detectado.formato
+
+
+def es_texto_plano(contenido: bytes) -> bool:
+    """¿Es esto algo que se puede leer como texto?
+
+    A diferencia del sniffing por firma, aqui si se acepta "es texto", porque
+    un `.txt` con el contenido de un comprobante es un caso real y util. Pero se
+    exige que no tenga bytes nulos ni una proporcion alta de caracteres de
+    control: un ejecutable o un `.xlsx` son binarios que una decodificacion con
+    `errors="replace"` devuelve como texto lleno de caracteres de reemplazo, y de
+    ahi el parser puede leer un numero que parece un total.
+    """
+    if not contenido:
+        return False
+
+    # UTF-16 y UTF-32 ponen nulos en las posiciones alternas de un texto
+    # legible, asi que la regla de nulos de abajo los rechazaria todos. Se
+    # reconoce el BOM ANTES, y no por estetica: el orden de estas dos
+    # comprobaciones es la diferencia entre leer un ticket exportado en UTF-16
+    # y declararlo binario.
+    if contenido[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return True
+
+    if b"\x00" in contenido:
+        return False
+
+    try:
+        texto = contenido.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+
+    muestra = texto[:2048]
+    if not muestra:
+        return False
+
+    controles = sum(1 for c in muestra if ord(c) < 32 and c not in "\t\n\r\f")
+    return controles / len(muestra) < 0.05

@@ -63,6 +63,17 @@ services:
       # Cache de HuggingFace persistente: evita volver a bajar el modelo de
       # embeddings (~470MB) cada vez que se recrea el contenedor.
       - hf_cache:/opt/hf-cache
+      # Carpeta de tickets del host, montada en SOLO LECTURA.
+      #
+      # `:ro` no es descuido: el escaner no borra ni escribe nada, y montarla de
+      # lectura lo hace imposible aunque un bug lo intentara. Un comprobante
+      # original que se borre porque el OCR salio mal es irreversible.
+      #
+      # La ruta del host va primero y la del contenedor despues, que es la que ve
+      # la app. Por eso `TICKETS_INPUT_DIR` dentro del contenedor es `/tickets` y
+      # no la ruta del host: montar `.:/app` y usar la ruta del host seria buscar
+      # `/Users/...` dentro del contenedor, donde no existe.
+      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets_app}:/tickets:ro
     env_file:
       # El orden importa: con la misma variable en los dos archivos gana el
       # ULTIMO, asi que .env.local pisa a .env.dev. Es lo que permite tener
@@ -81,6 +92,11 @@ services:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}@postgres-reconciler:5432/expense_db
       - HF_HOME=/opt/hf-cache
+      # Dentro del contenedor la carpeta SIEMPRE es /tickets. Se sobrescribe aqui
+      # a proposito: el `.env.dev` del host tiene la ruta del host, que no existe
+      # dentro del contenedor, y sin esto la app crearia `/Users/carloslott/...`
+      # en el sistema de archivos del contenedor, como root.
+      - TICKETS_INPUT_DIR=/tickets
     depends_on:
       postgres-reconciler:
         condition: service_healthy

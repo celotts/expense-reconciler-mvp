@@ -49,6 +49,10 @@ from app.core.archivo_real import (
     FORMATO_IMAGEN,
     FORMATO_PDF,
     FORMATO_TEXTO,
+    TIPO_IMAGEN,
+    TIPO_PDF,
+    detectar_tipo_real,
+    es_texto_plano,
     resolver_tipo,
     sniff_tipo,
 )
@@ -211,3 +215,159 @@ def _png_image(ancho: int, alto: int):
 
     img = Image.new("RGB", (ancho, alto), (240, 240, 235))
     return img
+
+
+# ---------------------------------------------------------------------------
+# Lo que el escaner de carpeta necesita encima
+# ---------------------------------------------------------------------------
+#
+# Arriba se prueba que el `file_type` del cliente no decide. Esto prueba el otro
+# lado: cuando NO hay nada que contrastar, porque el archivo viene de un
+# directorio y lo unico que hay es su nombre en el disco, tambien manda lo que
+# dicen los bytes. Un `ticket.pdf` que es un JPEG tiene que leerse como imagen.
+
+
+class TestDetectarSinDeclaracion:
+    """`detectar_tipo_real` es `sniff_tipo` sin la degradacion a imagen.
+
+    La diferencia importa para el escaner: un `.zip` en la carpeta no es una foto
+    borrosa, es un archivo que no se puede leer. Degradarlo a imagen produce un
+    ticket de relleno en la cola de revision; `None` lo marca `NO_SOPORTADO`, que
+    es un estado que el operador puede ver y actuar.
+    """
+
+    @pytest.mark.parametrize(
+        "contenido,esperado",
+        [
+            (b"%PDF-1.7\nresto", TIPO_PDF),
+            (b"\xff\xd8\xff\xe0\x00\x10JFIF", TIPO_IMAGEN),
+            (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", TIPO_IMAGEN),
+            (b"GIF89a\x01\x00\x01\x00", TIPO_IMAGEN),
+            (b"BM\x8a\x00\x00\x00", TIPO_IMAGEN),
+            (b"II*\x00\x08\x00\x00\x00", TIPO_IMAGEN),
+            (b"MM\x00*\x00\x00\x00\x08", TIPO_IMAGEN),
+            (b"RIFF\x24\x00\x00\x00WEBPVP8 ", TIPO_IMAGEN),
+            (b"8BPS\x00\x01", TIPO_IMAGEN),
+            # HEIC / AVIF: la caja `ftyp` va en el byte 4, no en el 0.
+            (b"\x00\x00\x00\x18ftypheic", TIPO_IMAGEN),
+            (b"\x00\x00\x00\x20ftypavif", TIPO_IMAGEN),
+        ],
+    )
+    def test_reconoce_cada_firma(self, contenido, esperado):
+        assert detectar_tipo_real(contenido) == esperado
+
+    def test_webp_se_reconoce_en_el_offset_8(self):
+        """WEBP es un contenedor RIFF: su marca no esta en el byte 0.
+
+        Buscando `WEBP` en el 0, ningun WEBP se reconoceria nunca.
+        """
+        assert detectar_tipo_real(b"RIFF\x24\x00\x00\x00WEBPVP8 ") == TIPO_IMAGEN
+
+    def test_lo_desconocido_es_none_y_no_imagen(self):
+        """Aqui `None` significa "no se sabe", y el escaner lo registra.
+
+        `sniff_tipo` degrada a imagen a proposito, porque para un endpoint HTTP
+        procesar de mas es mejor que rechazar. Un `.bin` de la carpeta no tiene
+        esa justificacion.
+        """
+        escritorio = b"PK\x03\x04\x14\x00\x00\x00"
+        assert detectar_tipo_real(escritorio) is None
+        assert sniff_tipo(escritorio).formato == FORMATO_DESCONOCIDO
+        assert sniff_tipo(escritorio).degradado_a_imagen is True
+
+    def test_archivo_vacio_es_none(self):
+        assert detectar_tipo_real(b"") is None
+
+    def test_un_pdf_con_basura_delante_no_es_pdf(self):
+        """`%PDF` tiene que estar en el byte 0.
+
+        Aceptar con preambulo es aceptar un archivo manipulado, y es lo que haria
+        que un `.bin` que empieza con `%PDF` fuera a pdfplumber.
+        """
+        assert detectar_tipo_real(b"basura%PDF-1.7") is None
+
+    def test_solo_necesita_los_primeros_bytes(self):
+        """La firma esta al principio; recorrer 5 MB no cambia el veredicto.
+
+        El escaner pasa el archivo entero, pero decidir no debe costar leerlo
+        todo: es lo que hace que una carpeta grande se pueda recorrer rapido.
+        """
+        enorme = b"\x89PNG\r\n\x1a\n" + b"\x00" * (5 * 1024 * 1024)
+        assert detectar_tipo_real(enorme) == TIPO_IMAGEN
+
+
+class TestLaExtensionNoManda:
+    """El motivo de que `detectar_tipo_real` exista, en tres casos."""
+
+    def test_un_jpeg_que_se_llama_pdf_es_imagen(self):
+        """`foto.pdf` que es un JPEG: la cascada de PDF lo rompe.
+
+        Con la extension como selector, este archivo se mandaria a pdfplumber,
+        que no lo abre, y la cascada caeria a vision. El resultado suele ser
+        correcto, pero se pago un modelo por algo que el OCR leia gratis, y el
+        motivo del reintento queda invisible.
+        """
+        assert detectar_tipo_real(b"\xff\xd8\xff\xe0\x00\x10JFIF") == TIPO_IMAGEN
+
+    def test_un_pdf_que_se_llama_jpg_es_pdf(self):
+        """`ticket.jpg` que es un PDF: vision cuando el texto era exacto.
+
+        Es el caso caro. Mandarlo a vision funciona, pero el documento tenia
+        capa de texto y se leyo como si fuera una foto. Ademas queda registrado
+        como lectura de modelo, y el reporte de exactitud atribuye al modelo
+        algo que no leyo.
+        """
+        assert detectar_tipo_real(b"%PDF-1.7\n") == TIPO_PDF
+
+    def test_un_texto_que_se_llame_png_no_es_imagen(self):
+        """`nota.png` que es texto: no se manda a vision.
+
+        Pasa con capturas pegadas con el nombre cambiado. Si se creyera en la
+        extension, esto iria a un modelo de vision que devolveria basura.
+        """
+        texto = b"RFC: GODE561231GR8\nTOTAL: 250.00\n" * 3
+        assert detectar_tipo_real(texto) is None
+        assert es_texto_plano(texto) is True
+
+
+class TestEsTextoPlano:
+    def test_texto_utf8_si(self):
+        assert es_texto_plano(b"RFC: GODE561231GR8\nTOTAL: 250.00\n") is True
+
+    def test_binario_con_nulos_no(self):
+        """Los nulos delatan un binario antes de intentar decodificar.
+
+        Un `.xlsx` o un `.exe` empiezan a ser "texto" con `errors="replace"`, y de
+        ahi el parser puede sacar un total. El byte nulo no se puede desambiguar
+        con ningun reemplazo, asi que corta aqui.
+        """
+        assert es_texto_plano(b"PK\x03\x04\x00\x00\x00\x00") is False
+
+    def test_utf8_invalido_no(self):
+        # Bytes que no son UTF-8 valido y NO empiezan con un BOM de UTF-16, para
+        # que la prueba mida lo que dice medir.
+        assert es_texto_plano(b"rece\xff\xfeipt\x80\x81 malformed") is False
+
+    def test_utf16_con_nulos_si(self):
+        """UTF-16 legible tiene nulos en las posiciones alternas.
+
+        Se reconoce el BOM ANTES de la regla de nulos. Si no, un ticket exportado
+        en UTF-16 se declararia binario, y el orden de las dos comprobaciones es
+        la diferencia entre leerlo y perderlo.
+        """
+        texto_utf16 = "RFC: GODE561231GR8\nTOTAL: 250.00".encode("utf-16")
+        assert b"\x00" in texto_utf16  # la premisa del caso
+        assert es_texto_plano(texto_utf16) is True
+
+    def test_vacio_no(self):
+        assert es_texto_plano(b"") is False
+
+    def test_texto_con_muchos_caracteres_de_control_no(self):
+        """Poca tinta visible y mucho control: no es un comprobante.
+
+        El umbral del 5% es arbitrario, y por eso es un numero con nombre y no un
+        0.5 escondido en una comparacion. Un ticket tiene lineas de texto y unos
+        cuantos saltos de linea; un archivo que es casi todo control no tiene un
+        total que leer.
+        """
+        assert es_texto_plano(b"\x01\x02\x03\x04\x05" * 100) is False

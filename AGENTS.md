@@ -24,18 +24,20 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 
 | Capa | Ubicación |
 |---|---|
-| API | `app/api/` — 7 routers bajo `/api/v1` |
-| Captura | `app/services/capture.py` → cascada de 4 escalones |
+| API | `app/api/` — 8 routers bajo `/api/v1` |
+| Captura | `app/services/capture.py` → cascada de 5 escalones |
+| OCR local | `app/services/ocr.py` → Tesseract, lazy |
+| Escáner | `app/services/scan_service.py` → recorre `TICKETS_INPUT_DIR` |
 | Veredicto | `app/services/confidence_gate.py` → checks + umbrales |
-| Persistencia | `app/api/tickets.py:_persist_extracted` + `app/services/document_service.py` |
+| Persistencia | `app/services/ticket_persistence.py` (la llama `app/api/tickets.py:_persist_extracted`) + `document_service.py` |
 | IA | `app/services/ai_client.py` (Ollama / OpenAI / Azure / local) |
 | Auth | `app/core/security.py` (scrypt + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **738** — 523 unit, 215 integration |
+| Tests | **907** — 523 unit + escáner, 215 integration + escáner, 1 skip |
 
 ### Rutas que existen
-`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations`
+`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan`
 Sin auth: solo `GET /health` y `POST /api/v1/auth/login`.
 
 ### Dos máquinas de estado — no las confundas
@@ -72,9 +74,9 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q                          # todo
-python3 -m pytest tests/unit -q                      # 523
-python3 -m pytest tests/integration -q               # 215
+python3 -m pytest tests/ -q           # 907
+python3 -m pytest tests/unit -q
+python3 -m pytest tests/integration -q
 ```
 
 ### Verificación por mutación — correr tras tocar defensa
@@ -82,13 +84,20 @@ Cada defensa de seguridad tiene un test que **muere si quitas la defensa**. Si t
 corre su verificador:
 
 ```bash
-python3 scripts/verify_capture_mutations.py     # 26 mutaciones: ruta de captura
-python3 scripts/verify_export_mutations.py      # inyección de fórmulas
-python3 scripts/verify_auth_mutations.py        # auth + forja de veredictos
-python3 scripts/verify_reconciliation_mutations.py
-python3 scripts/verify_spot_check_mutations.py
-python3 scripts/verify_vscode_mutations.py      # 18 mutaciones: superficie de confianza
+python3 scripts/verify_scan_mutations.py            # 14 mutaciones: escaner de carpeta
+python3 scripts/verify_capture_mutations.py         # 26 mutaciones: ruta de captura
+python3 scripts/verify_export_mutations.py          # 5 mutaciones: fórmulas
+python3 scripts/verify_auth_mutations.py            # 37 mutaciones: auth
+python3 scripts/verify_reconciliation_mutations.py  # 18 mutaciones
+python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
+python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
 ```
+
+> **Si refactorizas código que estos scripts mutan, actualiza la ruta.**
+> `verify_capture_mutations.py` mutaba `app/api/tickets.py`; al mover la
+> persistencia a `app/services/ticket_persistence.py` hay que reapuntarlo. Si no,
+> el script cuenta la defensa como no verificada, y lo hace **en silencio**: un
+> test que no corre parece un test que pasa.
 
 ### El `.vscode/` se versiona, y no es inocuo
 `settings.json` y `tasks.json` están en el repo; el resto de la carpeta sigue ignorado.
@@ -151,29 +160,54 @@ costumbre — el porqué está en el comentario junto al código.
    Si las reglas devuelven algo útil (`provider_name` real y `total > 0`), se devuelve eso y no
    se llama al LLM. Mutación: `verify_capture_mutations.py:36-48`.
 
-4. **El idempotente es `(company_id, source_hash)`, no `source_hash`.**
+4. **El OCR tiene su propia tabla de confianza, más baja.** `CONFIANZA_POR_CAMPOS_OCR`.
+    El OCR cambia caracteres sin avisar: `1,100.00` sale `l,l00.00`, y para un
+    regex `1,1OO.OO` es un total tan válido como el otro. Solo la combinación
+    completa (RFC **y** subtotal **y** fecha) auto-aprueba, y solo si
+    `subtotal + IVA == total` cuadra. **`ConfidenceSource.OCR` es un valor
+    aparte, no una variante de `LLM`**: el reporte agrupa por origen, y mezclar
+    dos readers da un número que no describe a ninguno.
+
+5. **La ruta de la carpeta se configura; no se pide.** `TICKETS_INPUT_DIR` es la
+    única ruta que el escáner conoce. No hay endpoint, ni parámetro, ni campo en
+    el body que acepte una carpeta, y no debe haberlos nunca:
+    `POST /scan {"folder_path": "/"}` sería lectura arbitraria del disco. La
+    contención se comprueba con `is_relative_to` **después** de `resolve()`,
+    porque un symlink a `/etc` no tiene un solo `..` en el texto.
+
+6. **La idempotencia del escáner usa `scan_files`, no `tickets.source_hash`.**
+    `source_hash` deduplica por contenido y no puede contestar "¿este archivo ya
+    se miró?". Sin `relative_path` + `content_hash` + `attempts`, cada corrida
+    vuelve a gastar OCR en los mismos archivos.
+
+7. **Un ticket con `reviewed_at` no se sobreescribe automáticamente.** Ni con
+    `reprocesar=True`. El único camino que lo hace es
+    `POST /scan/files/{id}/reprocess`, que es explícito. Perder trabajo humano en
+    silencio es peor que no reprocesar.
+
+8. **El idempotente es `(company_id, source_hash)`, no `source_hash`.**
    El SHA-256 no lleva empresa dentro: el mismo comprobante en dos empresas es legítimo.
    Índice único parcial `WHERE source_hash IS NOT NULL`.
 
-5. **El usuario se re-consulta en la BD en cada request.**
+9. **El usuario se re-consulta en la BD en cada request.**
    `get_current_user` no confía en los claims. Desactivar una cuenta surte efecto inmediato,
    no en 8 horas cuando caduca el token.
 
-6. **El rate limit va *antes* de gastar scrypt.**
+10. **El rate limit va *antes* de gastar scrypt.**
    Si no, el bloqueo se vuelve amplificador de DoS.
 
-7. **En XLSX solo `forzar_texto`; el apóstrofo es para CSV.**
+11. **En XLSX solo `forzar_texto`; el apóstrofo es para CSV.**
    `neutralizar_formula` mete `'` que Excel consume pero **se ve** en la celda. En XLSX
    `forzar_texto` pone `data_type = "s"` y nada más.
 
-8. **Allowlist de encodings, no denylist.**
+12. **Allowlist de encodings, no denylist.**
    `ENCODINGS_PERMITIDOS = {utf-8, latin-1, cp1252, iso-8859-1}`. utf-7 → XSS, zlib/bz2 → bomba.
 
-9. **El `content_type` que se sirve no es el que declaró el cliente.**
+13. **El `content_type` que se sirve no es el que declaró el cliente.**
    `content_type_servible()` aplica lista cerrada de 7 tipos; el resto es
    `application/octet-stream`. `text/html` y `image/svg+xml` excluidos a propósito.
 
-10. **La aritmética del documento se comprueba antes que RFC y fecha.**
+14. **La aritmética del documento se comprueba antes que RFC y fecha.**
     Es el único check que no depende de nada externo; si va después, un total malformado
     cortocircuita la validación.
 
@@ -187,9 +221,44 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   En `tickets.py` las rutas literales (`/review-queue`, `/spot-check`, `/accuracy`) van
   **antes** de `/{ticket_id}`. En `reconciliations.py`, `GET /{reconciliation_id}` va al
   **final**, después de `/mappings` y `/export/*`, con un comentario que lo explica.
+  En `app/api/scans.py` las literales (`/stats`, `/config`, `/ocr`) van antes de
+  `/files/{file_id}`, y `test_stats_no_choquea_con_files_por_id` lo comprueba con
+  una llamada real, no leyendo el código.
   Al añadir una ruta literal nueva, declárala **antes** de cualquier placeholder.
   Solo colisionan las de **un solo segmento** (`/mappings`), no las de dos o más
   (`/export/excel`, `/mappings/{id}`). Ya se rompió una vez: `docs/known-issues.md` §1.
+
+- **El texto del OCR tiene que conservar las líneas.** `image_to_data` devuelve los
+  números de bloque/párrafo/línea; si se ignoran y se une cada palabra con un salto
+  de línea, el parser no encuentra nada (los regex están anclados a `label: valor` en
+  una línea) y el ticket sale **vacío con la confianza más alta de la cascada**. Es
+  el fallo más caro de este trabajo y no se manifiesta como error.
+
+- **El piso de caracteres del OCR es 60, no 120.** Un comprobante mínimo real
+  (proveedor, RFC, fecha, subtotal, IVA, total) son 112 caracteres; con 120 se
+  rechazaban tickets válidos y cada foto iba a vision a pagar un modelo.
+
+- **Ninguna fecha `AAAA/MM/DD` se leía.** El parser reconocía `DD/MM/YYYY` y
+  `AAAA-MM-DD`, no `AAAA/MM/DD`, que es como los tickets de autocomERCio en México
+  imprimen la fecha. Corregido en `parser_service.py`.
+
+- **`pytesseract` no es el binario.** Es el envoltorio de Python. Sin
+  `tesseract-ocr` del sistema, `OCR_ENABLED=true` falla por cada foto en vez de al
+  arrancar. El Dockerfile instala el binario **y** `tesseract-ocr-spa` en la misma
+  capa, y `GET /scan/ocr` reporta el motivo exacto.
+
+- **Nada de OCR se importa al arrancar.** `easyocr` arrastra torch (~2 GB). La app
+  tiene que poder arrancar para poder *decir* que no hay Tesseract.
+
+- **El router del escáner es `app/api/scans.py`, no `scan.py`.** El repo nombra
+  los routers en plural y los schemas en singular; con `scan.py` en los dos, era el
+  único nombre que no seguía la convención. `app/core/archivo_real.py` lo escribió
+  `feature/informe-cierre-mensual` y lo amplió esta rama: hay **un solo** archivo y
+  **un solo** test, no dos copias.
+
+- **La persistencia vive en `services/ticket_persistence.py`,** y
+  `app/api/tickets.py:_persist_extracted` es una delegación. El escáner la necesita
+  y no puede importar de un router sin invertir la capa.
 
 - **El frontend ofrece los dos caminos, y se elige con un botón explícito.**
   "Aceptar y verificar con IA" → `extract-and-create`, que corre el gate de verdad y puede

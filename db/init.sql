@@ -150,6 +150,54 @@ CREATE TABLE IF NOT EXISTS accounting_mappings (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Registro de los archivos de la carpeta escaneada (0005).
+--
+-- Es el mismo DDL que emite app/models/scan_file.py y que esta en
+-- db/migrations/0005_scan_ledger.sql, por la misma razon que las tablas de
+-- arriba: una base creada desde cero y una migrada tienen que terminar con las
+-- mismas reglas, o el mismo codigo se comporta de dos maneras segun cuando se
+-- erigio la base.
+--
+-- Sin esto, `tickets.source_hash` es lo unico que sabe que un archivo ya se
+-- leyo, y ese hash deduplica por CONTENIDO, no por ruta. No puede contestar
+-- "este archivo ya fue mirado?" ni "por que fallo?", y las dos preguntas son
+-- las que hacen que un escaner no reprocese lo mismo en cada corrida.
+CREATE TABLE IF NOT EXISTS scan_files (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    -- Relativa a TICKETS_INPUT_DIR, no absoluta. Ver app/models/scan_file.py.
+    relative_path VARCHAR(500) NOT NULL,
+    content_hash VARCHAR(64) NOT NULL,
+    file_size BIGINT,
+    file_mtime TIMESTAMP WITH TIME ZONE,
+    detected_format VARCHAR(20),
+    declared_extension VARCHAR(20),
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    read_by VARCHAR(20),
+    last_error TEXT,
+    ticket_id UUID REFERENCES tickets(id) ON DELETE SET NULL,
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
+    first_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_scanned_at TIMESTAMP WITH TIME ZONE,
+    processed_at TIMESTAMP WITH TIME ZONE,
+    CONSTRAINT ck_scan_files_status
+        CHECK (status IN ('PENDIENTE', 'PROCESADO', 'DUPLICADO', 'ERROR', 'NO_SOPORTADO')),
+    CONSTRAINT uq_scan_files_relative_path UNIQUE (relative_path)
+);
+
+CREATE TABLE IF NOT EXISTS scan_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    scan_file_id UUID NOT NULL REFERENCES scan_files(id) ON DELETE CASCADE,
+    action VARCHAR(20) NOT NULL,
+    detail TEXT,
+    actor VARCHAR(255),
+    confidence NUMERIC(4, 3),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_scan_events_action
+        CHECK (action IN ('VISTO', 'CREADO', 'ACTUALIZADO', 'SIN_CAMBIOS',
+                          'OMITIDO', 'ERROR', 'REINTENTO', 'BORRADO'))
+);
+
 -- Los CREATE INDEX de abajo (y los de tickets) son IF NOT EXISTS a proposito:
 -- el script se puede volver a correr sin reventar. Postgres no lo perdona si
 -- no.
@@ -293,3 +341,19 @@ CREATE TABLE IF NOT EXISTS cierres_periodo (
 -- acceso principal, que siempre pregunta por un par concreto.
 CREATE UNIQUE INDEX IF NOT EXISTS ix_cierres_periodo_unico
     ON cierres_periodo (company_id, periodo);
+
+-- Registro del escaneo de carpeta (0005). Los cuatro indices y sus razones estan
+-- en db/migrations/0005_scan_ledger.sql; aqui van por la misma regla: el
+-- `init.sql` de arriba y esa migracion tienen que decir lo mismo, o una base
+-- creada desde cero y una migrada se comportan distinto con el mismo codigo.
+CREATE INDEX IF NOT EXISTS ix_scan_files_status
+    ON scan_files (status);
+
+CREATE INDEX IF NOT EXISTS ix_scan_files_content_hash
+    ON scan_files (content_hash);
+
+CREATE INDEX IF NOT EXISTS ix_scan_files_company
+    ON scan_files (company_id, status);
+
+CREATE INDEX IF NOT EXISTS ix_scan_events_file_created
+    ON scan_events (scan_file_id, created_at);

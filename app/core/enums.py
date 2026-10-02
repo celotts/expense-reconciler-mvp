@@ -48,6 +48,53 @@ class ConfidenceSource(str, Enum):
     RULES = "rules"          # parser deterministico por regex
     LLM_VALIDATED = "llm_validated"  # LLM que ademas paso validacion de consistencia
     PDF_TEXT = "pdf_text"    # texto extraido de PDF digital (sin IA)
+    OCR = "ocr"              # OCR local sobre la foto, y reglas sobre su texto
+
+    # OCR es un valor aparte y no una variante de `LLM` por una razon concreta:
+    # el reporte de exactitud agrupa por `confidence_source`. Si una foto leida
+    # por OCR se guardara como `llm`, su acierto se sumaria al del modelo y la
+    # cuenta "que tan bien lee el modelo" incluiria lecturas que el modelo no
+    # hizo. Un numero de exactitud que mezcla dos lectores distintos no
+    # describe a ninguno de los dos, y es exactamente el fallo que este enum
+    # existe para que no se pueda cometer por descuido.
+    #
+    # El riesgo real es que el dia que se conecte EasyOCR y PaddleOCR, cada uno
+    # con su tasa de error, el mismo valor "ocr" los promedie y el resultado no
+    # signifique nada. Si aparece un segundo motor, se agrega el valor
+    # (`ocr_tesseract`, `ocr_easyocr`) y no se reetiqueta el existente: cambiar
+    # el significado de una cadena ya persistida hace que los historiales
+    # antiguos se lean con el criterio de hoy.
+
+
+class ScanStatus(str, Enum):
+    """Estado de un archivo dentro de la carpeta escaneada.
+
+    Es el estado del ARCHIVO, no el del ticket. No son la misma maquina y no se
+    derivan una de la otra: un archivo puede estar `PROCESADO` y su ticket en
+    `REQUIERE_REVISION`, porque el archivo se leyo bien y lo que habia en el
+    papel no daba para cerrarlo. Confundir los dos fue el error de diseño de la
+    primera version de esta tabla, y hacia que un reintento de OCR pareciera
+    estar fallando cuando lo que estaba pendiente era la revision de una
+    persona.
+
+    Los estados:
+    PENDIENTE     -> visto en la carpeta, todavia sin leer
+    PROCESADO     -> leido; hay ticket ligado (nuevo o actualizado)
+    DUPLICADO     -> mismos bytes que un archivo ya procesado; no se relee
+    ERROR         -> se intento y no se pudo; `attempts` y `last_error` lo dicen
+    NO_SOPORTADO  -> el formato no es del dominio (no es PDF ni imagen)
+    """
+
+    PENDIENTE = "PENDIENTE"
+    PROCESADO = "PROCESADO"
+    DUPLICADO = "DUPLICADO"
+    ERROR = "ERROR"
+    NO_SOPORTADO = "NO_SOPORTADO"
+
+    @property
+    def is_open(self) -> bool:
+        """Estados en los que un reintento tiene sentido."""
+        return self in (ScanStatus.PENDIENTE, ScanStatus.ERROR)
 
 
 class SourceType(str, Enum):

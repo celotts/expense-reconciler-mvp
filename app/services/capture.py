@@ -40,6 +40,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
+from app.services.ocr import OCRNoDisponible
 from app.services.parser_service import (
     TicketExtractionResult,
     _parse_receipt_text,
@@ -51,6 +52,12 @@ logger = logging.getLogger(__name__)
 
 ExtractFn = Callable[[bytes, str], Awaitable["ExtractedInvoice"]]
 ExtractTextFn = Callable[[str], Awaitable["ExtractedInvoice"]]
+
+# El OCR es sincrono (Tesseract y EasyOCR no son awaitables) y devuelve su
+# propio tipo. Se tipa aparte de los otros dos extractores a proposito: es el
+# unico que no es `async`, y declararlo `async` obligaria a envolverlo en un
+# hilo sin ganar nada.
+OcrFn = Callable[[bytes], "ResultadoOCR"]
 
 
 class ExtractionUnavailable(RuntimeError):
@@ -93,6 +100,27 @@ FALLOS_DEL_MODELO = {
 # de unos 40 caracteres un comprobante no tiene proveedor, ni total, ni fecha;
 # lo que suele estar es la marca de agua o el nombre del archivo del escaner.
 PDF_MIN_CHARS_PARA_INTENTAR = 40
+
+# Lo mismo para el OCR, pero con un piso mas alto que el del PDF.
+#
+# El OCR devuelve texto aunque la foto sea una pared: leeria el ruido como
+# letras sueltas y, con el piso del PDF (40), pasaria, se parsearia y con suerte
+# saldria un comprobante sin proveedor que se guarda en la cola. Con este piso
+# mas alto, una foto que no es un ticket se queda en "no se leyo" y se va a
+# vision, que si tiene forma de decir "esto no es un comprobante".
+#
+# EL NUMERO ESTA MEDIDO, NO ESTIMADO. Se puso en 120 y habia que rechazaba
+# tickets de verdad: un comprobante minimo con proveedor, RFC, fecha, subtotal,
+# IVA y total son 112 caracteres. Un cafe de 50 pesos son menos de 40, y ahi si
+# toca aceptar que vision decida. El piso tiene que quedar debajo del ticket mas
+# chico que se quiere aceptar y encima del ruido, y con 120 el primero de los
+# dos estaba mal: 60 esta debajo de los 112 del ticket minimo real y encima de
+# los ~40 de una linea suelta de un muro.
+#
+# Si se sube, hay que medir contra receipts reales, no subirlo "por seguridad":
+# un piso que rechaza comprobantes legitimos no es conservatism, es un escaner
+# que pierde gastos y manda el ticket a vision a pagar un modelo.
+OCR_MIN_CHARS_PARA_INTENTAR = 60
 
 # Cuantas paginas se mandan a vision. Un comprobante de hotel son tres paginas;
 # un CFDI de ferreteria, veinte lineas. Mandar veinte paginas al modelo cuesta
@@ -159,6 +187,73 @@ def confianza_por_campos(
     )
 
 
+# La misma evidencia, leida por OCR, vale menos. Y no por distrusto del OCR en
+# abstracto, sino por una cosa concreta y medible: el OCR cambia caracteres sin
+# avisar. Un "1" se vuelve "l", un "0" se vuelve "O", y un total de 1,100.00
+# puede salir 1,1OO.OO. El regex de total no lo detecta, porque para el regex
+# "1,1OO.OO" es un total tan valido como el otro: no hay forma de saber que
+# esta mal desde el texto.
+#
+# En un PDF con capa de texto eso no pasa: los bytes son los que el emisor
+# escribio. Por eso la tabla de arriba no le aplica a OCR, y usar la misma para
+# los dos seria afirmar que leer una foto es tan seguro como leer el PDF, que es
+# justo lo que este proyecto no hace en ningun otro lado.
+#
+# Que la tabla este descontada no significa que un ticket con OCR no se pueda
+# cerrar solo. Significa que para cerrarlo hace falta la evidencia completa
+# (RFC, subtotal y fecha), y que el gate tiene quenadar la aritmetica. Un OCR
+# que se equivoco en un digito casi siempre rompe `subtotal + IVA == total`, y
+# esa es la comprobacion que atrapa el error. El descuento y la aritmetica
+# hacen el mismo trabajo por los dos lados: el numero baja, y lo que lo baja
+# esta verificado.
+#
+# Esta tabla tambien se escribe entera, con las ocho combinaciones, por la misma
+# razon que la de arriba.
+CONFIANZA_POR_CAMPOS_OCR: tuple[tuple[tuple[bool, bool, bool], float], ...] = (
+    # (rfc, subtotal, fecha) -> confianza, leyendo de una FOTO
+    ((False, False, False), 0.60),  # un total suelto de OCR: es ruido, no un dato
+    ((False, False, True), 0.68),   # fecha y ya: no dice de quien ni cuanto
+    ((True, False, False), 0.72),   # RFC sin subtotal no deja verificar nada
+    ((False, True, False), 0.76),   # el subtotal solo, con fecha perdida
+    ((True, False, True), 0.80),
+    ((False, True, True), 0.86),    # dos de tres: a revision
+    ((True, True, False), 0.88),    # RFC + subtotal, sin fecha
+    ((True, True, True), 0.93),     # completo, y el gate exige que la aritmetica cuadre
+)
+
+
+def confianza_por_campos_ocr(
+    tiene_rfc: bool,
+    tiene_subtotal: bool,
+    tiene_fecha: bool,
+) -> float:
+    """La confianza de un parseo hecho sobre texto que viene de OCR.
+
+    Es una tabla aparte y no `confianza_por_campos` con un factor, porque un
+    factor no puede expresar lo que pasa aqui: la diferencia entre "un total
+    suelto de PDF" y "un total suelto de OCR" no es la misma que la diferencia
+    entre "todo de PDF" y "todo de OCR". Un total sin RFC ni fecha es un dato
+    dudoso en cualquier papel, y es ruido en una foto.
+    """
+    for (rfc, subtotal, fecha), confianza in CONFIANZA_POR_CAMPOS_OCR:
+        if (rfc, subtotal, fecha) == (tiene_rfc, tiene_subtotal, tiene_fecha):
+            return confianza
+    raise AssertionError(
+        "falta una combinacion en CONFIANZA_POR_CAMPOS_OCR: "
+        f"rfc={tiene_rfc} subtotal={tiene_subtotal} fecha={tiene_fecha}"
+    )
+
+
+def _confianza_de_evidence(source: ConfidenceSource) -> float:
+    """Un quinto escalon para las tablas de confianza: de donde salio el texto.
+
+    Va en un solo punto a proposito. Si cada llamador eligiera la tabla, un
+    escalon nuevo podria marcar con la tabla de PDF lo que leyo de una foto, y
+    el numero seria mas alto que el de un PDF con la misma evidencia.
+    """
+    return confianza_por_campos_ocr if source is ConfidenceSource.OCR else confianza_por_campos
+
+
 def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
     """Traduce lo que devuelve el modelo a lo que el gate entiende.
 
@@ -223,7 +318,7 @@ def _marcar_por_reglas(
     que importa: no es la certeza del modelo, es el conteo de evidencia.
     """
     resultado.confidence_source = source
-    resultado.confidence = confianza_por_campos(
+    resultado.confidence = _confianza_de_evidence(source)(
         tiene_rfc=bool(resultado.provider_tax_id),
         tiene_subtotal=resultado.subtotal is not None,
         tiene_fecha=resultado.expense_date is not None,
@@ -266,12 +361,31 @@ def _mejor_de(primero: TicketExtractionResult, segundo: TicketExtractionResult):
 # ---------------------------------------------------------------------------
 
 
+def _ocr_por_defecto(datos: bytes) -> "ResultadoOCR":
+    """El OCR real. Se resuelve aqui y no al importar, por dos razones.
+
+    Una: `app.services.ocr` no importa pytesseract ni EasyOCR al cargarse, pero
+    si lo hiciera, importar `capture` arrastraria los dos. La app tiene que
+    poder arrancar en una maquina sin Tesseract para poder reportar que no lo
+    tiene.
+
+    Dos: los tests inyectan un OCR falso por `capture_ticket(ocr_reader=...)` y
+    asi no dependen de que haya un binario instalado. Que la suite pase en una
+    maquina sin Tesseract no es un detalle: si dependiera del binario, el que
+    no lo tiene veria tests rojos y aprenderia a saltarselos.
+    """
+    from app.services.ocr import leer_imagen
+
+    return leer_imagen(datos)
+
+
 async def capture_ticket(
     content: bytes,
     file_type: str,
     *,
     extract_from_image: ExtractFn | None = None,
     extract_from_text: ExtractTextFn | None = None,
+    ocr_reader: OcrFn | None = None,
 ) -> TicketExtractionResult:
     """Punto de entrada unico de un comprobante.
 
@@ -281,6 +395,9 @@ async def capture_ticket(
     Args:
         content: bytes del archivo tal como lo subio el usuario.
         file_type: `image`, `pdf` o `text`.
+        ocr_reader: como leer texto de una foto. Por defecto el OCR local. Se
+            inyecta para probar la politica de cascada sin un binario de
+            Tesseract instalado.
 
     Returns:
         `TicketExtractionResult` con `confidence` y `confidence_source`
@@ -293,7 +410,7 @@ async def capture_ticket(
         ExtractionUnavailable: tipo de archivo desconocido.
     """
     if file_type == "image":
-        return await _desde_imagen(content, extract_from_image)
+        return await _desde_imagen(content, extract_from_image, ocr_reader)
 
     if file_type == "text":
         texto = content.decode("utf-8", errors="replace")
@@ -310,12 +427,12 @@ async def capture_ticket(
         # Se intenta vision antes de rendirse: un ticket vale mas que una
         # excepcion.
         logger.info("pdfplumber no pudo abrir el PDF (%s); se intenta vision", exc)
-        return await _vision_pdf(content, extract_from_image)
+        return await _vision_pdf(content, extract_from_image, ocr_reader)
 
     if len(texto.strip()) < PDF_MIN_CHARS_PARA_INTENTAR:
         # Escaneado: no hay nada que parsear. Un regex sobre cadena vacia
         # devolveria ceros, y un ticket de ceros es un ticket falso.
-        return await _vision_pdf(content, extract_from_image)
+        return await _vision_pdf(content, extract_from_image, ocr_reader)
 
     return await _cascada_texto(texto, ConfidenceSource.PDF_TEXT, extract_from_text)
 
@@ -371,12 +488,73 @@ async def _cascada_texto(
     return modelo
 
 
-async def _vision_pdf(content: bytes, extract_from_image: ExtractFn | None) -> TicketExtractionResult:
-    """PDF sin texto: se renderizan las paginas y se leen con vision."""
-    if extract_from_image is None:
-        return _ilegible(
-            "el PDF no tiene capa de texto y no hay extractor de vision disponible"
-        )
+def _ocr_de_paginas(paginas: list[bytes], ocr: OcrFn) -> TicketExtractionResult | None:
+    """El mejor resultado de OCR sobre las paginas renderizadas, o `None`.
+
+    `None` significa "el OCR no dio nada utilizable" y es distinto de "el OCR
+    no esta instalado": los dos llevan a vision, pero se registran distinto
+    porque uno se arregla instalando un paquete y el otro mirando la foto.
+
+    Una sola pagina legible basta. En un comprobante de varias paginas, la que
+    tiene el resumen es la que tiene el total, y las demas son articulos o
+    condiciones. Se elige la de mayor total por la misma razon que en
+    `_vision_pdf`: el resumen esta al final.
+    """
+    utiles: list[TicketExtractionResult] = []
+
+    for indice, pagina in enumerate(paginas):
+        try:
+            leido = ocr(pagina)
+        except OCRNoDisponible as exc:
+            logger.info("OCR no disponible para la pagina %d: %s", indice + 1, exc)
+            return None
+        except Exception as exc:
+            # Una pagina que el OCR no puede leer no invalida las otras: un
+            # comprobante de tres paginas con una ilegible sigue siendo legible
+            # por las otras dos.
+            logger.warning("el OCR fallo en la pagina %d: %s", indice + 1, exc)
+            continue
+
+        texto = (leido.texto or "").strip()
+        if len(texto) < OCR_MIN_CHARS_PARA_INTENTAR:
+            continue
+
+        resultado = _marcar_por_reglas(_parse_receipt_text(texto), ConfidenceSource.OCR)
+        if _es_extraccion_util(resultado):
+            utiles.append(resultado)
+
+    if not utiles:
+        return None
+
+    if len(utiles) == 1:
+        return utiles[0]
+
+    mejor = max(utiles, key=lambda r: r.total_amount)
+    # El origen se vuelve a poner explicito. Viene de `_marcar_por_reglas` como
+    # `ocr`, pero si otro dia `_mejor_de` o una comparacion de aqui se llevan el
+    # resultado mas alto sin su `confidence_source`, esta linea es la que
+    # impide que un multi-pagina se reporte como si lo hubiera leido un modelo.
+    mejor.confidence_source = ConfidenceSource.OCR
+    return mejor
+
+
+async def _vision_pdf(
+    content: bytes,
+    extract_from_image: ExtractFn | None,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """PDF sin capa de texto: se renderiza y se lee con OCR, luego con vision.
+
+    El mismo orden que una foto suelta, y por la misma razon: un PDF escaneado
+    es una foto dentro de un PDF. Antes de que existiera el OCR, cada escaneo
+    iba directo a un modelo de vision; ahora se lee en local primero y solo se
+    paga el modelo cuando la lectura local no da un comprobante.
+
+    Que las paginas se rendericen para el OCR y no solo para vision es lo que
+    hace que esto no sea un feature aparte: el mismo `render_pdf_pages` alimenta
+    los dos caminos, y no hay una segunda manera de convertir un PDF en imagen.
+    """
+    ocr = ocr_reader or _ocr_por_defecto
 
     try:
         paginas = render_pdf_pages(
@@ -390,6 +568,15 @@ async def _vision_pdf(content: bytes, extract_from_image: ExtractFn | None) -> T
 
     if not paginas:
         return _ilegible("el PDF no tiene paginas")
+
+    por_ocr = _ocr_de_paginas(paginas, ocr)
+    if por_ocr is not None:
+        return por_ocr
+
+    if extract_from_image is None:
+        return _ilegible(
+            "el PDF no tiene capa de texto y no hay extractor de vision disponible"
+        )
 
     resultados: list[TicketExtractionResult] = []
     fallos_del_modelo: list[str] = []
@@ -444,8 +631,74 @@ async def _vision_pdf(content: bytes, extract_from_image: ExtractFn | None) -> T
     return mejor
 
 
-async def _desde_imagen(content: bytes, extract_from_image: ExtractFn | None) -> TicketExtractionResult:
-    """Foto o escaneo suelto: vision, no hay otra forma."""
+async def _desde_imagen(
+    content: bytes,
+    extract_from_image: ExtractFn | None,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """Foto o escaneo: primero OCR local, y vision solo si el OCR no alcanza.
+
+    El orden es el que decide el costo. Antes de este escalon, una foto
+    SIEMPRE iba a un modelo de vision, incluso cuando era un ticket impreso
+    legible que Tesseract leia sin equivocarse. Con OCR primero:
+
+    - una foto buena no toca ningun modelo, y sale con `confidence_source=ocr`,
+      que es la verdad sobre quien leyo el papel;
+    - una foto mala (borrosa, rotada, con la tinta corrida) cae a vision, que
+      es el unico escalon que puede con ella, y queda registrada como `llm`, que
+      tambien es la verdad.
+
+    Que los dos caminos esten etiquetados distinto es lo que permite que
+    el reporte de exactitud diga algo. Si los dos se guardaran como `llm`, el
+    numero mezcla "el modelo leyo esto" con "Tesseract leyo esto y la foto
+    estaba bien", y promedia dos cosas que no se parecen.
+
+    El OCR no se consulta si no hay quien lo lea. Un `OCRNoDisponible` no es un
+    fallo de este escalon: es la configuracion de la maquina, y se sigue al
+    siguiente escalon igual, que es lo que hacia que la app sirviera antes de
+    que existiera este modulo.
+    """
+    ocr = ocr_reader or _ocr_por_defecto
+
+    try:
+        leido = ocr(content)
+    except OCRNoDisponible as exc:
+        logger.info("OCR no disponible, se va directo a vision: %s", exc)
+    except Exception as exc:
+        # Un OCR que revienta (imagen corrupta, motor caido) no puede tumbar la
+        # lectura: todavia queda vision. Se registra y se sigue.
+        logger.warning("el OCR fallo (%s); se intenta vision", exc)
+    else:
+        texto = (leido.texto or "").strip()
+        if len(texto) < OCR_MIN_CHARS_PARA_INTENTAR:
+            logger.info(
+                "el OCR devolvio %d caracteres, menos que el minimo; se intenta vision",
+                len(texto),
+            )
+        else:
+            # Aqui NO se llama a `extract_from_text`. A diferencia de un PDF con
+            # texto, el texto de una foto es una transcripcion con errores: si
+            # las reglas no lo entienden, es porque el documento no se leyo bien,
+            # y un modelo al que se le pasa esa transcripcion va a suponer un
+            # total. Vision, que mira el papel, tiene mas probabilidades que un
+            # modelo leyendo los errores de Tesseract. Y asi una foto cuesta un
+            # modelo, no dos.
+            resultado = _marcar_por_reglas(
+                _parse_receipt_text(texto), ConfidenceSource.OCR
+            )
+            if _es_extraccion_util(resultado):
+                return resultado
+            logger.info(
+                "el OCR leyo el papel pero las reglas no lo entendieron "
+                "(proveedor=%r total=%s); se mira la imagen",
+                resultado.provider_name, resultado.total_amount,
+            )
+
+    return await _vision_de_imagen(content, extract_from_image)
+
+
+async def _vision_de_imagen(content: bytes, extract_from_image: ExtractFn | None) -> TicketExtractionResult:
+    """Vision: el ultimo escalon, el que mas caro es."""
     if extract_from_image is None:
         return _ilegible("no hay extractor de vision disponible")
 

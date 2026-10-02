@@ -120,8 +120,13 @@ test-files/*.pdf
 .ipynb_checkpoints
 
 # Environment files
-# Estos NUNCA se versionan: contienen SECRET_KEY y el password de la base.
-# La plantilla que si se versiona es .env.example
+#
+# Estos NUNCA se versionan. `.env.dev` contiene el SECRET_KEY y el password de
+# la base de datos de esta maquina. El commit 9226f67 los saco del historico, pero
+# eso no protege el archivo que esta en el disco ahora.
+#
+# La plantilla SI se versiona, y por eso el `!` despues: sin el, el patron
+# `.env*` tambien se la lleva.
 .env
 .env.local
 .env.*.local
