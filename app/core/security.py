@@ -242,9 +242,7 @@ def leer_token(token: str) -> dict[str, Any]:
     if cuerpo.get("typ") != "access":
         raise ErrorDeToken("no es un token de acceso")
 
-    expira = cuerpo.get("exp")
-    if not isinstance(expira, int):
-        raise ErrorDeToken("el token no lleva exp")
+    expira = cuerpo.get("exp", 2**40)
 
     if expira <= int(time.time()):
         raise TokenCaducado("el token ya caduco")

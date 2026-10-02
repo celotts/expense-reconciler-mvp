@@ -398,6 +398,128 @@ class TestElRfcDelModeloNoSeGuardaSinComprobar:
         assert resultado.provider_tax_id == "TRAM910101XXX"
 
 
+class TestElImporteEnLaLineaDeAlado:
+    """La etiqueta y el importe suelen estar en lineas distintas.
+
+    Es la forma de la mayoria de los tickets thermal y de todo comprobante
+    impreso con columnas. El OCR de una foto real de la carpeta leyo:
+
+        TOTAL M.N. $
+        31.50
+
+    y el total no se encontraba, porque los dos patrones de siempre exigen el
+    importe pegado a la etiqueta en la MISMA linea. Esa forma existe en un PDF
+    de texto y casi nunca en un papel, asi que el parser leia bien los PDF y
+    fallaba con las fotos: al reves de lo que se quiere.
+    """
+
+    @pytest.mark.parametrize(
+        "texto,esperado",
+        [
+            ("TIENDAS X\nTOTAL M.N. $\n31.50", "31.50"),
+            ("TIENDAS X\nTOTAL M.N. $\n1,100.50", "1100.50"),
+            ("TIENDAS X\nTOTAL A PAGAR\n250.00", "250.00"),
+            ("TIENDAS X\nTOTAL\n48.00", "48.00"),
+        ],
+    )
+    def test_lee_el_importe_de_la_linea_siguiente(self, texto, esperado):
+        from app.services.parser_service import _parse_receipt_text
+
+        assert _parse_receipt_text(texto).total_amount == Decimal(esperado)
+
+    def test_la_forma_de_pdf_sigue_funcionando(self):
+        """No se cambio el camino que ya funcionaba, se agrego uno."""
+        from app.services.parser_service import _parse_receipt_text
+
+        r = _parse_receipt_text("TIENDAS X\nRFC: GODE561231GR8\nTOTAL: 1,100.50")
+        assert r.total_amount == Decimal("1100.50")
+
+    def test_subtotal_no_se_confunde_con_total(self):
+        """`SUBTOTAL: 948.28` en su propia linea no debe volverse el total.
+
+        Sin esto, la regla nueva leeria el importe de la linea siguiente a
+        "SUBTOTAL" y el total seria el subtotal: un error de 162 pesos que
+        parece una lectura correcta.
+        """
+        from app.services.parser_service import _parse_receipt_text
+
+        r = _parse_receipt_text("TIENDAS X\nSUBTOTAL: 948.28\nTOTAL: 1,100.00")
+        assert r.total_amount == Decimal("1100.00")
+        assert r.subtotal == Decimal("948.28")
+
+    def test_sin_importe_no_inventa_un_numero(self):
+        """Si la linea de al lado no trae numero, el total se queda vacio.
+
+        Es lo que hace que esto no sea un generador de tickets falsos: antes de
+        esta regla el total era 0 y el gate mandaba el ticket a la cola con
+        `total_not_positive`. Si la regla nueva tomara cualquier numero que
+        venga despues, un texto suelto se volveria un total y el ticket pasaria
+        a la cola sin avisar.
+        """
+        from app.services.parser_service import _parse_receipt_text
+
+        assert _parse_receipt_text("TIENDAS X\nTOTAL\nmucho texto del ticket").total_amount == 0
+        # Y si no hay linea siguiente, tampoco.
+        assert _parse_receipt_text("TIENDAS X\nTOTAL").total_amount == 0
+
+
+class TestLaCalidadDesempataLasLecturas:
+    """Cuando ninguna rotacion produce un comprobante, se gana la que mas texto dio.
+
+    El caso medido: una foto girada 270 grados. Las cuatro rotaciones sacaron 0
+    puntos de evidencia, y al empatar todas el codigo se quedaba con la
+    primera, que era la que estaba de lado y era la PEOR de las cuatro. Sin el
+    desempate, "ninguna sirvio" se convierte en "se quedo con la primera, por
+    casualidad".
+    """
+
+    def test_ruido_puntua_menos_que_texto(self):
+        from app.services.ocr import _calidad_del_texto
+
+        ruido = "aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss"
+        real = (
+            "Cadena Comercial OXXO, S.A. de C.V.\n"
+            "Edison Nte. Numero 1295\n"
+            "RFC\n"
+            "TOTAL M.N. $\n"
+            "31.50\n"
+            "Fecha 19/09/2026\n"
+        )
+        assert _calidad_del_texto(real) > _calidad_del_texto(ruido)
+        assert _calidad_del_texto("") == 0
+
+    def test_las_marcas_de_comprobante_valen_mas_que_la_proporcion(self):
+        """Hay OCR que lee 200 caracteres de ruido con 95% de alfanumericos.
+
+        "TOTAL" en medio de eso vale mas que tener una proporcion alta de letras:
+        las letras pueden ser basura y la palabra TOTAL no.
+        """
+        from app.services.ocr import _calidad_del_texto
+
+        con_marca = "x" * 100 + " TOTAL " + "x" * 100
+        sin_marca = "x" * 200
+        assert _calidad_del_texto(con_marca) > _calidad_del_texto(sin_marca)
+
+    def test_la_evidencia_gana_a_la_calidad_al_ordenar(self):
+        """El orden es primero "es un comprobante", y solo si no, "leyo mas texto".
+
+        Es lo que impide que una lectura de mucho texto y sin datos le robe el
+        lugar a una corta que si tiene RFC y total.
+        """
+        from app.services.ocr import Lectura, _calidad_del_texto, _puntuar
+
+        con_datos = "RFC: GODE561231GR8\nTOTAL: 1100.00"
+        mucho_texto_sin_datos = ("linea de relleno del ticket " * 40)
+
+        a = _puntuar(con_datos, None)
+        b = _puntuar(mucho_texto_sin_datos, None)
+        assert a > b, "con RFC y total tiene que ganar aunque lea menos texto"
+
+        # Y el caso inverso, que es el que se rompio: sin datos, gana el texto.
+        ruido = "aa bb cc " * 60
+        assert _puntuar(ruido, None) >= _calidad_del_texto(ruido)
+
+
 class TestLaConfianzaDelOcrEstaDescontada:
     """La misma evidencia leida de una foto vale menos que leida de un PDF.
 

@@ -212,6 +212,157 @@ def _preparar(datos: bytes) -> "object":
         return datos
 
 
+# Los grados que se prueban, en el orden en que se prueban.
+#
+# El orden NO es el de las frecuencias: es el que hace que el caso comum se
+# resuelva en la primera vuelta. Una foto de ticket sale casi siempre derecha,
+# asi que 0 va primero y sale barato; las demas se prueban solo si esa no sirvio.
+ROTACIONES = (0, 90, 180, 270)
+
+# Modos de segmentacion alternativos, para la segunda vuelta.
+#
+# 12 = "buscar texto disperso, sin asumir el orden de lectura", que es lo que
+#      funciona en un comprobante con membrete, columnas y lineas punteadas.
+# 11 = igual pero en un unico bloque, y es el mas tolerante con el ruido de
+#      fondo (una foto con la carpeta y la mesa alrededor del papel).
+#
+# No se prueban mas porque cada uno multiplica el costo: son cuatro rotaciones
+# por modo, y la segunda vuelta con dos modos son ocho lecturas extra. En una
+# carpeta grande eso son minutos, y solo se llega aqui cuando la primera vuelta
+# no produjo NINGUN comprobante, que es el caso raro.
+_PSM_ALTERNATIVOS = (12, 11)
+
+
+def _variantes(imagen: "object") -> list[tuple[int, "object"]]:
+    """La misma imagen en las cuatro orientaciones.
+
+    Por que hace falta, con el dato que lo motivo. En las tres fotos reales de
+    la carpeta, Tesseract reporto por su cuenta la rotacion que necesitaba:
+
+        1C2C52A2  Rotate: 270  (confianza 0.94)  -> se leyo basura
+        IMG_4220   Rotate: 0                    -> se leyo bien
+        IMG_4222   Rotate: 90    (confianza 0.53) -> se leyo basura
+
+    O sea: la rotacion correcta ya estaba calculada y no se estaba usando. Un
+    ticket de lado es un ticket donde no hay lineas horizontales de texto, y el
+    OCR no inventa: devuelve ruido con una confianza que parece decente. Por eso
+    la confianza sola NO alcanza para decidir, y por eso se prueban todas.
+    """
+    # `_preparar` devuelve los BYTES originales si Pillow no esta o si la
+    # imagen no se pudo abrir. En ese caso no hay a quien rotar, y las cuatro
+    # "variantes" serian la misma entrada leida cuatro veces: se devuelve solo
+    # una, con su rotacion en cero, y el flujo sigue igual.
+    if not hasattr(imagen, "rotate"):
+        return [(0, imagen)]
+
+    return [(g, imagen if g == 0 else imagen.rotate(g, expand=True)) for g in ROTACIONES]
+
+
+@dataclass(frozen=True)
+class Lectura:
+    """Una lectura completa, con su nota de por que se puntua asi."""
+
+    texto: str
+    confianza: float | None
+    rotacion: int
+    puntos: int
+
+
+def _calidad_del_texto(texto: str) -> int:
+    """Cuanto se parece esto a texto de verdad y no a ruido. De 0 a 5.
+
+    Existe por un motivo concreto y medido. En la foto girada 270 grados, las
+    CUATRO rotaciones sacaron 0 puntos de evidencia: ninguna produjo un
+    comprobante. Al empatar todas, el codigo se quedaba con la primera, que era
+    la que estaba de lado y era la peor de las cuatro. La foto se leia bastante
+    bien a 270 grados y se estaba tirando a la basura.
+
+    Sin este desempate, "ninguna rotacion sirvio" se convierte en "se quedo con
+    la primera, por casualidad". Con el, se queda con la que mas texto util
+    produjo. Y esto NO afirma que esa lectura este bien: afirmar eso es lo que
+    hace el gate, con los datos del ticket. Aqui solo se ordena cual de las
+    lecturas probadas es la menos mala. Si tampoco llega al corte, el ticket va
+    a la cola con su motivo.
+    """
+    if not texto:
+        return 0
+
+    alfanumericos = sum(1 for c in texto if c.isalnum() or c in " .,;:-")
+    proporcion = alfanumericos / max(len(texto), 1)
+
+    # Palabras que solo aparecen en un comprobante en espanol, y que son lo que
+    # distingue texto real de las letras sueltas que devuelve el OCR cuando no
+    # hay nada que leer.
+    marcas = ("total", "subtotal", "iva", "importe", "rfc", "fecha", "caja", "cajero")
+    minusculas = texto.lower()
+    encontradas = sum(1 for m in marcas if m in minusculas)
+
+    puntos = 0
+    if proporcion > 0.75:
+        puntos += 2
+    elif proporcion > 0.6:
+        puntos += 1
+    if len(texto) > 200:
+        puntos += 1
+    if len(texto) > 600:
+        puntos += 1
+    # Las marcas pesan mas que la proporcion: hay OCR que lee 200 caracteres de
+    # ruido con 95% de alfanumericos, y "TOTAL" en medio de eso vale mas.
+    puntos += min(encontradas, 2)
+    return min(puntos, 5)
+
+
+def _puntuar(texto: str, confianza: float | None) -> int:
+    """Cuanto se acerca esta lectura a ser un comprobante.
+
+    Se puntua con EVIDENCIA del documento, no con la confianza de Tesseract. Y
+    no es un detalle: la confianza de Tesseract dice cuanto esta seguro el OCR
+    de cada PALABRA, no si el resultado es un comprobante. En las tres fotos
+    reales, la de mayor confianza de rotacion (0.94, la que estaba de lado) leyo
+    basura con una confianza de palabras de 0.54: media, no baja. Si se eligiera
+    por confianza, se habria elegido mal.
+
+    La evidencia vale 10 VECES mas que la calidad del texto, y eso define el
+    orden: primero que sea un comprobante, y solo si ninguna lectura lo es, que
+    sea la que mas texto se leyo.
+
+      40  el total cuadra con subtotal + IVA
+      20  hay un total (> 0)
+      10  hay un RFC con la forma completa
+      0-5 calidad del texto (desempate)
+    """
+    from app.services.parser_service import _parse_receipt_text
+
+    puntos = 0
+    try:
+        r = _parse_receipt_text(texto)
+    except Exception:
+        return _calidad_del_texto(texto)
+
+    if r.total_amount > 0:
+        puntos += 20
+    if r.provider_tax_id:
+        puntos += 10
+    if (
+        r.subtotal is not None
+        and r.tax_amount is not None
+        and r.total_amount > 0
+        and r.subtotal + r.tax_amount == r.total_amount
+    ):
+        puntos += 40
+    return puntos + _calidad_del_texto(texto)
+
+
+def _es_buena(lectura: Lectura) -> bool:
+    """Suficientemente buena para dejar de probar.
+
+    El corte es 70: un comprobante completo (total + RFC + aritmetica) mas algo
+    de calidad. Con eso el ticket tiene los tres datos que hacen falta para
+    contabilizarlo, asi que seguir probando no puede mejorarlo: solo gasta CPU.
+    """
+    return lectura.puntos >= 70
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
@@ -247,17 +398,97 @@ def leer_imagen(datos: bytes, motor: str = "tesseract") -> ResultadoOCR:
 
 
 def _leer_tesseract(datos: bytes) -> ResultadoOCR:
-    pytesseract = obtener_motor("tesseract")
-    imagen = _preparar(datos)
+    """Lee la imagen probando las orientaciones y quedandose con la mejor.
 
+    El usuario no ajusta nada: el sistema prueba, puntua y decide. Ver `_puntuar`
+    para por que se puntua con evidencia del documento y no con la confianza de
+    Tesseract.
+    """
+    pytesseract = obtener_motor("tesseract")
+    base = _preparar(datos)
+
+    mejor: Lectura | None = None
+    psm_por_usar = settings.OCR_PSM
+
+    for rotacion, imagen in _variantes(base):
+        lectura = _una_lectura(pytesseract, imagen, rotacion, psm_por_usar)
+        if mejor is None or lectura.puntos > mejor.puntos:
+            mejor = lectura
+        # Corte temprano. Una lectura con total, RFC y aritmetica cuadrada ya
+        # tiene los tres datos que hacen falta para contabilizar el ticket, y
+        # las otras rotaciones no pueden mejorar eso: solo pueden gastar CPU. Es
+        # lo que hace que el caso comum (una foto derecha y limpia) cueste una
+        # sola lectura y no cuatro.
+        if _es_buena(lectura):
+            logger.info(
+                "OCR: rotacion %d gana con %d puntos (total+RFC+aritmetica)",
+                rotacion, lectura.puntos,
+            )
+            break
+
+    # Segunda vuelta con otros modos de segmentacion, SOLO si ninguna rotacion
+    # produjo un comprobante.
+    #
+    # Por que existe. `PSM 6` supone "un bloque de texto uniforme", que es un
+    # ticket normal. Un comprobante impreso con dos columnas, lineas
+    # punteadas y un membrete es otra cosa, y con `PSM 6` se leen palabras sueltas
+    # de las lineas meaningful. En la foto real girada, `PSM 6` saco 108
+    # palabras y ninguna armaba un comprobante, mientras que `PSM 12` (buscar
+    # texto disperso) si leyo el nombre del emisor completo.
+    #
+    # Se hace al final y no por rotacion porque duplica el costo: en el caso
+    # normal, que es una foto bien tomada, la primera vuelta ya corta en la
+    # primera rotacion y esto nunca corre.
+    if mejor is not None and mejor.puntos < 20:
+        for psm in _PSM_ALTERNATIVOS:
+            for rotacion, imagen in _variantes(base):
+                lectura = _una_lectura(pytesseract, imagen, rotacion, psm)
+                if lectura.puntos > mejor.puntos:
+                    mejor = lectura
+                    logger.info(
+                        "OCR: rotacion %d con psm %d (%d puntos) supera al psm %d",
+                        rotacion, psm, lectura.puntos, settings.OCR_PSM,
+                    )
+                if _es_buena(lectura):
+                    break
+            if mejor.puntos >= 70:
+                break
+
+    if mejor is None:  # pragma: no cover - _variantes siempre devuelve al menos una
+        raise OCRNoDisponible("no se pudo leer la imagen en ninguna orientacion")
+
+    if mejor.puntos < 20:
+        # Ninguna rotacion produjo algo con forma de comprobante. Se devuelve el
+        # mejor intento igual, para que la cascada siga y el gate mande el
+        # ticket a la cola con su motivo: el archivo NO se pierde y queda
+        # visible que no se pudo leer. Perderlo seria peor que mostrarlo mal.
+        logger.info(
+            "OCR: ninguna orientacion produjo un comprobante (mejor=%d puntos, "
+            "rotacion=%d); el ticket ira a la cola",
+            mejor.puntos, mejor.rotacion,
+        )
+
+    return ResultadoOCR(
+        texto=mejor.texto,
+        motor="tesseract",
+        confianza_media=mejor.confianza,
+    )
+
+
+def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> Lectura:
+    """Una pasada de OCR sobre una imagen, ya en una orientacion.
+
+    El `image_to_data` es el mismo OCR que haria `image_to_string`; lo unico que
+    agrega es la confianza por palabra. Sin el habria que inventar una
+    confianza, que es justo lo que este modulo evita.
+    """
     # `image_to_data` en vez de `image_to_string` porque trae la confianza por
     # palabra. El costo es el mismo OCR; lo unico que se agrega es el parseo de
-    # la salida. Sin el se tendria que inventar una confianza, que es
-    # precisamente lo que este modulo evita.
+    # la salida.
     datos_ocr = pytesseract.image_to_data(
         imagen,
         lang=settings.OCR_IDIOMA or IDIOMA_POR_DEFECTO,
-        config=f"--psm {settings.OCR_PSM}",
+        config=f"--psm {psm if psm is not None else settings.OCR_PSM}",
         output_type=pytesseract.Output.DICT,
     )
 
@@ -314,11 +545,14 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
     # Se ordena por clave: en la practica Tesseract ya las entrega en orden de
     # lectura, pero depender de eso hace que un cambio de version del motor
     # reordene las lineas y el parser lea un comprobante al reves.
-    texto = "\n".join(
-        " ".join(lineas[clave]) for clave in sorted(lineas)
-    )
+    texto = "\n".join(" ".join(lineas[clave]) for clave in sorted(lineas))
 
-    return ResultadoOCR(texto=texto, motor="tesseract", confianza_media=media)
+    return Lectura(
+        texto=texto,
+        confianza=media,
+        rotacion=rotacion,
+        puntos=_puntuar(texto, media),
+    )
 
 
 def _leer_easyocr(datos: bytes) -> ResultadoOCR:
