@@ -217,9 +217,13 @@ sin las tres no se afirma que la lectura sea buena.
 | `IMG_4222.jpeg` | modelo | nada útil | foto arrugada y a contraluz; 90 s de moondream para un total en 0 |
 
 > **El OCR cambia cifras sin avisar.** En la foto de Oxxo el papel dice `51.50` y Tesseract leyó
-> `31.50`: un importe que pasa todos los checks del gate y es un error financiero. Está medido y
-> documentado en `docs/known-issues.md` §21. Por eso un ticket de OCR nunca auto-aprueba y la
-> revisión humana es la que confirma el importe.
+> `31.50` con **confianza 93**: un importe que pasa todos los checks del gate y es un error
+> financiero. Medido sobre las tres fotos con `scripts/medir_precision_ocr.py`: **33.3% del
+> total**, contra el 98.5% que se necesita. No es un problema de resolución ni de preprocesado
+> —cuatro caminos se probaron y se descartaron con medición en `docs/known-issues.md` §21—, sino
+> que **un lector único no es estable en cifras**. Hoy nada se afirma de las fotos: la regla
+> del gate manda todo a la cola y una persona confirma el importe. Lo que falta es poder
+> **medirlo**: por eso existe el script de medición.
 
 El `Dockerfile` instala el binario de Tesseract con el paquete de español y falla el
 build si falta. Para correrlo fuera de Docker en macOS:

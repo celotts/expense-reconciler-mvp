@@ -409,17 +409,29 @@ TOTAL: $89.50
         assert _parse_receipt_text(text).expense_date is None
 
 
-# Texto tal cual lo devolvio Tesseract sobre la foto real `IMG_4220.jpeg`
-# (carneMart, CMT QUERETARO REVOLUCION), recortado a las lineas que deciden la
-# fecha. La fecha real es 28/09/26 y la dice el papel en la linea del folio.
+# Texto con la FORMA que devolvio Tesseract sobre la foto real `IMG_4220.jpeg`,
+# recortado a las lineas que deciden la fecha. La fecha real es 28/09/26 y la
+# dice el papel en la linea del folio.
 #
-# Se pega el texto REAL y no uno inventado porque el caso que dio origen a esta
-# regla es ese texto: las tres fotos de la carpeta. En las tres, la fecha del
-# gasto no tiene la palabra "fecha" delante, y en las tres el parser la perdia.
-TEXTO_OCR_CON_FECHA_EN_EL_FOLIO = """CMT QUERETARO REVOLUCION
-AU. REVOLUCION NO. 403 COL. PLUTARCO ELIAS CALLES
+# POR QUE ESTE TEXTO NO ES EL REAL
+#
+# Es la misma forma con nombres inventados, y esa es la decision correcta: el
+# caso que dio origen a la regla es la FORMA de la linea ("una fecha de
+# vencimiento mas arriba, una fecha junto al folio mas abajo"), no el comercio
+# concreto. Poner el texto real metia en el repositorio el nombre, el domicilio
+# y el numero de folio de una tienda de verdad, que es exactamente lo que este
+# proyecto no hace con los comprobantes: `scripts/medir_precision_ocr.py` por
+# eso exige que la verdad rotulada viva FUERA del repo. Un test fixture no es
+# una excepcion a esa regla.
+#
+# Lo que si se conserva del texto real, porque es lo que prueba el caso: la
+# palabra "VENCEN" mas arriba (para que la fecha de vencimiento no gane), el
+# folio con "#" delante de la fecha, el anio de dos digitos, y el ruido del OCR
+# ("TOTAL AN" en vez de "TOTAL:", que es como se lee el papel).
+TEXTO_OCR_CON_FECHA_EN_EL_FOLIO = """CARNICERIA EJEMPLO SA DE CV
+AV. FICTICIO NO. 100 COL. CENTRO CP 00000
 TUS PUNTOS VENCEN: 31/10/2026
-#0436110 28/09/26 09:52 POS #01 TDA 4452
+#0000000 28/09/26 09:52 POS #01 TDA 0000
 TOTAL AN $97.56
 """
 
@@ -472,11 +484,11 @@ class TestLaFechaQueVaPegadaAlFolio:
         """Sin folio, nota ni "#", la fecha no se toca.
 
         Este es el caso MEDIDO de la foto `IMG_4222.jpeg`: el OCR leyo
-        `o: 261001000017) 01-10-2028`, con la "N" de "No:" perdida y el 6 del
+        `o: 000000000000) 01-10-2028`, con la "N" de "No:" perdida y el 6 del
         ano leido como 8. Sin marca de comprobante la fecha no se lee, el ticket
         va a la cola con `date_missing`, y no queda un gasto fechado en 2028.
         """
-        texto = "MERCASTAR\no: 261001000017) 01-10-2028 1Ój5T:19\nTOTAL: $48.00\n"
+        texto = "TIENDA EJEMPLO\no: 000000000000) 01-10-2028 1Ój5T:19\nTOTAL: $48.00\n"
         assert _parse_receipt_text(texto).expense_date is None
 
     def test_un_ano_imposible_llega_al_gate_como_date_in_future(self):
@@ -493,7 +505,7 @@ class TestLaFechaQueVaPegadaAlFolio:
         from app.services.confidence_gate import gate_ticket
 
         resultado = _parse_receipt_text(
-            "MERCASTAR\nNo: 261001000017 01-10-2028\nTOTAL: $48.00\n"
+            "TIENDA EJEMPLO\nNo: 000000000000 01-10-2028\nTOTAL: $48.00\n"
         )
         assert resultado.expense_date == date(2028, 10, 1)
 

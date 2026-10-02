@@ -93,6 +93,25 @@ python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
 ```
 
+### Medir la exactitud de las fotos
+El muestreo del 5% entra **solo** sobre tickets `AUTO_APROBADO`, y un ticket de OCR nunca
+llega ahí, así que `GET /tickets/accuracy` no puede decir nada sobre las fotos (medido: las
+filas `confidence_source='ocr'` tienen `spot_check_status = NULL`). Para eso está:
+
+```bash
+# La verdad se rotula a mano mirando el papel, y vive FUERA del repo.
+python3 scripts/medir_precision_ocr.py --init ~/Documents/Tickets_app
+python3 scripts/medir_precision_ocr.py /tickets --min-exactitud-total 0.985
+```
+
+Corre **dentro del contenedor** (necesita Tesseract): `docker compose exec expense-api python
+/app/scripts/medir_precision_ocr.py /tickets`. Estado medido sobre las tres fotos reales:
+**33.3% del total** contra el 98.5% pedido. Los cuatro caminos que se probaron para
+subirlo (resolución, preprocesado, voto entre lecturas, re-OCR del recorte) están
+**descartados con medición** en `docs/known-issues.md` §21: no los vuelvas a intentar sin una
+razón nueva. Lo que queda es un segundo motor (EasyOCR, ya soportado en el código y no
+instalado) y muchas más fotos rotuladas.
+
 > **Si refactorizas código que estos scripts mutan, actualiza la ruta.**
 > `verify_capture_mutations.py` mutaba `app/api/tickets.py`; al mover la
 > persistencia a `app/services/ticket_persistence.py` hay que reapuntarlo. Si no,

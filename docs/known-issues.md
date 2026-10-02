@@ -182,42 +182,114 @@ contenedor. Es aceptable para "una máquina, un contador" y no para un despliegu
 > actual ya evita que vuelva a pasar.
 
 ### 21. El OCR cambia cifras y el gate no lo detecta — **el peor defecto medido**
-Tres fotos reales de `~/Documents/Tickets_app`, leídas con el código de hoy:
 
-| Archivo | El papel | Tesseract leyó | Consecuencia |
+**Medido con `scripts/medir_precision_ocr.py` sobre las tres fotos reales de
+`~/Documents/Tickets_app`, rotuladas a mano mirando el papel:**
+
+| Archivo | El papel | El sistema leyó | Veredicto |
 |---|---|---|---|
-| `1C2C52A2…jpeg` (Oxxo) | **51.50** | **31.50** | total equivocado que pasa `total_not_positive` |
-| `IMG_4220.jpeg` | 97.56 | 97.56 | correcto |
-| `IMG_4222.jpeg` | 48.00 | `5000` (de `$48,00`) | cae a visión, 90 s de moondream, total 0.00 |
+| `1C2C52A2…jpeg` (Oxxo) | **51.50** | **31.50** | fallo |
+| `IMG_4220.jpeg` | 97.56 | 97.56 | acierto |
+| `IMG_4222.jpeg` | 48.00 | 0.00 | fallo |
 
-`51.50` → `31.50` es un 5 leído como 3, y **ningún check lo frena**: hay total, hay proveedor,
-el gate da `PENDIENTE` solo porque falta la fecha. Es un importe financiero equivocado con
-apariencia de dato.
+**Exactitud del total: 33.3%.** El objetivo pedido es 98.5%. Con tres comprobantes esto
+no es una medida, es una anécdota (el script lo avisa), pero el orden de magnitud
+no es un detalle: falta un factor de tres, no un punto.
 
-**Por qué no se arregla con una regla.** Se probó la regla evidente —"el total de OCR necesita
-que otro importe del documento lo respalde"— y **rompe el producto**: el fixture canónico de OCR
-del proyecto (`tests/unit/test_capture_ocr.py::TEXTO_OCR`) tiene un único `TOTAL: 1100.00` y
-pasaría a leerse como 0, mandando a la cola fotos perfectamente legibles. El False Negative
-—una persona revisando un comprobante bueno— es más barato que el False Positive —el sistema
-afirmando una cifra que el papel no dice—, pero la regla sola no es lo bastante precisa para
-no pagar el primero de forma masiva. **Queda abierto, no resuelto.**
+| Campo | Exactitud |
+|---|---|
+| `tax_amount` | 100.0% |
+| `provider_name` | 33.3% |
+| `expense_date` | 33.3% |
+| `total_amount` | 33.3% |
+| `provider_tax_id` | 0.0% |
+| `subtotal` | 0.0% |
 
-Lo que sí contiene el daño hoy: un ticket de OCR no auto-aprueba sin RFC **y** subtotal **y**
-fecha (regla 4 de `AGENTS.md`), y estas tres no tienen ninguna de las tres. Para cerrar el
-problema de verdad hace falta que el OCR deje de equivocarse en cifras —deskew, o un segundo
-motor que vote—, no que el parser adivine.
+**Y lo que frena el daño hoy: nada, dentro del ticket.** El total `31.50` equivocado pasa
+`total_not_positive`, porque es positivo. Lo único que lo detiene es que al ticket le falte
+RFC, subtotal y fecha, y por regla 4 no auto-aprueba. El daño está contenido por la
+conservadurismo del gate, no por una defensa sobre la cifra.
 
-**Dos reglas que NO se adoptaron, a propósito, y con el caso que las refuta:**
+#### El caso, al detalle
+
+El recorte donde Tesseract coloca `31.50` **dice 51.50** (verificado mirando el recorte), con
+**confianza 93**. Es un 5 leído como 3 y la confianza del motor no dice nada.
+
+#### Lo que se probó y NO funciona, con la medición
+
+Cuatro caminos, los cuatro descartados con datos y no con opinión. **No los vuelvas a
+intentar sin una razón nueva:**
+
+1. **No es resolución.** `_preparar` reduce a 2000 px de ancho; la foto es de 3840. A
+   resolución nativa el total se sigue leyendo `31.50` (confianza 93). Subir la resolución no
+   cambia el resultado.
+2. **No es preprocesado.** Unsharp, SHARPEN, mediana y umbrales globales **no lo arreglan:
+   lo desplazan**. Medido sobre el recorte, aciertos de `51.50` sobre 4 modos de
+   segmentación: sin tratar 4/4 · unsharp r2 2/4 · mediana 3 2/4 · **umbral 110 0/4, que lee
+   `51.80`** · unsharp r4 4/4 · umbral 165 4/4. Cualquier ajuste que "arregle" esta foto
+   rompe otra; es elegir el parámetro que da el número que ya sabes. Un filtro de whitelist de
+   dígitos empeora: `551.50`, `01.50`.
+3. **No es un voto entre lecturas.** `_leer_tesseract` ya hace 12 lecturas (4 rotaciones ×
+   3 PSM) y descarta todas menos una. Medido: **11 de las 12 no encuentran total, y la única
+   que lo encuentra es la equivocada.** No hay contradicción que detectar: hay una lectura
+   afortunada. Una regla de "mayoría" no tiene nada que votar.
+4. **No es un re-OCR del recorte.** El recorte ceñido a los dígitos lee `31.50`; includída la
+   etiqueta lee `51.50`; con un recorte genérico (todo el ancho de la banda) lee un **tercer**
+   valor, `21.50`. Que el recorte a mano dé el correcto es casualidad de ajuste, no una
+   técnica: la caja se eligió después de ver la imagen.
+
+**Lo que sí se descubrió de paso:** el contexto de maquetación desambigua el glifo. Con
+`TOTAL M.N. $` a la vista Tesseract lee `51.50`; con los dígitos solos, `31.50`. Es un
+mecanismo real y explicable (el LSTM usa los tokens vecinos), pero no se puede explotar sin
+saber de antemano dónde está el total, y saberlo requiere haberlo leído.
+
+#### Lo que sí funciona, y es lo que queda
+
+**Nadie afirma nada de las fotos.** Con la regla 4 vigente, ningún ticket de OCR auto-aprueba:
+entra a la cola con `REQUIERE_REVISION` y una persona confirma el importe contra el papel. La
+precisión de lo que el sistema **afirma** sobre fotos es 100% por construcción, porque no
+afirma nada. Eso es defendible; lo que no es defendible es que nadie pueda **medir** si la
+cosa mejora, y ese era el agujero real:
+
+> **El reporte de exactitud no puede medir el OCR.** El muestreo del 5% entra solo sobre
+> tickets `AUTO_APROBADO` (`ticket_persistence.py`), y un ticket de OCR nunca llega ahí.
+> Medido en la base de este proyecto: las dos filas con `confidence_source='ocr'` tienen
+> `spot_check_status = NULL`. `GET /api/v1/tickets/accuracy` agrupa por origen, así que su
+> fila `ocr` siempre dirá "sin evidencia". **El número que se necesita no existe todavía.**
+
+Por eso se agregó `scripts/medir_precision_ocr.py`: mide la ruta real de OCR contra una verdad
+rotulada a mano, por fuera del ciclo de vida del ticket, y es lo único hoy que puede decir si
+un cambio en el OCR ayudó o empeoró.
+
+**Los comprobantes personales NO van al repositorio.** El archivo `verdad.json` vive en la
+carpeta de las fotos (`--init` lo escribe ahí). El repo lleva el script y
+`scripts/verdad_ejemplo.json`, con datos inventados.
+
+#### Camino que sí queda, y cuesta
+
+La evidencia dice que un lector único e inestable no da 98.5% en cifras. Lo que puede darlo:
+
+- **Un segundo motor que vote.** EasyOCR ya está soportado en el código
+  (`ocr.py:_leer_easyocr`, `obtener_motor("easyocr")`) y **no está instalado** porque arrastra
+  torch (~2 GB). La inestabilidad de un lector es justamente lo que un segundo lector
+  detecta. Con dos motores, el total se afirma solo si **ambos** coinciden; si no, a la cola.
+  Contra: AGENTS.md prohíbe arrastrar torch al arranque y el presupuesto de RAM es de 7.7 GB
+  con 7.2 GB ya comprometidos.
+- **Más fotos rotuladas.** Con 3 no se mide nada. Con 30 se empieza a ver una tendencia; para
+  afirmar 98.5% con intervalo de confianza hacen falta cientos. Es trabajo de captura, no de
+  código, y es lo que decide si el resto vale la pena.
+
+#### Dos reglas del parser que NO se adoptaron, y el caso que las refuta
 
 - **El RFC sin etiqueta.** El ticket de Oxxo trae `(CCO-860523-1N4)` en el encabezado sin la
-  palabra "RFC", y `RFC_CANDIDATO_RE` lo matchearía. **No se adoptó** porque en `IMG_4220.jpeg`
-  el mismo patrón captura `R.F.C OCO-030116-UR4`, que es de **ONUS COMERCIAL** (la empresa que
-  factura), no de `CMT QUERETARO REVOLUCION` (el comercio). Sin etiqueta no hay forma de
-  distinguirlos, y un RFC ajeno cuenta como evidencia en el gate: puede hacer auto-aprobar un
-  ticket malo. RFC ausente es mejor que RFC equivocado.
-- **La etiqueta pegada: `ARTIC. TOTAL:` → `ATOTAL:`.** El OCR funde la etiqueta, el parser no la
-  reconoce y el total queda en 0. Relajar el patrón haría leer `5000` (que es `48,00` con el
-  punto perdido) como el total: 100× y 4.02 exactos de error en una fila que parecería buena.
+  palabra "RFC", y `RFC_CANDIDATO_RE` lo matchearía. **No se adoptó** porque en
+  `IMG_4220.jpeg` el mismo patrón captura un RFC con etiqueta `R.F.C`, que es de la
+  **empresa que factura** (una tercera), no del comercio que emitió el ticket. Sin
+  etiqueta no hay forma de distinguirlos, y un RFC ajeno cuenta como evidencia en el gate.
+  RFC ausente es mejor que RFC equivocado.
+- **La etiqueta pegada: `ARTIC. TOTAL:` → `ATOTAL:`.** El OCR funde la etiqueta, el parser no
+  la reconoce y el total queda en 0. Relajar el patrón haría leer `5000` (que es `48,00` con
+  el punto perdido) como el total: 100× de error en una fila que parecería buena.
 
 ### 22. scrypt estaba por debajo del mínimo de OWASP — ✅ CORREGIDO
 `app/core/security.py` usaba `N=2**14` con `p=1`, y el comentario afirmaba que era "el mínimo

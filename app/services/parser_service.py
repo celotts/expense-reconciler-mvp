@@ -96,7 +96,7 @@ MARCA_DEL_COMPROBANTE_RE = re.compile(
     r"(?:\b(?:folio|nota|ticket|comprobante|caja|operacion|transaccion|corte)\b"
     r"|#\d"
     # "No" suelta matchearia media frase en espanol ("NO HAY CAMBIO"), asi que
-    # exige el numero del comprobante detras: "No: 261001000017".
+    # exige el numero del comprobante detras: "No: 000000000000".
     r"|\bno\.?:?\s*\d)",
     re.IGNORECASE,
 )
@@ -141,7 +141,7 @@ def _fecha_del_comprobante(lines: list[str]) -> date | None:
 
     Se probo la version mas generosa, que aceptaba cualquier fecha de cuatro
     digitos sin marca, y fallo con la foto real: en el ticket de la ferreteria el
-    OCR leyo `o: 261001000017) 01-10-2028` (el papel dice 2026; el 6 se leyo 8)
+    OCR leyo `o: 000000000000) 01-10-2028` (el papel dice 2026; el 6 se leyo 8)
     y la regla generica tomo esa fecha. Con la estrecha, esa linea no se acepta
     porque no dice "No:" sino "o:", y el ticket va a la cola con `date_missing`.
 

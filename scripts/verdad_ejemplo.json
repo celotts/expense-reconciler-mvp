@@ -1,0 +1,28 @@
+{
+  "_COMO_SE_LLENA": "Una linea por foto. Los valores se leen MIRANDO EL PAPEL, no desde el sistema. Lo que el papel no trae va en null: null es 'no venia', y no cuenta como error del OCR. Este archivo es un EJEMPLO con datos inventados; el tuyo va fuera del repositorio, en la carpeta de tus fotos (--init lo escribe).",
+  "_POR_QUE_FUERA_DEL_REPO": "Un comprobante lleva RFC, proveedor, fecha y monto. Un repositorio es publico en cuanto alguien lo comparte, y 'lo borro despues' no lo despublica. Ademas los montos de este ejemplo son inventados a proposito: si alguien lo usa tal cual, mide datos que no existen.",
+  "_CAMPOS": [
+    "provider_name",
+    "provider_tax_id",
+    "expense_date",
+    "subtotal",
+    "tax_amount",
+    "total_amount"
+  ],
+  "EJEMPLO-INVENTADO.jpg": {
+    "provider_name": "Comercio de ejemplo SA de CV",
+    "provider_tax_id": null,
+    "expense_date": "2026-09-28",
+    "subtotal": null,
+    "tax_amount": null,
+    "total_amount": "97.56"
+  },
+  "EJEMPLO-INVENTADO-2.jpg": {
+    "provider_name": "Otro comercio inventado",
+    "provider_tax_id": null,
+    "expense_date": null,
+    "subtotal": "1450.00",
+    "tax_amount": "232.00",
+    "total_amount": "1682.00"
+  }
+}
