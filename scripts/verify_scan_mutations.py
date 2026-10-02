@@ -97,11 +97,22 @@ MUTACIONES = [
     Mutacion(
         nombre="la idempotencia se decide por mtime en vez de por hash",
         archivo="app/services/scan_service.py",
-        viejo="        if hash_actual == fila.content_hash and not forzar:",
+        viejo="        if hash_actual == fila.content_hash and not forzar and not falta_atribuir:",
         nuevo="        if True:",
         prueba="test_la_comparacion_usa_sha256_del_contenido",
     ),
     # --- 5. El trabajo humano no se pisa -----------------------------------
+    Mutacion(
+        # Sin esta, el atajo de "sin cambios" mira solo el hash y un archivo
+        # inventariado (leido, `PROCESADO`, SIN ticket) jamas se podria atribuir
+        # a una empresa: el siguiente escaneo lo daria por sin cambios. Es el
+        # bug que aparecio al escanear la carpeta de verdad.
+        nombre="un archivo inventariado nunca se puede atribuir a una empresa",
+        archivo="app/services/scan_service.py",
+        viejo="        falta_atribuir = fila.ticket_id is None and company_id is not None",
+        nuevo="        falta_atribuir = False",
+        prueba="test_inventariar_y_despues_atribuir_crea_el_ticket",
+    ),
     Mutacion(
         nombre="se sobreescribe un ticket ya revisado por una persona",
         archivo="app/services/scan_service.py",
@@ -155,7 +166,11 @@ MUTACIONES = [
     ),
     Mutacion(
         nombre="las acciones validas divergen entre el modelo y el SQL",
-        archivo="db/migrations/0005_scan_ledger.sql",
+        # 0008 y no 0005: `feature/informe-cierre-mensual` ya tenia un 0005
+        # (`0005_source_hash_por_empresa.sql`) y dos archivos con el mismo
+        # numero no se pueden ordenar. Este salio de ahi, asi que es el
+        # siguiente.
+        archivo="db/migrations/0008_scan_ledger.sql",
         viejo="'REINTENTO', 'BORRADO'",
         nuevo="'REINTENTO', 'BORRADO', 'INVENTADO'",
         prueba="test_las_acciones_validas_coinciden_entre_modelo_y_sql",

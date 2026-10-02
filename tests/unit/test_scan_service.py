@@ -312,6 +312,71 @@ class TestEscanearEsIdempotente:
         tickets = (await db_session.execute(select(TicketModel))).scalars().all()
         assert len(tickets) == 1, "dos corridas no pueden crear dos tickets"
 
+    async def test_inventariar_y_despues_atribuir_crea_el_ticket(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """Un archivo inventariado despues SI se puede atribuir a una empresa.
+
+        El caso se vio escaneando la carpeta de verdad: el primer `POST /scan`
+        sin `company_id` dejo los 3 archivos registrados con su hash, y el
+        siguiente con empresa los reporto "sin cambios" y no creo ningun
+        ticket. Esos archivos ya no se atribuian nunca por la via normal y
+        habia que reprocesarlos uno por uno a mano.
+
+        La causa: el atajo de "sin cambios" miraba solo el hash, y el hash ya
+        estaba escrito por el escaneo de inventario. Pero `PROCESADO` quiere
+        decir "se leyo", NO "esta contabilizado": un archivo leido en el
+        inventario esta `PROCESADO` y sin ticket, y son esos dos hechos juntos
+        los que hay que mirar.
+        """
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "ocho.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+
+        # 1. Inventario: sin empresa, no crea tickets pero registra el archivo.
+        inventario = await scan_service.escanear(db_session, None, "ana")
+        assert inventario.archivos_vistos == 1
+        assert inventario.nuevos == 0
+        tickets_despues_del_inventario = (
+            await db_session.execute(select(TicketModel))
+        ).scalars().all()
+        assert tickets_despues_del_inventario == []
+
+        fila = (await db_session.execute(select(ScanFileModel))).scalar_one()
+        assert fila.ticket_id is None, "el inventario no debe crear ticket"
+        assert fila.content_hash, "pero si guarda el hash, para no releerlo"
+
+        # 2. Con empresa: el mismo archivo, sin cambios de bytes, debe crear el
+        #    ticket. Es el paso que se rompia.
+        con_empresa = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1, (
+            "un archivo inventariado se debe poder atribuir despues a una empresa"
+        )
+        assert con_empresa.nuevos == 1
+        assert tickets[0].total_amount == Decimal("1100.00")
+
+    async def test_despues_de_atribuir_ya_si_es_idempotente(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """Y una vez atribuido, volver a pasar no crea un segundo ticket.
+
+        Es la otra mitad de la prueba de arriba: si el arreglo hiciera que
+        CUALQUIER pasada releyera, el escaneo volveria a gastar OCR en cada
+        corrida y habria perdido lo que resolvia.
+        """
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "ocho.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+
+        await scan_service.escanear(db_session, None, "ana")
+        await scan_service.escanear(db_session, test_company.id, "ana")
+        tercera = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1
+        assert tercera.sin_cambios == 1, "ya tiene ticket: ya no hay nada que hacer"
+        assert tercera.nuevos == 0
+
     async def test_la_segunda_pasada_no_incrementa_los_intentos(
         self, db_session, test_company, carpeta, sin_modelo, monkeypatch
     ):

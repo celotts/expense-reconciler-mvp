@@ -465,14 +465,14 @@ class TestElRegistro:
 class TestElEsquemaNoDiverge:
 
     def test_las_tablas_existen_en_la_migracion_y_en_init(self):
-        """`db/init.sql` y `0005_scan_ledger.sql` tienen que decir lo mismo.
+        """`db/init.sql` y `0008_scan_ledger.sql` tienen que decir lo mismo.
 
         `init.sql` solo corre con el volumen vacio. Si las dos no coinciden, una
         base nueva y una migrada se comportan distinto con el mismo codigo, que
         es la forma mas lenta de tener dos verdades.
         """
         init = (RAIZ / "db" / "init.sql").read_text(encoding="utf-8")
-        migracion = (RAIZ / "db" / "migrations" / "0005_scan_ledger.sql").read_text(
+        migracion = (RAIZ / "db" / "migrations" / "0008_scan_ledger.sql").read_text(
             encoding="utf-8"
         )
 
@@ -482,7 +482,7 @@ class TestElEsquemaNoDiverge:
 
     def test_los_indices_coinciden(self):
         init = (RAIZ / "db" / "init.sql").read_text(encoding="utf-8")
-        migracion = (RAIZ / "db" / "migrations" / "0005_scan_ledger.sql").read_text(
+        migracion = (RAIZ / "db" / "migrations" / "0008_scan_ledger.sql").read_text(
             encoding="utf-8"
         )
 
@@ -505,7 +505,7 @@ class TestElEsquemaNoDiverge:
         from app.core.enums import ScanStatus
 
         init = (RAIZ / "db" / "init.sql").read_text(encoding="utf-8")
-        migracion = (RAIZ / "db" / "migrations" / "0005_scan_ledger.sql").read_text(
+        migracion = (RAIZ / "db" / "migrations" / "0008_scan_ledger.sql").read_text(
             encoding="utf-8"
         )
 
@@ -516,7 +516,7 @@ class TestElEsquemaNoDiverge:
     def test_las_acciones_validas_coinciden_entre_modelo_y_sql(self):
         """La constraint de `action` tiene la misma lista en los dos lados."""
         texto_modelo = fuente("scan_model")
-        migracion = (RAIZ / "db" / "migrations" / "0005_scan_ledger.sql").read_text(
+        migracion = (RAIZ / "db" / "migrations" / "0008_scan_ledger.sql").read_text(
             encoding="utf-8"
         )
 

@@ -12,8 +12,24 @@ from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
 # Mexican RFC: 3-4 letters (persona fisica/moral), 6 digits (YYMMDD), 3 alnum
 # (homoclave). The letter group is LAZY so a 3-letter RFC like WAL910101XXX
 # matches as a whole instead of swallowing 4 letters and shifting the groups.
+#
+# El patron exige la forma COMPLETA de un RFC mexicano antes de hacer match: 3
+# o 4 letras, 6 digitos (anio y mes de constitucion) y 3 de homoclave, en tres
+# grupos que se rearman. Con grupos fijos y `\b` en los dos extremos, un
+# candidato incompleto no hace match y `None` es la respuesta correcta.
+#
+# El `\b` del principio no es cosmetico: sin el, el final de una palabra mas
+# larga se engancha y `FACTURARFC: ...` encontraria el RFC igual.
+RFC_CANDIDATO_RE = re.compile(
+    r"\b([A-Z&Ñ]{3,4})\s?-?\s?(\d{6})\s?-?\s?([A-Z0-9]{3})\b",
+    re.IGNORECASE,
+)
+
+# La forma "RFC: XXX..." con el valor pegado al label, que es como lo imprimen
+# los tickets. El patron del candidato va dentro de un grupo que NO captura, y
+# los tres grupos del RFC quedan libres para poder rearmarlos.
 RFC_LABEL_RE = re.compile(
-    r"(?:rfc|nit|tax\s*id)\s*[:]?\s*([A-Z&Ñ]{3,4}?\d{6}[A-Z0-9]{3})\b",
+    r"(?:rfc|nit|tax\s*id)\s*[:]?\s*(?:" + RFC_CANDIDATO_RE.pattern + r")",
     re.IGNORECASE,
 )
 
@@ -583,7 +599,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     for line in lines[:15]:
         rfc_match = RFC_LABEL_RE.search(line)
         if rfc_match and provider_tax_id is None:
-            provider_tax_id = rfc_match.group(1)
+            # Se rearman los TRES grupos, no se toma el grupo 1. El patron exige
+            # la forma completa (letras + 6 digitos + homoclave) para que un
+            # numero mal leido no entre, y el valor normalizado son los tres
+            # grupos pegados, sin los guiones que algunos tickets traen.
+            provider_tax_id = "".join(rfc_match.groups())
 
         if provider_name != UNKNOWN_PROVIDER:
             continue
@@ -690,7 +710,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # RFC - emitter (first one found wins)
         rfc_match = RFC_LABEL_RE.search(line)
         if rfc_match and provider_tax_id is None:
-            provider_tax_id = rfc_match.group(1)
+            # Se rearman los TRES grupos, no se toma el grupo 1. El patron exige
+            # la forma completa (letras + 6 digitos + homoclave) para que un
+            # numero mal leido no entre, y el valor normalizado son los tres
+            # grupos pegados, sin los guiones que algunos tickets traen.
+            provider_tax_id = "".join(rfc_match.groups())
     
     # Fallback: if no total found, try generic total match
     if total_amount == Decimal("0.00"):

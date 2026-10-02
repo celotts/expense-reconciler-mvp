@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0005 - Escaneo de carpeta: el registro de los archivos
+-- 0008 - Escaneo de carpeta: el registro de los archivos
 -- =====================================================================
 --
 -- POR QUE EXISTE ESTE ARCHIVO
@@ -45,7 +45,7 @@
 -- Como aplicarla (volumen existente):
 --
 --     docker exec -i expense_pgvector psql -U postgres -d expense_db \
---         -v ON_ERROR_STOP=1 < db/migrations/0005_scan_ledger.sql
+--         -v ON_ERROR_STOP=1 < db/migrations/0008_scan_ledger.sql
 --
 -- Es idempotente: se puede correr las veces que haga falta.
 -- ---------------------------------------------------------------------

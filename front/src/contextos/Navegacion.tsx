@@ -12,6 +12,7 @@ export type Page =
   | 'dashboard'
   | 'companies'
   | 'tickets'
+  | 'scan'
   | 'review'
   | 'spotcheck'
   | 'bank'

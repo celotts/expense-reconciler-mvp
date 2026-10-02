@@ -10,6 +10,10 @@ import type {
   AccountingMapping, AccountingMappingCreate,
 } from '../types/api';
 import type { Categoria, DashboardResponse } from '../types/dashboard';
+import type {
+  ScanConfig, ScanFileDetail, ScanFilePage, ScanItem, ScanOcrEstado,
+  ScanRequest, ScanResultado, ScanStats, ScanStatus,
+} from '../types/scan';
 import { leerToken, notificarCaducidad, SesionVencida } from './sesion';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
@@ -292,6 +296,60 @@ export const ticketsApi = {
       body: formData,
     });
   },
+
+  // -------------------------------------------------------------------------
+  // Escaner de carpeta
+  // -------------------------------------------------------------------------
+
+  /** Escanea la carpeta.
+   *
+   *  Sin `company_id` el escaneo SOLO inventaria los archivos y no crea
+   *  tickets, y por eso los tres campos son opcionales aqui y no requeridos:
+   *  la pantalla tiene dos botones distintos para las dos intenciones, y el
+   *  body los distingue. */
+  escanear: (data: ScanRequest = {}): Promise<ScanResultado> =>
+    fetchApi<ScanResultado>('/scan/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  /** El registro de archivos, con `limit` y `offset` explicitos.
+   *
+   *  El backend tiene un tope de 200 por pagina y `limit` por omision es 50.
+   *  Aqui se mandan siempre, para que la paginacion sea la misma sin importar
+   *  desde donde se entro a la pantalla. */
+  scanFiles: (params: { estado?: ScanStatus; companyId?: string; limit?: number; offset?: number } = {}): Promise<ScanFilePage> => {
+    const q = new URLSearchParams();
+    if (params.estado) q.append('estado', params.estado);
+    if (params.companyId) q.append('company_id', params.companyId);
+    if (params.limit !== undefined) q.append('limit', String(params.limit));
+    if (params.offset !== undefined) q.append('offset', String(params.offset));
+    const qs = q.toString();
+    return fetchApi<ScanFilePage>(`/scan/files${qs ? `?${qs}` : ''}`);
+  },
+
+  scanFile: (id: string): Promise<ScanFileDetail> =>
+    fetchApi<ScanFileDetail>(`/scan/files/${id}`),
+
+  /** Relee UN archivo.
+   *
+   *  Es el UNICO camino que sobreescribe un ticket con correcciones humanas, y
+   *  por eso lleva su propia funcion y no es un parametro del escaneo: quien lo
+   *  pide quiere decir "relee ESTE", no "relee lo que haya cambiado". Si el
+   *  archivo ya no esta en el disco el backend responde 409, no un exito. */
+  reprocesarScanFile: (id: string, companyId?: string): Promise<{ archivo: ScanItem; forzado: boolean }> => {
+    const qs = companyId ? `?company_id=${companyId}` : '';
+    return fetchApi<{ archivo: ScanItem; forzado: boolean }>(
+      `/scan/files/${id}/reprocess${qs}`,
+      { method: 'POST' },
+    );
+  },
+
+  scanStats: (): Promise<ScanStats> => fetchApi<ScanStats>('/scan/stats'),
+
+  scanConfig: (): Promise<ScanConfig> => fetchApi<ScanConfig>('/scan/config'),
+
+  scanOcr: (): Promise<ScanOcrEstado> => fetchApi<ScanOcrEstado>('/scan/ocr'),
 
   /** El comprobante original, como Blob.
    *

@@ -330,6 +330,74 @@ class TestLasLineasDelOcrNoSePierden:
         assert resultado.motor == "tesseract"
 
 
+class TestElRfcDelModeloNoSeGuardaSinComprobar:
+    """Lo que devuelve `vision` pasa por una comprobacion de forma antes de la base.
+
+    El caso se vio con una foto real de la carpeta: el modelo devolvio
+    `provider_tax_id="1905-01-01"`, que es un numero de ticket mal leido como si
+    fuera una fecha. El gate lo marca `malformed_rfc` y el ticket va a la cola,
+    asi que no se aprueba como bueno; pero el dato queda EN LA FILA, y lo que el
+    operador ve al revisar es un RFC inventado junto a su total.
+
+    No es lo mismo "el sistema no sabe el RFC" que "el sistema guardo esto". Lo
+    primero se corrige a mano; lo segundo hace dudar de toda la fila.
+    """
+
+    @pytest.mark.parametrize(
+        "valor,esperado",
+        [
+            ("TRAM910101XXX", "TRAM910101XXX"),
+            ("GODE561231GR8", "GODE561231GR8"),
+            ("trám910101xxx".replace("á", "A"), "TRAM910101XXX"),  # se normaliza a mayusculas
+            # El caso real: un numero de ticket leido como fecha.
+            ("1905-01-01", None),
+            ("2025-03-15", None),
+            ("12345", None),
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_solo_pasa_un_rfc_con_forma(self, valor, esperado):
+        from app.services.capture import _rfc_en_forma
+
+        assert _rfc_en_forma(valor) == esperado
+
+    def test_un_rfc_basura_no_llega_a_la_extraccion(self):
+        """La comprobacion esta en la frontera, no en el gate.
+
+        Si estuviera en el gate, el dato ya estaria en la fila cuando se
+        rechaza, que es justo lo que no queremos. `_rfc_en_forma` vive en
+        `invoice_to_result`, que es donde el modelo se vuelve `TicketExtractionResult`.
+        """
+        from app.services.ai_extractor import ExtractedInvoice
+        from app.services.capture import invoice_to_result
+
+        invoice = ExtractedInvoice(
+            provider_name="OXXO SA de CV",
+            provider_tax_id="1905-01-01",
+            total=Decimal("50.00"),
+            confidence=0.9,
+            raw_text="texto",
+        )
+        resultado = invoice_to_result(invoice)
+        assert resultado.provider_tax_id is None
+
+    def test_un_rfc_bueno_sigue_pasando(self):
+        """La comprobacion no puede ser tan estricta que tire los buenos."""
+        from app.services.ai_extractor import ExtractedInvoice
+        from app.services.capture import invoice_to_result
+
+        invoice = ExtractedInvoice(
+            provider_name="OXXO SA de CV",
+            provider_tax_id="TRAM910101XXX",
+            total=Decimal("50.00"),
+            confidence=0.9,
+            raw_text="texto",
+        )
+        resultado = invoice_to_result(invoice)
+        assert resultado.provider_tax_id == "TRAM910101XXX"
+
+
 class TestLaConfianzaDelOcrEstaDescontada:
     """La misma evidencia leida de una foto vale menos que leida de un PDF.
 

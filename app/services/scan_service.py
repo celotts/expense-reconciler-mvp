@@ -490,7 +490,22 @@ async def procesar_archivo(
         # releer nada. Y ese es justo el caso para el que existe: se mejoro el
         # motor de OCR, se instalo Tesseract donde no habia, o el archivo salio
         # mal la primera vez y los bytes no van a cambiar por reintentarlo.
-        if hash_actual == fila.content_hash and not forzar:
+        # El atajo de "sin cambios" NO aplica cuando el archivo se leyo pero no
+        # tiene ticket. Ese es el caso de un escaneo de inventario: el primer
+        # `POST /scan` sin `company_id` lee los archivos y los deja registrados
+        # con su hash, para que se vean en la lista. Si el atajo no mirara el
+        # ticket, el siguiente escaneo CON empresa los encontraria "sin
+        # cambios", no crearia ningun ticket y el archivo no volveria a
+        # atribuirse nunca por la via normal. Habria que reprocesar uno por uno
+        # a mano.
+        #
+        # Se comprueba `ticket_id`, no el estado: `PROCESADO` significa "se
+        # leyo", no "esta contabilizado". Un archivo leido en el inventario esta
+        # `PROCESADO` y sin ticket, y esos dos hechos juntos son los que
+        # separan "ya esta" de "falta la empresa".
+        falta_atribuir = fila.ticket_id is None and company_id is not None
+
+        if hash_actual == fila.content_hash and not forzar and not falta_atribuir:
             fila.last_scanned_at = ahora
             fila.file_size = vista.tamano
             fila.file_mtime = vista.mtime
@@ -503,7 +518,11 @@ async def procesar_archivo(
             return resumen
 
         # El contenido cambio. Sin `forzar` no se relee: ver la nota del modulo.
-        if not forzar:
+        # La excepcion es `falta_atribuir`: el contenido NO cambio, lo que falta
+        # es la empresa, y releer el archivo es justo lo que hace falta para
+        # poder crear el ticket. Sin esta excepcion el atajo de arriba no
+        # serviria de nada: aqui se volveria a salir igual.
+        if not forzar and not falta_atribuir:
             fila.last_scanned_at = ahora
             fila.file_size = vista.tamano
             fila.file_mtime = vista.mtime

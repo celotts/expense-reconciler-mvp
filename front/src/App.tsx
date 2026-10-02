@@ -7,17 +7,19 @@ import { ReviewQueue } from './pages/ReviewQueue';
 import { SpotCheck } from './pages/SpotCheck';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
+import { Scan } from './pages/Scan';
 import { NavegacionProvider, useNavegacion } from './contextos/Navegacion';
 import { SesionProvider, useSesion } from './contextos/Sesion';
 import { Loading } from './components/ui';
 import './App.css';
 
-type Page = 'dashboard' | 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations';
+type Page = 'dashboard' | 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations' | 'scan';
 
 const navigation = [
   { key: 'dashboard' as Page, label: 'Inicio', icon: HomeIcon },
   { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon },
   { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon },
+  { key: 'scan' as Page, label: 'Escáner', icon: FolderScanIcon },
   { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon },
   { key: 'spotcheck' as Page, label: 'Muestreo', icon: CheckBadgeIcon },
   { key: 'bank' as Page, label: 'Banco', icon: BankIcon },
@@ -82,6 +84,14 @@ function CheckBadgeIcon({ className = 'w-5 h-5' }: { className?: string }) {
 
 
 
+function FolderScanIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7zM9 12h6m-6 4h4" />
+    </svg>
+  );
+}
+
 function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {  return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
@@ -109,6 +119,7 @@ function AppInner() {
       // El filtro viene del tablero: al pulsar la barra gris de "sin clasificar"
       // se abre esta pantalla ya filtrada, no la lista completa.
       case 'tickets': return <Tickets filtroInicial={filtroTickets ?? 'todos'} />;
+      case 'scan': return <Scan />;
       case 'review': return <ReviewQueue />;
       case 'spotcheck': return <SpotCheck />;
       case 'bank': return <BankTransactions />;

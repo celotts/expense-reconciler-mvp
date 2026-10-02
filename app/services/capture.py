@@ -254,6 +254,31 @@ def _confianza_de_evidence(source: ConfidenceSource) -> float:
     return confianza_por_campos_ocr if source is ConfidenceSource.OCR else confianza_por_campos
 
 
+def _rfc_en_forma(valor: str | None) -> str | None:
+    """El RFC solo si tiene la forma completa de uno mexicano.
+
+    Sin esta comprobacion, lo que devuelve el modelo se guarda tal cual. Se vio
+    con una foto real: `vision` devolvio `provider_tax_id="1905-01-01"`, que es
+    un numero de ticket mal leido como si fuera una fecha. El gate lo marca
+    `malformed_rfc` y manda el ticket a la cola, asi que no se aprueba como
+    bueno; pero el dato basura queda EN LA FILA, y lo que el operador ve en la
+    cola de revision es un RFC inventado al lado de su total.
+
+    No es lo mismo "el sistema no sabe el RFC" (vacio, y el gate dice
+    `rfc_missing` o nada) y "el sistema guardo esto" (basura, con forma de
+    dato). Lo primero se corrige a mano; lo segundo hace dudar de toda la fila.
+    Por eso se descarta aqui y no se deja pasar a la base.
+    """
+    if not valor:
+        return None
+    from app.services.parser_service import RFC_CANDIDATO_RE
+
+    candidato = valor.strip().upper()
+    if RFC_CANDIDATO_RE.fullmatch(candidato):
+        return candidato
+    return None
+
+
 def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
     """Traduce lo que devuelve el modelo a lo que el gate entiende.
 
@@ -269,7 +294,9 @@ def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
 
     return TicketExtractionResult(
         provider_name=nombre,
-        provider_tax_id=invoice.provider_tax_id,
+        # Pasa por `_rfc_en_forma`: lo que devuelve el modelo no se guarda sin
+        # comprobar su forma. Ver ahi el caso de una foto real.
+        provider_tax_id=_rfc_en_forma(invoice.provider_tax_id),
         total_amount=invoice.total if invoice.total is not None else Decimal("0.00"),
         tax_amount=invoice.tax_amount if invoice.tax_amount is not None else Decimal("0.00"),
         expense_date=invoice.invoice_date,

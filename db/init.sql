@@ -150,10 +150,10 @@ CREATE TABLE IF NOT EXISTS accounting_mappings (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Registro de los archivos de la carpeta escaneada (0005).
+-- Registro de los archivos de la carpeta escaneada (0008).
 --
 -- Es el mismo DDL que emite app/models/scan_file.py y que esta en
--- db/migrations/0005_scan_ledger.sql, por la misma razon que las tablas de
+-- db/migrations/0008_scan_ledger.sql, por la misma razon que las tablas de
 -- arriba: una base creada desde cero y una migrada tienen que terminar con las
 -- mismas reglas, o el mismo codigo se comporta de dos maneras segun cuando se
 -- erigio la base.
@@ -342,8 +342,8 @@ CREATE TABLE IF NOT EXISTS cierres_periodo (
 CREATE UNIQUE INDEX IF NOT EXISTS ix_cierres_periodo_unico
     ON cierres_periodo (company_id, periodo);
 
--- Registro del escaneo de carpeta (0005). Los cuatro indices y sus razones estan
--- en db/migrations/0005_scan_ledger.sql; aqui van por la misma regla: el
+-- Registro del escaneo de carpeta (0008). Los cuatro indices y sus razones estan
+-- en db/migrations/0008_scan_ledger.sql; aqui van por la misma regla: el
 -- `init.sql` de arriba y esa migracion tienen que decir lo mismo, o una base
 -- creada desde cero y una migrada se comportan distinto con el mismo codigo.
 CREATE INDEX IF NOT EXISTS ix_scan_files_status
