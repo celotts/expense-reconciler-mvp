@@ -63,7 +63,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -423,8 +423,31 @@ async def _actualizar_ticket(
     # `ix_tickets_source_hash` dejaria apuntando al hash viejo, y el siguiente
     # escaneo de ESTE archivo lo compararia contra si mismo.
     ticket.source_hash = hashlib.sha256(contenido).hexdigest()
-    if extracted.expense_date is not None:
-        ticket.expense_date = extracted.expense_date
+    # La fecha se escribe SIEMPRE, tambien cuando la lectura no trajo ninguna, y
+    # con la misma convencion provisional que usa `persistir_extraccion`: el dia
+    # local de hoy, con `date_missing` a la vista en `validation_errors`.
+    #
+    # Antes solo se escribia `if extracted.expense_date is not None`, y eso
+    # dejaba una fila que se contradice a si misma. Medido en el reprocesado de
+    # las tres fotos de la carpeta: la foto de Oxxo se relejo con OCR, la lectura
+    # nueva NO trajo fecha (el gate puso `date_missing`), y el ticket seguia
+    # guardando `2021-08-15` de una lectura anterior. O sea: una fecha de una
+    # lectura mas vieja, con la fila diciendo que no hay fecha, y nadie que sepa
+    # de donde salio ese 15 de agosto de 2021.
+    #
+    # No se puede conservar por dos razones, y las dos importan. Una: esa fecha
+    # no la puso una persona, porque si la hubiera puesto el ticket tendria
+    # `reviewed_at` y este codigo no habria llegado aqui (regla 7). Viene de una
+    # lectura automatica anterior, que ya no es lo que dice el papel. Dos: dejarla
+    # hace que el gasto entre en un periodo que la fila niega tener, y el cierre
+    # mensual lo cuenta sin que nada avise.
+    #
+    # Y no es "quedarse con la fecha vieja" lo que evita la fabricacion: el
+    # `date.today()` de aqui es la MISMA marca que ya acepta el alta de un ticket
+    # (`ticket_persistence.py`), con su `date_missing` al lado. Fabricar es lo que
+    # haria el gate si esto fuera `None`: un `date_missing` sin marcar, indistinguible
+    # de un gasto real de ese dia.
+    ticket.expense_date = extracted.expense_date or date.today()
 
     await db.commit()
     await db.refresh(ticket)

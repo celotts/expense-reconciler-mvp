@@ -30,6 +30,13 @@ CLAVE_OK = "k" * 48
 # Una clave que no: 31 caracteres, uno menos.
 CLAVE_CORTA = "k" * 31
 
+# Claves distintas para distinguir QUE ARCHIVO gano. Todas de 32 o mas, que es
+# el minimo que `config.py` exige.
+CLAVE_DE_DEV = "clave-de-dev-00000000000000000000"
+CLAVE_DE_LOCAL = "clave-de-local-000000000000000000"
+CLAVE_DEL_ENTORNO = "clave-del-entorno-0000000000000000"
+assert min(len(c) for c in (CLAVE_DE_DEV, CLAVE_DE_LOCAL, CLAVE_DEL_ENTORNO)) >= 32
+
 BASE = {"DATABASE_URL": "postgresql+asyncpg://x@localhost/x"}
 
 
@@ -177,3 +184,159 @@ class TestLaLongitudDeLaClave:
 
         con_espacios = f"  {CLAVE_OK}  "
         assert _settings(SECRET_KEY=con_espacios).SECRET_KEY == con_espacios
+
+
+class TestElCorsNoPuedeSerComodin:
+    """`*` con credenciales es un fallo de seguridad, no una configuracion floja.
+
+    El test de arranque, y despues una llamada HTTP real: la razon de que el
+    primero no basta es que un validator se puede mutar a algo que sigue
+    arrancando. Lo que importa es lo que responde el servidor.
+    """
+
+    def test_un_origen_comodin_impide_arrancar(self):
+        with pytest.raises(ValidationError) as error:
+            _settings(CORS_ORIGINS=["*"])
+
+        texto = str(error.value)
+        assert "CORS_ORIGINS" in texto
+        assert "allow_credentials" in texto
+
+    def test_un_comodin_junto_a_otros_tambien_impide_arrancar(self):
+        """`*` mezclado con origenes concretos sigue siendo un comodin.
+
+        Es el caso que se cuela: alguien anade su localhost nuevo y pega el `*`
+        "por si acaso" junto. Con la lista mixta, `is_allowed_origin` de Starlette
+        sigue devolviendo True para cualquiera.
+        """
+        with pytest.raises(ValidationError):
+            _settings(CORS_ORIGINS=["http://localhost:3000", "*"])
+
+    def test_una_lista_de_origenes_concretos_arranca(self):
+        """El caso normal: los dos localhost de desarrollo."""
+        resultado = _settings(
+            CORS_ORIGINS=["http://localhost:3000", "http://localhost:5173"]
+        )
+        assert resultado.CORS_ORIGINS == [
+            "http://localhost:3000",
+            "http://localhost:5173",
+        ]
+
+
+class TestElOrdenDeLosArchivosDeEntorno:
+    """`.env.dev` y luego `.env.local`, y el ultimo manda.
+
+    No es cosmetico. `docker-compose.yml` carga los dos en ese orden, asi que si
+    `config.py` los leiera al reves, correr `uvicorn` en la maquina firmaria con
+    la clave de `.env.dev` mientras el contenedor firma con la de `.env.local`:
+    dos juegos de tokens y un "mi sesion se cae" que solo se reproduce donde se
+    reproduce. Con `--reload`, ademas, cada cambio en un `.py` genera una clave
+    nueva y echa a todos dentro.
+    """
+
+    def test_el_archivo_correcto_es_el_que_gana(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.dev").write_text(f"SECRET_KEY={CLAVE_DE_DEV}\n")
+        (tmp_path / ".env.local").write_text(f"SECRET_KEY={CLAVE_DE_LOCAL}\n")
+
+        resultado = Settings(
+            _env_file=(".env.dev", ".env.local"),
+            DATABASE_URL=BASE["DATABASE_URL"],
+        )
+
+        assert resultado.SECRET_KEY == CLAVE_DE_LOCAL
+
+    def test_sin_local_se_lee_dev(self, tmp_path, monkeypatch):
+        """Clone nuevo: no hay `.env.local` y la app tiene que levantar igual."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.dev").write_text(f"SECRET_KEY={CLAVE_DE_DEV}\n")
+
+        resultado = Settings(
+            _env_file=(".env.dev", ".env.local"),
+            DATABASE_URL=BASE["DATABASE_URL"],
+        )
+
+        assert resultado.SECRET_KEY == CLAVE_DE_DEV
+
+    def test_la_variable_de_entorno_gana_sobre_los_dos(self, tmp_path, monkeypatch):
+        """Lo que usa Compose: pone `DATABASE_URL` en `environment:`, y eso tiene
+        que pisar a los dos archivos. Si no, la ruta de la BD del host ganaria
+        dentro del contenedor, donde no existe."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.dev").write_text(f"SECRET_KEY={CLAVE_DE_DEV}\n")
+        (tmp_path / ".env.local").write_text(f"SECRET_KEY={CLAVE_DE_LOCAL}\n")
+        monkeypatch.setenv("SECRET_KEY", CLAVE_DEL_ENTORNO)
+
+        resultado = Settings(
+            _env_file=(".env.dev", ".env.local"),
+            DATABASE_URL=BASE["DATABASE_URL"],
+        )
+
+        assert resultado.SECRET_KEY == CLAVE_DEL_ENTORNO
+
+
+class TestLaPlantillaDeLosEnv:
+    """Los archivos del repo tienen que seguir siendo secretos-free y claros.
+
+    Es la unica defensa contra volver a poner una clave real en `.env.dev`. El
+    archivo esta en `.gitignore`, asi que `git status` no lo delata ni cuando se
+    rompe la regla; y `git diff` tampoco lo muestra.
+    """
+
+    def _leer(self, nombre: str) -> str:
+        from pathlib import Path
+
+        raiz = Path(__file__).resolve().parents[2]
+        return (raiz / nombre).read_text(encoding="utf-8")
+
+    def test_env_dev_no_tiene_contrasena_de_la_base(self):
+        """La `DATABASE_URL` de `.env.dev` no lleva contrasena.
+
+        Dentro de Docker la sobrescribe `docker-compose.yml`, asi que la que este
+        aqui no se usa: es un segundo lugar donde vive el mismo secreto, con
+        permisos de lectura para el grupo. La plantilla `.env.example` ya lo
+        explica; este test lo hace cumplir.
+        """
+        import re
+
+        for linea in self._leer(".env.dev").splitlines():
+            if linea.startswith("DATABASE_URL="):
+                usuario_y_host, _, _ = linea.partition("@")
+                # `usuario:password@host` -> la parte antes de la arroba no lleva
+                # dos puntos, que es donde iria la contrasena.
+                assert usuario_y_host.count(":") <= 1, linea
+
+    def test_env_local_no_declara_ninguna_de_la_base(self):
+        """`.env.local` es el archivo del secreto de firma y nada mas.
+
+        Si aparece `POSTGRES_PASSWORD` ahi, el secreto se multiplica otra vez, en
+        un archivo cuya copia local nadie revisa.
+        """
+        texto = self._leer(".env.local")
+        assert "POSTGRES_PASSWORD" not in texto
+        assert "DATABASE_URL" not in texto
+
+    def test_la_plantilla_explica_cuantos_archivos_hay(self):
+        """La plantilla dice para que es cada archivo.
+
+        Cuatro archivos `.env` sin explicar cual es cual es como acaba la clave
+        en dos sitios y la contrasena en tres: no por descuido, sino porque nadie
+        sabe quien gana. Este test no mira el texto completo, solo que nombrelos.
+        """
+        texto = self._leer(".env.example")
+        for nombre in (".env.dev", ".env.local"):
+            assert nombre in texto, f"{nombre} no se menciona en .env.example"
+
+    def test_la_plantilla_avisa_de_lo_del_cors(self):
+        """El comentario de `CORS_ORIGINS` tiene que estar junto a la variable.
+
+        Es la unica documentacion que vera alguien que copie el archivo. Y la
+        trampa es real: `*` es lo que se escribe cuando se quiere "que no haya
+        problemas de CORS".
+        """
+        texto = self._leer(".env.example")
+        linea_cors = next(
+            l for l in texto.splitlines() if l.startswith("CORS_ORIGINS=")
+        )
+        contexto = texto[max(0, texto.index(linea_cors) - 700) : texto.index(linea_cors)]
+        assert "*" in contexto, "el aviso del origen comodin no esta junto a la variable"

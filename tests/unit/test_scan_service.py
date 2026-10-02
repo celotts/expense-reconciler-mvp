@@ -513,7 +513,75 @@ class TestNoSePisaLaCorreccionDeUnaPersona:
 
 
 # ---------------------------------------------------------------------------
-# 5. Un archivo roto no tumba la corrida
+# 5. Una relectura no deja datos de la lectura anterior
+# ---------------------------------------------------------------------------
+
+
+class TestLaRelecturaNoDejaLaFechaVieja:
+    """Lo que se escribe es lo que se leyó, también cuando no se leyó nada.
+
+    El caso medido: reprocesando las tres fotos de la carpeta, el ticket de Oxxo
+    se releyo con OCR, la lectura nueva NO trajo fecha (el gate puso
+    `date_missing`) y la fila seguia guardando `2021-08-15` de una lectura
+    anterior. Una fila que dice "no hay fecha" y tiene una fecha de 2021 es peor
+    que una que no tiene fecha: nadie sabe de donde salio, y el cierre cuenta el
+    gasto en agosto de 2021 sin avisar.
+    """
+
+    async def test_sin_fecha_nueva_no_queda_la_de_la_lectura_anterior(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "nueve.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        ticket = (await db_session.execute(select(TicketModel))).scalar_one()
+        await db_session.refresh(ticket)
+        primera = ticket.expense_date
+        assert primera == date(2025, 3, 15)
+
+        # El archivo cambia y ahora NO trae fecha. El gate va a marcar
+        # `date_missing`, que es lo que hay que ver en la fila.
+        sin_fecha = COMPROBANTE.replace("Fecha: 2025/03/15\n", "")
+        _pdf_con_texto(monkeypatch, sin_fecha)
+        (carpeta / "nueve.pdf").write_bytes(b"%PDF-1.7 " + sin_fecha.encode())
+
+        await scan_service.escanear(db_session, test_company.id, "ana", reprocesar=True)
+
+        await db_session.refresh(ticket)
+        assert ticket.expense_date != primera, (
+            "quedo la fecha de la lectura anterior con la fila diciendo date_missing"
+        )
+        assert ticket.expense_date == date.today(), (
+            "la convencion provisional es la del alta: hoy, con date_missing al lado"
+        )
+        assert "date_missing" in (ticket.validation_errors or "")
+
+    async def test_con_fecha_nueva_si_se_escribe(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """Lo contrario, porque un reproceso tiene que poder corregir la fecha.
+
+        Si este test falla porque la fecha no se escribe, el arreglo es el
+        contrario del de arriba: dejar de sobrescribir. Por eso los dos van juntos.
+        """
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "diez.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        otra = COMPROBANTE.replace("Fecha: 2025/03/15", "Fecha: 2025/07/04")
+        _pdf_con_texto(monkeypatch, otra)
+        (carpeta / "diez.pdf").write_bytes(b"%PDF-1.7 " + otra.encode())
+
+        await scan_service.escanear(db_session, test_company.id, "ana", reprocesar=True)
+
+        ticket = (await db_session.execute(select(TicketModel))).scalar_one()
+        await db_session.refresh(ticket)
+        assert ticket.expense_date == date(2025, 7, 4)
+
+
+# ---------------------------------------------------------------------------
+# 6. Un archivo roto no tumba la corrida
 # ---------------------------------------------------------------------------
 
 

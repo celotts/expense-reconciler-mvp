@@ -15,7 +15,11 @@ services:
       # Sale de `.env` (gitignored). La plantilla es `.env.example`.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}
     ports:
-      - "5434:5432"
+      # `127.0.0.1:` y no un puerto suelto. Sin el prefijo, Docker publica en
+      # `0.0.0.0` y la base de datos con su contrasena queda escuchando en la red
+      # del cafe, de la oficina o del hotel. Es una herramienta local: el puerto
+      # publicado tiene que ser reachable solo desde esta maquina.
+      - "127.0.0.1:5434:5432"
     volumes:
       - pgvector_expense_data:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
@@ -35,7 +39,16 @@ services:
     image: ollama/ollama:latest
     container_name: expense_ollama
     ports:
-      - "11434:11434"
+      # Igual que Postgres: sin el prefijo, Ollama queda accesible desde la red
+      # local, y cualquiera que llegue al puerto puede meter y sacar modelos y
+      # leer los que ya estan.
+      #
+      # El puerto del HOST es 11435 y no 11434 por un motivo concreto: en esta
+      # maquina hay un Ollama nativo corriendo en 127.0.0.1:11434, y publicar el
+      # mismo puerto en loopback no arranca. La app NO usa este puerto: habla con
+      # Ollama por la red interna (`http://ollama:11434`, ver `OLLAMA_BASE_URL`).
+      # Este mapeo es solo para poder mirar el contenedor desde la maquina.
+      - "127.0.0.1:11435:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -57,7 +70,10 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     working_dir: /app
     ports:
-      - "8000:8000"
+      # El API sin TLS en todas las interfaces de la maquina. Un token de 8 horas
+      # en texto plano por HTTP, alcanzable desde la red local, no es una
+      # combinacion que se deje puesta en un despliegue "local".
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
       # Cache de HuggingFace persistente: evita volver a bajar el modelo de
@@ -122,7 +138,7 @@ services:
       dockerfile: front/Dockerfile.prod
     container_name: expense_front_service
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
     depends_on:
       - expense-api
     mem_limit: 256m

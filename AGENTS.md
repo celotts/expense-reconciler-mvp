@@ -31,10 +31,10 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Veredicto | `app/services/confidence_gate.py` → checks + umbrales |
 | Persistencia | `app/services/ticket_persistence.py` (la llama `app/api/tickets.py:_persist_extracted`) + `document_service.py` |
 | IA | `app/services/ai_client.py` (Ollama / OpenAI / Azure / local) |
-| Auth | `app/core/security.py` (scrypt + JWT HS256 escritos a mano, **sin PyJWT**) |
+| Auth | `app/core/security.py` (scrypt N=2\*\*17 + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **907** — 523 unit + escáner, 215 integration + escáner, 1 skip |
+| Tests | **960** — 717 unit + escáner, 243 integration, 1 skip |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan`
@@ -74,7 +74,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 907
+python3 -m pytest tests/ -q           # 960
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 ```
@@ -84,10 +84,10 @@ Cada defensa de seguridad tiene un test que **muere si quitas la defensa**. Si t
 corre su verificador:
 
 ```bash
-python3 scripts/verify_scan_mutations.py            # 14 mutaciones: escaner de carpeta
+python3 scripts/verify_scan_mutations.py            # 15 mutaciones: escaner de carpeta
 python3 scripts/verify_capture_mutations.py         # 26 mutaciones: ruta de captura
 python3 scripts/verify_export_mutations.py          # 5 mutaciones: fórmulas
-python3 scripts/verify_auth_mutations.py            # 37 mutaciones: auth
+python3 scripts/verify_auth_mutations.py            # 42 mutaciones: auth y coste del hash
 python3 scripts/verify_reconciliation_mutations.py  # 18 mutaciones
 python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
@@ -211,6 +211,36 @@ costumbre — el porqué está en el comentario junto al código.
     Es el único check que no depende de nada externo; si va después, un total malformado
     cortocircuita la validación.
 
+15. **Una relectura escribe lo que leyó, también cuando no leyó nada.**
+    `_actualizar_ticket` ponía la fecha solo `if extracted.expense_date is not None`, y
+    eso dejaba una fila que se contradice: `date_missing` en `validation_errors` con
+    `2021-08-15` de una lectura vieja. Ahora usa la misma convención provisional del
+    alta (`extracted.expense_date or date.today()`), con su `date_missing` al lado. No se
+    puede conservar la fecha anterior: si la hubiera puesto una persona, el ticket
+    tendría `reviewed_at` y no habría llegado aquí (regla 7).
+
+16. **`SECRET_KEY` con entropía inventada: >= 32 caracteres, y sin comodines.**
+    Además, `CORS_ORIGINS` **no admite `"*"`**: con `allow_credentials=True`, Starlette
+    refleja cualquier origen y eso deja que cualquier sitio web lea la API con la
+    sesión del navegador (`config.py:_revisa_el_cors` aborta el arranque).
+    Lo que **no** hay es revocación de tokens: uno robado vive 8 horas.
+
+17. **scrypt con los parámetros de OWASP, y los del hash, no los del módulo.**
+    `N=2**17, r=8, p=1`. El `2**14` que había antes **con `p=1` no estaba** en la lista
+    de la guía (2\*\*14 solo aparece con p=5). El formato lleva sus propios parámetros y
+    `_VERSION_HASH` no sube al cambiar N, o los hashes viejos dejan de validar y todos
+    los usuarios reciben "contraseña incorrecta" por una contraseña correcta.
+    `maxmem` se calcula con `_maxmem_para(n, r)`: con una constante, subir N rompe todos
+    los logins a la vez.
+
+18. **La fecha del comprobante se lee junto al folio, no en cualquier línea.**
+    `_fecha_del_comprobante`. Una fecha suelta puede ser el vencimiento de un cupón
+    (`TUS PUNTOS VENCEN: 31/10/2026`), y una fecha equivocada que pasa los checks
+    (`date_in_future` no objectiona a octubre siendo septiembre) mete el gasto en otro
+    mes. Sin marca de comprobante (folio, nota, `#`, `No:`) no se lee. OJO: esto **no**
+    defiende contra los años mal leídos — eso es `date_in_future` del gate —; defiende
+    contra que la fecha del documento sea la de otra cosa.
+
 ---
 
 ## Trampas verificadas
@@ -313,6 +343,23 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 - **`db/init.sql` y los modelos divergen en un punto.** `bank_transactions.company_id` es
   nullable en `init.sql:126` y `NOT NULL` en `models/bank_transaction.py:24`. Los tests corren
   contra SQLite construyendo desde los modelos, así que no lo detectan.
+
+- **Hay cuatro `.env` y sólo uno se versiona.** `.env.example` es la plantilla (versionada);
+  `.env` lleva `POSTGRES_PASSWORD` y lo lee `docker compose`; `.env.dev` lleva la configuración
+  de la app y **no lleva secretos**; `.env.local` lleva la `SECRET_KEY` y **gana** sobre
+  `.env.dev`. `config.py` lee los dos últimos en ese orden, el mismo de `docker-compose.yml`:
+  antes leía solo `.env.dev` y por eso `uvicorn` local firmaba con una clave distinta a la del
+  contenedor. Los dos con secretos van en `chmod 600`. Regla: **`.env.dev` no lleva
+  contraseña ni clave**; la `DATABASE_URL` de ahí va sin contraseña porque Docker la
+  sobrescribe. Un test (`TestLaPlantillaDeLosEnv`) lo hace cumplir, porque `.gitignore` y
+  `git status` no delatan nada de esto.
+
+- **El puerto de Ollama publicado es 11435.** En esta máquina hay un Ollama nativo en
+  `127.0.0.1:11434` y publicar el mismo puerto en loopback no arranca. La app habla con
+  Ollama por la red interna (`OLLAMA_BASE_URL=http://ollama:11434`).
+
+- **Los puertos van en `127.0.0.1:`.** Sin el prefijo, Docker publica en `0.0.0.0` y la base
+  de datos con su contraseña queda al alcance de la red local.
 
 ---
 

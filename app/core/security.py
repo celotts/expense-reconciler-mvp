@@ -29,19 +29,53 @@ from typing import Any
 
 from app.core.config import settings
 
-# Coste de memoria de scrypt. 2**14 es el minimo recomendado por la
-# documentacion de OWASP para_PASSWORD_HASHING. Sube con la memoria de la
-# maquina, no con el numero de usuarios: el objetivo es que un atacante con
-# una GPU dedicated no pueda probar miles de contrasenas por segundo.
-_SCRYPT_N = 2**14
+# Coste de memoria de scrypt. N=2**17 con r=8 y p=1 es la primera de las cuatro
+# combinaciones que lista OWASP en su Password Storage Cheat Sheet, y por eso es
+# la que se usa.
+#
+# LO QUE HABIA AQUI, Y POR QUE ESTABA MAL
+#
+# `_SCRYPT_N = 2**14` con `p=1` eran 16 MiB y 27 ms por hash. Parecia el minimo
+# de OWASP, y el comentario de arriba lo afirmaba, pero no lo era: la guia lista
+# N=2**14 SOLO con p=5. Con p=1, 2**14 no es ninguna de las combinaciones
+# recomendadas: son 8 veces menos memoria que N=2**17 y 5 veces menos trabajo por
+# memoria. En una GPU dedicada esa diferencia es la que separa "caro de crackear"
+# de "crackeable". El numero venia de una guia anterior, que ya no lo decia asi.
+#
+# Coste medido en esta maquina: 27 ms -> 230 ms por hash, y 16 MiB -> 128 MiB de
+# memoria por verificacion. Es asumible para el login de una herramienta local, y
+# es el precio de que la contrasena no sea un hash rapido.
+#
+# Sube con la memoria de la maquina, no con el numero de usuarios: el objetivo es
+# que un atacante con una GPU dedicada no pueda probar miles de contrasenas por
+# segundo.
+_SCRYPT_N = 2**17
 _SCRYPT_R = 8
 _SCRYPT_P = 1
 _LLAVE_LEN = 32
 _SAL_LEN = 16
 
-# Version del formato del hash. Si algun dia se cambian los parametros, esta
-# cadena cambia con ellos y `verificar` rechaza los hashes viejos en vez de
-# compararlos con parametros que ya no son los que se usaron.
+# `maxmem` va por DEBAJO de los 128 MiB que N=2**17 con r=8 necesita, a proposito:
+# si el limite del contenedor no alcanzara, `hashlib.scrypt` lanza `ValueError` y
+# el login responde 500 en vez de verificar en silencio con menos coste del que
+# dice la constante. Un fallo ruidoso es lo que se quiere cuando el presupuesto de
+# memoria no da: verificar con N=2**14 porque no habia memoria seria dejar de
+# proteger sin avisar, que es peor que no dejar entrar.
+_MAXMEM_SCRYPT = 192 * 1024 * 1024
+
+# Version del formato del hash.
+#
+# NO cambia al subir N, y es deliberado. El formato ya lleva sus propios
+# parametros (`scrypt-v1$n$r$p$salt$hash`) y `verificar_contrasena` los lee de ahi,
+# no de estas constantes. Por eso los hashes con N=2**14 que ya estan en la tabla
+# `users` siguen validos despues del cambio, y el version es "v1" en los dos
+# casos.
+#
+# No es un detalle menor: subir el version sin migrar los hashes deja fuera a
+# todos los usuarios de golpe, con un `return False` silencioso que responde
+# "contrasena incorrecta" para una contrasena que es correcta. Si el formato
+# cambia de verdad, la version tiene que subir junto con una migracion que
+# rehashee, y no antes.
 _VERSION_HASH = "scrypt-v1"
 
 
@@ -87,7 +121,7 @@ def hashear_contrasena(contrasena: str) -> str:
         r=_SCRYPT_R,
         p=_SCRYPT_P,
         dklen=_LLAVE_LEN,
-        maxmem=132 * 1024 * 1024,
+        maxmem=_MAXMEM_SCRYPT,
     )
     return "$".join(
         [
@@ -101,10 +135,41 @@ def hashear_contrasena(contrasena: str) -> str:
     )
 
 
+def _maxmem_para(n: int, r: int) -> int:
+    """La memoria que `hashlib.scrypt` puede usar para estos parametros.
+
+    `scrypt` necesita `128 * r * n` bytes, y `hashlib` exige que le dejen usar
+    algo mas: si `maxmem` se queda corto lanza `ValueError`. Por eso el margen.
+
+    Se calcula desde los parametros del hash y no desde una constante fija, por
+    dos razones que se ven con el caso y no en abstracto:
+
+    - Con una constante fija, un hash con N=2**17 verifica bien en un contenedor
+      con memoria de sobra y lanza `ValueError` en una maquina con menos: un 500
+      en el login por un parametro que no cambio.
+    - Al subir N sin subir `maxmem`, TODOS los logins empiezan a fallar de golpe.
+      Los parametros viajan en el hash, asi que el techo tiene que viajar con
+      ellos.
+
+    El margen es de 32 MiB sobre lo que scrypt pide. Con N=2**17 y r=8 son 128 MiB
+    y se admiten 160: hay colchon para la maquina, y sigue siendo imposible que
+    un N absurdo en una fila de la base se convierta en una reserva de memoria
+    arbitraria.
+    """
+    return 128 * r * n + 32 * 1024 * 1024
+
+
 def verificar_contrasena(contrasena: str, guardado: str) -> bool:
     """Compara en tiempo constante. `hmac.compare_digest` y no `==` porque `==`
     sale en cuanto encuentra la primera diferencia: el tiempo de respuesta
-    filtra cuantos caracteres correctos lleva alguien probando."""
+    filtra cuantos caracteres correctos lleva alguien probando.
+
+    Los parametros se leen del hash guardado y NO de las constantes de este
+    modulo. Es lo que permite subir N sin invalidar las contrasenas que ya estan
+    en la base: cada hash lleva los suyos y se verifica con los suyos. Por eso
+    subir N no sube `_VERSION_HASH`, y por eso los hashes de N=2**14 que ya
+    habia siguen validos.
+    """
     try:
         version, n, r, p, sal_b64, esperado_b64 = guardado.split("$")
         if version != _VERSION_HASH:
@@ -117,7 +182,7 @@ def verificar_contrasena(contrasena: str, guardado: str) -> bool:
             r=int(r),
             p=int(p),
             dklen=len(esperado),
-            maxmem=132 * 1024 * 1024,
+            maxmem=_maxmem_para(int(n), int(r)),
         )
     except (ValueError, TypeError):
         # Hash mal formado o de otra version: no es una contrasena valida, y
@@ -242,7 +307,9 @@ def leer_token(token: str) -> dict[str, Any]:
     if cuerpo.get("typ") != "access":
         raise ErrorDeToken("no es un token de acceso")
 
-    expira = cuerpo.get("exp", 2**40)
+    expira = cuerpo.get("exp")
+    if not isinstance(expira, int):
+        raise ErrorDeToken("el token no lleva exp")
 
     if expira <= int(time.time()):
         raise TokenCaducado("el token ya caduco")

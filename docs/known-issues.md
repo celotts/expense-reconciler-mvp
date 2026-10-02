@@ -173,6 +173,122 @@ contenedor. Es aceptable para "una máquina, un contador" y no para un despliegu
 
 ---
 
+## 🔴 Seguridad
+
+> Lo que sigue se verificó contra el código y contra el contenedor corriendo. Los
+> archivos `.env` **no** están en el historial de git de este repo (`git log -S` sobre la
+> contraseña y la clave no devuelve nada), así que lo pendiente ahí es higiene local, no
+> exposición: sí hay que rotar por el repo público que menciona §15, y el `.gitignore`
+> actual ya evita que vuelva a pasar.
+
+### 21. El OCR cambia cifras y el gate no lo detecta — **el peor defecto medido**
+Tres fotos reales de `~/Documents/Tickets_app`, leídas con el código de hoy:
+
+| Archivo | El papel | Tesseract leyó | Consecuencia |
+|---|---|---|---|
+| `1C2C52A2…jpeg` (Oxxo) | **51.50** | **31.50** | total equivocado que pasa `total_not_positive` |
+| `IMG_4220.jpeg` | 97.56 | 97.56 | correcto |
+| `IMG_4222.jpeg` | 48.00 | `5000` (de `$48,00`) | cae a visión, 90 s de moondream, total 0.00 |
+
+`51.50` → `31.50` es un 5 leído como 3, y **ningún check lo frena**: hay total, hay proveedor,
+el gate da `PENDIENTE` solo porque falta la fecha. Es un importe financiero equivocado con
+apariencia de dato.
+
+**Por qué no se arregla con una regla.** Se probó la regla evidente —"el total de OCR necesita
+que otro importe del documento lo respalde"— y **rompe el producto**: el fixture canónico de OCR
+del proyecto (`tests/unit/test_capture_ocr.py::TEXTO_OCR`) tiene un único `TOTAL: 1100.00` y
+pasaría a leerse como 0, mandando a la cola fotos perfectamente legibles. El False Negative
+—una persona revisando un comprobante bueno— es más barato que el False Positive —el sistema
+afirmando una cifra que el papel no dice—, pero la regla sola no es lo bastante precisa para
+no pagar el primero de forma masiva. **Queda abierto, no resuelto.**
+
+Lo que sí contiene el daño hoy: un ticket de OCR no auto-aprueba sin RFC **y** subtotal **y**
+fecha (regla 4 de `AGENTS.md`), y estas tres no tienen ninguna de las tres. Para cerrar el
+problema de verdad hace falta que el OCR deje de equivocarse en cifras —deskew, o un segundo
+motor que vote—, no que el parser adivine.
+
+**Dos reglas que NO se adoptaron, a propósito, y con el caso que las refuta:**
+
+- **El RFC sin etiqueta.** El ticket de Oxxo trae `(CCO-860523-1N4)` en el encabezado sin la
+  palabra "RFC", y `RFC_CANDIDATO_RE` lo matchearía. **No se adoptó** porque en `IMG_4220.jpeg`
+  el mismo patrón captura `R.F.C OCO-030116-UR4`, que es de **ONUS COMERCIAL** (la empresa que
+  factura), no de `CMT QUERETARO REVOLUCION` (el comercio). Sin etiqueta no hay forma de
+  distinguirlos, y un RFC ajeno cuenta como evidencia en el gate: puede hacer auto-aprobar un
+  ticket malo. RFC ausente es mejor que RFC equivocado.
+- **La etiqueta pegada: `ARTIC. TOTAL:` → `ATOTAL:`.** El OCR funde la etiqueta, el parser no la
+  reconoce y el total queda en 0. Relajar el patrón haría leer `5000` (que es `48,00` con el
+  punto perdido) como el total: 100× y 4.02 exactos de error en una fila que parecería buena.
+
+### 22. scrypt estaba por debajo del mínimo de OWASP — ✅ CORREGIDO
+`app/core/security.py` usaba `N=2**14` con `p=1`, y el comentario afirmaba que era "el mínimo
+recomendado por OWASP". **No lo era**: la Password Storage Cheat Sheet lista cuatro
+combinaciones, y `N=2**14` solo aparece **con p=5**. Con p=1 eran 16 MiB y 27 ms por hash, 8
+veces menos memoria que `N=2**17`.
+
+Ahora usa `N=2**17, r=8, p=1`: 128 MiB y ~230 ms. Los hashes con N=2\*\*14 que ya estaban en
+la tabla `users` **siguen validando**, porque el formato lleva sus propios parámetros
+(`scrypt-v1$n$r$p$...`) y `_VERSION_HASH` no subió. Subir la versión sin migrar habría dejado
+fuera a todos los usuarios con un `return False` silencioso.
+
+`maxmem` pasó de una constante hardcodeada (132 MiB) a `_maxmem_para(n, r)`: con la constante,
+un hash con N alto lanzaba `ValueError` en una máquina con menos memoria — un 500 en el login —
+y al subir N sin subir el techo, **todos** los logins se rompían a la vez.
+`verify_auth_mutations.py` cubre las cuatro (42 mutaciones, todas mueren).
+
+> Lo que **no** se cambió: `ACCESS_TOKEN_EXPIRE_MINUTES=480` y la ausencia de refresh tokens.
+> Son decisiones documentadas de diseño para "una máquina, un contador", no defectos. Lo que sí
+> conviene saber es que **no hay revocación**: un token robado es válido 8 horas, y desactivar
+> la cuenta lo invalida (regla 9) pero no invalida tokens ya emitidos para otras rutas que no
+> reconsultan. Ver `deps.py`.
+
+### 23. `CORS_ORIGINS=["*"]` con credenciales = cualquier sitio web lee la API — ✅ CORREGIDO
+La app se sirve con `allow_credentials=True`. Con `allow_origins=["*"]`, `is_allowed_origin` de
+Starlette devuelve `True` para **cualquier** `Origin` y, como hay credenciales, la respuesta
+**refleja** el origen pedido en vez de mandar `*`:
+
+```
+Access-Control-Allow-Origin: https://sitio-que-no-es-nuestro.example
+Access-Control-Allow-Credentials: true
+```
+
+Cualquier página abierta en el mismo navegador lee tickets, empresas y extracto bancario con
+la sesión que ya está abierta. Sin contraseña, sin token, y sin aparecer en el log.
+
+`config.py:_revisa_el_cors` ahora **aborta el arranque**. `tests/integration/test_cors.py`
+pregunta al servidor, porque el middleware es de Starlette y leer el `main.py` no prueba nada.
+
+> Un detalle que hace el ataque más grave de lo que parece: el token vive en `localStorage` y
+> viaja en `Authorization: Bearer`, así que un `fetch` desde el origen ajeno puede reusarlo.
+> Con una cookie `HttpOnly` el daño sería de lectura.
+
+### 24. Los puertos se publicaban en `0.0.0.0` — ✅ CORREGIDO
+`"8000:8000"`, `"5434:5432"` y `"11434:11434"` sin prefijo publican en **todas** las interfaces:
+la API sin TLS y **la base de datos con su contraseña** alcanzables desde la red del café. Ahora
+los cuatro van a `127.0.0.1`. El de Ollama es `11435` porque hay un Ollama nativo en 11434.
+
+### 25. Cuatro archivos `.env` y el mismo secreto en varios — ✅ CORREGIDO
+`.env` (600) · `.env.dev` (**644**) · `.env.local` (**644**) · `.env.example` (versionado).
+
+- **La contraseña de la base estaba en `.env.dev`**, dentro de `DATABASE_URL`, con permisos de
+  lectura para el grupo. Docker la sobrescribe con la de `POSTGRES_PASSWORD`, así que la de
+  `.env.dev` no se usaba: era un segundo lugar donde vive el mismo secreto. Quitada.
+- **`.env.dev` y `.env.local` en 644.** Con una sesión abierta en la máquina, cualquier otro
+  usuario las lee. Ahora en 600.
+- **`config.py` leía solo `.env.dev`** mientras `docker-compose` leía los dos. La
+  `SECRET_KEY` de `.env.local` solo valía dentro de Docker: `uvicorn` en local firmaba con
+  otra, y el síntoma era "la sesión se cae, pero solo cuando depuro". Ahora los dos leen los
+  dos en el mismo orden.
+- **Los comentarios mentían.** Los dos archivos decían que la clave "mide EXACTAMENTE 32
+  caracteres" (mide 64) y que `.env.dev` "SÍ está versionado en git" (está en `.gitignore`).
+  Un comentario que afirma lo contrario de lo que se hace se lee más rápido que el código.
+
+**Pendiente, y es lo único de esta sección que no se puede arreglar en el código: rotar
+`SECRET_KEY` y `POSTGRES_PASSWORD`.** Los archivos están fuera de git, pero §15 dice que el
+repo estuvo público, y una clave que estuvo expuesta sirve hasta que se rota, no hasta que se
+borra del archivo.
+
+---
+
 ## 🟡 Deuda / data quality
 
 ### 12. `VendorNormalizer` nunca se ejecuta

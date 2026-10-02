@@ -133,31 +133,45 @@ siga cabiendo en la VM.
 > error visible. Después de cambiar un modelo: `make up` y verifica con
 > `docker compose exec ollama ollama list`.
 
-### Variables de entorno (`.env.dev`)
+### Archivos de entorno
 
-Copia la plantilla y rellénala. **Nunca escribas una contraseña en este README.** Este repositorio
-fue público con una `SECRET_KEY` y una contraseña de base de datos escritas en archivos
-versionados, y ambas quedaron en el historial: borrarlas del archivo no las borra de ahí. La
-plantilla que sí se versiona es `.env.example`.
+Hay **cuatro** archivos y solo uno se versiona. Están repartidos así a propósito: un archivo
+con la clave de firma y la configuración de IA mezclados tiene que subirse para compartir la
+parte de IA, y entonces la clave sale con él.
+
+| Archivo | Versionado | Qué lleva | Quién lo lee |
+|---|---|---|---|
+| `.env.example` | **sí** | la plantilla | tú |
+| `.env` | no | solo `POSTGRES_PASSWORD` | `docker compose` (interpola `${POSTGRES_PASSWORD}`) |
+| `.env.dev` | no | configuración de la app: IA, carpeta de tickets, OCR. **Sin secretos** | `docker compose` y `app/core/config.py` |
+| `.env.local` | no | solo `SECRET_KEY` | `docker compose` y `app/core/config.py`, **gana** sobre `.env.dev` |
 
 ```bash
-cp .env.example .env        # para docker compose (POSTGRES_PASSWORD)
-cp .env.example .env.dev    # para la app
+cp .env.example .env.dev
+cp .env.example .env
+chmod 600 .env .env.dev     # con 644 cualquiera con una sesión en la máquina los lee
 ```
 
-```env
-# .env.dev — ver .env.example para la lista completa
-PROJECT_NAME="Expense Reconciler MVP"
-POSTGRES_PASSWORD=<tu-password>
-DATABASE_URL=postgresql+asyncpg://postgres:<tu-password>@postgres-reconciler:5432/expense_db
-API_V1_STR="/api/v1"
-CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
-```
+La app lee `.env.dev` y después `.env.local`, en ese orden y con el último ganando — el mismo
+orden que usa `docker-compose.yml`. Correr `uvicorn` a mano firma los tokens con la misma clave
+que el contenedor; antes no era así, y se veía como "la sesión se cae, pero solo cuando depuro
+en local".
 
-> `SECRET_KEY` **no** tiene valor por defecto. Si no la defines, `app/core/config.py:76` genera
-> una clave efímera y avisa: molesto (cada reinicio cierra las sesiones) pero no roto. Genera
-> una real con `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. Sin ella,
-> cualquier token firmado con la clave de otro despliegue sería válido aquí.
+> **`SECRET_KEY` no tiene valor por defecto.** Sin ella, `config.py` genera una clave efímera y
+> avisa: molesto (con `--reload`, cada cambio en un `.py` cierra las sesiones) pero no roto.
+> Genera una real con `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` y ponla
+> en `.env.local`. Con ella se pueden firmar tokens válidos sin pasar por el login, así que si
+> crees que salió del equipo, **rotarla** es lo único que sirve.
+
+> **`DATABASE_URL` en `.env.dev` va sin contraseña.** Dentro de Docker la sobrescribe
+> `docker-compose.yml` con la que arma desde `POSTGRES_PASSWORD`, así que la que esté ahí no se
+> usa. Dejarla con la contraseña puesta era tener el mismo secreto en dos archivos, uno de
+> ellos legible por el grupo. Fuera de Docker sí se usa: ahí apunta a una base que exista de
+> verdad y la rellenas tú.
+
+> **`CORS_ORIGINS` no admite `"*"`.** La app se sirve con `allow_credentials=True`, y esa
+> combinación hace que cualquier sitio web pueda leer la API con la sesión del navegador de
+> quien la tiene abierta. El arranque falla si aparece un comodín, en vez de dejarlo pasar.
 
 ### Escaner de carpeta (OCR local, sin APIs de pago)
 
@@ -181,6 +195,31 @@ La carpeta se crea sola si no existe. En Docker el host la monta en solo lectura
 volumes:
   - ${TICKETS_HOST_DIR}:/tickets:ro
 ```
+
+Dentro del contenedor la ruta es siempre `/tickets`: la del host no existe ahí, y sin el
+override `docker-compose.yml` crearía `/Users/carloslott/...` como root dentro del contenedor.
+
+> **El puerto publicado de Ollama es 11435, no 11434.** En esta máquina hay un Ollama nativo en
+> `127.0.0.1:11434` y publicar el mismo puerto en loopback no arranca. La app habla con Ollama
+> por la red interna (`OLLAMA_BASE_URL=http://ollama:11434`); ese mapeo es solo para mirar el
+> contenedor desde la máquina.
+
+#### Qué sale de leer una foto, medido en las tres de esta máquina
+
+Las tres JPEG de `Tickets_app` se leen, pero ninguna auto-aprueba. Lo que decide el gate es
+el mismo en las tres: a un comprobante leído por OCR le falta RFC **y** subtotal **y** fecha, y
+sin las tres no se afirma que la lectura sea buena.
+
+| Archivo | Origen | Qué se leyó bien | Qué falta |
+|---|---|---|---|
+| `IMG_4220.jpeg` | OCR | proveedor, total 97.56, **fecha 28/09/26** | RFC y subtotal → `REQUIERE_REVISION` |
+| `1C2C52A2…jpeg` | OCR | proveedor | fecha (el OCR la perdió) → `PENDIENTE` |
+| `IMG_4222.jpeg` | modelo | nada útil | foto arrugada y a contraluz; 90 s de moondream para un total en 0 |
+
+> **El OCR cambia cifras sin avisar.** En la foto de Oxxo el papel dice `51.50` y Tesseract leyó
+> `31.50`: un importe que pasa todos los checks del gate y es un error financiero. Está medido y
+> documentado en `docs/known-issues.md` §21. Por eso un ticket de OCR nunca auto-aprueba y la
+> revisión humana es la que confirma el importe.
 
 El `Dockerfile` instala el binario de Tesseract con el paquete de español y falla el
 build si falta. Para correrlo fuera de Docker en macOS:

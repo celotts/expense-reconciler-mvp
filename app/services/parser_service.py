@@ -53,6 +53,125 @@ ISSUER_LABEL_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Fecha sin etiqueta
+# ---------------------------------------------------------------------------
+#
+# Los tres patrones de arriba exigen la palabra "fecha" pegada al valor. Es la
+# forma de un PDF de texto y casi no es la de un papel: en un ticket de
+# autocomercio el momento de la transaccion va pegado al FOLIO y no a una
+# etiqueta. Medido en las tres fotos de la carpeta, con el texto que devolvio
+# Tesseract:
+#
+#     #0436110 28/09/26 09:52 POS #01 TDA #452
+#
+# Ninguno de los tres patrones la encuentra: no hay "fecha" delante. La fecha se
+# perdia con RFC, total e IVA correctamente leidos, y el ticket iba a la cola
+# con `date_missing` habiendole leido todo lo demas. Corregido en
+# `parser_service.py`.
+#
+# POR QUE EXIGE UNA MARCA DEL COMPROBANTE Y NO CUALQUIER FECHA
+#
+# Porque "una fecha suelta en el documento" no es una fecha: es la primera que
+# aparezca. En la MISMA foto, doce lineas antes de la del folio:
+#
+#     TUS PUNTOS VENCEN: 31/10/2026
+#
+# que es el vencimiento de unos puntos, no el dia del gasto. Sin el filtro esa
+# linea ganaba, el comprobante de una compra de septiembre aparecia fechado el
+# 31 de octubre, y el cierre mensual lo contaba en otro mes: un dato equivocado
+# que pasa TODOS los checks, porque `date_in_future` y `date_too_old` no tienen
+# nada que objectar a una fecha de futuro creible.
+#
+# El criterio es que la fecha este en la misma linea que el identificador del
+# comprobante (folio, nota, ticket, caja, el numero precedido de "#"). Es donde
+# el papel imprime el momento de la transaccion, y casi nunca donde pone otra
+# cosa. El filtro es estrecho a proposito: una fecha sin marca se deja sin leer
+# y el ticket va a la cola con su motivo, que es el resultado correcto cuando no
+# se sabe cual es.
+#
+# El punto NO es separador aqui, a proposito: "1.028" y "51.50" son importes y
+# el punto tambien hace de separador de miles.
+MARCA_DEL_COMPROBANTE_RE = re.compile(
+    r"(?:\b(?:folio|nota|ticket|comprobante|caja|operacion|transaccion|corte)\b"
+    r"|#\d"
+    # "No" suelta matchearia media frase en espanol ("NO HAY CAMBIO"), asi que
+    # exige el numero del comprobante detras: "No: 261001000017".
+    r"|\bno\.?:?\s*\d)",
+    re.IGNORECASE,
+)
+
+# Palabras que convierten la fecha de al lado en el VENCIMIENTO de algo: un
+# cupon, una garantia, una promccion. No es el dia del gasto.
+VENCIMIENTO_RE = re.compile(
+    r"\b(?:vence|vencen|vencimiento|expira|expiracion|caduca|caducidad|validez|vigencia|limite)\w*",
+    re.IGNORECASE,
+)
+
+FECHA_SIN_ETIQUETA_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)")
+
+
+def _a_fecha(dia: str, mes: str, anio: str) -> date | None:
+    """Une dia/mes/anio en una fecha, o `None` si no existe.
+
+    A mano y no con `pd.to_datetime` a proposito: `dayfirst=True` resuelve la
+    ambiguedad con una heuristica de `dateutil` que ademas AVISA en vez de
+    fallar, y un aviso en medio de un escaneo de 400 archivos es un aviso que
+    nadie lee. `date()` lanza `ValueError` en "2026-13-01" y en "2026-02-30",
+    que es exactamente la respuestas que se quiere: no existe, no se inventa.
+    """
+    try:
+        anio_num = int(anio)
+        if anio_num < 100:
+            # El corte en 68 es el de POSIX: 69-99 son 1969-1999 y 00-68 son
+            # 2000-2068. Un ticket de 1969 no existe en este producto y uno de
+            # 2069 tampoco, asi que el error de esa lectura cae en el gate
+            # (`date_in_future`, `date_too_old`) y no aqui.
+            anio_num = 2000 + anio_num if anio_num <= 68 else 1900 + anio_num
+        return date(anio_num, int(mes), int(dia))
+    except ValueError:
+        return None
+
+
+def _fecha_del_comprobante(lines: list[str]) -> date | None:
+    """La fecha que va pegada al identificador del comprobante, o `None`.
+
+    Una sola pasada y una sola regla: la fecha tiene que estar en la misma linea
+    que el folio, la nota, el "#" o el "No:" del comprobante.
+
+    Se probo la version mas generosa, que aceptaba cualquier fecha de cuatro
+    digitos sin marca, y fallo con la foto real: en el ticket de la ferreteria el
+    OCR leyo `o: 261001000017) 01-10-2028` (el papel dice 2026; el 6 se leyo 8)
+    y la regla generica tomo esa fecha. Con la estrecha, esa linea no se acepta
+    porque no dice "No:" sino "o:", y el ticket va a la cola con `date_missing`.
+
+    OJO con lo que esta regla NO hace, porque es tentador atribuirle mas de lo
+    que hace. Si el OCR lee "No:" completo, la fecha SI se toma, aunque el ano
+    sea un 8 donde el papel tiene un 6: el parser no puede saberlo. Lo que
+    detiene ese caso es el check `date_in_future` del gate, que ya existe. Esta
+    regla no es una defensa contra los anos mal leidos; es una defensa contra
+    que la fecha del documento sea la de otra cosa.
+
+    Un anio de dos digitos sin marca ("28/09") NO se acepta nunca: a dos digitos
+    "28/09" es un importe o un codigo tan facilmente como una fecha.
+    """
+    for linea in lines:
+        if VENCIMIENTO_RE.search(linea):
+            continue
+        if not MARCA_DEL_COMPROBANTE_RE.search(linea):
+            continue
+
+        encontrado = FECHA_SIN_ETIQUETA_RE.search(linea)
+        if encontrado is None:
+            continue
+
+        leida = _a_fecha(*encontrado.groups())
+        if leida is not None:
+            return leida
+
+    return None
+
+
 class BankTransactionRow(BaseModel):
     transaction_date: date
     amount: Decimal
@@ -759,7 +878,15 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             # numero mal leido no entre, y el valor normalizado son los tres
             # grupos pegados, sin los guiones que algunos tickets traen.
             provider_tax_id = "".join(rfc_match.groups())
-    
+
+    # Fecha pegada al identificador del comprobante, cuando no hay ninguna con
+    # etiqueta. Va DESPUES del bucle y no dentro, por una razon que se sintio al
+    # escribirlo: dentro, la primera linea con una fecha gana, y en un ticket la
+    # primera fecha no es la del gasto. Fuera, se comparan todas y se elige.
+    # Ver `_fecha_del_comprobante`.
+    if expense_date is None:
+        expense_date = _fecha_del_comprobante(lines)
+
     # Fallback: if no total found, try generic total match
     if total_amount == Decimal("0.00"):
         for line in reversed(lines):

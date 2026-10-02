@@ -124,6 +124,46 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _revisa_el_cors(self) -> "Settings":
+        """Se niega a arrancar con `*` en `CORS_ORIGINS`.
+
+        La app se sirve con `allow_credentials=True`, y esa combinacion con un
+        origen comodin no es "no restrictivo": es el peor de los dos mundos.
+        `allow_origins=["*"]` hace que `is_allowed_origin` de Starlette devuelva
+        True para cualquier `Origin`, y como hay credenciales, la respuesta
+        REFLEJA el origen que pidio el navegador en vez de mandar `*`:
+
+            Access-Control-Allow-Origin: https://sitio-que-no-es-nuestro.example
+            Access-Control-Allow-Credentials: true
+
+        Eso es: cualquier pagina web que se abra en el navegador de quien esta
+        usando la herramienta puede leer los tickets, las empresas y el extracto
+        bancario con la sesion que ya tiene abierta. No hace falta saber la
+        contrasena ni tener un token, y el ataque no aparece en el log del
+        servidor porque para el servidor es una peticion normal.
+
+        El navegador exige que el script envie el token, asi que si viviera en
+        una cookie `HttpOnly` el dano seria de lectura y no de escritura. Este
+        API usa `Authorization: Bearer`, que el frontend guarda en `localStorage`,
+        y ahi si lo tiene: un `fetch` con cabeceras a medida desde otro origen
+        puede reusarlo.
+
+        Por eso no es una advertencia: es un arranque abortado. Es el mismo
+        criterio que el del `SECRET_KEY` de menos de 32 caracteres, y por el
+        mismo motivo: una configuracion que no se puede usar bien se detecta
+        arrancando, no despues de que alguien la haya usado mal.
+        """
+        if "*" in self.CORS_ORIGINS:
+            raise ValueError(
+                "CORS_ORIGINS no puede contener '*': la app se sirve con "
+                "allow_credentials=True, y con un origen comodin Starlette "
+                "refleja CUALQUIER origen con credenciales, que deja que "
+                "cualquier sitio web lea la API con la sesion del navegador. "
+                'Escriba los origenes uno por uno: CORS_ORIGINS=["http://localhost:3000"]'
+            )
+        return self
+
+    @model_validator(mode="after")
     def _revisa_la_carpeta_de_tickets(self) -> "Settings":
         """Deja la carpeta de entrada existiendo y utilizable.
 
@@ -170,7 +210,27 @@ class Settings(BaseSettings):
 
         return self
 
-    model_config = SettingsConfigDict(env_file=".env.dev", extra="ignore")
+    # Los dos archivos, y en ESTE orden.
+    #
+    # `docker-compose.yml` carga `.env.dev` y despues `.env.local`, y con la
+    # misma variable en los dos gana el ULTIMO. `config.py` hacia lo contrario:
+    # leia solo `.env.dev`. Ese desajuste tiene una consecuencia concreta: la
+    # `SECRET_KEY` de `.env.local` solo valia dentro de Docker, y correr
+    # `uvicorn` en la maquina para depurar firmaba tokens con la de `.env.dev`.
+    # Dos claves, dos sesiones, y un "mi sesion se cae" que no se reproducia
+    # donde se reproducia.
+    #
+    # Ahora los dos leen los dos archivos y en el mismo orden, asi que el token
+    # que firma Docker es el mismo que firma `uvicorn` local. Si `.env.local` no
+    # existe, se lee solo `.env.dev`: es la configuracion de un clone nuevo.
+    #
+    # Lo que NO se hace es intentar ser clever con la precedencia. Las variables
+    # de entorno reales gana sobre los dos archivos, y `docker-compose` pone
+    # `DATABASE_URL` y `TICKETS_INPUT_DIR` en `environment:` justamente para eso.
+    model_config = SettingsConfigDict(
+        env_file=(".env.dev", ".env.local"),
+        extra="ignore",
+    )
 
 
 settings = Settings()

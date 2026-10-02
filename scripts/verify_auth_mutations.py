@@ -329,6 +329,51 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         '            self.SECRET_KEY = "clave-fija-que-esta-en-el-repositorio-000"',
         [CONFIG_T],
     ),
+    # -----------------------------------------------------------------------
+    # El coste del hash. Subir N es facil; subirlo sin que nada lo compruebe es
+    # como se vuelve a bajar sin querer.
+    # -----------------------------------------------------------------------
+    (
+        "el coste de scrypt vuelve al que no recomienda la guia",
+        SEGURIDAD,
+        "_SCRYPT_N = 2**17",
+        "_SCRYPT_N = 2**14",
+        ["tests/unit/test_security.py::TestElCosteDeScrypt"],
+    ),
+    (
+        "scrypt se queda sin paralelismo (2**14 con p=1 no esta en la lista)",
+        SEGURIDAD,
+        "_SCRYPT_P = 1",
+        "_SCRYPT_P = 5",
+        ["tests/unit/test_security.py::TestElCosteDeScrypt"],
+    ),
+    (
+        "el techo de memoria se deja de calcular con los parametros del hash",
+        SEGURIDAD,
+        "    return 128 * r * n + 32 * 1024 * 1024",
+        "    return 16 * 1024 * 1024",
+        ["tests/unit/test_security.py::TestElCosteDeScrypt"],
+    ),
+    (
+        "verificar usa los parametros del modulo y no los del hash",
+        SEGURIDAD,
+        "            n=int(n),\n            r=int(r),\n            p=int(p),",
+        "            n=_SCRYPT_N,\n            r=_SCRYPT_R,\n            p=_SCRYPT_P,",
+        [
+            "tests/unit/test_security.py::TestElHashDeContrasena"
+            "::test_el_hash_antiguo_se_sigue_validando_despues_de_subir_n",
+        ],
+    ),
+    (
+        "el techo de memoria se queda corto para un hash con N alto",
+        SEGURIDAD,
+        "    return 128 * r * n + 32 * 1024 * 1024",
+        "    return _MAXMEM_SCRYPT",
+        [
+            "tests/unit/test_security.py::TestElCosteDeScrypt"
+            "::test_un_hash_mas_caro_que_la_constante_tambien_verifica",
+        ],
+    ),
 ]
 
 

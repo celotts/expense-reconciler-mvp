@@ -409,6 +409,139 @@ TOTAL: $89.50
         assert _parse_receipt_text(text).expense_date is None
 
 
+# Texto tal cual lo devolvio Tesseract sobre la foto real `IMG_4220.jpeg`
+# (carneMart, CMT QUERETARO REVOLUCION), recortado a las lineas que deciden la
+# fecha. La fecha real es 28/09/26 y la dice el papel en la linea del folio.
+#
+# Se pega el texto REAL y no uno inventado porque el caso que dio origen a esta
+# regla es ese texto: las tres fotos de la carpeta. En las tres, la fecha del
+# gasto no tiene la palabra "fecha" delante, y en las tres el parser la perdia.
+TEXTO_OCR_CON_FECHA_EN_EL_FOLIO = """CMT QUERETARO REVOLUCION
+AU. REVOLUCION NO. 403 COL. PLUTARCO ELIAS CALLES
+TUS PUNTOS VENCEN: 31/10/2026
+#0436110 28/09/26 09:52 POS #01 TDA 4452
+TOTAL AN $97.56
+"""
+
+
+class TestLaFechaQueVaPegadaAlFolio:
+    """La fecha sin etiqueta, en la linea del identificador del comprobante."""
+
+    def test_la_fecha_del_folio_se_lee(self):
+        """La regresion que motivo la regla.
+
+        El texto OCR de la foto real trae "#0436110 28/09/26 09:52" y ningun
+        patron con etiqueta la encuentra: no hay "fecha" delante. Antes de esta
+        regla el ticket iba a la cola con `date_missing` habiendole leido bien
+        el proveedor, el total y el IVA.
+        """
+        resultado = _parse_receipt_text(TEXTO_OCR_CON_FECHA_EN_EL_FOLIO)
+        assert resultado.expense_date == date(2026, 9, 28)
+
+    def test_un_anio_de_dos_digitos_se_agrupa_en_el_siglo_que_toca(self):
+        """`28/09/26` es 2026, no 1926.
+
+        El corte en 68 es el de POSIX. Un comprobante de 1926 no existe en este
+        producto, y aceptarlo mandaria el gasto a un periodo que el gate marca
+        como `date_too_old`: mejor que la regla lo rechace con un motivo claro.
+        """
+        texto = "TIENDA\nFOLIO 5521 28/09/26 09:52\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 9, 28)
+
+    def test_el_vencimiento_no_gana_aunque_venga_primero(self):
+        """`TUS PUNTOS VENCEN: 31/10/2026` es el vencimiento de unos puntos.
+
+        Es la unica fecha de la foto antes de la del folio, asi que una regla
+        de "primera fecha que encuentres" mete el comprobante de una compra de
+        septiembre en el mes de octubre. Y `date_in_future` no lo frena: una
+        fecha de octubre es un futuro creible para un ticket de septiembre.
+        """
+        resultado = _parse_receipt_text(TEXTO_OCR_CON_FECHA_EN_EL_FOLIO)
+        assert resultado.expense_date != date(2026, 10, 31)
+
+    def test_la_etiqueta_manda_sobre_la_fecha_del_folio(self):
+        """Una fecha con la palabra "fecha" delante gana, este o mas abajo.
+
+        La regla del folio es un RESPALDO, no una preferencia: si el documento
+        dice "FECHA:", lo que dice el documento es la fecha.
+        """
+        texto = "TIENDA\nFECHA: 15/01/2025\nFOLIO 5521 28/09/26 09:52\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2025, 1, 15)
+
+    def test_la_linea_sin_marca_no_se_acepta(self):
+        """Sin folio, nota ni "#", la fecha no se toca.
+
+        Este es el caso MEDIDO de la foto `IMG_4222.jpeg`: el OCR leyo
+        `o: 261001000017) 01-10-2028`, con la "N" de "No:" perdida y el 6 del
+        ano leido como 8. Sin marca de comprobante la fecha no se lee, el ticket
+        va a la cola con `date_missing`, y no queda un gasto fechado en 2028.
+        """
+        texto = "MERCASTAR\no: 261001000017) 01-10-2028 1Ój5T:19\nTOTAL: $48.00\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_ano_imposible_llega_al_gate_como_date_in_future(self):
+        """Con la marca leida bien, la fecha se acepta y el gate la detiene.
+
+        El caso de al lado del anterior, y delimita donde acaba esta regla.
+        Cuando el OCR lee "No:" completo, la fecha SI se toma: el parser no
+        puede saber que el 8 del ano era un 6. Lo que detiene el gasto dentro
+        de dos anos no es esta regla, es el check `date_in_future` del gate, que
+        ya existe (`confidence_gate.py:146`). Por eso el test de este caso
+        comprueba el veredicto del gate y no solo el del parser.
+        """
+        from app.core.enums import ExtractionStatus
+        from app.services.confidence_gate import gate_ticket
+
+        resultado = _parse_receipt_text(
+            "MERCASTAR\nNo: 261001000017 01-10-2028\nTOTAL: $48.00\n"
+        )
+        assert resultado.expense_date == date(2028, 10, 1)
+
+        veredicto = gate_ticket(
+            provider_name=resultado.provider_name,
+            total_amount=resultado.total_amount,
+            tax_amount=resultado.tax_amount,
+            expense_date=resultado.expense_date,
+            provider_tax_id=resultado.provider_tax_id,
+            subtotal=resultado.subtotal,
+            confidence=resultado.confidence,
+            source=resultado.confidence_source,
+        )
+        assert any(
+            fallo.startswith("date_in_future") for fallo in veredicto.validation.failures
+        ), veredicto.validation.failures
+        assert veredicto.status is not ExtractionStatus.AUTO_APROBADO
+
+    def test_un_importe_no_se_toma_como_fecha(self):
+        """`1.028 HILANESA DE PECHU 94.90` es un codigo de producto.
+
+        El punto no es separador de fecha a proposito: en un ticket mexicano el
+        punto separa miles y decimales, y "51.50" es un importe.
+        """
+        texto = "TIENDA\nFOLIO 452\n1.028 HILANESA DE PECHU 94.90\nTOTAL: $97.56\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_una_fecha_que_no_existe_se_descarta(self):
+        """`31/02/2026` no es una fecha, y no se "corrige" a marzo.
+
+        A proposito se usa `date()` y no `pd.to_datetime`: la libreria resuelve
+        el fuera de rango con un aviso y un valor inventado en vez de fallar, y
+        un comprobante del 31 de febrero es un dato que no se sabe.
+        """
+        texto = "TIENDA\nFOLIO 5521 31/02/2026\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_importe_en_la_misma_linea_no_confunde_la_fecha(self):
+        """La linea del folio tambien trae importes; la fecha es la primera.
+
+        `FOLIO 5521 28/09/26 09:52` tiene un numero de cuatro digitos antes de
+        la fecha y una hora detras. El dia tiene que salir del primer grupo que
+        sigue a una barra, no de "5521".
+        """
+        texto = "TIENDA\nFOLIO 5521 28/09/26 09:52 POS #01\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 9, 28)
+
+
 class TestAmountExtraction:
     def test_subtotal_is_not_mistaken_for_total(self):
         text = "TIENDA\nSUBTOTAL: $215.40\nIVA (16%): $34.46\nTOTAL: $249.86\n"
