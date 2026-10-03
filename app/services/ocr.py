@@ -555,43 +555,137 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
     )
 
 
-def _leer_easyocr(datos: bytes) -> ResultadoOCR:
-    import io
+def _lineas_desde_cajas(detecciones: list) -> tuple[str, float | None]:
+    """Reconstruye las LINEAS de una lista de cajas de EasyOCR.
 
-    lector = obtener_motor("easyocr")
-    try:
-        from PIL import Image
-    except ImportError:
-        imagen = datos
-    else:
+    Por que hace falta, y por que no es un detalle de forma.
+
+    EasyOCR devuelve `[bbox, texto, confianza]` por_region, sin decir que palabras
+    estan en la misma linea. Tesseract si lo dice: `image_to_data` trae
+    bloque, parrafo y linea, y `_una_lectura` los usa. Sin esa informacion, el
+    texto sale una palabra por linea y el parser por reglas no encuentra nada,
+    porque esta anclado a la forma `label: valor` en UNA linea.
+
+    Medido con las fotos reales de la carpeta, antes y despues de agrupar:
+
+        sin agrupar:  'P.TOTAL'      <- etiqueta sola
+                     '97.56'        <- el importe, dos lineas mas abajo
+
+        agrupado:     'TOTAL 97.56'  <- lo que el parser entiende
+
+    Y el caso grave: `97.56` se lee con confianza **1.00** y sin agrupar no llega
+    a ningun sitio. El numero estaba bien leido todo el tiempo; lo que faltaba
+    era la linea.
+
+    El criterio de agrupar es solapamiento VERTICAL, no proximidad: dos palabras
+    estan en la misma linea si comparten banda vertical. La distancia horizontal
+    no dice nada, porque en un ticket el importe esta en la columna de al lado,
+    lejos de su etiqueta pero en la misma fila.
+
+    `detail=1` de EasyOCR no garantiza orden de lectura, asi que el orden se
+    reconstruye aqui: de arriba abajo, y dentro de cada linea de izquierda a
+    derecha, que es como lo lee una persona.
+    """
+    cajas: list[dict] = []
+    for deteccion in detecciones:
+        if len(deteccion) < 2:
+            continue
+        bbox, texto = deteccion[0], str(deteccion[1])
+        if not texto.strip():
+            continue
         try:
-            imagen = Image.open(io.BytesIO(datos)).convert("RGB")
-        except Exception as exc:
-            raise OCRNoDisponible(f"EasyOCR no pudo abrir la imagen: {exc}") from exc
+            ys = [float(p[1]) for p in bbox]
+            xs = [float(p[0]) for p in bbox]
+        except (TypeError, ValueError, IndexError):
+            continue
+        confianza = None
+        if len(deteccion) > 2:
+            try:
+                confianza = float(deteccion[2])
+            except (TypeError, ValueError):
+                confianza = None
+        cajas.append({
+            "x0": min(xs), "x1": max(xs), "y0": min(ys), "y1": max(ys),
+            "texto": texto, "conf": confianza,
+        })
 
-    lineas = lector.readtext(imagen, detail=1)
+    if not cajas:
+        return "", None
+
+    # De arriba abajo. El desempate por x es lo que hace que dos palabras en la
+    # misma banda salgan en orden de lectura y no en el orden en que el detector
+    # las devolvio.
+    cajas.sort(key=lambda c: (c["y0"], c["x0"]))
+
+    lineas: list[dict] = []
+    for caja in cajas:
+        alto_caja = caja["y1"] - caja["y0"]
+        colocada = False
+        for linea in lineas:
+            solape = min(linea["y1"], caja["y1"]) - max(linea["y0"], caja["y0"])
+            # La mitad del alto mas pequeno: dos textos comparten linea si se
+            # pisan mas de la mitad de uno de los dos. Es lo que distingue "el
+            # TOTAL y su importe" de "el TOTAL y la linea de debajo".
+            if solape > 0.5 * min(linea["y1"] - linea["y0"], alto_caja):
+                linea["cajas"].append(caja)
+                linea["y0"] = min(linea["y0"], caja["y0"])
+                linea["y1"] = max(linea["y1"], caja["y1"])
+                colocada = True
+                break
+        if not colocada:
+            lineas.append({"y0": caja["y0"], "y1": caja["y1"], "cajas": [caja]})
+
     textos: list[str] = []
     confianza_total = 0.0
+    con_confianza = 0
     for linea in lineas:
-        # EasyOCR devuelve (bbox, texto, confianza); el orden de los elementos
-        # no esta garantizado entre versiones, asi que se desempaca por posicion
-        # en vez de por nombre.
-        if len(linea) < 3:
-            continue
-        texto = linea[1]
-        confianza = linea[2]
-        if not texto or not str(texto).strip():
-            continue
-        textos.append(str(texto))
-        try:
-            confianza_total += float(confianza)
-        except (TypeError, ValueError):
-            continue
+        palabras = sorted(linea["cajas"], key=lambda c: c["x0"])
+        textos.append(" ".join(p["texto"] for p in palabras))
+        for p in palabras:
+            if p["conf"] is not None:
+                confianza_total += p["conf"]
+                con_confianza += 1
 
     media = (
-        round(confianza_total / len(textos), 4) if textos else None
+        round(confianza_total / con_confianza, 4) if con_confianza else None
     )
-    return ResultadoOCR(texto="\n".join(textos), motor="easyocr", confianza_media=media)
+    return "\n".join(textos), media
+
+
+def _leer_easyocr(datos: bytes) -> ResultadoOCR:
+    lector = obtener_motor("easyocr")
+
+    # EasyOCR acepta una ruta, bytes o un array de numpy. Una imagen de Pillow
+    # NO la acepta, y la version actual lo dice:
+    #
+    #     ValueError: Invalid input type. Supporting format = string, bytes, numpy array
+    #
+    # Este codigo le pasaba `Image.open(...)` a `readtext`, asi que la rama de
+    # easyocr de este modulo **nunca funciono**: "easyocr esta soportado" era una
+    # verdad a medias. Medido y reproducido; ver `scripts/medir_dos_motores.py`.
+    #
+    # Ademas EasyOCR no aplica el preprocesado de `_preparar` (exif_transpose,
+    # escala, autocontraste). Sin el, comparar los dos motores seria comparar
+    # dos motores con entradas distintas, y el resultado no diria nada sobre el
+    # motor: una foto de iPhone llega rotada 90 grados.
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - easyocr arrastra numpy
+        raise OCRNoDisponible("EasyOCR necesita numpy") from exc
+
+    imagen = _preparar(datos)
+    try:
+        rgb = np.array(imagen.convert("RGB"), dtype=np.uint8)
+    except Exception as exc:
+        raise OCRNoDisponible(f"EasyOCR no pudo preparar la imagen: {exc}") from exc
+
+    try:
+        detecciones = lector.readtext(rgb, detail=1, paragraph=False)
+    except Exception as exc:
+        raise OCRNoDisponible(f"EasyOCR no pudo leer la imagen: {exc}") from exc
+
+    texto, confianza = _lineas_desde_cajas(detecciones)
+    return ResultadoOCR(texto=texto, motor="easyocr", confianza_media=confianza)
 
 
 def disponibilidad() -> dict[str, object]:

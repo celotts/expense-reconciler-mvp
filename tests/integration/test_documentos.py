@@ -128,44 +128,63 @@ class TestElDocumentoSeGuarda:
         assert documento.content_type == "application/pdf"
 
 
-class TestUnTicketSoloTieneUnDocumento:
-    """La unicidad, y lo que pasaria sin ella."""
+class TestUnaSolaVersionVigente:
+    """Antes esta clase se llamaba `TestUnTicketSoloTieneUnDocumento` y afirmaba
+    lo contrario: que un ticket tiene UN documento y que reemplazarlo lo
+    sobrescribe.
+
+    Ese era el bug. La unicidad que importa no es "cuantas filas hay", es
+    "cuantas son VIGENTES": puede haber varias versiones y solo una se descarga.
+    Lo que no puede haber es dos vigentes, porque entonces "el comprobante de
+    este ticket" no tiene respuesta unica, que es lo que rompe la descarga y el
+    muestreo.
+
+    Ver `db/migrations/0009_documento_inmutable.sql` y
+    `tests/integration/test_documento_inmutable.py`, que es donde vive la
+    cadena completa.
+    """
 
     @pytest.mark.asyncio
-    async def test_subir_de_nuevo_reemplaza_y_no_acumula(
+    async def test_reemplazar_apila_y_deja_un_solo_vigente(
         self, db_session, test_company
     ):
         """Reextraer produce una lectura mejor del MISMO papel.
 
-        El gasto no cambia: es el mismo comprobante. Guardar las dos lecturas
-        como dos documentos seria duplicar el gasto en el historico contable, que
-        es la ultima cosa que este sistema puede hacer. Y la API lo resuelve
-        con `PUT`, que es un reemplazo, no un agregado.
+        El gasto no cambia y las dos versiones se conservan, porque el papel
+        original es la evidencia contra la que se contrasto la lectura anterior.
+        Lo que se resuelve es cual se descarga: la ultima.
         """
-        from sqlalchemy import func, select
+        from sqlalchemy import select
 
         from app.models.ticket_document import TicketDocumentModel
+        from app.services.document_service import documento_de_ticket
 
         ticket = await _crear_ticket(db_session, test_company.id, TICKET_TEXTO)
 
         await reemplazar_documento(
             db_session, ticket.id, b"%PDF-1.7 version reextraida",
+            actor="ana@test.mx", motivo="reextraido con otro motor",
             content_type="application/pdf", nombre_archivo="mejor.pdf",
         )
         await db_session.commit()
 
         documentos = (await db_session.execute(
-            select(TicketDocumentModel).where(
-                TicketDocumentModel.ticket_id == ticket.id
-            )
+            select(TicketDocumentModel)
+            .where(TicketDocumentModel.ticket_id == ticket.id)
+            .order_by(TicketDocumentModel.version)
         )).scalars().all()
 
-        assert len(documentos) == 1, "un ticket con dos comprobantes no se sabe cual es"
-        assert documentos[0].contenido == b"%PDF-1.7 version reextraida"
-        assert documentos[0].nombre_archivo == "mejor.pdf"
+        assert len(documentos) == 2, "el comprobante original se perdio"
+        assert documentos[0].contenido == TICKET_TEXTO
+        assert documentos[1].contenido == b"%PDF-1.7 version reextraida"
+        assert documentos[1].nombre_archivo == "mejor.pdf"
+
+        # Y el que se descarga es el nuevo, no el primero por costumbre.
+        vigente = await documento_de_ticket(db_session, ticket.id)
+        assert vigente.contenido == b"%PDF-1.7 version reextraida"
 
     @pytest.mark.asyncio
-    async def test_la_cantidad_no_crece_al_reintentar_muchas_veces(
+    async def test_la_cadena_crece_de_a_uno_y_solo_uno_es_el_vigente(
         self, db_session, test_company
     ):
         from sqlalchemy import func, select
@@ -176,14 +195,25 @@ class TestUnTicketSoloTieneUnDocumento:
         for i in range(5):
             await reemplazar_documento(
                 db_session, ticket.id, f"intento {i}".encode(),
+                actor="ana@test.mx", motivo=f"intento {i}",
             )
         await db_session.commit()
 
-        total = await db_session.scalar(
-            select(func.count()).select_from(TicketDocumentModel)
+        documentos = (await db_session.execute(
+            select(TicketDocumentModel)
+            .where(TicketDocumentModel.ticket_id == ticket.id)
+            .order_by(TicketDocumentModel.version)
+        )).scalars().all()
+
+        assert [d.version for d in documentos] == [1, 2, 3, 4, 5, 6]
+        # Seis papeles, una sola punta. El indice unico sobre `reemplaza_a` es lo
+        # que impide que la cadena se bifurque.
+        maxima = await db_session.scalar(
+            select(func.max(TicketDocumentModel.version))
             .where(TicketDocumentModel.ticket_id == ticket.id)
         )
-        assert total == 1
+        vigentes = [d for d in documentos if d.version == maxima]
+        assert len(vigentes) == 1
 
 
 class TestLoQueNoTieneDocumento:
@@ -233,7 +263,10 @@ class TestLoQueNoTieneDocumento:
 
         from app.models.ticket import TicketModel
 
-        ok = await reemplazar_documento(db_session, uuid4(), b"contenido")
+        ok = await reemplazar_documento(
+            db_session, uuid4(), b"contenido",
+            actor="ana@test.mx", motivo="prueba",
+        )
 
         assert ok is False
         assert await db_session.scalar(
@@ -251,7 +284,10 @@ class TestLoQueNoTieneDocumento:
         """
         ticket = await _crear_ticket(db_session, test_company.id, TICKET_TEXTO)
 
-        assert await reemplazar_documento(db_session, ticket.id, b"") is False
+        assert await reemplazar_documento(
+            db_session, ticket.id, b"",
+            actor="ana@test.mx", motivo="prueba",
+        ) is False
         await db_session.commit()
 
         # El documento ANTERIOR sigue ahi. Un intento fallido no borra lo que
@@ -296,29 +332,58 @@ class TestElDocumentoYElTicketNacenJuntos:
     async def test_la_relacion_esta_cableada_para_borrar_en_cascada(
         self, db_session, test_company
     ):
-        """Que el borrado en cascada este DECLARADO, no que funcione aqui.
+        """Que el borrado en cascada este DECLARADO, y ahora donde vive.
 
-        Lo que se comprueba es que la relationship tiene `delete-orphan` y
-        `single_parent`. Eso es lo que hace que el borrado del ticket borre el
-        comprobante sin que nadie lo pida.
+        ANTES: la relationship del ORM llevaba `cascade="all, delete-orphan"` y
+        `single_parent=True`, y eso era lo que borraba el comprobante.
 
-        Lo que NO se comprueba aqui, y es lo importante, es que el `ON DELETE
-        CASCADE` de la llave foranea exista de verdad en Postgres. SQLite
-        ignora las llaves foraneas por omision (hace falta un PRAGMA que esta
-        base de prueba no activa), asi que un `DELETE` aqui pasaria aunque el
-        CASCADE no estuviera escrito. Comprobarlo es trabajo de
-        `scripts/verify_postgres_documentos.py`, y no de esta suite.
+        AHORA: la relationship es de SOLO LECTURA (`viewonly=True`) y el borrado
+        es de la BASE, por el `ON DELETE CASCADE` de la llave foranea. El cambio
+        no es cosmetico: con la relationship escribible, un `db.delete(ticket)`
+        podia intentar borrar el documento por su cuenta Y la base borrarlo otra
+        vez, que es justo el doble borrado que el trigger de
+        `0009_documento_inmutable.sql` existe para impedir.
 
-        Sin el CASCADE en la base, borrar un ticket desde la API (que usa la
-        relationship) dejaria el archivo, y borrar un ticket por SQL directo no
-        lo borraria nunca. Son dos caminos de borrado y tienen que terminar igual.
+        Lo que se comprueba aqui es que el modelo NO seasto able de escribir en
+        esta tabla. Lo que NO se comprueba, y es lo importante, es que el
+        `ON DELETE CASCADE` exista de verdad en Postgres y que el trigger lo
+        deje pasar: SQLite ignora las llaves foraneas por omision (hace falta un
+        PRAGMA que esta base de prueba no activa). Eso es trabajo de
+        `scripts/verify_postgres_documentos.py`.
         """
         from app.models.ticket import TicketModel
+        from app.models.ticket_document import TicketDocumentModel
 
-        relationship = TicketModel.documento.property
-        assert relationship.uselist is False, "debe ser uno o ninguno, no una lista"
-        assert "delete-orphan" in relationship.cascade
-        assert "delete" in relationship.cascade
+        # `documento` paso de ser una relationship a una PROPIEDAD que devuelve
+        # el vigente. La cadena se lee por `documentos`.
+        assert isinstance(TicketModel.documento, property), (
+            "documento deberia ser una propiedad que devuelve el vigente; si vuelve "
+            "a ser una relationship escribible, el ORM puede borrar documentos y "
+            "chocar con el trigger de 0009"
+        )
+
+        # Y la relacion que si existe tiene que ser de solo lectura.
+        relationship = TicketModel.documentos.property
+        assert relationship.viewonly is True, (
+            "la cadena de documentos no se escribe por el ORM: la escribe "
+            "document_service y la protege el trigger"
+        )
+        # `merge` lo pone SQLAlchemy solo y no borra nada. Lo que no puede haber
+        # es `delete` ni `delete-orphan`: con ellos, un `db.delete(ticket)`
+        # intentaria borrar los documentos ademas de que lo haga la base.
+        assert "delete" not in relationship.cascade, (
+            "si el ORM borra documentos, choca con el trigger de 0009 y con el "
+            "ON DELETE CASCADE de la base: los borraria dos veces"
+        )
+
+        # Y el borrado en cascada esta declarado donde ahora vive: la llave
+        # foranea con ON DELETE CASCADE.
+        columna = TicketDocumentModel.__table__.c.ticket_id
+        for llave in columna.foreign_keys:
+            assert llave.ondelete == "CASCADE", (
+                "sin ON DELETE CASCADE, borrar un ticket dejaria comprobantes "
+                "huerfanos de gastos que ya no existen"
+            )
 
 
 class TestUnFalloDeAlmacenamientoNoPierdeElGasto:

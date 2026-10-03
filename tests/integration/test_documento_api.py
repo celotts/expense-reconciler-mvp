@@ -278,6 +278,7 @@ class TestReemplazarElDocumento:
         r = await async_client.put(
             f"/api/v1/tickets/{ticket.id}/documento",
             files={"file": ("oaxaca.pdf", nuevo, "application/pdf")},
+            data={"motivo": "la foto estaba cortada y no se leia el RFC"},
         )
 
         assert r.status_code == 200
@@ -304,6 +305,7 @@ class TestReemplazarElDocumento:
         await async_client.put(
             f"/api/v1/tickets/{ticket.id}/documento",
             files={"file": ("otro.pdf", b"%PDF-1.7 otro", "application/pdf")},
+            data={"motivo": "prueba"},
         )
 
         lista = await async_client.get("/api/v1/tickets/")
@@ -325,6 +327,7 @@ class TestReemplazarElDocumento:
         r = await async_client.put(
             f"/api/v1/tickets/{ticket.id}/documento",
             files={"file": ("enorme.pdf", enorme, "application/pdf")},
+            data={"motivo": "prueba"},
         )
 
         assert r.status_code == 413
@@ -334,12 +337,65 @@ class TestReemplazarElDocumento:
         assert despues.content == TICKET_TEXTO
 
     @pytest.mark.asyncio
+    async def test_el_historial_muestra_el_cambio(
+        self, async_client, con_ticket
+    ):
+        """El cambio tiene que ser VISIBLE, no solo estar escrito en la base.
+
+        Antes, reemplazar un comprobante lo dejaba escrito en la tabla y
+        invisible para quien opera el sistema. Eso es lo mismo que un cambio
+        silencioso, con la diferencia de que ahora podria consultarse... si
+        alguien supiera que existe este endpoint.
+        """
+        ticket = await con_ticket()
+
+        await async_client.put(
+            f"/api/v1/tickets/{ticket.id}/documento",
+            files={"file": ("otro.pdf", b"%PDF-1.7 otro", "application/pdf")},
+            data={"motivo": "el original estaba cortado"},
+        )
+
+        r = await async_client.get(f"/api/v1/tickets/{ticket.id}/documentos")
+        assert r.status_code == 200
+        historial = r.json()
+
+        assert len(historial) == 2
+        assert [d["version"] for d in historial] == [1, 2]
+        # Solo la ultima es vigente: la primera es la que se conserva como
+        # evidencia, no la que se descarga.
+        assert [d["vigente"] for d in historial] == [False, True]
+        assert historial[1]["motivo"] == "el original estaba cortado"
+        assert historial[1]["actor"], "el reemplazo tiene que decir quien lo hizo"
+
+    @pytest.mark.asyncio
+    async def test_reemplazar_sin_motivo_da_422(
+        self, async_client, con_ticket
+    ):
+        """Sin motivo no hay cambio de comprobante.
+
+        Es lo que separa "cambie el papel" de "cambie el papel y por que". Un
+        endpoint que lo dejara pasar tendria una cadena de cambios sin
+        explicación, que es lo mismo que el silencio que se vino a cerrar.
+        """
+        ticket = await con_ticket()
+
+        r = await async_client.put(
+            f"/api/v1/tickets/{ticket.id}/documento",
+            files={"file": ("otro.pdf", b"%PDF-1.7 otro", "application/pdf")},
+        )
+
+        assert r.status_code == 422
+        vigente = await async_client.get(f"/api/v1/tickets/{ticket.id}/documento")
+        assert vigente.content == TICKET_TEXTO, "cambio el papel sin que se le pidiera motivo"
+
+    @pytest.mark.asyncio
     async def test_reemplazar_en_un_ticket_inexistente_es_404(
         self, async_client
     ):
         r = await async_client.put(
             f"/api/v1/tickets/{uuid4()}/documento",
             files={"file": ("x.pdf", b"%PDF-1.7", "application/pdf")},
+            data={"motivo": "prueba"},
         )
         assert r.status_code == 404
 

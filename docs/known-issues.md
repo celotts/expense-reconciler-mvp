@@ -149,18 +149,51 @@ son deuda real, no pendientes teoricos:
   con un contador y el campo `omitidos_por_tope` está en la respuesta, pero no hay
   un test que ponga 3 archivos, el tope en 2 y compruebe que queda 1.
 
-### 19. `easyocr` está soportado pero no instalado, y su confianza no está normalizada
-`ocr.py:_leer_easyocr` existe y `GET /scan/ocr` lo reporta como no disponible con su
-instrucción, pero `easyocr` **no** está en `requirements.txt`: arrastra torch (~2 GB) y
-descarga ~100 MB de pesos la primera vez, y el repositorio ya tiene una regla sobre no
-arrastrar torch al arrancar. Igual con `opencv-python` (el preprocesado usa solo Pillow)
-y `pdf2image` (el repo ya usa `pypdfium2`, que además llega con pdfplumber).
+### 19. `easyocr` estaba soportado pero **nunca funcionó** — PARCIALMENTE CORREGIDO
 
-Riesgo concreto sin reproducir: EasyOCR devuelve la confianza por línea en `[0, 1]`
-pero hay versiones que la devuelven en `[0, 100]`, y el código la usa tal cual, así que
-`confianza_media` podría valer `87.0`. **No afecta al gate** (esa confianza la calcula
-`confianza_por_campos_ocr` a partir de la evidencia), así que el daño es acotado a un
-campo informativo. Cuando se agregue easyocr, normalizar por el máximo observado.
+La rama de easyocr **existía pero no podía ejecutarse.** `ocr.py:_leer_easyocr` pasaba una
+imagen de Pillow a `readtext`, y EasyOCR solo acepta ruta, bytes o array de numpy:
+
+```
+ValueError: Invalid input type. Supporting format = string(file path or url), bytes, numpy array
+```
+
+Reproducido contra EasyOCR instalado en el contenedor. O sea: la afirmación "easyocr está
+soportado" era una verdad a medias, y por eso el endpoint `GET /scan/ocr` reportaba
+"no disponible" sin que nadie notara que además estaba roto.
+
+**Corregido en dos partes:** la conversión a numpy y el paso por `_preparar` (que aplica
+`exif_transpose`, escala y autocontraste). Lo del EXIF no es cosmético: una foto de iPhone
+llega rotada 90 grados, y EasyOCR no la endereza solo. Sin eso se comparaban dos motores
+con entradas distintas y el resultado no habría dicho nada sobre el motor.
+
+**Lo que sigue pendiente, y es lo importante:**
+
+- **`easyocr` no está en `requirements.txt`.** Instalado a mano dentro del contenedor, no
+  persiste: `docker compose up --build` lo borra, y en otra máquina nunca estuvo. El
+  `pip` del volumen tampoco ayuda, porque el volumen es `.:/app` (código) y no
+  `site-packages`. El único hogar permanente de una dependencia es `requirements.txt`.
+- **No cabe en el contenedor con la memoria configurada.** Medido:
+
+  | | RAM |
+  |---|---|
+  | Cargar el lector de EasyOCR | **1235 MiB** |
+  | Tras una lectura | **1615 MiB** |
+  | El API ya usando | ~460 MiB |
+  | `mem_limit` de `expense-api` | **1709 MiB** |
+
+  1615 + 460 > 1709: el proceso lo mata el OOM killer. **No es un problema de disco ni de
+  dinero, es `mem_limit` en `docker-compose.yml`.** El equipo tiene 18 GB y Docker tiene 8
+  asignados, de los que en reposo se usan ~520 MB. Hay aire de sobra: la solución es subir
+  el límite o dar más RAM a la VM de Docker, no comprar nada.
+- **La confianza de EasyOCR no está normalizada.** EasyOCR devuelve la confianza por línea
+  en `[0, 1]` pero hay versiones que la devuelven en `[0, 100]`, y el código la usa tal
+  cual, así que `confianza_media` podría valer `87.0`. **No afecta al gate** (esa
+  confianza la calcula `confianza_por_campos_ocr` a partir de la evidencia), así que el
+  daño es acotado a un campo informativo. Normalizar por el máximo observado.
+
+La medición de si dos motores juntos valen la pena está en `scripts/medir_dos_motores.py`
+y su resultado en §21.
 
 ### 20. `TICKETS_INPUT_DIR` por omisión es una ruta de una máquina concreta
 `config.py` usa `/Users/carloslott/Documents/Tickets_app`, que es lo que pide el

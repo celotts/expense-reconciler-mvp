@@ -34,7 +34,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Auth | `app/core/security.py` (scrypt N=2\*\*17 + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **960** — 717 unit + escáner, 243 integration, 1 skip |
+| Tests | **982** — 726 unit + escáner, 256 integration, 1 skip |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan`
@@ -74,7 +74,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 960
+python3 -m pytest tests/ -q           # 982
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 ```
@@ -84,10 +84,11 @@ Cada defensa de seguridad tiene un test que **muere si quitas la defensa**. Si t
 corre su verificador:
 
 ```bash
-python3 scripts/verify_scan_mutations.py            # 15 mutaciones: escaner de carpeta
+python3 scripts/verify_scan_mutations.py            # 17 mutaciones: escaner de carpeta
 python3 scripts/verify_capture_mutations.py         # 26 mutaciones: ruta de captura
 python3 scripts/verify_export_mutations.py          # 5 mutaciones: fórmulas
 python3 scripts/verify_auth_mutations.py            # 42 mutaciones: auth y coste del hash
+python3 scripts/verify_documentos_mutations.py      # 11 mutaciones: el papel no se altera
 python3 scripts/verify_reconciliation_mutations.py  # 18 mutaciones
 python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
@@ -252,7 +253,20 @@ costumbre — el porqué está en el comentario junto al código.
     `maxmem` se calcula con `_maxmem_para(n, r)`: con una constante, subir N rompe todos
     los logins a la vez.
 
-18. **La fecha del comprobante se lee junto al folio, no en cualquier línea.**
+18. **El comprobante digitalizado NO SE ALTERA: se apila.**
+    `PUT /tickets/{id}/documento` hace `INSERT` de una versión nueva con
+    `reemplaza_a` apuntando a la anterior, y **no borra nada**. El vigente es el
+    de mayor `version`. `actor` y `motivo` son obligatorios desde la segunda
+    versión, en el servicio **y en la base**
+    (`ck_ticket_documents_*`). Un trigger de Postgres prohíbe `UPDATE` siempre y
+    `DELETE` mientras el ticket exista: la regla es del motor, no del código, y
+    por eso vale también para un `psql`. La excepción es la cascada —borrar el
+    gasto borra su papel— y se comprueba mirando si el ticket padre sigue
+    existiendo.
+    Antes esto era `DELETE` + `INSERT` sin dejar ni hash anterior, ni autor, ni
+    fecha: la evidencia se podía borrar en silencio.
+
+19. **La fecha del comprobante se lee junto al folio, no en cualquier línea.**
     `_fecha_del_comprobante`. Una fecha suelta puede ser el vencimiento de un cupón
     (`TUS PUNTOS VENCEN: 31/10/2026`), y una fecha equivocada que pasa los checks
     (`date_in_future` no objectiona a octubre siendo septiembre) mete el gasto en otro

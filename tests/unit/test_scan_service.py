@@ -604,6 +604,83 @@ class TestUnArchivoMaloNoTumbaLaCorrida:
         assert resumen.no_soportados == 1
         assert resumen.con_error == 0
 
+    async def test_un_json_no_se_convierte_en_ticket(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """El defecto mas grave que se ha encontrado en el escaner.
+
+        Medido y reproducido: un `verdad.json` con etiquetas de proveedor, RFC,
+        subtotal, total y fecha escritas a mano entro por la carpeta, se leyo con
+        la cascada de texto y salio **AUTO_APROBADO**:
+
+            total_amount = 51.50   extraction_status = AUTO_APROBADO
+
+        Un gasto que no existe, afirmado con maxima confianza, que entra a
+        libros y se exporta. Y no fue un descuido del contenido: el parser hizo
+        bien su trabajo con lo que le dieron. El problema es que se le dio algo
+        que no era un comprobante.
+
+        La carpeta es un proceso desatendido. Con la cascada de texto activa,
+        dejar ahi unas notas, un export del banco o un `.csv` es suficiente para
+        que el sistema afirme un gasto.
+        """
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "verdad.json").write_text(
+            '{"proveedor": "Cadena Comercial Oxxo, S.A. de C.V.", '
+            '"subtotal": "51.50", "total": "51.50", "fecha": "2026-09-19"}\n',
+            encoding="utf-8",
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        assert resumen.no_soportados == 1, "un JSON deberia quedar NO_SOPORTADO"
+        assert resumen.nuevos == 0
+        assert (await db_session.execute(select(TicketModel))).scalar_one_or_none() is None, (
+            "un archivo que no es un comprobante se converted en un ticket"
+        )
+
+    async def test_un_txt_de_la_carpeta_tampoco_es_un_comprobante(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """El caso general del anterior, con la extension que mas se parece.
+
+        `test-files/factura_gas.txt` es un comprobante en texto plano REAL y sigue
+        entrando por `POST /tickets/extract` con `file_type=text`, donde quien lo
+        sube lo declara. Lo que no puede pasar es que aparezca solo en la carpeta
+        y se apruebe solo: ahi no hay nadie declarando nada.
+        """
+        (carpeta / "factura_gas.txt").write_text(
+            "PROVEEDOR SA DE CV\nRFC: ABC010101XXX\nFecha: 2025/03/15\nTOTAL: 100.00\n",
+            encoding="utf-8",
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        assert resumen.no_soportados == 1
+        assert resumen.nuevos == 0
+
+    async def test_el_motivo_dice_que_hay_que_hacer(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """"No soportado" sin decir por que deja al operador sin accion.
+
+        La fila tiene que distinguir "el escaner esta roto" de "este archivo no es
+        un comprobante y no se va a intentar", que son problemas opuestos con
+       odos distintos.
+        """
+        (carpeta / "notas.json").write_text('{"nota": "recordatorio"}', encoding="utf-8")
+
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        fila = (await db_session.execute(select(ScanFileModel))).scalar_one()
+        assert fila.status == ScanStatus.NO_SOPORTADO.value
+        # Se comprueban LAS DOS mitades del motivo, no una sola palabra: la que
+        # dice que este escaner solo digitaliza escaneos, y la que dice donde se
+        # sube un comprobante en texto. Con una sola, una mutacion que quitara
+        # la otra pasaria el test y el operador se quedaria sin accion.
+        assert "solo digitaliza escaneos" in fila.last_error, fila.last_error
+        assert "file_type=text" in fila.last_error, fila.last_error
+
     async def test_una_foto_ilegible_no_detiene_a_los_demas(
         self, db_session, test_company, carpeta, sin_modelo, monkeypatch
     ):

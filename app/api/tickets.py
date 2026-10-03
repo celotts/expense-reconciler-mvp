@@ -19,6 +19,7 @@ from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
 from app.schemas.ticket import (
     ClasificarLoteRequest, ClasificarLoteResponse,
+    DocumentoHistorialResponse,
     ExactitudPorOrigenResponse, ReporteExactitudResponse, SpotCheckItemResponse,
     SpotCheckQueueResponse, SpotCheckRequest, TicketCreate, TicketResponse,
     TicketReviewQueueResponse, TicketReviewRequest, TicketUpdate,
@@ -30,7 +31,8 @@ from app.services.accuracy_service import (
 )
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.document_service import (
-    documento_de_ticket, guardar_documento, reemplazar_documento,
+    documento_de_ticket, documentos_del_ticket, guardar_documento,
+    reemplazar_documento,
 )
 from app.services.parser_service import TicketExtractionResult
 from app.services.ai_extractor import ai_extractor
@@ -970,13 +972,76 @@ async def get_documento(
     )
 
 
+@router.get(
+    "/{ticket_id}/documentos",
+    response_model=list[DocumentoHistorialResponse],
+    tags=["Tickets"],
+    summary="Historial de versiones del comprobante",
+)
+async def listar_documentos(
+    ticket_id: UUID,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentoHistorialResponse]:
+    """La cadena de papeles de un ticket, de la mas antigua a la vigente.
+
+    No devuelve bytes, sino el recorrido: que version hay, quien la puso, por
+    que, y cuando. Sin esto, un cambio de comprobante queda escrito en la base
+    pero invisible para quien opera el sistema, que es el mismo problema que
+    hacia peligroso al reemplazo silencioso.
+
+    Es tambien lo que responde "¿este gasto se puede auditar?". Si hay una sola
+    version, el papel es el que subio el escaner. Si hay mas de una, la cadena
+    dice quien lo cambio y por que, y el hash de cada version permite verificar
+    los bytes que quedaron.
+    """
+    existe = (
+        await db.execute(
+            select(TicketModel.id).where(TicketModel.id == ticket_id)
+        )
+    ).scalar_one_or_none()
+    if existe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+        )
+
+    documentos = await documentos_del_ticket(db, ticket_id)
+    return [
+        DocumentoHistorialResponse(
+            id=documento.id,
+            version=documento.version,
+            sha256=documento.sha256,
+            tamano=documento.tamano,
+            content_type=documento.content_type,
+            nombre_archivo=documento.nombre_archivo,
+            actor=documento.actor,
+            motivo=documento.motivo,
+            created_at=documento.created_at,
+            # Vigente = el ultimo de la cadena. Con `reemplaza_a IS NULL` solo
+            # la version 1 daria True, que es exactamente la que no se descarga.
+            vigente=documento is documentos[-1],
+        )
+        for documento in documentos
+    ]
+
+
 @router.put("/{ticket_id}/documento", response_model=TicketResponse)
 async def put_documento(
     ticket_id: UUID,
+    # `usuario` va antes que `file` porque en Python un parametro sin default no
+    # puede ir despues de uno que lo tiene, y `File(...)` cuenta como default.
+    usuario: UsuarioActual,
     file: UploadFile = File(...),
+    motivo: str = Form(
+        ...,
+        description=(
+            "Por que se cambia el papel. Queda escrito en la version nueva y es "
+            "obligatorio: es la pregunta que un contador hace despues."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
-    """Reemplaza el documento de un ticket que ya existe.
+    """AGREGA una version nueva del documento. La anterior no se borra.
 
     Es lo que hace recuperable un documento que no se pudo leer. Un PDF que no
     llego a leerse porque el extractor estaba apagado queda ilegible para
@@ -985,15 +1050,27 @@ async def put_documento(
     ticket que ya existe y el documento queda disponible para que alguien lo
     revise o para que se reextraiga.
 
+    NO REEMPLAZA: APENDA. Antes este endpoint hacia `DELETE` + `INSERT` y los
+    bytes originales desaparecian sin dejar ni hash, ni autor, ni fecha. Ahora
+    la tabla es una cadena (`db/migrations/0009_documento_inmutable.sql`): el
+    documento vigente es el que no fue reemplazado, el anterior queda apuntado,
+    y un trigger de Postgres prohibe `UPDATE` y `DELETE` mientras el ticket
+    exista. El comprobante es la evidencia contra la que se contrasta cualquier
+    lectura, y una evidencia que se borra en silencio no es evidencia.
+
+    Por eso `motivo` es obligatorio y por eso se guarda `usuario.email`. Sin
+    ellos la cadena diria que algo paso sin decir quien ni por que, que es
+    exactamente el silencio que esta regla viene a cerrar. La base tambien los
+    exige, asi que un INSERT directo por SQL tampoco puede saltarselos.
+
     No crea un ticket nuevo ni cambia los datos que ya se extrajeron. Reextraer
     es otra operacion y otra decision: la lectura guardada es la que se sometio
     a muestreo, y cambiarla en silencio haria que el veredicto registrado no
     correspondiera a lo que el sistema leyo.
 
-    El `PUT` y no el `POST` porque el recurso es el documento de ESE ticket y
-    queda exactamente uno: es un reemplazo, no un agregado. Con `POST` el
-    cliente no tendria forma de saber si el segundo archivo se sumo o se
-    sustituyo, y de las dos respuestas solo una es la que se quiere.
+    El `PUT` y no el `POST` porque el recurso es el documento de ESE ticket, y
+    hay exactamente uno vigente: es un cambio de papel, no un agregado. El
+    historial se consulta en `GET /tickets/{id}/documentos`.
     """
     ticket = (await db.execute(
         select(TicketModel).where(TicketModel.id == ticket_id)
@@ -1011,10 +1088,27 @@ async def put_documento(
 
     guardado = await reemplazar_documento(
         db, ticket_id, contenido,
+        actor=usuario.email,
+        motivo=motivo,
         content_type=file.content_type,
         nombre_archivo=file.filename,
     )
     if not guardado:
+        # El servicio devuelve `False` por dos motivos que NO son el mismo
+        # problema, y responder 422 a los dos le diria a la persona que su archivo
+        # estaba mal cuando lo que paso es que el ticket ya habia sido revisado.
+        # El 409 es el que corresponde a un conflicto de estado, no a un archivo
+        # invalido.
+        if ticket.reviewed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Este ticket ya fue revisado por una persona y su documento "
+                    "no se cambia por esta via. Reemplazar el papel invalidaria "
+                    "esa revision. Usa el endpoint de reproceso, que es "
+                    "explicito."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(

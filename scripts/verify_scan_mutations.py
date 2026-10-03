@@ -175,6 +175,40 @@ MUTACIONES = [
         nuevo="'REINTENTO', 'BORRADO', 'INVENTADO'",
         prueba="test_las_acciones_validas_coinciden_entre_modelo_y_sql",
     ),
+    # -----------------------------------------------------------------------
+    # Lo que el escaner NO puede leer. Es la defensa mas importante de este
+    # modulo y la mas facil de devolver por descuido: basta con una linea que
+    # diga "si es texto, leelo".
+    # -----------------------------------------------------------------------
+    Mutacion(
+        nombre="un archivo de texto vuelve a leerse como comprobante",
+        archivo="app/services/scan_service.py",
+        viejo="    tipo = detectar_tipo_real(contenido)\n",
+        nuevo=(
+            "    tipo = detectar_tipo_real(contenido)\n"
+            "    if tipo is None:\n"
+            "        from app.core.archivo_real import es_texto_plano\n"
+            "        if es_texto_plano(contenido):\n"
+            "            tipo = 'text'\n"
+        ),
+        prueba="test_un_json_no_se_convierte_en_ticket",
+    ),
+    Mutacion(
+        nombre="el motivo de NO_SOPORTADO deja de decir que hacer",
+        archivo="app/services/scan_service.py",
+        # Se reemplaza el mensaje ENTERO, no un prefijo. Una mutacion que quita
+        # solo la primera frase deja el resto del motivo intacto, el test sigue
+        # en verde, y no representa la regresion: la regresion es dejar de
+        # explicarle al operador QUE HACER, que es quitarlo todo.
+        viejo=(
+            '            "no es un PDF ni una imagen con firma conocida. El escaner de carpeta "\n'
+            '            "solo digitaliza escaneos: un archivo de texto se sube por "\n'
+            '            "POST /tickets/extract con file_type=text, donde quien lo sube lo "\n'
+            '            "declara."'
+        ),
+        nuevo='            "no soportado"',
+        prueba="test_el_motivo_dice_que_hay_que_hacer",
+    ),
 ]
 
 

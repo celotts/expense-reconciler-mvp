@@ -1,6 +1,7 @@
 import pytest
 import tempfile
 import shutil
+from sqlalchemy import event
 from pathlib import Path
 from uuid import uuid4
 from httpx import AsyncClient, ASGITransport
@@ -29,6 +30,25 @@ async def test_engine():
         poolclass=StaticPool,
         connect_args={"check_same_thread": False}
     )
+
+    # `PRAGMA foreign_keys=ON`. SQLite ignora las llaves foraneas por omision, y
+    # sin esto los tests mienten sobre lo que hace la base.
+    #
+    # Por que se activo AHORA y no antes: `ticket_documents` solia borrarse desde
+    # el ORM (`cascade="all, delete-orphan"` en la relationship), asi que el
+    # borrado en cascada lo hacia Python y nunca se noto que SQLite no lo hacia.
+    # Con `0009_documento_inmutable.sql` la relationship paso a `viewonly` y el
+    # borrado es del `ON DELETE CASCADE` de la llave foranea, que en SQLite exige
+    # este PRAGMA.
+    #
+    # Sin el, borrar un ticket dejaba el comprobante huerfano en los tests y no
+    # en produccion: el test pasaba por el motivo equivocado.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _activar_llaves_foraneas(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine

@@ -181,25 +181,42 @@ class TicketModel(Base):
     company = relationship("CompanyModel", backref="tickets")
     reconciliations = relationship("ReconciliationModel", back_populates="ticket")
 
-    # El documento original, cuando se subio un archivo. `uselist=False` porque
-    # es uno o ninguno, y `single_parent` con el CASCADE de la llave foranea
-    # hace que borrar el ticket borre el archivo sin pedirlo: si no, la
-    # relationship intentaria poner en NULL la llave foranea que no admite NULL
-    # y el borrado fallaria con un error que no tiene nada que ver con lo que
-    # la persona estaba haciendo.
+    # LA CADENA DE DOCUMENTOS del ticket, en orden de version.
     #
-    # `lazy="selectin"` y no el default: la cola de revision y el muestreo
-    # necesitan saber si el documento existe para CADA fila que muestran, y con
-    # la carga perezosa eso seria una consulta por ticket. Con la lista de
-    # tickets de una pantalla son dos consultas, no doscientas.
-    documento = relationship(
+    # Antes era `documento`, uno a uno, y `cascade="all, delete-orphan"` con
+    # `single_parent=True`: el ORM manejaba el borrado. Ahora son varias filas por
+    # ticket (ver `db/migrations/0009_documento_inmutable.sql`) y el borrado es de
+    # la BASE, no del ORM.
+    #
+    # Por que `viewonly=True` y sin cascade, que es un cambio de fondo y no un
+    # detalle: esta tabla es append-only y lo hace cumplir un trigger de Postgres
+    # que prohibe `UPDATE` y `DELETE` mientras el ticket exista. Si el ORM
+    # tuvieracascade, un `db.delete(ticket)` podria intentar borrar los
+    # documentos por su cuenta Y dejar que la base los borrara otra vez, que es
+    # justo el doble borrado que la regla quiere evitar. Con `viewonly` el ORM
+    # no escribe nunca aqui: las inserciones las hace `document_service` y el
+    # borrado, la base.
+    documentos = relationship(
         "TicketDocumentModel",
         back_populates="ticket",
-        uselist=False,
-        cascade="all, delete-orphan",
-        single_parent=True,
+        order_by="TicketDocumentModel.version",
         lazy="selectin",
+        viewonly=True,
     )
+
+    # El documento VIGENTE, que es el que se descarga y el que compara el
+    # muestreo. Vive como propiedad y no como relationship para poder filtrar por
+    # `reemplaza_a IS NULL`: con un `uselist=False` sobre la coleccion entera, un
+    # ticket con dos versiones lanzaria `MultipleResultsFound`, que es un error
+    # de programacion donde deberia haber una respuesta.
+    @property
+    def documento(self):
+        """El papel vigente, o `None` si este ticket se tecleo a mano.
+
+        Vigente = el de mayor `version`. La relationship viene ordenada por
+        `version` ascendente, asi que el ultimo es la punta de la cadena.
+        """
+        return self.documentos[-1] if self.documentos else None
 
     @property
     def is_open_for_review(self) -> bool:

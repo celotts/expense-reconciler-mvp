@@ -1,356 +1,210 @@
-"""El almacenamiento del comprobante, contra Postgres real.
+#!/usr/bin/env python3
+"""Verifica en Postgres real lo que SQLite no puede comprobar.
 
-Los tests corren contra SQLite, y SQLite no es Postgres en tres cosas que aqui
-importan:
+QUE HACE ESTE SCRIPT Y POR QUE HACE FALTA
 
-  1. **Ignora las llaves foraneas por omision.** SQLite no activa el PRAGMA
-     `foreign_keys` salvo que se pida, asi que un `ON DELETE CASCADE` escrito en
-     el DDL no se ejecuta. Un test en verde que borra un ticket y comprueba que
-     el documento se fue con el, estaria probando el `delete-orphan` del ORM y
-     no el CASCADE de la base. Son dos caminos de borrado distintos: uno pasa
-     por la API y el otro por SQL directo, y tienen que terminar igual.
+`ticket_documents` es append-only, y esa regla la hace cumplir un TRIGGER de
+Postgres, no el codigo de Python. La suite corre sobre SQLite, donde los
+triggers de PL/pgSQL no existen y las llaves foraneas estan apagadas por
+omision. Un test en SQLite que dijera "el trigger existe" estaria mintiendo: la
+suite comprueba el SERVICIO, y el motor se comprueba aqui.
 
-  2. **Un BYTEA de 12 MB entra sin quejarse.** En Postgres el TOAST lo comprime
-     o lo rechaza segun el tamano, y el error sale al escribir. En SQLite no
-     hay limite, asi que un test que sube un comprobante enorme pasa en verde y
-     revienta en produccion.
+Lo que se verifica contra la base de verdad:
 
-  3. **El DDL del modelo no se crea igual.** `Index(..., postgresql_where=...)`
-     es un indice PARCIAL de Postgres. SQLite lo ignora, asi que una constraint
-     o un indice que solo existe en Postgres no lo ejecuta la suite.
+  1. `UPDATE` sobre un documento es RECHAZADO.
+  2. `DELETE` de un documento cuyo ticket sigue vivo es RECHAZADO.
+  3. INSERT de la version 2: apila, no borra, y guarda actor y motivo.
+  4. El original sigue byte-identico.
+  5. El vigente es el de mayor `version`.
+  6. La cadena no se puede bifurcar (dos versiones reemplazando a la misma).
+  7. Un reemplazo sin actor ni motivo lo rechaza la base, no solo Python.
+  8. `DELETE` en cascada SI se permite: borrado el gasto, se va el papel.
 
-Este script usa la base real migrada y el codigo real de la API, y comprueba lo
-que solo se puede comprobar ahi:
+Se usa `asyncpg`, que es el driver que ya tiene el proyecto, y NO se agrega
+`psycopg` para esto.
 
-  1. Que los bytes lleguen intactos, con un archivo de tamano real.
-  2. Que `ON DELETE CASCADE` exista de verdad y borre el comprobante.
-  3. Que `UNIQUE(ticket_id)` impida el segundo documento.
-  4. Que un ticket y su documento no puedan separarse.
+Uso:
 
+    export POSTGRES_PASSWORD=$(grep POSTGRES_PASSWORD .env | cut -d= -f2)
     python3 scripts/verify_postgres_documentos.py
+
+Salida: 0 si todo se cumple, 1 si algo falla.
 """
 
 from __future__ import annotations
 
-import os
 import asyncio
-import hashlib
+import os
 import sys
 import uuid
-from datetime import date
-from decimal import Decimal
-from pathlib import Path
 
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+import asyncpg
 
-RAIZ = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(RAIZ))
-
-from app.api.tickets import _persist_extracted  # noqa: E402
-from app.core.enums import SourceType  # noqa: E402
-from app.models.company import CompanyModel  # noqa: E402
-from app.models.ticket import TicketModel  # noqa: E402
-from app.models.ticket_document import TicketDocumentModel  # noqa: E402
-from app.services.capture import capture_ticket  # noqa: E402
-from app.services.document_service import (  # noqa: E402
-    documento_de_ticket, reemplazar_documento,
+# El DSN se lee del entorno y no se escribe aqui. Este proyecto tuvo una
+# contrasena en un archivo versionado; no se vuelve a escribir una en otro.
+DSN = "postgresql://postgres:{}@localhost:5434/expense_db".format(
+    os.environ.get("POSTGRES_PASSWORD", ""),
 )
 
-def _fatal(mensaje: str) -> str:
-    """Sale con un mensaje, en vez de un KeyError sin pista."""
-    print(f"ERROR: {mensaje}", file=sys.stderr)
-    raise SystemExit(2)
 
+class Comprobador:
+    def __init__(self) -> None:
+        self.ok = 0
+        self.fallos: list[str] = []
 
-# El DSN se lee del entorno, no se escribe aqui. Este archivo estuvo versionado
-# en un repositorio publico con la password escrita en esta linea, y eso permitia
-# a cualquiera entrar a la base de datos. Rotar la password no borra el archivo
-# viejo del historial: ademas de rotarla, la password deja de estar en el codigo.
-#     export POSTGRES_PASSWORD=...      (o ponla en .env.local)
-DSN = "postgresql+asyncpg://postgres:{}@localhost:5434/expense_db".format(
-    os.environ.get("POSTGRES_PASSWORD") or _fatal("POSTGRES_PASSWORD no esta definida.")
-)
+    def comprueba(self, condicion: bool, descripcion: str) -> None:
+        if condicion:
+            self.ok += 1
+            print(f"  [OK]      {descripcion}")
+        else:
+            self.fallos.append(descripcion)
+            print(f"  [FALLA]   {descripcion}")
 
-fallos: list[str] = []
-_empresas: list[uuid.UUID] = []
-
-
-def check(desc: str, condicion: bool) -> None:
-    print(f"  {'OK   ' if condicion else 'FALLA'} {desc}")
-    if not condicion:
-        fallos.append(desc)
-
-
-def _limpiar() -> None:
-    """Borra lo que creo la corrida, aunque reviente a mitad.
-
-    Un script de verificacion que deja datos ensucia la siguiente corrida, y lo
-    peor es que la ensucia en silencio: los conteos dan bien y el reporte dice
-    que la base esta correcta mientras esta mezclando filas de dos corridas.
-    """
-    if not _empresas:
-        return
-
-    async def borrar() -> None:
-        motor = create_async_engine(DSN)
-        try:
-            async with async_sessionmaker(motor, expire_on_commit=False)() as db:
-                for empresa_id in _empresas:
-                    # Los documentos primero y por `text()`. Un DELETE con
-                    # `TicketDocumentModel.__table__.delete().where(<subquery de
-                    # tickets>)` funciona, pero Postgres avisa de producto cartesiano
-                    # porque las dos tablas no tienen condicion de union explicita, y
-                    # esa advertencia es el tipo de cosa que alguien lee como ruido
-                    # durante meses. Con `text` la intencion se ve.
-                    await db.execute(
-                        text(
-                            "DELETE FROM ticket_documents WHERE ticket_id IN "
-                            "(SELECT id FROM tickets WHERE company_id = :c)"
-                        ),
-                        {"c": empresa_id},
-                    )
-                    await db.execute(
-                        TicketModel.__table__.delete().where(
-                            TicketModel.company_id == empresa_id
-                        )
-                    )
-                    await db.execute(
-                        CompanyModel.__table__.delete().where(
-                            CompanyModel.id == empresa_id
-                        )
-                    )
-                await db.commit()
-        finally:
-            await motor.dispose()
-
-    try:
-        asyncio.run(borrar())
-    except Exception as exc:  # noqa: BLE001
-        print(f"  AVISO: no se pudo limpiar: {exc}")
-
-
-# Un PDF de tamano realista: ~1.6 MB, que es lo que pesa una foto de ticket en
-# un iPhone. No es un tamano arbitrario: es el que hace que el TOAST entre de
-# verdad, y por lo tanto el unico que comprueba que la columna aguanta lo que le
-# va a llegar.
-PDF_REALISTA = b"%PDF-1.7\n" + (b"datos del comprobante " * 60_000)
+    def fallo(self, descripcion: str) -> None:
+        self.fallos.append(descripcion)
+        print(f"  [FALLA]   {descripcion}")
 
 
 async def main() -> int:
-    motor = create_async_engine(DSN)
-    sesiones = async_sessionmaker(motor, expire_on_commit=False)
-    empresa_id = uuid.uuid4()
-    _empresas.append(empresa_id)
+    if not os.environ.get("POSTGRES_PASSWORD"):
+        print(
+            "Falta POSTGRES_PASSWORD. Esta en el archivo .env:\n"
+            "    export POSTGRES_PASSWORD=$(grep POSTGRES_PASSWORD .env | cut -d= -f2)"
+        )
+        return 2
 
-    async with sesiones() as db:
-        db.add(CompanyModel(
-            id=empresa_id,
-            name=f"Verificacion documentos {empresa_id.hex[:6]}",
-            tax_id=f"VD{empresa_id.hex[:9].upper()}",
-        ))
-        await db.commit()
+    c = Comprobador()
+    empresa, ticket = uuid.uuid4(), uuid.uuid4()
 
-        # --- 1. Los bytes llegan intactos ------------------------------------
-        print("\n1. El comprobante llega intacto (1.6 MB de bytes)")
-        contenido = PDF_REALISTA
-        extracted = await capture_ticket(contenido, "pdf")
-        ticket = await _persist_extracted(
-            db, empresa_id, extracted, contenido,
-            SourceType.PDF, "comprobante.pdf", content_type="application/pdf",
+    conn = await asyncpg.connect(DSN)
+    try:
+        print("\nPreparando datos de prueba...")
+        await conn.execute(
+            "INSERT INTO companies (id, name, tax_id) VALUES ($1, $2, $3)",
+            empresa, "Verificacion documentos", f"VDOC{uuid.uuid4().hex[:8]}",
         )
-        # El id se copia a una variable y no se vuelve a leer de `ticket`.
-        # Abajo hay un `rollback()` a proposito (para probar el UNIQUE), y un
-        # rollback expira todos los objetos de la sesion: leer `ticket.id` justo
-        # despues dispara una carga perezosa de atributo, que en un contexto sin
-        # greenlet lanza MissingGreenlet. El error no dice nada de documentos, y
-        # el que lo lee pierde el tiempo buscando un problema de almacenamiento
-        # que no existe.
-        ticket_id = ticket.id
-
-        documento = await documento_de_ticket(db, ticket_id)
-        check("el documento se guardo", documento is not None)
-        check(
-            f"los {len(contenido)} bytes llegan iguales, no truncados",
-            documento.contenido == contenido,
+        await conn.execute(
+            """INSERT INTO tickets (id, company_id, provider_name, total_amount,
+                   tax_amount, expense_date, extraction_status, source_hash)
+               VALUES ($1, $2, 'PRUEBA', 10, 0, CURRENT_DATE, 'PENDIENTE', $3)""",
+            ticket, empresa, f"h{uuid.uuid4().hex}",
         )
-        check(
-            "el tamano guardado es el real (no una aproximacion)",
-            documento.tamano == len(contenido),
-        )
-        check(
-            "el hash permite verificar la integridad sin releer el archivo",
-            documento.sha256 == hashlib.sha256(contenido).hexdigest(),
-        )
-        print(f"        (tamano: {documento.tamano / 1024 / 1024:.2f} MB)")
-
-        # El camino que de verdad importa: releerlo de la base, no el objeto que
-        # se acaba de escribir. Un LONGBLOB puede venir corrupto de la base y el
-        # objeto en memoria estar bien.
-        guardado = await db.scalar(
-            select(func.length(TicketDocumentModel.contenido)).where(
-                TicketDocumentModel.ticket_id == ticket_id
-            )
-        )
-        check(
-            "y al releerlo de la base, el tamano es el mismo",
-            guardado == len(contenido),
+        await conn.execute(
+            """INSERT INTO ticket_documents (ticket_id, contenido, tamano, sha256)
+               VALUES ($1, decode('7631', 'hex'), 1, 'a1')""",
+            ticket,
         )
 
-        # --- 2. UNIQUE(ticket_id) --------------------------------------------
-        print("\n2. Un ticket no puede tener dos comprobantes")
-        segundo_intento = False
+        print("\n1. UPDATE sobre un documento debe ser RECHAZADO")
         try:
-            db.add(TicketDocumentModel(
-                ticket_id=ticket_id,
-                contenido=b"otro documento",
-                tamano=15,
-            ))
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            segundo_intento = True
-        check(
-            "el indice unico rechaza un segundo documento para el mismo ticket",
-            segundo_intento,
-        )
-
-        # --- 3. El reemplazo no acumula --------------------------------------
-        print("\n3. Reextraer reemplaza, no acumula")
-        await reemplazar_documento(
-            db, ticket_id, b"%PDF-1.7 version mejor leida",
-            content_type="application/pdf", nombre_archivo="mejor.pdf",
-        )
-        await db.commit()
-
-        total = await db.scalar(
-            select(func.count()).select_from(TicketDocumentModel).where(
-                TicketDocumentModel.ticket_id == ticket_id
+            await conn.execute(
+                "UPDATE ticket_documents SET tamano = 999 WHERE ticket_id = $1", ticket
             )
-        )
-        check("sigue habiendo un solo documento", total == 1)
-        actual = await documento_de_ticket(db, ticket_id)
-        check("y es el nuevo", actual.contenido == b"%PDF-1.7 version mejor leida")
+            c.fallo("un UPDATE cambio los bytes de un comprobante y DEBIO ser rechazado")
+        except Exception as exc:  # noqa: BLE001
+            if "append-only" in str(exc):
+                c.comprueba(True, "un UPDATE no cambia los bytes de un comprobante")
+            else:
+                c.fallo(f"rechazado por el motivo equivocado: {exc}")
 
-        # --- 4. El CASCADE de verdad -----------------------------------------
-        # Esto es lo que SQLite no puede comprobar: ahi el PRAGMA de llaves
-        # foraneas esta apagado y el borrado lo hace el ORM, no la base.
-        print("\n4. ON DELETE CASCADE (esto SQLite no lo comprueba)")
-        empresa_para_borrar = uuid.uuid4()
-        _empresas.append(empresa_para_borrar)
-        db.add(CompanyModel(
-            id=empresa_para_borrar,
-            name="Verificacion cascade",
-            tax_id=f"VC{empresa_para_borrar.hex[:9].upper()}",
-        ))
-        await db.commit()
-
-        extracted_c = await capture_ticket(contenido, "pdf")
-        ticket_c = await _persist_extracted(
-            db, empresa_para_borrar, extracted_c, contenido,
-            SourceType.PDF, "cascade.pdf", content_type="application/pdf",
-        )
-        await db.commit()
-
-        antes = await db.scalar(
-            select(func.count()).select_from(TicketDocumentModel).where(
-                TicketDocumentModel.ticket_id == ticket_c.id
+        print("\n2. DELETE con el ticket vivo debe ser RECHAZADO")
+        try:
+            await conn.execute(
+                "DELETE FROM ticket_documents WHERE ticket_id = $1", ticket
             )
+            c.fallo("se borro el papel de un gasto que sigue existiendo")
+        except Exception as exc:  # noqa: BLE001
+            if "append-only" in str(exc):
+                c.comprueba(True, "no se borra el papel mientras el gasto exista")
+            else:
+                c.fallo(f"rechazado por el motivo equivocado: {exc}")
+
+        print("\n3. La version 2 se apila y guarda quien y por que")
+        await conn.execute(
+            """INSERT INTO ticket_documents
+                   (ticket_id, contenido, tamano, sha256, reemplaza_a, version, actor, motivo)
+               SELECT $1, decode('7632', 'hex'), 1, 'a2', id, 2, 'ana@test.mx', 'prueba'
+               FROM ticket_documents WHERE ticket_id = $1""",
+            ticket,
         )
-        check("el documento existe antes de borrar el ticket", antes == 1)
-
-        # Por SQL directo, no por la API: asi lo borra Postgres con su CASCADE y
-        # no el `delete-orphan` del ORM. Es el camino que no se prueba en la
-        # suite de SQLite.
-        ticket_c_id = ticket_c.id
-        await db.execute(text("DELETE FROM tickets WHERE id = :id"), {"id": ticket_c_id})
-        await db.commit()
-
-        despues = await db.scalar(
-            select(func.count()).select_from(TicketDocumentModel).where(
-                TicketDocumentModel.ticket_id == ticket_c.id
-            )
+        filas = await conn.fetch(
+            """SELECT version, contenido, actor, motivo, reemplaza_a IS NOT NULL AS tiene_padre
+               FROM ticket_documents WHERE ticket_id = $1 ORDER BY version""",
+            ticket,
         )
-        check(
-            "borrar el ticket por SQL borra el comprobante (CASCADE de verdad)",
-            despues == 0,
+        c.comprueba(len(filas) == 2, "hay dos versiones: el original NO se borro")
+        c.comprueba(filas[0]["contenido"] == b"v1", "la version 1 conserva sus bytes")
+        c.comprueba(filas[1]["contenido"] == b"v2", "la version 2 tiene los bytes nuevos")
+        c.comprueba(filas[1]["actor"] == "ana@test.mx", "el reemplazo guarda el actor")
+        c.comprueba(filas[1]["motivo"] == "prueba", "el reemplazo guarda el motivo")
+        c.comprueba(filas[1]["tiene_padre"] is True, "la version 2 apunta a la que reemplaza")
+
+        print("\n4. El vigente es el de mayor version")
+        vigente = await conn.fetchrow(
+            "SELECT version FROM ticket_documents WHERE ticket_id = $1"
+            " ORDER BY version DESC LIMIT 1",
+            ticket,
         )
-        tickets_restantes = await db.scalar(
-            select(func.count()).select_from(TicketModel).where(
-                TicketModel.id == ticket_c.id
+        c.comprueba(vigente["version"] == 2, "el vigente es la version 2")
+
+        print("\n5. La cadena no se puede bifurcar")
+        try:
+            await conn.execute(
+                """INSERT INTO ticket_documents
+                       (ticket_id, contenido, tamano, sha256, reemplaza_a, version, actor, motivo)
+                   SELECT $1, decode('7633', 'hex'), 1, 'a3', id, 3, 'ana@test.mx', 'x'
+                   FROM ticket_documents WHERE ticket_id = $1 AND version = 1""",
+                ticket,
             )
-        )
-        check("y el ticket tampoco esta", tickets_restantes == 0)
+            c.fallo("dos versiones reemplazaron a la misma y DEBIO ser rechazado")
+        except Exception as exc:  # noqa: BLE001
+            if "duplicate key" in str(exc) or "unique" in str(exc).lower():
+                c.comprueba(True, "dos versiones no pueden reemplazar a la misma")
+            else:
+                c.fallo(f"rechazado por el motivo equivocado: {exc}")
 
-        # --- 5. Lo que la constraint declara ---------------------------------
-        print("\n5. El DDL es el que dice el modelo")
-        fks = (await db.execute(text("""
-            SELECT confdeltype
-              FROM pg_constraint
-             WHERE conrelid = 'ticket_documents'::regclass
-               AND contype = 'f'
-        """))).scalars().all()
-        # Los valores de `pg_constraint.confdeltype` no son los de `ON DELETE`:
-        #   'a' = NO ACTION,  'r' = RESTRICT,  'c' = CASCADE,
-        #   'n' = SET NULL,   'd' = SET DEFAULT
-        #
-        # Se comprueba la letra de la base y no el `pg_get_constraintdef`, que
-        # sale en texto y con el nombre de la tabla. Con el texto habria que
-        # parsear "ON DELETE CASCADE" de una cadena, y ese es exactamente el tipo
-        # de comprobacion que se rompe sin avisar.
-        check(
-            "la llave foranea declara ON DELETE CASCADE (confdeltype = 'c')",
-            list(fks) == [b"c"],
-        )
-        if list(fks) != [b"c"]:
-            print(f"        (encontrado: {list(fks)}; 'c' es CASCADE)")
-
-        unicidad = (await db.execute(text("""
-            SELECT count(*) FROM pg_index i
-              JOIN pg_attribute a ON a.attrelid = i.indrelid
-                                  AND a.attnum = ANY(i.indkey)
-             WHERE i.indrelid = 'ticket_documents'::regclass
-               AND i.indisunique
-        """))).scalar()
-        check("hay un indice unico sobre la tabla", unicidad >= 1)
-
-        # --- limpieza ---------------------------------------------------------
-        for id_para_borrar in (empresa_id, empresa_para_borrar):
-            await db.execute(
-                text(
-                    "DELETE FROM ticket_documents WHERE ticket_id IN "
-                    "(SELECT id FROM tickets WHERE company_id = :c)"
-                ),
-                {"c": id_para_borrar},
+        print("\n6. La base exige actor y motivo en un reemplazo")
+        try:
+            await conn.execute(
+                """INSERT INTO ticket_documents
+                       (ticket_id, contenido, tamano, sha256, reemplaza_a, version)
+                   SELECT $1, decode('7634', 'hex'), 1, 'a4', id, 9
+                   FROM ticket_documents WHERE ticket_id = $1 AND version = 2""",
+                ticket,
             )
-            await db.execute(
-                TicketModel.__table__.delete().where(
-                    TicketModel.company_id == id_para_borrar
-                )
-            )
-            await db.execute(
-                CompanyModel.__table__.delete().where(
-                    CompanyModel.id == id_para_borrar
-                )
-            )
-        await db.commit()
+            c.fallo("un reemplazo sin actor ni motivo DEBIO ser rechazado por la base")
+        except Exception:  # noqa: BLE001
+            c.comprueba(True, "un reemplazo sin actor ni motivo lo rechaza la base")
 
-    await motor.dispose()
+        print("\n7. DELETE en cascada SI se permite")
+        await conn.execute("DELETE FROM tickets WHERE id = $1", ticket)
+        try:
+            await conn.execute(
+                "DELETE FROM ticket_documents WHERE ticket_id = $1", ticket
+            )
+            quedan = await conn.fetchval(
+                "SELECT count(*) FROM ticket_documents WHERE ticket_id = $1", ticket
+            )
+            c.comprueba(
+                quedan == 0,
+                "borrado el gasto, su comprobante se va con el (cascade permitido)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            c.fallo(f"la cascada legitima fue bloqueada: {exc}")
 
-    print()
-    if fallos:
-        print(f"{len(fallos)} comprobaciones fallaron:")
-        for desc in fallos:
-            print(f"  - {desc}")
+        await conn.execute("DELETE FROM companies WHERE id = $1", empresa)
+    finally:
+        await conn.close()
+
+    print("\n" + "=" * 68)
+    if c.fallos:
+        print(f"{len(c.fallos)} comprobacion(es) fallaron:")
+        for f in c.fallos:
+            print(f"  - {f}")
         return 1
-    print("Todo verificado contra Postgres real. Base limpia.")
+    print(f"Las {c.ok} comprobaciones pasaron. El trigger hace lo que dice.")
     return 0
 
 
 if __name__ == "__main__":
-    codigo = 1
-    try:
-        codigo = asyncio.run(main())
-    finally:
-        _limpiar()
-    raise SystemExit(codigo)
+    sys.exit(asyncio.run(main()))

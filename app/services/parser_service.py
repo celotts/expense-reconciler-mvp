@@ -111,6 +111,73 @@ VENCIMIENTO_RE = re.compile(
 FECHA_SIN_ETIQUETA_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)")
 
 
+def _importe_tras_la_etiqueta(linea: str, a_decimal) -> Decimal | None:
+    """El primer importe que aparece despues de la palabra "total" en la linea.
+
+    Por que hace falta, con el texto real que la motivo:
+
+        Total hN $ 51.50
+        O/CREDITO TOTAL (* ENTRE HtvENTA Y STETE $ 97.56 SU Cahbio $ 0 .00
+
+    El patron de siempre exige el importe pegado a la etiqueta. En un ticket
+    impreso casi siempre lo esta, y por eso funcionaba; con el texto que arma
+    EasyOCR —cajas ordenadas por posicion, sin lineas— hay palabras de por medio
+    y el importe correcto se queda sin leer. El numero esta a la vista en los dos
+    casos: lo que faltaba era la regla.
+
+    "PRIMER" importe, y no el ultimo: una linea de total trae mas numeros (el
+    cambio, los puntos acumulados, el IVA incluido) y el que corresponde a la
+    etiqueta es el primero. Tomar el ultimo seria leer el cambio como total, que
+    es un error de una magnitud distinta.
+
+    `(?<![\\d.,])` y `(?![\\d.,])` evitan agarrar un fragmento de un codigo: sin
+    ellos, "P.TOTAL 403" en "COL. 403" se leeria como 403.
+
+    SOLO se acepta un importe CON separador decimal, y esa es la parte que
+    importa. En un comprobante mexicano el importe se imprime con centavos
+    siempre: `51.50`, `97.56`, `1,100.50`. Un entero suelto despues de "total" es
+    mucho mas probable que un trozo partido que el total entero. Medido en la
+    foto de Oxxo, donde las dos cosas conviven:
+
+        Pago Electronico: S1.50 ... IVA INCLUIDO: Total: s 51 .š0 5 0.00
+        Total hN $ 51.50
+
+    La primera linea tiene el importe partido y la segunda lo tiene entero. Sin
+    el filtro, la primera gana por ir antes y el total queda en `51` — la mitad
+    del importe real, que es peor que no leer nada. Con el filtro, la primera no
+    aporta nada y la segunda entra.
+
+    El caso de un ticket que IMPRIMA el total sin centavos ("TOTAL 500") deja de
+    leerse por esta linea, y sigue entrando por la regla de la linea siguiente.
+    Se pierde un caso raro a cambio de no inventar la mitad de un importe.
+
+    `a_decimal` se recibe como argumento y no se usa el del modulo porque el
+    parser de importes vive dentro de `_parse_receipt_text` (con la convencion
+    mexicana de separadores) y no hay uno equivalente arriba: `_a_decimal` es
+    para CSV, que usa coma decimal, y aqui seria la lectura equivocada.
+    """
+    etiqueta = re.search(r"(?:^|\s)total\b", linea, re.IGNORECASE)
+    if not etiqueta:
+        return None
+
+    resto = linea[etiqueta.end():]
+    # Se buscan todos los candidatos y se toma el primero que TRAIGA separador
+    # decimal. Ver el docstring: un entero suelto es un trozo partido, no un total.
+    for candidato in re.finditer(r"(?<![\d.,])(\d[\d.,]*\d)(?![\d.,])", resto):
+        if "." not in candidato.group(1) and "," not in candidato.group(1):
+            continue
+        try:
+            return a_decimal(candidato.group(1))
+        except (InvalidOperation, ValueError):
+            continue
+    return None
+
+    try:
+        return a_decimal(importe.group(1))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _a_fecha(dia: str, mes: str, anio: str) -> date | None:
     """Une dia/mes/anio en una fecha, o `None` si no existe.
 
@@ -777,40 +844,50 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             except (InvalidOperation, ValueError):
                 pass
         elif total_amount == Decimal("0.00") and "subtotal" not in line.lower():
-            # La etiqueta y el importe estan en lineas DISTINTAS.
+            # Hay DOS formas de que la etiqueta y su importe no esten pegados, y
+            # se prueban en este orden porque en un ticket impreso la misma linea
+            # gana siempre a la siguiente.
             #
-            # Esto no es un caso raro: es la forma de la mayoria de los tickets
-            # thermal y de todo comprobante impreso con columnas. En una foto
-            # real de la carpeta, el OCR leyo:
+            # (a) La MISMA linea, con tokens de por medio. El patron de arriba
+            #     exige el importe inmediatamente despues de la etiqueta. Con el
+            #     texto de EasyOCR no se cumple, porque las palabras llegan en el
+            #     orden de las cajas. Medido en las dos fotos donde el total si
+            #     esta bien leido:
             #
-            #     TOTAL M.N. $
-            #     31.50
+            #         Total hN $ 51.50                   <- "hN" es "M.N." mal leido
+            #         O/CREDITO TOTAL (* ENTRE HtvENTA $ 97.56
             #
-            # y el total no se encontraba, porque los dos patrones de arriba
-            # exigen el importe pegado a la etiqueta en la MISMA linea. Esa
-            # forma existe en un PDF de texto y casi nunca en un papel, asi que
-            # el parser leia bien los PDF y fallaba con las fotos: exactamente
-            # al reves de lo que se quiere.
+            #     En las dos el numero correcto esta a la vista y el parser no lo
+            #     toma. No es un problema del motor: es que "la etiqueta y su
+            #     importe son contiguos" es un supuesto del papel ordenado, no del
+            #     texto.
             #
-            # Se mira la linea siguiente SOLO si esta no trae numero, y solo si
-            # la etiqueta es la ultima palabra util de la linea (que es como se
-            # ve un total con el importe en la columna de al lado). Sin esa
-            # condicion, "TOTAL" en medio de un texto tomaria como importe
-            # cualquier numero que venga despues.
-            etiqueta = re.search(r"(?:^|\s)total\b(.*)$", line, re.IGNORECASE)
-            # El criterio NO es "la linea termina en la etiqueta", sino "no hay
-            # ningun digito despues de la etiqueta". La diferencia importa: los
-            # tickets imprimen "TOTAL M.N. $" y "TOTAL A PAGAR", y
-            # "M.N." (moneda nacional) queda entre la etiqueta y el fin de linea.
-            # Un patron que exigiera el fin de linea no losCubria.
-            if etiqueta and not re.search(r"\d", etiqueta.group(1)):
-                if siguiente_no_vacia is not None:
-                    importe = re.match(r"\s*[$€]?\s*(\d[\d.,]*)\s*$", siguiente_no_vacia)
-                    if importe:
-                        try:
-                            total_amount = parse_mexican_number(importe.group(1))
-                        except (InvalidOperation, ValueError):
-                            pass
+            #     "PRIMER" importe despues de la etiqueta, a proposito: en una
+            #     linea de total hay mas numeros (el cambio, los puntos, el IVA) y
+            #     el que va con la etiqueta es el primero. Tomar el ultimo seria
+            #     tomar el cambio.
+            total_en_linea = _importe_tras_la_etiqueta(line, parse_mexican_number)
+            if total_en_linea is not None:
+                total_amount = total_en_linea
+            else:
+                # (b) Lineas DISTINTAS: la columna de al lado. Es el caso mas
+                #     comun en papel: la etiqueta termina la linea y el importe
+                #     esta en la fila siguiente.
+                #
+                #     El criterio NO es "la linea termina en la etiqueta" sino
+                #     "no hay ningun digito despues de la etiqueta". Los tickets
+                #     imprimen "TOTAL M.N. $" y "TOTAL A PAGAR", y "M.N."
+                #     (moneda nacional) queda entre la etiqueta y el fin de linea:
+                #     un patron que exigiera el fin de linea no los cubiria.
+                etiqueta = re.search(r"(?:^|\s)total\b(.*)$", line, re.IGNORECASE)
+                if etiqueta and not re.search(r"\d", etiqueta.group(1)):
+                    if siguiente_no_vacia is not None:
+                        importe = re.match(r"\s*[$€]?\s*(\d[\d.,]*)\s*$", siguiente_no_vacia)
+                        if importe:
+                            try:
+                                total_amount = parse_mexican_number(importe.group(1))
+                            except (InvalidOperation, ValueError):
+                                pass
 
         # IVA - word-anchored so product names containing "iva"/"tax" don't match
         tax_match = re.search(r"\b(?:iva|tax|impuesto)\b(?:\s*\(\d+(?:[.,]\d+)?\s*%\))?[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)

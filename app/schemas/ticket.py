@@ -285,6 +285,32 @@ class TicketResponse(BaseModel):
         return enriched
 
 
+class DocumentoHistorialResponse(BaseModel):
+    """UNA version del comprobante, sin los bytes.
+
+    El historial responde "¿que papel guardamos y como llegamos a el?". Los bytes
+    NO van aqui: se descargan del vigente, y meterlos en un listado de historial
+    seria una forma de bajar 10 MB sin querer.
+
+    `vigente` es lo que hace util la lista sin tener que deducirlo de las fechas:
+    la version vigente es la que no fue reemplazada, y es la unica que se
+    descarga y la unica contra la que se contrasta una lectura.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    version: int
+    sha256: str | None = None
+    tamano: int
+    content_type: str | None = None
+    nombre_archivo: str | None = None
+    actor: str | None = None
+    motivo: str | None = None
+    created_at: datetime
+    vigente: bool
+
+
 class TicketReviewRequest(BaseModel):
     """Accion de revision humana sobre un ticket en cola.
 

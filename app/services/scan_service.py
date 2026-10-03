@@ -71,7 +71,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.archivo_real import detectar_tipo_real, es_texto_plano
+from app.core.archivo_real import detectar_tipo_real
 from app.core.config import settings
 from app.core.enums import ConfidenceSource, ScanStatus, SourceType
 from app.core.time import utcnow
@@ -475,8 +475,42 @@ async def procesar_archivo(
     ahora = utcnow()
 
     tipo = detectar_tipo_real(contenido)
-    if tipo is None and es_texto_plano(contenido):
-        tipo = "text"
+
+    # EL ESCANER SOLO ADMITE PDF E IMAGEN. NADA MAS.
+    #
+    # Antes, si los bytes no eran un PDF ni una imagen con firma conocida, se
+    # preguntaba `es_texto_plano` y, si lo eran, se leia con la cascada de texto.
+    # Eso hacia que CUALQUIER archivo UTF-8 en la carpeta se podia convertir en un
+    # ticket. Medido y reproducido: un `verdad.json` de etiquetas escritas a mano
+    # (con proveedor, RFC, subtotal, total y fecha) entro por el escaner y salio
+    # `AUTO_APROBADO`:
+    #
+    #     provider_name = Cadena Comercial Oxxo, S.A. de C.V.
+    #     total_amount  = 51.50
+    #     extraction_status = AUTO_APROBADO
+    #
+    # Un gasto que no existe, afirmado con maxima confianza, y como
+    # `AUTO_APROBADO` entra a libros y se exporta.
+    #
+    # La carpeta es un proceso DESATENDIDO. Si alguien deja ahi unas notas, un
+    # export del banco o un `.csv`, el sistema lo lee como comprobante y lo
+    # aprueba solo. Ese es el error humano que la carga en lote se supone que
+    # evita: no lo evita, lo automatiza.
+    #
+    # Por que no se admite texto y ya:
+    #
+    # - El trabajo de este modulo es digitalizar ESCANEOS. Un `.txt` no es un
+    #   escaneo.
+    # - El comprobante en texto plano si existe (`test-files/factura_gas.txt`) y
+    #   no se pierde: sigue entrando por `POST /tickets/extract` con
+    #   `file_type=text`, donde quien lo sube lo DECLARA. La diferencia entre las
+    #   dos vias es la que importa: en la API hay una persona diciendo "esto es un
+    #   comprobante"; en la carpeta no hay nadie.
+    # - Es la unica forma de que la afirmacion del sistema se corresponda con un
+    #   papel. Sin esta comprobacion, "el sistema leyo" y "hay un comprobante" son
+    #   la misma frase, y el muestreo de exactitud deja de medir nada.
+    if tipo is None:
+        tipo = None  # se deja None a proposito: cae en NO_SOPORTADO, abajo
 
     fila = await _buscar(db, vista.relative_path)
     nuevo = fila is None
@@ -566,9 +600,15 @@ async def procesar_archivo(
         fila.status = ScanStatus.NO_SOPORTADO.value
         fila.detected_format = None
         fila.last_scanned_at = ahora
+        # El motivo dice LAS DOS cosas: que no se pudo leer y por que no se
+        # intenta como texto. Un operador que ve "no soportado" tiene que poder
+        # distinguir "el escaner esta roto" de "este archivo no es un
+        # comprobante y no se va a intentar", que son problemas opuestos.
         fila.last_error = (
-            "los bytes no son un PDF ni una imagen con firma conocida, y tampoco "
-            "son texto legible"
+            "no es un PDF ni una imagen con firma conocida. El escaner de carpeta "
+            "solo digitaliza escaneos: un archivo de texto se sube por "
+            "POST /tickets/extract con file_type=text, donde quien lo sube lo "
+            "declara."
         )
         await db.commit()
         resumen.status = ScanStatus.NO_SOPORTADO

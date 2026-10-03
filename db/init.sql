@@ -241,9 +241,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_tickets_source_hash
 -- archivo en disco, ese borrado sería una tarea aparte que nadie recuerda.
 CREATE TABLE IF NOT EXISTS ticket_documents (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    -- UNIQUE y llave foránea a la vez: un ticket tiene un documento o ninguno,
-    -- nunca dos, y nunca un documento sin ticket.
-    ticket_id UUID NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+    -- SIN `UNIQUE`. Antes lo tenía, y era correcto cuando la tabla era "un
+    -- documento por ticket". Con la cadena de versiones (0009) un ticket tiene
+    -- VARIAS filas y solo UNA vigente, y el UNIQUE impediría hasta la segunda:
+    -- una instalación nueva fallaría al guardar el primer reemplazo, sin que
+    -- ningún test lo notara porque los tests construyen desde los modelos.
+    -- Lo que no puede haber son dos VIGENTES, y eso lo garantiza el índice
+    -- `ix_ticket_documents_sin_bifurcar` más la regla de que el vigente es el
+    -- de mayor `version`.
+    ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
     contenido BYTEA NOT NULL,
     -- Lo declara el cliente y NO se usa tal cual para servirlo: el endpoint
     -- responde desde una lista cerrada de tipos que el navegador no puede
@@ -251,14 +257,93 @@ CREATE TABLE IF NOT EXISTS ticket_documents (
     content_type VARCHAR(120),
     nombre_archivo VARCHAR(500),
     tamano INTEGER NOT NULL,
-    -- El mismo hash que tickets.source_hash, para verificar los bytes guardados
-    -- sin volver a pedir el archivo.
+    -- El hash DE LOS BYTES DE ESTA VERSION. Antes se llenaba con
+    -- `tickets.source_hash`, que es el hash de lo que el ESCANER leyó: en esa
+    -- ruta coinciden, pero al reemplazar un documento los bytes nuevos quedaban
+    -- sellados con el hash de los viejos y la columna describía otra cosa.
     sha256 VARCHAR(64),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    -- Cadena de versiones (0009). El comprobante digitalizado NO SE ALTERA: se
+    -- apila. `reemplaza_a` apunta hacia atrás (la versión nueva dice a cuál
+    -- reemplaza) porque la tabla es append-only y el UPDATE está prohibido, así
+    -- que la vieja no puede apuntar a la nueva. El vigente es el de mayor
+    -- `version`.
+    reemplaza_a UUID REFERENCES ticket_documents(id) ON DELETE SET NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    actor VARCHAR(255),
+    motivo TEXT,
+
+    -- Las tres reglas de la cadena, con el mismo texto que la migración 0009.
+    CONSTRAINT ck_ticket_documents_version
+        CHECK (version >= 1),
+    -- El motivo es obligatorio cuando hay reemplazo: la primera versión la pone
+    -- el escáner y no hay nadie detrás; desde la segunda, "por qué cambiaste el
+    -- papel" es la pregunta que un contador hace después.
+    CONSTRAINT ck_ticket_documents_motivo_si_reemplaza
+        CHECK (reemplaza_a IS NULL OR (motivo IS NOT NULL AND length(trim(motivo)) > 0)),
+    -- Y el actor también: un reemplazo siempre lo hace una persona.
+    CONSTRAINT ck_ticket_documents_actor_si_reemplaza
+        CHECK (reemplaza_a IS NULL OR (actor IS NOT NULL AND length(trim(actor)) > 0))
 );
 
 CREATE INDEX IF NOT EXISTS ix_ticket_documents_ticket
     ON ticket_documents (ticket_id);
+
+CREATE INDEX IF NOT EXISTS ix_ticket_documents_cadena
+    ON ticket_documents (ticket_id, version);
+
+-- Una versión puede ser reemplazada por UNA sola siguiente. Es lo que impide que
+-- la cadena se bifurque, y por eso el vigente es "el de mayor version" y no "el
+-- que nadie apunta".
+CREATE UNIQUE INDEX IF NOT EXISTS ix_ticket_documents_sin_bifurcar
+    ON ticket_documents (reemplaza_a)
+    WHERE reemplaza_a IS NOT NULL;
+
+-- --- La regla del motor (0009) ---------------------------------------------
+--
+-- Un trigger, y no una convención del código: así vale también para un `psql`,
+-- una restauración mal hecha o el próximo script que se escriba.
+--
+-- UPDATE nunca. No hay un caso legítimo: un documento es una foto de un papel y
+-- cambiarlo in situ es alterar la evidencia, no corregirla.
+--
+-- DELETE tampoco, SALVO que el ticket ya no exista. `ticket_id` tiene ON DELETE
+-- CASCADE, y bloquearlo dejaría imposible borrar una empresa. La distinción es
+-- "borré el gasto entero" contra "me robé el papel".
+--
+CREATE OR REPLACE FUNCTION ticket_documents_no_actualizar() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'ticket_documents es append-only: un documento no se actualiza, se agrega '
+        'una version nueva (reemplaza_a) y la anterior se conserva. Ticket %',
+        OLD.ticket_id
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ticket_documents_no_borrar() RETURNS trigger AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM tickets WHERE id = OLD.ticket_id) THEN
+        RAISE EXCEPTION
+            'ticket_documents es append-only: no se borra un documento mientras su '
+            'ticket exista. Para cambiar el papel se agrega una version nueva. Ticket %',
+            OLD.ticket_id
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_ticket_documents_no_actualizar ON ticket_documents;
+CREATE TRIGGER trg_ticket_documents_no_actualizar
+    BEFORE UPDATE ON ticket_documents
+    FOR EACH ROW EXECUTE FUNCTION ticket_documents_no_actualizar();
+
+DROP TRIGGER IF EXISTS trg_ticket_documents_no_borrar ON ticket_documents;
+CREATE TRIGGER trg_ticket_documents_no_borrar
+    BEFORE DELETE ON ticket_documents
+    FOR EACH ROW EXECUTE FUNCTION ticket_documents_no_borrar();
 
 -- Muestreo de exactitud (0003). Dos índices parciales, y la diferencia importa:
 --

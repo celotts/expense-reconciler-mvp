@@ -81,7 +81,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import (
-    TIMESTAMP, Column, ForeignKey, Index, Integer, LargeBinary, String, text,
+    TIMESTAMP, Column, ForeignKey, Index, Integer, LargeBinary, String, Text, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -130,24 +130,70 @@ def content_type_servible(declarado: str | None) -> str:
 class TicketDocumentModel(Base):
     """Los bytes de un comprobante, o NULL si ese ticket se tecleo a mano.
 
-    Una fila por ticket, no un historico de versiones. Se sobrescribe cuando se
-    reextrae, y por que se puede hacer sin pedir permiso es justo lo que esta
-    tabla habilita: volver a leer el mismo archivo con un extractor distinto
-    produce una lectura mejor, y el gasto es el mismo. Guardar las dos
-    extracciones seria duplicar el gasto en el historico contable.
+    UNA CADENA DE VERSIONES, NO UNA FILA. Antes esta tabla era "una fila por
+    ticket" y `PUT /documento` la sobrescribia con un `DELETE` + `INSERT`: los
+    bytes originales desaparecian y no quedaba ni el hash anterior, ni quien lo
+    cambio, ni cuando, ni por que. El endpoint ni siquiera tomaba el usuario
+    autenticado.
 
-    `ticket_id` es UNIQUE y a la vez la llave foranea. Las dos cosas juntas dicen
-    lo mismo desde dos angulos: `UNIQUE` impide que un ticket tenga dos
-    documentos (que haria que "el documento de este ticket" no tenga respuesta
-    unica), y la llave foranea con CASCADE hace que borrar el ticket borre el
-    archivo, para que no queden comprobantes huerfanos de gastos que ya no
-    existen. Con `ON DELETE CASCADE` el borrado del archivo no es una tarea
-    pendiente: es una consecuencia de borrar el gasto.
+    Eso hacia falsa la promesa del producto: que el comprobante es la evidencia
+    contra la que se contrasta cualquier lectura. Un papel que se puede borrar en
+    silencio no es evidencia, y el muestreo de exactitud estaria midiendo algo
+    que nadie reviso sin que se pudiera demostrar.
+
+    COMO SE LEE AHORA
+    -----------------
+    - `reemplaza_a` apunta HACIA ATRAS: la version nueva dice a cual reemplaza.
+      Y va hacia atras porque la tabla es append-only y el `UPDATE` esta
+      prohibido, asi que la version vieja no puede apuntar a la nueva. La version
+      1 es la unica con `reemplaza_a IS NULL`, y lo segue siendo para siempre.
+    - El documento **vigente** es el de mayor `version`. No es "el que nadie
+      apunta": esa consulta habria que rehacerla en cada lectura, y con el indice
+      unico sobre `reemplaza_a` la cadena no se puede bifurcar, asi que el mayor
+      `version` ES la punta.
+    - La version anterior no se borra: queda enlazada. La cadena se recorre por
+      `version` en orden ascendente.
+    - `actor` y `motivo` son obligatorios a partir de la segunda version. La
+      primera la pone el escaner y no hay nadie detras; un reemplazo siempre lo
+      hace una persona, y "por que cambiaste el papel" es la pregunta que un
+      contador va a hacer.
+
+    `ON DELETE CASCADE` se mantiene, y con un trigger de Postgres que prohibe
+    borrar un documento mientras su ticket exista. Los dos juntos: borrar el
+    gasto borra su papel (sin huerfanos), pero nadie puede borrar SOLO el papel.
+    Ver `db/migrations/0009_documento_inmutable.sql`.
+
+    QUE NO ES
+    ---------
+    No es un historico de LO QUE SE LEYO. Eso vive en `tickets` y en el
+    `spot_check`. Aqui lo que se conserva es el PAPEL: cambiar el documento no
+    cambia `tickets.source_hash` ni la lectura, y por eso un veredicto de
+    muestreo registrado sigue correspondiendo a lo que el sistema leyo.
     """
 
     __tablename__ = "ticket_documents"
     __table_args__ = (
-        Index("ix_ticket_documents_ticket", "ticket_id", unique=True),
+        # Un indice unico PARCIAL sobre `reemplaza_a`: cada version puede ser
+        # reemplazada por UNA sola.version siguiente.
+        #
+        # NO se puede poner un unico sobre `reemplaza_a IS NULL` (es decir, "solo
+        # una version sin padre") porque con la cadena append-only la version 1
+        # es la unica sin `reemplaza_a` para siempre: no se puede volver a poner
+        # en NULL sin un UPDATE, y el UPDATE esta prohibido. Ese indice
+        # rechazaria la segunda insercion.
+        #
+        # Lo que si importa es que la cadena NO se bifurque: que no existan dos
+        # versiones diciendo "reemplazo a la misma". Eso es lo que este indice
+        # prohibe, y por eso el vigente es "la de mayor `version`" y no "la que
+        # nadie apunta".
+        Index(
+            "ix_ticket_documents_sin_bifurcar",
+            "reemplaza_a",
+            unique=True,
+            sqlite_where=text("reemplaza_a IS NOT NULL"),
+            postgresql_where=text("reemplaza_a IS NOT NULL"),
+        ),
+        Index("ix_ticket_documents_cadena", "ticket_id", "version"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -155,7 +201,17 @@ class TicketDocumentModel(Base):
         UUID(as_uuid=True),
         ForeignKey("tickets.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
+    )
+    # La version anterior de esta misma cadena. `None` = vigente.
+    #
+    # `ON DELETE SET NULL` y no `CASCADE`: borrar un documento (que el trigger
+    # impide mientras el ticket exista) no puede llevarse la cadena entera. Con
+    # SET NULL la fila se convierte en vigente, que es la unica lectura sensata si
+    # algo se borrara.
+    reemplaza_a = Column(
+        UUID(as_uuid=True),
+        ForeignKey("ticket_documents.id", ondelete="SET NULL"),
+        nullable=True,
     )
     # Los bytes. `LargeBinary` mapea a BYTEA en Postgres, que es lo que se
     # quiere: el limite de Postgres es 1 GB por campo y aqui el tope lo pone
@@ -169,10 +225,24 @@ class TicketDocumentModel(Base):
     tamano = Column(Integer, nullable=False)
     # El mismo SHA-256 que esta en `tickets.source_hash`. Se repite aqui para
     # poder verificar la integridad del contenido sin releer el archivo entero.
+    #
+    # Ojo con el nombre: es el hash DEL PAPEL DE ESTA VERSION, no del ticket. Si
+    # se reemplaza el documento, este valor cambia y `tickets.source_hash` no: la
+    # diferencia entre "que leyo el sistema" y "que papel se guardo" es
+    # exactamente lo que esta tabla hace visible.
     sha256 = Column(String(64), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
-    ticket = relationship("TicketModel", back_populates="documento")
+    # Quien agrego ESTA version y por que. Texto y no llave foranea, igual que
+    # `tickets.spot_checked_by`: la firma tiene que sobrevivir a la baja de la
+    # cuenta.
+    actor = Column(String(255), nullable=True)
+    motivo = Column(Text, nullable=True)
+    # 1 para la version inicial; 2, 3... para cada reemplazo. Es la orden de la
+    # cadena legible, que `reemplaza_a` ya implica pero no de un vistazo.
+    version = Column(Integer, nullable=False, default=1, server_default=text("1"))
+
+    ticket = relationship("TicketModel", back_populates="documentos")
 
     @property
     def content_type_servible(self) -> str:
