@@ -539,6 +539,7 @@ export const dashboardApi = {
 export type { 
   Company, CompanyCreate, CompanyUpdate,
   Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
+  LineaTicketUpdate,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
   SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,

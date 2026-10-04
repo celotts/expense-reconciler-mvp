@@ -60,6 +60,14 @@ def carpeta(tmp_path, monkeypatch):
     destino = tmp_path / "tickets"
     destino.mkdir()
     monkeypatch.setattr(settings, "TICKETS_INPUT_DIR", str(destino))
+    # El destino del archivado tambien va a `tmp_path`, por el mismo motivo y
+    # con la misma obligacion: sin esto, `carpeta_de_escaneados()` resuelve contra
+    # el sistema de archivos y en macOS `mkdir` en `/` da "Read-only file
+    # system". Medido: 24 tests caidos por no aislar esto.
+    monkeypatch.setattr(settings, "TICKETS_SCAN_OUTPUT_DIR", str(tmp_path / "escaneados"))
+    # Y el archivado apagado, porque estas pruebas son de LECTURA y mover
+    # archivos las haria depender del orden de ejecucion.
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR", False)
     return destino
 
 

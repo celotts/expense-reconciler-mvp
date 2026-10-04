@@ -170,3 +170,35 @@ TOTAL:              $249.86
 METODO PAGO: TARJETA DEBITO
 REF: 123456789012
 """
+
+# ---------------------------------------------------------------------------
+# El archivado, aislado para TODAS las pruebas
+# ---------------------------------------------------------------------------
+#
+# `autouse=True` y aqui, y no en cada archivo, por la razon de siempre: una
+# defensa puesta en un solo lugar no se puede olvidar. Ponerlo en un solo archivo
+# de tests deja los otros escribiendo en el disco real.
+#
+# Son DOS cosas y las dos hacen falta:
+#
+# 1. **DONDE.** `TICKETS_SCAN_OUTPUT_DIR` a un tmp. Sin esto, la carpeta de
+#    escaneados se resuelve como hermana de `TICKETS_INPUT_DIR` —que en un test
+#    es el tmp de pytest, asi que esto casi nunca falla— pero si el ajuste trae
+#    una ruta absoluta de contenedor, `mkdir` en macOS da "Read-only file
+#    system". Medido: 24 tests caidos.
+#
+# 2. **SI.** Los dos apagones en False. Un test de LECTURA no debe mover
+#    archivos: `test_reprocesar_un_archivo_lo_relee` falla si el archivo ya no
+#    esta donde lo dejo, y el archivado se lo llevo. Medido: 3 tests caidos.
+#    Los tests que EXPLICITAMENTE prueban el archivado lo encienden.
+@pytest.fixture(autouse=True)
+def _aislar_el_archivado(tmp_path, monkeypatch):
+    from app.core.config import settings
+
+    destino = tmp_path / "escaneados"
+    destino.mkdir(exist_ok=True)
+    monkeypatch.setattr(settings, "TICKETS_SCAN_OUTPUT_DIR", str(destino))
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR", False)
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR", False)
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR", False)
+    return destino

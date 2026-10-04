@@ -24,7 +24,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 
 | Capa | Ubicación |
 |---|---|
-| API | `app/api/` — 8 routers bajo `/api/v1` |
+| API | `app/api/` — 9 routers bajo `/api/v1` |
 | Captura | `app/services/capture.py` → cascada de 5 escalones |
 | OCR local | `app/services/ocr.py` → Tesseract, lazy |
 | Escáner | `app/services/scan_service.py` → recorre `TICKETS_INPUT_DIR` |
@@ -33,11 +33,12 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | IA | `app/services/ai_client.py` (Ollama / OpenAI / Azure / local) |
 | Auth | `app/core/security.py` (scrypt N=2\*\*17 + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
+| Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **982** — 726 unit + escáner, 256 integration, 1 skip |
+| Tests | **1068** — 796 unit + escáner, 256 integration, 1 skip |
 
 ### Rutas que existen
-`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan`
+`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario`
 Sin auth: solo `GET /health` y `POST /api/v1/auth/login`.
 
 ### Dos máquinas de estado — no las confundas
@@ -92,7 +93,216 @@ python3 scripts/verify_documentos_mutations.py      # 11 mutaciones: el papel no
 python3 scripts/verify_reconciliation_mutations.py  # 18 mutaciones
 python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
+python3 scripts/verify_postgres_inventario.py       # 10 defensas: kardex, firma, índices
 ```
+
+### Inventario: la compra que suma stock exige una persona
+Cuatro tablas nuevas (`0010`): `productos`, `compras`, `compra_items`, `movimientos_inventario`.
+
+**Los tres estados son `EstadoCompra`, NO `ExtractionStatus`.** Son dos máquinas distintas:
+`ExtractionStatus` responde *"cómo se leyó el papel"*; `EstadoCompra` responde *"el inventario ya
+contó esto"*. Un ticket puede estar `AUTO_APROBADO` y su compra en `EN_REVISION`, porque que la
+lectura del encabezado sea buena no dice nada de las líneas. **El gate nunca midió la confianza
+de una línea** — `confianza_por_campos` solo mira los campos del encabezado.
+
+```
+PROCESAR  → EN_REVISION  → PROCESADO   ← solo este suma stock
+```
+
+**Por qué el movimiento es humano, y no prudencia genérica.** Todo esto está medido:
+- El OCR sobre fotos reales da **33.3%** de exactitud (`AGENTS.md`; los cuatro caminos para
+  mejorarlo están descartados con medición en `docs/known-issues.md` §21).
+- Una línea es un tiro más que el total. En 15 líneas, que las 15 estén bien **no** tiene la
+  misma probabilidad que el total esté bien: se multiplican.
+- **La conciliación bancaria valida el MONTO, nunca la COMPOSICIÓN.** Un ticket puede dar
+  `PERFECT` contra el banco y tener las líneas equivocadas.
+- La deriva es **monotona**: una cantidad de más infla el stock para siempre, y las ventas las
+  cuentas tú. La diferencia entre lo contado y lo que dice el sistema crece sin techo.
+
+Cuatro reglas con test que muere si la quitas:
+
+1. **`compras.ticket_id` es UNIQUE.** Es lo único que impide contar dos veces el mismo
+   comprobante. `registrar_compra` también es idempotente, para que la segunda llamada devuelva
+   la compra existente en vez de reventar.
+2. **`ck_compras_confirmacion`: `PROCESADO` exige `confirmada_por` y `confirmada_at`; los demás
+   estados los prohíben.** Sin ella, un `UPDATE` basta para que el inventario parezca autorizado.
+3. **No se confirma con líneas sin producto.** Es un bloqueo, no un aviso: si se autorizara,
+   esas líneas no entrarían al inventario y el stock quedaría incompleto sin rastro.
+4. **`movimientos_inventario` es append-only por trigger**, no por convención: `UPDATE` nunca,
+   `DELETE` nunca mientras el producto exista. Corregir es agregar un `AJUSTE`. Es lo que hace
+   que `SELECT SUM(cantidad)` sea la definición del stock y no una opinión.
+
+**El stock NO es una columna.** Es `SUM(movimientos_inventario)`; `stock_de()` lo calcula. Una
+columna `stock` es una copia, y una copia se desincroniza siempre sin que nadie lo note.
+
+**Las líneas sin producto NO crean un producto automáticamente.** Con OCR al 33%, un catálogo
+armado solo se llena de variantes (`Reginen de` / `Regin de`) que el sistema contaría como tres
+y entre las que el stock se repartiría. La cola es `compra_items WHERE producto_id IS NULL` — no
+hay tabla de "pendientes", y por eso no se puede desincronizar.
+
+### `items` se extraía y se tiraba (arreglado en `0010`)
+El modelo ya pedía las líneas (`ai_extractor.ExtractedInvoice.items`) desde antes de que
+existiera el inventario, y `capture.py:invoice_to_result` no las copiaba al
+`TicketExtractionResult`: **la línea desaparecía antes de llegar al gate**. Ahora se persisten en
+`tickets.items` como JSON crudo, y `compra_items` es la versión normalizada y revisada.
+
+**Un `Decimal` en `items` no es JSON, y el ticket se perdía (arreglado).**
+`ai_extractor.py:346-348` convierte a `Decimal` cantidad, precio e importe de cada línea —que es lo
+correcto para dinero— y `tickets.items` es una columna JSON, así que `json.dumps` reventaba:
+`TypeError: Object of type Decimal is not JSON serializable`. El INSERT del ticket moría y
+`procesar_archivo` lo reportaba como `accion=ERROR` con el comprobante perdido.
+
+Lo que lo hace caro es que **solo pasaba con facturas que tienen detalle de partidas**. Las que
+no, se guardan bien, así que el camino del LLM se podía dar por bueno entero mientras no se le
+pasara una con `items`. Se midió con un `ticket_mercado_simple.pdf` de 4 líneas.
+
+La columna es `JSONConDecimal` (`app/core/json_decimal.py`), no `JSON` pelado: un `TypeDecorator`
+que convierte `Decimal` a **texto**, recursivo, porque las líneas son `list[dict]` y un `Decimal`
+vive dos niveles dentro. Y es texto y no `float` a propósito: `0.1 + 0.2` en binario no es `0.3`, y
+aquí la aritmética decide si una compra cuadra con su total. Convertir a `float` "por
+compatibilidad" se comería centavos en silencio.
+
+No se define un `json_encoder` global: cambiaría el comportamiento de **todas** las columnas JSON
+de la app sin que nadie lo pidiera, y el bug reaparecería en cualquier sitio nuevo sin que nadie lo
+mirara. El arreglo es local a la columna que lo tiene.
+
+**La ruta OCR no extrae líneas.** Solo el LLM lo hace. Un ticket leído con Tesseract llega con
+`items = NULL`, y por eso `registrar_compra` devuelve `None` sin error: es el caso normal, no un
+fallo. Para inventario por foto hay que resolverlo antes —ver la advertencia del punto 2.
+
+### Las fotos no se veían: `content_type` NULL y el `<object>` fijo en PDF
+Dos bugs juntos, y los dos hacen falta para que una foto no se pinte. **Medido: 7 de 9 documentos
+guardados tenían `content_type=NULL`** y se servían como `application/octet-stream`, que el
+navegador **descarga** en vez de pintar. Los otros 2 sí lo traían porque entraron por una subida
+HTTP; ninguno de los dos había pasado por el escáner, que es el que no declara nada.
+
+**El tipo se deduce de los BYTES, y se deduce al SERVIR.** `media_type_real()` en
+`app/core/archivo_real.py` devuelve el medio real del archivo, y
+`TicketDocumentModel.content_type_servible` lo usa cuando la columna viene en `NULL`.
+
+Que sea al servir y no al guardar **no es un detalle de implementación, es que no se puede de otra
+forma**: `ticket_documents` es append-only por trigger, y backfillear la columna pide un `UPDATE`
+que Postgres rechaza a propósito. Medido:
+
+```
+ERROR:  ticket_documents es append-only: un documento no se actualiza, se agrega una version nueva
+```
+
+Un backfill habría necesitado un `ALTER` o apagar el trigger, es decir, saltarse la regla de que el
+papel no se altera — y escribir sobre una columna que es un hecho del papel. El tipo que se **sirve**
+es una decisión de ahora, no un atributo de lo que se subió en marzo.
+
+Y es lo que arregla las fotos de verdad: **un backfill habría dejado las 7 viejas sirviendo como
+descarga para siempre**, con el bug visible solo en las nuevas. Así se esconden estos fallos.
+`guardar_documento` también deduce el tipo al escribir, pero eso es una mejora para lo que se suba
+de aquí en adelante, **no la defensa**: si se quita, lo único que se pierde es la columna.
+
+**El nombre del archivo tampoco decide, y hay el caso que lo prueba.** `IMG_4253 2.HEIC` está
+guardado y **por sus bytes es un JPEG** — la cámara del teléfono lo nominó así. Keyear por extensión
+lo habría servido como HEIC. La foto es la misma; lo que falla es la etiqueta.
+
+**La lista cerrada sigue mandando.** Lo deducido no es lo que se sirve: un HEIC deduce
+`image/heic`, cae fuera de `CONTENT_TYPES_SERVIBLES` y sale como `application/octet-stream`, que es
+lo correcto porque ningún navegador de escritorio lo pinta. Las dos mitades están separadas a
+propósito: `media_type_real` dice **qué es**, el allowlist decide **si se puede pintar**.
+
+**En el front, `<object type="application/pdf">` estaba fijo para todos los documentos.**
+`TicketDocumento.tsx` declaraba PDF a cualquier cosa, así que un JPEG nunca se pintaba aunque
+llegara con el tipo correcto. Ahora el tipo sale del `Blob` (`blob.type`, que viene del
+`Content-Type` de la respuesta) y una imagen va en `<img>`. `<img>` y no `<object>` porque
+`<object>` vuelve a pedir el recurso **sin la cabecera `Authorization`** y sale 401: el `Blob` ya
+viene autenticado.
+
+### `POST /scan` devuelve los datos de cada ticket, no solo el metadata
+Cada elemento de `detalles[]` trae un `datos` con lo que el lector afirmo que dice el papel:
+proveedor, RFC, total, subtotal, IVA, fecha, categoría y líneas, **más el veredicto** del gate
+(`confidence`, `confidence_source`, `extraction_status`, `validation_errors`, `reviewed_by/at`).
+
+Tres decisiones, y las tres importan:
+
+- **Los datos vienen de la fila de `tickets`, no de la lectura cruda.** Es la diferencia que hace
+  que la respuesta sea citable: si el gate mandó la lectura a revisión, ahí `extraction_status` lo
+  dice **al lado** de los números. Un JSON con los datos pero sin el veredicto deja a quien lo
+  consume creyendo que el sistema respondió por ellos, que es justo lo que el gate se negó a
+  afirmar. Por eso van en el MISMO objeto y no en campos sueltos que se puedan leer por separado.
+- **`datos` se resuelve DESPUÉS del bucle** (`_resolver_datos_de_tickets`), en una sola consulta,
+  y no dentro de `procesar_archivo`. Esa función tiene trece salidas y el dato depende de una fila
+  que a veces todavía no existe: el DUPLICADO no crea ticket y apunta al de otro archivo, el
+  OMITIDO por `company_id` no creó ninguno, y el ACTUALIZADO pudo encontrar el ticket ya borrado.
+  Resolverlo al final, desde el `ticket_id` que cada rama ya dejó escrito, es lo único que cubre
+  las trece sin trece copias de la misma asignación.
+- **`datos=null` cuando no hay ticket, y no un objeto de campos vacíos.** Un objeto lleno de `None`
+  es *peor* que un `null`: parece que el sistema leyó el comprobante y no encontró nada, cuando lo
+  que pasó es que no hay ticket del que sacar datos. Son dos cosas que piden acciones distintas.
+
+**`raw_text` no va en la respuesta.** Son hasta 20 000 caracteres por ticket y no es un dato: es la
+evidencia. Quien la necesite la pide con `GET /tickets/{id}`, que además la sirve con el documento al
+lado. Y `items` sale como `list[dict]` **crudo**, sin un modelo de línea tipado: las líneas se
+persisten sin normalizar, e inventar `descripcion`/`cantidad`/`precio_unitario` afirmaría una
+estructura que el sistema nunca verificó — con OCR al 33% esa afirmación sería falsa seguido. Lo
+que normaliza es `inventario_service.interpretar_items`.
+
+### El comprobante se mueve a `Ticket_Scan`, y el montaje ya no es `:ro`
+`TICKETS_SCAN_OUTPUT_DIR` es una **carpeta hermana**, montada aparte, y no una subcarpeta de la
+que se escanea: con `TICKETS_SCAN_RECURSIVO=True`, una subcarpeta haría que cada archivo movido
+se volviera a leer en cada corrida (su `relative_path` cambia, el ledger no lo reconoce).
+
+Se mueve **solo cuando la compra está `PROCESADO`**, nunca por veredicto de lectura — con 33.3%
+de exactitud, mover también lo `PENDIENTE` habría enterrado dos de cada tres comprobantes en una
+carpeta que dice "escaneados", sin que nadie los hubiera revisado. `archivado_service` **nunca
+sobreescribe**: si el destino existe, agrega sufijo.
+
+El `:ro` → `:rw` de `docker-compose.yml` es un cambio consciente, y el motivo está escrito en el
+propio archivo. Lo que se necesita es **mover**, no borrar: los bytes no cambian.
+
+**El movimiento es configurable en DOS ejes, y son decisiones distintas:**
+
+| ajuste | qué hace |
+|---|---|
+| `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR` | mueve en cuanto el sistema digitaliza (por omisión `true`) |
+| `TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR` | mueve cuando alguien confirma la compra |
+
+Con los dos en `true`, el segundo casi nunca dispara: el archivo ya se movió al escanear.
+**La carpeta de escaneados NO significa "esto se leyó bien"** —significa "el sistema ya lo
+intentó"— y por eso `POST /scan` devuelve `archivados_pendientes`, el número de los que se movieron
+sin leerse bien. Con OCR al 33.3% ese número es alto y es **visible**, que es la diferencia entre
+una decisión y un silencio.
+
+**Usa `simular: true` antes de la primera corrida real.** La primera deja la carpeta de entrada
+vacía, y conviene ver eso antes de que ocurra. No crea ni mueve nada; devuelve la ruta de destino
+de cada archivo y si su lectura quedó pendiente.
+
+**`TICKETS_SCAN_OUTPUT_DIR` vacía significa "hermano de la carpeta de entrada"**, no una ruta fija.
+Es lo que hace que la omisión funcione fuera de Docker: una ruta de contenedor (`/tickets_scan`)
+da `Read-only file system` en macOS. Y `docker-compose.yml` la fija en el `environment:` del
+servicio — igual que `TICKETS_INPUT_DIR` — porque sin eso el archivado resuelve `/Tickets_Scan`
+dentro del contenedor y los comprobantes desaparecen de la máquina. **Medido: pasó, y los
+archivos hubo que devolverlos a mano.**
+
+**No se archiva lo que no produjo ticket**, y eso incluye `ERROR`, `DUPLICADO` y `NO_SOPORTADO`: un
+archivo que el sistema no pudo leer es justo el que alguien tiene que mirar. Y un ticket ya
+atribuido a otra empresa **no se mueve**.
+
+### La colección de Insomnia es un artefacto generado, no escrita a mano
+`expense-reconciler-insomnia.json` sale de `scripts/generar_insomnia.py`, que lee el OpenAPI
+**de la API viva**. No lo edites a mano: se pierde en la siguiente regeneración.
+
+```bash
+make insomnia         # regenerar (52 peticiones, 9 carpetas)
+make insomnia-check   # sale 1 si está desfasado — para cuando añades una ruta
+```
+
+Por qué importa: la versión anterior estaba exportada del **2025-01-21** con 25 peticiones de
+las 52 que expone hoy, y —esto es lo que la hacía inútil— **sin un solo header `Authorization`**.
+Como `api_router.py` pone el token obligatorio a nivel de router, 51 de 52 rutas respondían 401.
+Un archivo que no sabe que hay rutas nuevas no avisa; por eso es generado.
+
+Dos cosas que el generador respeta y que no hay que romper al tocarlo:
+- **`password` sale vacía.** El archivo está versionado con remoto en GitHub; una contraseña
+  escrita ahí queda publicada. Mismo criterio que `.env.dev` (regla de *Reglas que no se rompen*).
+- **`base_url` ya trae `/api/v1` y las rutas del spec también.** Sumar las dos da
+  `/api/v1/api/v1/...`, que es un 404 limpio, no un error de sintaxis. Es la misma trampa que
+  documenta `api_router.py` vista desde el cliente, y salió al verificar, no al leer.
 
 ### Medir la exactitud de las fotos
 El muestreo del 5% entra **solo** sobre tickets `AUTO_APROBADO`, y un ticket de OCR nunca

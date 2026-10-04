@@ -82,6 +82,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.archivo_real import media_type_real
 from app.core.subida import TICKET_MAX_BYTES
 from app.models.ticket import TicketModel
 from app.models.ticket_document import TicketDocumentModel
@@ -113,9 +114,46 @@ async def guardar_documento(
     no cumplio el tope al subirlo, es practicamente imposible que llegue aqui. Se
     comprueba igual, porque un `INSERT` de 2 GB en Postgres no falla: se escribe,
     y el problema aparece cuando alguien mas intenta guardar.
+
+    EL `CONTENT_TYPE` SE DEDUCE DE LOS BYTES CUANDO FALTA
+    ------------------------------------------------------
+    El `content_type` que se guarda sale de `media_type_real(contenido)`, no del
+    cliente, cuando el cliente no dio uno. Sin esto, todo lo que entra por el
+    escaner de carpeta se guardaba con `content_type=NULL` y se servia como
+    `application/octet-stream`, que el navegador DESCARGA en vez de pintar: la
+    foto existia, se podia bajar, y el revisor veia un recuadro vacio.
+
+    Medido: 7 de 9 documentos guardados tenian `content_type` NULL. Los otros 2
+    habian entrado por una subida HTTP, que si lo manda.
+
+    Por que se deduce y no se copia el declarado: lo mismo que en
+    `content_type_servible` —el declarado viene de fuera— y una razon extra, que
+    aqui es la de `archivo_real`: **el nombre del archivo tampoco dice nada**. Hay
+    un `IMG_4253 2.HEIC` que por sus bytes es un JPEG.
+
+    Lo que se deduce NO es lo que se sirve: `content_type_servible()` sigue
+    aplicando la lista cerrada al final. Esta funcion dice que ES el archivo; el
+    allowlist dice si se sirve como tal. Un HEIC deduce `image/heic`, cae fuera de
+    la lista y se sirve como octet-stream, que es lo correcto porque ningun
+    navegador lo pinta.
+
+    Y lo mas importante: **esto NO es lo que arregla las fotos**. Escribir la
+    columna no alcanza para los documentos ya guardados, porque
+    `ticket_documents` es append-only por trigger y backfillear exige un `UPDATE`
+    que Postgres rechaza a proposito. El arreglo que de verdad las ve es deducir
+    al SERVIR, en `TicketDocumentModel.content_type_servible`, que no toca la base
+    y por eso tambien arregla las 7 que ya estaban ahi.
+
+    Guardar el tipo deducido se queda porque es una mejora real para lo que se
+    suba de aqui en adelante, y porque deja la columna con un dato en vez de con
+    un hueco. Pero no es la defensa: si alguien quita esto, lo unico que se pierde
+    es la columna, y las fotos siguen viéndose.
     """
     if not contenido:
         return False
+
+    if content_type is None:
+        content_type = media_type_real(contenido)
 
     if len(contenido) > TICKET_MAX_BYTES:
         logger.warning(

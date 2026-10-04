@@ -1,293 +1,2010 @@
-
 {
   "_type": "export",
   "__export_format": 4,
-  "__export_date": "2025-01-21T23:00:00.000Z",
-  "__export_version": "2025-01-21",
+  "__export_date": "2026-10-02T00:00:00.000Z",
+  "__export_version": "2026-10-02",
   "resources": [
     {
       "_id": "wrk_expense_reconciler",
       "parentId": null,
-      "modified": 1705872000000,
-      "created": 1705872000000,
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Expense Reconciler MVP",
-      "description": "API para conciliación de gastos y exportación contable",
+      "description": "Coleccion generada por scripts/generar_insomnia.py",
       "scope": "collection",
       "_type": "workspace"
     },
     {
       "_id": "env_base",
       "parentId": "wrk_expense_reconciler",
-      "modified": 1705872000000,
-      "created": 1705872000000,
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Base Environment",
+      "description": "Variables del environment.\n\n`password` va VACIA a proposito: este archivo esta versionado en git con remoto\nen GitHub, y una contrasena escrita aqui queda publicada. Pegala una vez en\nInsomnia (o escribela en el environment local, que no se exporta).\n\nLo demas se llena solo, y no hace falta tocarlo a mano:\n  token                  <- POST /auth/login\n  company_id             <- GET /companies/\n  ticket_id              <- GET /tickets/\n  bank_transaction_id    <- GET /bank-transactions/\n  reconciliation_id      <- GET /reconciliations/\n  file_id                <- GET /scan/files\n  compra_id              <- GET /inventario/compras\n  compra_item_id         <- GET /inventario/cola (pegar el id de una linea)\n\nEl orden importa: login, companies, y despues todo lo demas. El token dura 8\nhoras (ACCESS_TOKEN_EXPIRE_MINUTES); cuando devuelva 401 por caducado, repite\nel login y solo eso.\n\nAVISO SOBRE LOS IDs VACIOS\n\nSi `{{ company_id }}` esta vacia, `GET /companies/{{ company_id }}` se manda\ncomo `GET /companies/` y devuelve 200 con la LISTA, no con el detalle. No es un\nerror: es otra ruta. Lo mismo con `ticket_id`, `reconciliation_id` y `file_id`.\nPor eso los scripts de listado llenan la variable antes de usar las rutas de\ndetalle: si ves una lista donde esperabas un objeto, casi siempre es que la\nvariable quedo vacia.",
       "data": {
-        "base_url": "http://localhost:8000/api/v1",
+        "api_root": "http://127.0.0.1:8000",
+        "base_url": "http://127.0.0.1:8000/api/v1",
+        "email": "insomnia@test.mx",
+        "password": "",
+        "token": "",
         "company_id": "",
         "ticket_id": "",
-        "bank_tx_id": "",
-        "recon_id": ""
+        "bank_transaction_id": "",
+        "reconciliation_id": "",
+        "mapping_id": "",
+        "file_id": "",
+        "compra_id": "",
+        "compra_item_id": ""
+      },
+      "dataOrder": {
+        "api_root": 0,
+        "base_url": 1,
+        "email": 2,
+        "password": 3,
+        "token": 4,
+        "company_id": 5,
+        "ticket_id": 6,
+        "bank_transaction_id": 7,
+        "reconciliation_id": 8,
+        "mapping_id": 9,
+        "file_id": 10,
+        "compra_id": 11,
+        "compra_item_id": 12
       },
       "scope": "environment",
       "_type": "environment"
     },
     {
-      "_id": "req_health",
+      "_id": "col_api",
       "parentId": "wrk_expense_reconciler",
-      "name": "Health Check",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "API v1",
+      "description": "Bearer token a nivel de carpeta: hereda el {{ token }} que deja el login. Solo /auth/login y /health lo apagan.",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "environment": {
+        "id": "env_base"
+      },
+      "metaSortKey": -2000,
+      "_type": "request_group"
+    },
+    {
+      "_id": "fld_01",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Auth",
+      "environment": {},
+      "metaSortKey": -999,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_01",
+      "parentId": "fld_01",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Iniciar sesion",
+      "description": "",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"{{ email }}\",\n  \"password\": \"{{ password }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/auth/login",
+      "metaSortKey": 1,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_02",
+      "parentId": "fld_01",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Quien soy",
+      "description": "Existe para que el cliente confirme su sesion al arrancar.\n\nLa alternativa habitual es fiarse del token guardado en el navegador. Un\ntoken puede seguir siendo criptograficamente valido con la cuenta dada de\nbaja, o haber caducado mientras la pestana estaba cerrada: este endpoint es\nlo que dice la verdad, y por eso se llama en cada carga de la aplicacion.",
       "method": "GET",
-      "url": "{{ _.base_url }}/../health",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
       "parameters": [],
       "headers": [],
-      "body": {},
+      "url": "{{ base_url }}/auth/me",
+      "metaSortKey": 2,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_companies",
-      "parentId": "wrk_expense_reconciler",
+      "_id": "fld_02",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Dashboard",
+      "environment": {},
+      "metaSortKey": -998,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_03",
+      "parentId": "fld_02",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Dashboard",
+      "description": "El tablero.\n\n`usuario` se declara y no se usa: la proteccion la pone el router entero en\n`api_router.py`, no este endpoint. Se deja para que quede a la vista que\naqui no hay puerta, y no porque sirva de algo.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "meses",
+          "value": "12",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/dashboard/",
+      "metaSortKey": 3,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_03",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Categorias",
+      "environment": {},
+      "metaSortKey": -997,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_04",
+      "parentId": "fld_03",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Listar Categorias",
+      "description": "Las categorias, en el orden canonico y con su etiqueta legible.\n\nEl orden es el mismo con el que el tablero las dibuja, para que la persona\nelija viendo la misma secuencia en los dos lados. Y cada una trae su tipo\n(fijo o variable) porque clasificar tambien dice si un gasto se mueve con la\nactividad, y eso se decide al clasificar, no despues.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/categorias",
+      "metaSortKey": 4,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_05",
+      "parentId": "fld_03",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Sin Clasificar",
+      "description": "El pseudo-valor con el que se saca un ticket de la barra gris.\n\nExiste para poder **desclasificar**. Un ticket mal clasificado es peor que\nuno sin clasificar: el primero se cuenta en un rubro que no es el suyo y\nnadie lo ve, el segundo al menos esta en la barra que avisa. Sin una manera\nde quitar la categoria, corregir un error de captura es imposible, y la\nclasificacion se vuelve irreversible.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/categorias/sin-clasificar",
+      "metaSortKey": 5,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_04",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Companies",
+      "environment": {},
+      "metaSortKey": -996,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
       "_type": "request_group"
     },
     {
-      "_id": "req_create_company",
-      "parentId": "fld_companies",
-      "name": "Crear Empresa",
+      "_id": "req_06",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "List Companies",
+      "description": "List all companies with pagination.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/companies/",
+      "metaSortKey": 6,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_07",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Create Company",
+      "description": "Create a new company.",
       "method": "POST",
-      "url": "{{ _.base_url }}/companies/",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"name\": \"Mi Taquería\",\n  \"tax_id\": \"MTA123456789\"\n}"},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"name\": \"Mi Taqueria\",\n  \"tax_id\": \"MTA123456789\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/companies/",
+      "metaSortKey": 7,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_list_companies",
-      "parentId": "fld_companies",
-      "name": "Listar Empresas",
+      "_id": "req_08",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Company",
+      "description": "Get a company by ID.",
       "method": "GET",
-      "url": "{{ _.base_url }}/companies/",
-      "parameters": [{"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/companies/{{ company_id }}",
+      "metaSortKey": 8,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_get_company",
-      "parentId": "fld_companies",
-      "name": "Obtener Empresa",
-      "method": "GET",
-      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_update_company",
-      "parentId": "fld_companies",
-      "name": "Actualizar Empresa",
+      "_id": "req_09",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Update Company",
+      "description": "Update a company.",
       "method": "PATCH",
-      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"name\": \"Mi Taquería SA de CV\"\n}"},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"name\": \"Mi Taqueria\",\n  \"tax_id\": \"MTA123456789\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}",
+      "metaSortKey": 9,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_delete_company",
-      "parentId": "fld_companies",
-      "name": "Eliminar Empresa",
+      "_id": "req_10",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Delete Company",
+      "description": "Delete a company.",
       "method": "DELETE",
-      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/companies/{{ company_id }}",
+      "metaSortKey": 10,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_tickets",
-      "parentId": "wrk_expense_reconciler",
+      "_id": "fld_05",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Tickets",
+      "environment": {},
+      "metaSortKey": -995,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
       "_type": "request_group"
     },
     {
-      "_id": "req_create_ticket",
-      "parentId": "fld_tickets",
-      "name": "Crear Ticket Manual",
-      "method": "POST",
-      "url": "{{ _.base_url }}/tickets/",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"provider_name\": \"GAS PROVEEDOR SA\",\n  \"provider_tax_id\": \"GPS010101XXX\",\n  \"total_amount\": \"500.00\",\n  \"tax_amount\": \"80.00\",\n  \"expense_date\": \"2025-01-15\",\n  \"category\": \"SUMINISTROS\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_extract_ticket",
-      "parentId": "fld_tickets",
-      "name": "Extraer de PDF/Imagen (Preview)",
-      "method": "POST",
-      "url": "{{ _.base_url }}/tickets/extract",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "factura.pdf"},
-        {"name": "file_type", "value": "pdf", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_extract_and_create",
-      "parentId": "fld_tickets",
-      "name": "Extraer y Crear Ticket",
-      "method": "POST",
-      "url": "{{ _.base_url }}/tickets/extract-and-create",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "factura.pdf"},
-        {"name": "file_type", "value": "pdf", "type": "text"},
-        {"name": "company_id", "value": "{{ _.company_id }}", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_list_tickets",
-      "parentId": "fld_tickets",
-      "name": "Listar Tickets",
+      "_id": "req_11",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "List Tickets",
+      "description": "List tickets with optional company filter and review-state filter.\n\n`sin_categoria` y `con_categoria` son las dos caras de la misma pregunta, que\nes la que hace el tablero con la barra gris. Se ponen los tres filtros\nexcluyentes de forma explicita en vez de confiar en el orden en que llegan:\n`categoria` manda sobre los otros dos (es el mas especifico), y si vienen\n`sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto\nque cumpla las dos, y devolver vacio seria un fallo silencioso.",
       "method": "GET",
-      "url": "{{ _.base_url }}/tickets/",
-      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "extraction_status",
+          "value": "REQUIERE_REVISION",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "only_open",
+          "value": "false",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "sin_categoria",
+          "value": "false",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "con_categoria",
+          "value": "false",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "categoria",
+          "value": "ALIMENTACION",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/",
+      "metaSortKey": 11,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_get_ticket",
-      "parentId": "fld_tickets",
-      "name": "Obtener Ticket",
+      "_id": "req_12",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Create Ticket",
+      "description": "Create a new ticket manually.\n\nUna persona tecleo los datos, asi que no hay confianza que medir, pero si\npasan los mismos checks deterministas que la IA. Escribirlos a mano no\nexime de que el total sea positivo.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/",
+      "metaSortKey": 12,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_13",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Reporte Exactitud",
+      "description": "Lo que la muestra sostiene sobre el objetivo de exactitud.\n\nEl reporte no devuelve un porcentaje. Devuelve cuantos se revisaron, cuantos\nacertaron, y el intervalo que esos datos sostienen. Es menos vistoso y es la\nunica forma de que el numero signifique algo: con 25 revisiones, \"96%\" tiene\nun intervalo de [80%, 99%], y publicar el 96% sin el 80% seria afirmar una\ncerteza que nadie midio.\n\nY nunca promedia entre metodos de lectura. Un ticket leido con regex y uno\nleido con un modelo se reportan por separado, porque mezclarlos sube el\npromedio con el metodo que casi no falla y esconde al que falla.",
       "method": "GET",
-      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/accuracy",
+      "metaSortKey": 13,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_update_ticket",
-      "parentId": "fld_tickets",
-      "name": "Actualizar Ticket",
+      "_id": "req_14",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Clasificar Lote",
+      "description": "Pone la misma categoria a varios tickets de una vez.\n\n**No cambia `extraction_status` ni toca la cola de revision.** Clasificar es\nun dato del gasto, no una validacion de la lectura: un ticket puede estar\nAUTO_APROBADO y no tener categoria, y clasificarlo no lo convierte en\nrevisado ni al reves. Mezclar las dos cosas haria que \"ya lo clasifique\"\npareciera una entrada mas en la cola, y el trabajo de verdad se perderia de\nvista.\n\n**Un `UPDATE` con `IN (...)`, no un bucle de PATCH.** Con 200 tickets son 200\nviajes de ida y vuelta, y cada uno abre su propia transaccion. Ademas un\nbucle que falla en el ticket 150 deja los 149 anteriores escritos y el 150 sin\nhacer, y el cliente no puede saber cuales. Con un solo `UPDATE` es todo o\nnada.\n\n`None` desclasifica: deja la categoria en NULL y el ticket vuelve a la barra\ngris. Es lo que permite corregir una clasificacion equivocada.",
       "method": "PATCH",
-      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"category\": \"COMBUSTIBLE\",\n  \"total_amount\": \"520.00\"\n}"},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"ticket_ids\": [\n    \"{{ ticket_id }}\"\n  ],\n  \"category\": \"ALIMENTACION\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/categoria",
+      "metaSortKey": 14,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_delete_ticket",
-      "parentId": "fld_tickets",
-      "name": "Eliminar Ticket",
+      "_id": "req_15",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Extract Ticket",
+      "description": "Extract ticket data from uploaded file (PDF/Image).\n\n`file_type` se acepta por compatibilidad, pero no decide nada: el formato\nsale de los bytes. Ver `_tipo_real_del_archivo`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "file_type",
+            "value": "pdf",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/extract",
+      "metaSortKey": 15,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_16",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Extract And Create Ticket",
+      "description": "Extract ticket data from file and create ticket.\n\nAntes insertaba directo sin validar. Un total en 0 o un RFC malformado\nllegaban a la BD sin filtro. Ahora pasa por el gate: si los checks no\ncuadran, el ticket se guarda igual pero en estado pendiente de revision,\nnunca como aprobado.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "company_id",
+            "value": "{{ company_id }}",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "file_type",
+            "value": "pdf",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/extract-and-create",
+      "metaSortKey": 16,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_17",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Review Queue",
+      "description": "Cola agrupada de tickets pendientes de revision.\n\nSin esto, los documentos que no se pudieron leer son invisibles: el usuario\nno tiene forma de saber que existen. Un error silencioso es peor que un\nerror visible porque nadie lo va a corregir.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets`     viene filtrado por `status` si se paso\n  - `por_estado`  y `total_open` son SIEMPRE globales\n\nAsi el badge del encabezado no salta de 40 a 3 al filtrar, y el usuario ve\nde entrada quantos hay de cada tipo. El filtro es para trabajar, no para\nperder de vista el tamano de la cola.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "status",
+          "value": "PENDIENTE",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/review-queue",
+      "metaSortKey": 17,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_18",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Spot Check Queue",
+      "description": "La muestra a revisar, y el conteo de lo ya verificado.\n\nLa lista se filtra SIEMPRE por un estado de la muestra, y por defecto es el\nPENDIENTE. Ese unico filtro hace las dos cosas:\n\n- Saca los tickets que NO estan en la muestra. El 95% que no fue elegido\n  tiene `spot_check_status` en NULL, y NULL no es igual a ningun estado, asi\n  que no puede colarse. Sin esto el endpoint devolvia los 10 000 tickets de\n  una empresa para que el revisor descartara a mano los que no tocan.\n\n- Saca lo ya revisado. Una cola de trabajo es trabajo: con 500 muestreados y\n  400 ya hechos, mezclar los dos deja la primera pagina con 20 cosas que\n  hacer entre 100 filas. Es el mismo criterio que usa la cola de revision,\n  y por la misma razon.\n\nAntes habia dos filtros, `IS NOT NULL` y el de estado. El primero resulto\nser redundante: quitarlo no cambia ninguna consulta, porque\n`status = 'PENDIENTE'` ya excluye los NULL. Se quito porque un filtro que\nno hace nada, con un comentario que afirma que es imprescindible, es peor\nque no tenerlo: el que lo lea creera que la garantia depende de ahi, y\ncambiara el otro sin avisar. La mutacion que borra el filtro de estado\n(`scripts/verify_spot_check_mutations.py`) es la que protege la garantia.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets` viene filtrado por estado\n  - `total_pendientes`, `total_revisados`, `aciertos` e `incorrectos` son\n    SIEMPRE globales\n\nAsi el encabezado no salta de 200 a 3 al filtrar, y se ve de entrada\ncuantos hay de cada clase. El filtro es para trabajar, no para perder de\nvista el tamano de la cola.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "status",
+          "value": "PENDIENTE",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/spot-check",
+      "metaSortKey": 18,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_19",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Ticket",
+      "description": "Get a ticket by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}",
+      "metaSortKey": 19,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_20",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Update Ticket",
+      "description": "Update a ticket.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"subtotal\": 1.0,\n  \"items\": [\n    \"texto\"\n  ]\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}",
+      "metaSortKey": 20,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_21",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Delete Ticket",
+      "description": "Delete a ticket.",
       "method": "DELETE",
-      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}",
+      "metaSortKey": 21,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_bank",
-      "parentId": "wrk_expense_reconciler",
+      "_id": "req_22",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Documento",
+      "description": "Los bytes del comprobante, tal como los subio la persona.\n\nEs lo que hace posible el muestreo: la pregunta \"¿la extraccion coincidio con\nel papel?\" solo tiene respuesta si hay papel. Y es lo que hace auditable un\nveredicto meses despues, cuando el papel ya no esta en la carpeta de\nquien lo subio.\n\nEl `Content-Type` sale de una lista cerrada y no de lo que declaro el\ncliente. Ver `app.models.ticket_document.content_type_servible`: servir\n`text/html` con bytes sin revisar seria XSS desde el propio dominio, con\nsesion iniciada, disparado por alguien de confianza de la empresa.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
+      "metaSortKey": 22,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_23",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Put Documento",
+      "description": "AGREGA una version nueva del documento. La anterior no se borra.\n\nEs lo que hace recuperable un documento que no se pudo leer. Un PDF que no\nllego a leerse porque el extractor estaba apagado queda ilegible para\nsiempre aunque manana se encienda: los bytes se habian perdido con el\n`request`. Con este endpoint, el mismo archivo se vuelve a subir sobre el\nticket que ya existe y el documento queda disponible para que alguien lo\nrevise o para que se reextraiga.\n\nNO REEMPLAZA: APENDA. Antes este endpoint hacia `DELETE` + `INSERT` y los\nbytes originales desaparecian sin dejar ni hash, ni autor, ni fecha. Ahora\nla tabla es una cadena (`db/migrations/0009_documento_inmutable.sql`): el\ndocumento vigente es el que no fue reemplazado, el anterior queda apuntado,\ny un trigger de Postgres prohibe `UPDATE` y `DELETE` mientras el ticket\nexista. El comprobante es la evidencia contra la que se contrasta cualquier\nlectura, y una evidencia que se borra en silencio no es evidencia.\n\nPor eso `motivo` es obligatorio y por eso se guarda `usuario.email`. Sin\nellos la cadena diria que algo paso sin decir quien ni por que, que es\nexactamente el silencio que esta regla viene a cerrar. La base tambien los\nexige, asi que un INSERT directo por SQL tampoco puede saltarselos.\n\nNo crea un ticket nuevo ni cambia los datos que ya se extrajeron. Reextraer\nes otra operacion y otra decision: la lectura guardada es la que se sometio\na muestreo, y cambiarla en silencio haria que el veredicto registrado no\ncorrespondiera a lo que el sistema leyo.\n\nEl `PUT` y no el `POST` porque el recurso es el documento de ESE ticket, y\nhay exactamente uno vigente: es un cambio de papel, no un agregado. El\nhistorial se consulta en `GET /tickets/{id}/documentos`.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "motivo",
+            "value": "El papel estaba borroso; subo la foto mejor",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
+      "metaSortKey": 23,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_24",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Historial de versiones del comprobante",
+      "description": "La cadena de papeles de un ticket, de la mas antigua a la vigente.\n\nNo devuelve bytes, sino el recorrido: que version hay, quien la puso, por\nque, y cuando. Sin esto, un cambio de comprobante queda escrito en la base\npero invisible para quien opera el sistema, que es el mismo problema que\nhacia peligroso al reemplazo silencioso.\n\nEs tambien lo que responde \"¿este gasto se puede auditar?\". Si hay una sola\nversion, el papel es el que subio el escaner. Si hay mas de una, la cadena\ndice quien lo cambio y por que, y el hash de cada version permite verificar\nlos bytes que quedaron.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documentos",
+      "metaSortKey": 24,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_25",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Review Ticket",
+      "description": "Revision humana de un ticket en cola.\n\nAprobar re-corre los checks deterministas sobre los datos finales. Si\nsiguen rotos, no se aprueba: la revision es una opinion, los checks son\nuna ley.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"action\": \"approve\",\n  \"notes\": \"Revisado contra el papel\",\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/review",
+      "metaSortKey": 25,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_26",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Registrar Veredicto",
+      "description": "Registra si la extraccion coincidia con el papel. No modifica el ticket.\n\nUn ticket que no estaba en la muestra se puede registrar igual: el sistema\nno le cierra la puerta a quien ya lo reviso de rebote. Se acepta solo si el\nticket es AUTO_APROBADO, que es la unica condicion bajo la que la respuesta\nmide algo. Un ticket en la cola no se puede \"dar por correcto\": su estado\nya lo decidio el gate.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"correct\": true,\n  \"campos_incorrectos\": [\n    \"total_amount\"\n  ],\n  \"notes\": \"Revisado contra el papel\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/spot-check",
+      "metaSortKey": 26,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_06",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Scan",
+      "environment": {},
+      "metaSortKey": -994,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_27",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Escanear",
+      "description": "Recorre la carpeta y procesa lo que corresponda.\n\nEl body NO lleva carpeta. Se lee `TICKETS_INPUT_DIR` de la configuracion y\nno de la peticion, por seguridad: ver la nota del modulo.\n\nSin `company_id` el escaneo inventaria y NO crea tickets. Es a proposito, y\nes el primer paso que conviene: correrlo para ver que hay en la carpeta antes\nde atribuir los gastos a una empresa.\n\nY sin `company_id` NO se archiva nada, aunque `archivar` veniga en `true`:\nmover un comprobante sin que se haya guardado su contenido deja el papel en\nun sitio donde nadie lo va a buscar y sin registro de lo que se leyo.\n\nCOMO USAR `simular`\n====================\n\nCon `archivar` activo por omision, la primera corrida deja la carpeta de\nentrada vacia. Eso conviene verlo antes de que ocurra:\n\n    POST /scan {\"company_id\": \"...\", \"simular\": true}\n\nDevuelve exactamente lo que moveria, con la ruta de destino de cada archivo\ny si su lectura quedo pendiente, y no mueve nada.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"reprocesar\": false,\n  \"solo_pendientes\": false,\n  \"archivar\": false,\n  \"simular\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/scan/",
+      "metaSortKey": 27,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_28",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Configuracion Del Escaneo",
+      "description": "La configuracion efectiva del escaneo.\n\nSe expone porque el valor por defecto de la carpeta es una ruta de una\nmaquina concreta (`/Users/carloslott/...`). En cualquier otra maquina, en\nun contenedor o en la de otra persona, hay que cambiar la variable, y sin\neste endpoint la unica forma de saber si el cambio tomo efecto es correr un\nescaneo y mirar la ruta que salio en el resumen.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/scan/config",
+      "metaSortKey": 28,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_29",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Listar Registro",
+      "description": "El registro de archivos, filtrado y paginado.\n\n`limit` tiene tope porque no hay tope sin el: un `GET /files` sin limite\nsobre una carpeta de diez mil comprobantes devuelve diez mil filas y se come\nla memoria del proceso, que es el mismo proceso que sirve el resto de la API.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "estado",
+          "value": "PROCESADO",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "offset",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/scan/files",
+      "metaSortKey": 29,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_30",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Estado Del Ocr",
+      "description": "Que motores de OCR se pueden usar ahora mismo.\n\nExiste porque \"OCR no funciona\" y \"OCR esta apagado\" piden acciones\nopuestas, y verlas separadas evita la diagnostica de quince minutos. Cuando\nTesseract no esta instalado, esto dice como instalarlo, en vez de dejar que\ncada foto falle con un error que hay que buscar en el log del servidor.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/scan/ocr",
+      "metaSortKey": 30,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_31",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Listar Corridas",
+      "description": "Las corridas de escaneo recientes, la que esta corriendo primero.\n\nEs el canal de progreso. `POST /scan` es sincrono y con fotos tarda minutos,\nasi que sin esto el cliente no tiene nada que mostrar mientras espera: solo un\n`cargando` que puede ser \"va bien\" o \"se trabo en el archivo 3 de 200\".\n\nLo que responde, en una linea: `terminada=false` con `actual` puesto es una\ncorrida en marcha, y `actual` es el archivo que se esta leyendo ahora.\n\nEN MEMORIA, Y POR QUE NO ES UN TRABAJO EN COLA\n----------------------------------------------\nAl reiniciar el contenedor esta lista sale vacia aunque la carpeta tenga 200\narchivos a medio leer. Es correcto: un proceso que murio no sigue trabajando,\ny fingir lo contrario seria peor. Lo que NO se pierde es el estado real de cada\narchivo, que esta en `scan_files` y `scan_events` y es lo que evita repetir\ntrabajo en la proxima pasada.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "limite",
+          "value": "10",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/scan/runs",
+      "metaSortKey": 31,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_32",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Estadisticas",
+      "description": "Como va el escaneo: conteos por estado, por motor y por antiguedad.\n\nVa antes que `/files/{file_id}` por el orden de rutas. Sin eso,\n`GET /scan/stats` se buscaria como un UUID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/scan/stats",
+      "metaSortKey": 32,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_33",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Detalle Archivo",
+      "description": "Un archivo con su historico completo.\n\nEl historico va aqui y no en un endpoint aparte de auditoria porque la\npregunta casi siempre es \"que le paso a ESTE archivo\", y separarla obliga a\ndos requests para la misma pantalla.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/scan/files/{{ file_id }}",
+      "metaSortKey": 33,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_34",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Ver Una Corrida",
+      "description": "El progreso de UNA corrida.\n\nEs la llamada que hace el cliente cada dos o tres segundos mientras el\n`POST /scan` sigue abierto. Devuelve el resumen final cuando ya termino, asi\nque el mismo endpoint sirve para el progreso y para el resultado.\n\nUn 404 aqui NO es \"no existio\": el registro es en memoria y se descarta a las\ndos horas, y tambien al reiniciar. El mensaje lo dice, para que el cliente no\nlo presente como un error del servidor.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/scan/runs/{{ corrida_id }}",
+      "metaSortKey": 34,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_35",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Reprocesar Archivo",
+      "description": "Relee UN archivo. Este es el camino explicito para forzar una relectura.\n\nEs el unico endpoint que puede sobreescribir un ticket que ya tiene\ncorrecciones humanas, y lo hace porque la peticion es explicita: alguien\npidio reprocesar ESTE archivo. El escaneo automatico nunca lo hace, y esa\ndiferencia es el motivo de que los dos caminos existan.\n\nSi el archivo ya no esta en el disco, devuelve 409 con el motivo y no un\nexito: reprocesar el registro de un archivo que alguien movio tiene que\nverse, no reportarse como leido.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/scan/files/{{ file_id }}/reprocess",
+      "metaSortKey": 35,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_07",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Bank Transactions",
+      "environment": {},
+      "metaSortKey": -993,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
       "_type": "request_group"
     },
     {
-      "_id": "req_create_bank_tx",
-      "parentId": "fld_bank",
-      "name": "Crear Movimiento Manual",
-      "method": "POST",
-      "url": "{{ _.base_url }}/bank-transactions/",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"transaction_date\": \"2025-01-15\",\n  \"amount\": \"-500.00\",\n  \"description\": \"PAGO GAS PROVEEDOR SA\",\n  \"reference\": \"REF001\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_import_csv_preview",
-      "parentId": "fld_bank",
-      "name": "Preview CSV Import",
-      "method": "POST",
-      "url": "{{ _.base_url }}/bank-transactions/import-csv",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "movimientos.csv"},
-        {"name": "date_column", "value": "fecha", "type": "text"},
-        {"name": "amount_column", "value": "importe", "type": "text"},
-        {"name": "description_column", "value": "concepto", "type": "text"},
-        {"name": "reference_column", "value": "referencia", "type": "text"},
-        {"name": "date_format", "value": "%d/%m/%Y", "type": "text"},
-        {"name": "decimal_separator", "value": ".", "type": "text"},
-        {"name": "thousands_separator", "value": ",", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_import_csv_create",
-      "parentId": "fld_bank",
-      "name": "Importar CSV y Guardar",
-      "method": "POST",
-      "url": "{{ _.base_url }}/bank-transactions/import-csv-and-create",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "movimientos.csv"},
-        {"name": "company_id", "value": "{{ _.company_id }}", "type": "text"},
-        {"name": "date_column", "value": "fecha", "type": "text"},
-        {"name": "amount_column", "value": "importe", "type": "text"},
-        {"name": "description_column", "value": "concepto", "type": "text"},
-        {"name": "reference_column", "value": "referencia", "type": "text"},
-        {"name": "date_format", "value": "%d/%m/%Y", "type": "text"},
-        {"name": "decimal_separator", "value": ".", "type": "text"},
-        {"name": "thousands_separator", "value": ",", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_list_bank_tx",
-      "parentId": "fld_bank",
-      "name": "Listar Movimientos",
+      "_id": "req_36",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "List Bank Transactions",
+      "description": "List bank transactions with optional company filter.",
       "method": "GET",
-      "url": "{{ _.base_url }}/bank-transactions/",
-      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/bank-transactions/",
+      "metaSortKey": 36,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_reconciliations",
-      "parentId": "wrk_expense_reconciler",
+      "_id": "req_37",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Create Bank Transaction",
+      "description": "Create a new bank transaction manually.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"transaction_date\": \"2026-09-15\",\n  \"amount\": \"1500.00\",\n  \"description\": \"Compra con tarjeta\",\n  \"reference\": \"AUTOCARD ****1234\",\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/",
+      "metaSortKey": 37,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_38",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Import Bank Csv Preview",
+      "description": "Preview CSV import without saving to database.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "date_column",
+            "value": "fecha",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "amount_column",
+            "value": "importe",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "description_column",
+            "value": "concepto",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "reference_column",
+            "value": "referencia",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "date_format",
+            "value": "%d/%m/%Y",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "decimal_separator",
+            "value": ".",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "thousands_separator",
+            "value": ",",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "encoding",
+            "value": "utf-8",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/bank-transactions/import-csv",
+      "metaSortKey": 38,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_39",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Import Bank Csv And Create",
+      "description": "Parse CSV and create bank transactions in database.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "company_id",
+            "value": "{{ company_id }}",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "date_column",
+            "value": "fecha",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "amount_column",
+            "value": "importe",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "description_column",
+            "value": "concepto",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "reference_column",
+            "value": "referencia",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "date_format",
+            "value": "%d/%m/%Y",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "decimal_separator",
+            "value": ".",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "thousands_separator",
+            "value": ",",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "encoding",
+            "value": "utf-8",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
+      "metaSortKey": 39,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_40",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Bank Transaction",
+      "description": "Get a bank transaction by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
+      "metaSortKey": 40,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_41",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Update Bank Transaction",
+      "description": "Update a bank transaction.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"transaction_date\": \"2026-09-15\",\n  \"amount\": \"1500.00\",\n  \"description\": \"Compra con tarjeta\",\n  \"reference\": \"AUTOCARD ****1234\",\n  \"is_reconciled\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
+      "metaSortKey": 41,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_42",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Delete Bank Transaction",
+      "description": "Delete a bank transaction.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
+      "metaSortKey": 42,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_08",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Reconciliations",
+      "environment": {},
+      "metaSortKey": -992,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
       "_type": "request_group"
     },
     {
-      "_id": "req_run_reconciliation",
-      "parentId": "fld_reconciliations",
-      "name": "Ejecutar Conciliación",
+      "_id": "req_43",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "List Reconciliations",
+      "description": "List reconciliations with optional filters.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "match_status",
+          "value": "PERFECT",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/",
+      "metaSortKey": 43,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_44",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Create Reconciliation",
+      "description": "Create a manual reconciliation link.",
       "method": "POST",
-      "url": "{{ _.base_url }}/reconciliations/run",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"amount_tolerance\": \"0.01\",\n  \"date_tolerance_days\": 3\n}"},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"ticket_id\": \"{{ ticket_id }}\",\n  \"bank_transaction_id\": \"{{ bank_transaction_id }}\",\n  \"match_status\": \"PERFECT\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/",
+      "metaSortKey": 44,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_list_reconciliations",
-      "parentId": "fld_reconciliations",
-      "name": "Listar Conciliaciones",
+      "_id": "req_45",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "List Accounting Mappings",
+      "description": "List accounting mappings.",
       "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/",
-      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/mappings",
+      "metaSortKey": 45,
+      "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_export_excel",
-      "parentId": "fld_reconciliations",
-      "name": "Exportar Excel Estándar",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/export/excel?company_id={{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_export_contpaqi",
-      "parentId": "fld_reconciliations",
-      "name": "Exportar CONTPAQI",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/export/contpaqi?company_id={{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_export_generic",
-      "parentId": "fld_reconciliations",
-      "name": "Exportar Genérico",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/export/generic?company_id={{ _.company_id }}&columns=Fecha,Proveedor,Total,Estatus%20Conciliacion",
-      "_type": "request"
-    },
-    {
-      "_id": "req_create_mapping",
-      "parentId": "fld_reconciliations",
-      "name": "Crear Plantilla CONTPAQI",
+      "_id": "req_46",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Create Accounting Mapping",
+      "description": "Create an accounting mapping template.",
       "method": "POST",
-      "url": "{{ _.base_url }}/reconciliations/mappings",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"software_name\": \"CONTPAQI_CUSTOM\",\n  \"column_mappings\": {\n    \"Fecha\": \"Fecha\",\n    \"Concepto\": \"Concepto\",\n    \"RFC\": \"RFC\",\n    \"Nombre\": \"Proveedor\",\n    \"Importe\": \"Subtotal\",\n    \"IVA\": \"IVA\",\n    \"Total\": \"Total\",\n    \"Cuenta\": \"6000\",\n    \"Referencia\": \"Referencia Banco\",\n    \"TipoComprobante\": \"I\",\n    \"Serie\": \"A\",\n    \"Folio\": \"001\",\n    \"Moneda\": \"MXN\",\n    \"TipoCambio\": \"1.0000\",\n    \"MetodoPago\": \"PUE\",\n    \"UsoCFDI\": \"G03\"\n  }\n}"},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"software_name\": \"CONTPAQI\",\n  \"column_mappings\": {\n    \"Fecha\": \"expense_date\",\n    \"Proveedor\": \"provider_name\",\n    \"Total\": \"total_amount\"\n  },\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/mappings",
+      "metaSortKey": 46,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_47",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Run Reconciliation Engine",
+      "description": "Run the automatic reconciliation engine.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"date_from\": \"2026-01-01\",\n  \"date_to\": \"2026-12-31\",\n  \"amount_tolerance\": \"1.00\",\n  \"date_tolerance_days\": 3\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/run",
+      "metaSortKey": 47,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_48",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Export Reconciliations Contpaqi",
+      "description": "Export reconciliations to CONTPAQI format.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "date_from",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "date_to",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "only_reconciled",
+          "value": "true",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "mapping_id",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/export/contpaqi",
+      "metaSortKey": 48,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_49",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Export Reconciliations Excel",
+      "description": "Export reconciliations to standard Excel format.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "date_from",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "date_to",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "only_reconciled",
+          "value": "true",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/export/excel",
+      "metaSortKey": 49,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_50",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Export Reconciliations Generic",
+      "description": "Export reconciliations with custom columns.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "date_from",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "date_to",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "only_reconciled",
+          "value": "true",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "columns",
+          "value": "Fecha,Proveedor,Total,EstatusConciliacion",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/export/generic",
+      "metaSortKey": 50,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_51",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Reconciliation",
+      "description": "Get a reconciliation by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 51,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_52",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Delete Reconciliation",
+      "description": "Delete a reconciliation and mark bank transaction as unreconciled.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 52,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_53",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Get Accounting Mapping",
+      "description": "Get an accounting mapping by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
+      "metaSortKey": 53,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_09",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Sistema",
+      "environment": {},
+      "metaSortKey": -991,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_54",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Health",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ api_root }}/health",
+      "metaSortKey": 54,
+      "collectionId": "col_api",
+      "_type": "request",
+      "authentication": {
+        "type": "none"
+      }
+    },
+    {
+      "_id": "req_55",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Lineas cuya descripcion no se reconoce (la cola de trabajo)",
+      "description": "Las lineas de compra sin producto asignado.\n\nEs la cola de trabajo del inventario. No hay una tabla de \"pendientes\": esta\nconsulta ES la cola, y es `compra_items WHERE producto_id IS NULL`. Una tabla\nmas seria una segunda fuente de verdad que se puede desincronizar de\n`compra_items`.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/inventario/cola",
+      "metaSortKey": 55,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_56",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Listar Compras",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "estado",
+          "value": "PROCESADO",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/inventario/compras",
+      "metaSortKey": 56,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_57",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "El kardex: que movio cada producto y cuando",
+      "description": "La linea de tiempo del inventario.\n\nEs la respuesta a \"el conteo fisico no cuadra, que movio este producto\".",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "producto_id",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "200",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/inventario/movimientos",
+      "metaSortKey": 57,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_58",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Listar Productos",
+      "description": "El catalogo, con el stock de cada uno.\n\nEl stock sale del kardex (`stock_de`), no de una columna: ver el modulo de\n`inventario_service`. Por eso la consulta del catalogo y la del stock son dos\ny despues se pegan: una columna `stock` seria una copia que se desincroniza.\n\n`solo_sin_verificar=true` es la cola de revision de productos. Es la parte que\nhace manejable el alta automatica: el inventario funciona desde el primer dia\ny a la vez hay una lista de lo que hay que limpiar. Ver\ndb/migrations/0011_productos_origen.sql.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "incluir_inactivos",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "solo_sin_verificar",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "url": "{{ base_url }}/inventario/productos",
+      "metaSortKey": 58,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_59",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Crear Producto",
+      "description": "Da de alta un producto. A mano, no desde una linea de OCR.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"texto\",\n  \"codigo\": \"texto\",\n  \"unidad_medida\": \"PZA\",\n  \"precio_referencia\": 1.0\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/productos",
+      "metaSortKey": 59,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_60",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Obtener Compra",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
+      "metaSortKey": 60,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_61",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "EN_REVISION -> PROCESADO. Aqui es donde el inventario suma.",
+      "description": "Autoriza la compra y hace que sus lineas entren al inventario.\n\nEs el unico endpoint del proyecto que escribe en `movimientos_inventario`, y\npor eso devuelve 409 y no 200 en los tres casos que importan: ya confirmada\n(no se vuelve a sumar), con lineas sin producto (el inventario quedaria\nincompleto sin rastro), o sin quien firmar.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nota\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
+      "metaSortKey": 61,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_62",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Le asigna un producto del catalogo a una linea",
+      "description": "Resuelve una linea de la cola.\n\nGuarda QUIEN asigno y cuando: \"lo eligio el sistema\" y \"lo eligio Ana\" son\nrespuestas distintas a \"de donde salio este producto del catalogo\", y sin la\ncolumna de actor la segunda no se puede reconstruir.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"producto_id\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
+      "metaSortKey": 62,
+      "collectionId": "col_api",
       "_type": "request"
     }
   ]

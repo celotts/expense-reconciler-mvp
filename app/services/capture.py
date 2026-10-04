@@ -39,6 +39,7 @@ from collections.abc import Awaitable, Callable
 from datetime import date
 from decimal import Decimal
 
+from app.core.config import settings
 from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
 from app.services.ocr import OCRNoDisponible
 from app.services.parser_service import (
@@ -303,6 +304,13 @@ def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
         category=None,
         raw_text=invoice.raw_text,
         subtotal=invoice.subtotal if invoice.subtotal is not None else None,
+        # Las lineas del comprobante. Antes se perdian aqui: el modelo las
+        # devolvia (`ai_extractor.ExtractedInvoice.items`) y este constructor no
+        # las copiaba, de modo que la linea desaparecia antes de llegar al
+        # gate y nunca se guardaba. Sin ellas no hay inventario posible, porque un
+        # comprobante dice que se gasto $4,093.80 y no que se compro que.
+        # Ver db/migrations/0010_inventario.sql.
+        items=list(invoice.items) if invoice.items else None,
         confidence=float(invoice.confidence) if invoice.confidence else None,
         # El modelo puede leer un PDF escaneado o una foto: en los dos casos
         # lo que hizo fue mirar. `llm` es la verdad en ambos.
@@ -330,8 +338,88 @@ def _es_extraccion_util(resultado: TicketExtractionResult) -> bool:
     uno de los dos, el documento no se entendio y todavia se le puede pedir a
     otro escalon que lo mire. Guardar medio comprobante en la cola cuando aun
     queda un escalon disponible es trabajo humano desperdiciado.
+
+    Y SIN LINEAS DE PRODUCTO NO ES UTIL, Y ESTE ES EL CAMBIO IMPORTANTE
+    ================================================================
+
+    Antes bastaba con proveedor y total. Ese criterio es el que hacia que una
+    foto leida por Tesseract con un total verosimil **nunca llegara al modelo
+    de vision**: las reglas parseaban `97.56`, eso se veía bien, y la cascada
+    devolvia. El ticket quedaba `REQUIERE_REVISION` con `read_by=ocr`, sin una
+    sola linea de producto, y no habia forma de que el inventario lo supiera.
+
+    Medido en `IMG_4220.jpeg`, que esta en la base con esa forma exacta.
+
+    La razon de fondo: un total sin lineas no describe una compra, la describe a
+    medias. Y el motivo por el que el modelo de vision sigue existiendo es
+    justo este —es el unico escalon que puede con una foto mala—, asi que
+    saltarselo porque "el OCR ya dio algo" es usar el escalon mas caro como si
+    fuera el mas barato.
+
+    `_exige_items` se apaga para los formatos donde no aplica: en un PDF que solo
+    se gasta, las reglas pueden acertar el encabezado sin que haya nada que leer
+    linea por linea, y ahi exigir items seria pedirle al modelo un gasto de
+    nuevo sin motivo.
     """
-    return resultado.provider_name != UNKNOWN_PROVIDER and resultado.total_amount > 0
+    if resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0:
+        return False
+    return True
+
+
+def _exige_items(resultado: TicketExtractionResult) -> bool:
+    """¿Hay que pedirle a la IA porque a esta lectura le faltan las lineas?
+
+    Depende de `ESCALAR_A_IA_SIN_LINEAS`, y el ajuste explica la tension: "una
+    foto buena no toca ningun modelo" contra "sin lineas no hay inventario".
+
+    NO es lo mismo que "falta el encabezado": exigir el encabezado es
+   decir el minimo para que el ticket valga, y exigir items es decidir si vale
+    la pena pagar un modelo por el detalle. Son preguntas distintas y por eso son
+    dos funciones.
+    """
+    if not settings.ESCALAR_A_IA_SIN_LINEAS:
+        return False
+    return resultado.items is None
+
+
+def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
+    """Que tan completa es una lectura. Mayor es mejor.
+
+    LA REGLA QUE HACE FALTA ARRIBA DE ESTO
+    =======================================
+
+    **Un lector no reemplaza a otro con una lectura peor.** La escalada a la IA
+    se introdujo para conseguir lineas de producto, y funciona: el modelo las
+    trae. Pero en una foto que el OCR leia *medianamente*, el modelo devolvio
+    `total_amount = 0.00` y eso **sobrescribio** los 97.56 que el OCR si habia
+    leido.
+
+    Medido en los 7 comprobantes reales: con la escalada activa, los siete
+    quedaron en 0.00. Sin ella, `IMG_4220` tenia 97.56. O sea: el cambio mejoro
+    una cosa y rompio otra, y sin este criterio la ruta que gana es la del
+    modelo aunque no haya leido nada.
+
+    El orden de los campos es deliberado y NO es el de "que se ve primero":
+
+      1. `total_amount > 0`. Sin total no hay gasto. Un ticket en cero no es un
+         ticket: es un papel que nadie pudo leer, y se distingue por ser cero,
+         no por no estar.
+      2. Las lineas de producto. Es lo que la escalada va a buscar.
+      3. El proveedor. Sin el, el gasto no tiene a quien pertenece.
+      4. El RFC y el subtotal. Afinan la confianza pero no hacen falta para que
+         el ticket valga.
+
+    Se compara tupla a tupla, asi que gana la primera diferencia y no un peso
+    inventado que alguien puedailverar despues.
+    """
+    tiene_lineas = 1 if resultado.items else 0
+    return (
+        1 if resultado.total_amount > 0 else 0,
+        tiene_lineas,
+        1 if resultado.provider_name != UNKNOWN_PROVIDER else 0,
+        1 if resultado.provider_tax_id else 0,
+        1 if resultado.subtotal is not None else 0,
+    )
 
 
 def _marcar_por_reglas(
@@ -373,14 +461,30 @@ def _ilegible(motivo: str, raw_text: str = "") -> TicketExtractionResult:
     )
 
 
-def _mejor_de(primero: TicketExtractionResult, segundo: TicketExtractionResult):
-    """El mejor de dos intentos parciales.
+def _mejor_de(
+    primero: TicketExtractionResult, segundo: TicketExtractionResult
+) -> TicketExtractionResult:
+    """De dos lecturas, la que mas dice de verdad.
 
-    "Mejor" quiere decir el que mas dice de verdad: el que tiene total. Entre
-    dos resultados igual de incompletos se queda el primero, que es el del
-    escalon mas barato y por tanto el que menos esta inventando.
+    ANTES COMPARABA SOLO EL TOTAL, y eso no basta desde que existe inventario.
+    Con la escalada a la IA —que se introduce para conseguir lineas de
+    producto—, un modelo que devuelve `total 0.00` le ganaba a unas reglas que si
+    habian leido 97.56, porque `0.00 > 97.56` es falso pero el `return modelo`
+    de despues no comparaba nada.
+
+    Medido en los 7 comprobantes reales: con la escalada activa los siete
+    quedaron en 0.00. Antes, `IMG_4220` tenia 97.56 del OCR. El cambio mejoro una
+    cosa y rompio otra, y sin este criterio gana siempre el modelo aunque no haya
+    leido nada.
+
+    Ver `_puntaje_de_extraccion` para el orden de los campos y por que es ese.
+
+    Empate va a `primero`, que es el escalon mas barato y por tanto el que menos
+    esta inventando. Es la razon de que las reglas sean el primer escalon.
     """
-    return segundo if segundo.total_amount > primero.total_amount else primero
+    if _puntaje_de_extraccion(segundo) > _puntaje_de_extraccion(primero):
+        return segundo
+    return primero
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +545,12 @@ async def capture_ticket(
 
     if file_type == "text":
         texto = content.decode("utf-8", errors="replace")
-        return await _cascada_texto(texto, ConfidenceSource.RULES, extract_from_text)
+        # `exigir_items=False`: un `.txt` puede ser cualquier cosa y no se sabe que
+        # sea una compra con detalle. Preguntar por lineas aqui seria gastar un
+        # modelo para obtener una lista vacia.
+        return await _cascada_texto(
+            texto, ConfidenceSource.RULES, extract_from_text, exigir_items=False
+        )
 
     if file_type != "pdf":
         raise ExtractionUnavailable(f"tipo de archivo no soportado: {file_type!r}")
@@ -461,25 +570,39 @@ async def capture_ticket(
         # devolveria ceros, y un ticket de ceros es un ticket falso.
         return await _vision_pdf(content, extract_from_image, ocr_reader)
 
-    return await _cascada_texto(texto, ConfidenceSource.PDF_TEXT, extract_from_text)
+    # Un PDF si es un comprobante: se exige el detalle.
+    return await _cascada_texto(
+        texto, ConfidenceSource.PDF_TEXT, extract_from_text, exigir_items=True
+    )
 
 
 async def _cascada_texto(
     texto: str,
     source: ConfidenceSource,
     extract_from_text: ExtractTextFn | None,
+    *,
+    exigir_items: bool = True,
 ) -> TicketExtractionResult:
     """Hay texto: primero las reglas, el modelo solo si las reglas no pueden.
 
-    El orden no es una preferencia de rendimiento. Un regex sobre texto
-    extraido no inventa un total: o lo encuentra o no lo encuentra. Un modelo
-    puede inventarlo. Cuando las reglas fallan, lo que el modelo devuelve ya
-    no esta leyendo el documento con reglas, esta suponiendo, y su respuesta
-    hay que leerla desconfiando.
+    El orden no es una preferencia de rendimiento. Un regex sobre texto extraido
+    no inventa un total: o lo encuentra o no lo encuentra. Un modelo puede
+    inventarlo. Cuando las reglas fallan, lo que el modelo devuelve ya no esta
+    leyendo el documento con reglas, esta suponiendo, y su respuesta hay que
+    leerla desconfiando.
+
+    `exigir_items` es la excepcion que la cascada normal no tiene: aunque las
+    reglas acierten el ENCABEZADO, si el documento es un comprobante y las reglas
+    no traen lineas de producto, se le pregunta al modelo de todos modos.
+
+    Ver `ESCALAR_A_IA_SIN_LINEAS` en `app/core/config.py`, que explica por que es
+    una decision y no un descuido: es "pagar un modelo" contra "tener inventario".
     """
     reglas = _marcar_por_reglas(_parse_receipt_text(texto), source)
 
-    if _es_extraccion_util(reglas):
+    # `exigir_items=False` para `file_type=text`: un archivo de texto puede ser
+    # cualquier cosa y no se sabe que sea una compra con detalle.
+    if _es_extraccion_util(reglas) and not (exigir_items and _exige_items(reglas)):
         return reglas
 
     if extract_from_text is None:
@@ -507,12 +630,10 @@ async def _cascada_texto(
 
     modelo = invoice_to_result(invoice)
 
-    if not _es_extraccion_util(modelo):
-        # Ni reglas ni modelo dieron un comprobante. Se devuelve el mejor
-        # intento para que la cola pueda decir algo concreto de por que.
-        return _mejor_de(reglas, modelo)
-
-    return modelo
+    # Ni aqui gana el modelo por defecto. Un modelo que lee menos que las
+    # reglas NO debe replaces lo que las reglas si leyeron: ese fue el bug que
+    # dejo los 7 comprobantes en 0.00.
+    return _mejor_de(reglas, modelo)
 
 
 def _ocr_de_paginas(paginas: list[bytes], ocr: OcrFn) -> TicketExtractionResult | None:
@@ -686,6 +807,8 @@ async def _desde_imagen(
     que existiera este modulo.
     """
     ocr = ocr_reader or _ocr_por_defecto
+    # Lo que el OCRReply leyo, para poder compararlo con lo que vea el modelo.
+    por_ocr: TicketExtractionResult | None = None
 
     try:
         leido = ocr(content)
@@ -713,15 +836,25 @@ async def _desde_imagen(
             resultado = _marcar_por_reglas(
                 _parse_receipt_text(texto), ConfidenceSource.OCR
             )
-            if _es_extraccion_util(resultado):
+            if _es_extraccion_util(resultado) and not _exige_items(resultado):
                 return resultado
+            # Se guarda para comparar. Sin esto, lo que el modelo devuelva
+            # REEMPLAZA a lo que el OCR leyo, sin mirar: medido en los 7
+            # comprobantes reales, un modelo que devolvio `total 0.00` dejo los
+            # siete en cero, y `IMG_4220` ya habia leido 97.56.
+            por_ocr = resultado
             logger.info(
-                "el OCR leyo el papel pero las reglas no lo entendieron "
-                "(proveedor=%r total=%s); se mira la imagen",
-                resultado.provider_name, resultado.total_amount,
+                "el OCR leyo el papel pero las reglas no lo entendieron bien "
+                "(proveedor=%r total=%s items=%s); se mira la imagen con el modelo",
+                resultado.provider_name,
+                resultado.total_amount,
+                "si" if resultado.items else "NO",
             )
 
-    return await _vision_de_imagen(content, extract_from_image)
+    vision = await _vision_de_imagen(content, extract_from_image)
+    if por_ocr is None:
+        return vision
+    return _mejor_de(por_ocr, vision)
 
 
 async def _vision_de_imagen(content: bytes, extract_from_image: ExtractFn | None) -> TicketExtractionResult:

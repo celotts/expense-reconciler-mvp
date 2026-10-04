@@ -32,6 +32,7 @@ from app.models.ticket import TicketModel
 from app.services.accuracy_service import en_muestra
 from app.services.confidence_gate import compute_source_hash, gate_ticket
 from app.services.document_service import guardar_documento
+from app.services.inventario_service import registrar_compra
 from app.services.parser_service import TicketExtractionResult
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,11 @@ async def persistir_extraccion(
         # documento no trae subtotal: un 0 seria un dato falso con apariencia
         # de dato, y haria que la cuenta pareciera cuadrar sin comprobar nada.
         subtotal=extracted.subtotal,
+        # Las lineas, crudas. Antes no se guardaban porque no habia donde: el
+        # inventario no existia. Ahora si, y sin ellas una compra no tiene
+        # contenido — un comprobante dice que se gasto $4,093.80, no que se
+        # compro. Ver db/migrations/0010_inventario.sql.
+        items=extracted.items,
         category=extracted.category,
         raw_text=extracted.raw_text,
         confidence=decision.persisted_confidence,
@@ -166,6 +172,29 @@ async def persistir_extraccion(
         content_type=content_type,
         nombre_archivo=source_file,
     )
+
+    # La orden de compra entra SIEMPRE en EN_REVISION, nunca en PROCESADO.
+    #
+    # Va despues de `guardar_documento` y antes del commit, para que salga en la
+    # misma transaccion que el ticket: una compra sin ticket es un huerfano, y un
+    # commit intermedio dejaria esa ventana abierta.
+    #
+    # Y va antes del commit, no despues, por la razon del documento: si falla,
+    # `registrar_compra` devuelve None (por ejemplo, `items` es NULL porque la
+    # ruta OCR no extrae lineas) y el ticket se guarda igual. Perder el gasto
+    # entero porque no habia detalle de productos seria peor que guardar el
+    # gasto sin su compra, que ademas se ve en la cola de inventario.
+    #
+    # `None` no es un fallo y no se avisa como error: es el caso normal de un
+    # comprobante leido por Tesseract, que no produce lineas.
+    compra = await registrar_compra(db, ticket)
+    if compra is not None:
+        logger.info(
+            "Ticket %s abrio la compra %s en %s.",
+            ticket.id,
+            compra.id,
+            compra.estado,
+        )
 
     await db.commit()
     await db.refresh(ticket)

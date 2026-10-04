@@ -64,7 +64,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import UUID
 
@@ -72,12 +72,25 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.archivo_real import detectar_tipo_real
+from app.services import scan_registry
 from app.core.config import settings
-from app.core.enums import ConfidenceSource, ScanStatus, SourceType
+from app.core.enums import (
+    ConfidenceSource,
+    EstadoCompra,
+    ExtractionStatus,
+    ScanStatus,
+    SourceType,
+)
 from app.core.time import utcnow
+from app.models.inventario import CompraModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
 from app.models.ticket import TicketModel
 from app.services.ai_extractor import ai_extractor
+from app.services.archivado_service import (
+    ErrorDeArchivado,
+    archivar,
+    carpeta_de_escaneados,
+)
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.confidence_gate import gate_ticket
 from app.services.ticket_persistence import persistir_extraccion
@@ -298,6 +311,41 @@ class ResumenArchivo:
     origen: ConfidenceSource | None = None
     detalle: str | None = None
 
+    # --- El archivado ---------------------------------------------------
+    #
+    # Van en la respuesta y no solo en un contador porque la pregunta al vaciar
+    # la carpeta de entrada es siempre "¿que se movio, donde quedo, y el sistema
+    # lo entendio?".
+    #
+    # `estaba_pendiente` es el que hay que mirar: True significa que el archivo
+    # se movio aunque la lectura no fuera confiable. Con OCR al 33.3% eso es
+    # frecuente, y esconderlo seria el error — la carpeta de escaneados no dice
+    # "esto se leyo bien", dice "esto ya se intento y su veredicto quedo escrito".
+    archivado: bool = False
+    ruta_archivo: str | None = None
+    extraction_status: str | None = None
+    estaba_pendiente: bool | None = None
+    solo_simulado: bool = False
+
+    # --- Los datos del ticket -------------------------------------------
+    #
+    # Lo que el lector afirmo que dice el papel, para no tener que pedir un
+    # `GET /tickets/{id}` por cada archivo de la corrida.
+    #
+    # Es un `dict` y no el schema de la API a proposito: `services/` no importa
+    # de `schemas/`, la frontera esa la respeta el resto del servicio. El router
+    # lo valida en `_de_resumen`.
+    #
+    # Lo arma `_resolver_datos_de_tickets`, DESPUES del bucle y en una sola
+    # consulta, y no dentro de `procesar_archivo`. La razon es que
+    # `procesar_archivo` tiene trece salidas y el dato depende de una fila que
+    # a veces todavia no existe: el DUPLICADO no crea ticket y apunta al de otro
+    # archivo, el OMITIDO por `company_id` no creo ninguno, y el ACTUALIZADO
+    # puede haber encontrado el ticket ya borrado. Resolverlo al final, desde el
+    # `ticket_id` que cada rama ya dejo escrito, es lo unico que cubre las trece
+    # sin trece copias de la misma asignacion.
+    datos: dict | None = None
+
 
 @dataclass
 class ResumenEscaneo:
@@ -314,6 +362,22 @@ class ResumenEscaneo:
     omitidos_por_tope: int = 0
     lecturas_por_motor: dict[str, int] = field(default_factory=dict)
     detalles: list[ResumenArchivo] = field(default_factory=list)
+
+    # El total de la corrida. Es un `dict` y no el schema de la API por la misma
+    # razon que `ResumenArchivo.datos`: `services/` no importa de `schemas/`.
+    resumen: dict | None = None
+    # El id con el que esta corrida se puede consultar mientras corre, por
+    # `GET /scan/runs/{id}`. Va en la respuesta para que el cliente no tenga que
+    # inventar una manera de correlacionar: la corrida y su total salen juntos.
+    corrida_id: str | None = None
+
+    # El archivado. `archivados_pendientes` va al lado de `archivados` porque es
+    # el que da miedo: son los comprobantes que se movieron SIN que el sistema
+    # los leyera bien. `simulado` dice si lo que se lee ya ocurrio o es un plan.
+    archivados: int = 0
+    archivados_pendientes: int = 0
+    carpeta_destino: str | None = None
+    simulado: bool = False
 
     @property
     def leidos(self) -> int:
@@ -414,6 +478,19 @@ async def _actualizar_ticket(
     ticket.total_amount = extracted.total_amount
     ticket.tax_amount = extracted.tax_amount
     ticket.subtotal = extracted.subtotal
+    # Las LINEAS DE PRODUCTO tambien se actualizan. Antes no se copiaban, y eso
+    # hacia que reprocesar un comprobante no sirviera de nada para el inventario:
+    # el ticket se actualizaba (total, IVA, proveedor) pero `items` se quedaba en
+    # el NULL que dejo la primera lectura por OCR.
+    #
+    # Medido: un PDF reprocesado salio con `confidence_source=llm` y confianza
+    # 0.95, y `items` seguia NULL. Con esto, reprocesar es la via para llenar las
+    # lineas de lo que el OCR no pudo leer.
+    #
+    # Se escribe SIEMPRE, incluso con None: si esta relectura tampoco trajo
+    # lineas, lo honesto es que no hay lineas, y dejar las de la lectura anterior
+    # seria mostrar contenido de un papel que ya se esta releyendo.
+    ticket.items = extracted.items
     ticket.raw_text = extracted.raw_text
     ticket.confidence = decision.persisted_confidence
     ticket.confidence_source = decision.confidence_source.value
@@ -570,6 +647,12 @@ async def procesar_archivo(
             resumen.scan_file_id = fila.id
             resumen.status = ScanStatus(fila.status)
             resumen.accion = "SIN_CAMBIOS"
+            # El `ticket_id` se devuelve tambien en el atajo. Sin esto, el
+            # archivado —que solo necesita "este archivo tiene ticket"— no
+            # puede decidir nada en un archivo ya leido, y todos los
+            # digitalizados antes de que existiera el archivado quedarian en la
+            # carpeta de entrada para siempre.
+            resumen.ticket_id = fila.ticket_id
             resumen.detalle = "el contenido no cambio desde la ultima lectura"
             await _registrar(db, fila, "SIN_CAMBIOS", resumen.detalle, actor)
             return resumen
@@ -845,6 +928,8 @@ async def escanear(
     *,
     reprocesar: bool = False,
     solo_pendientes: bool = False,
+    archivar: bool | None = None,
+    simular: bool = False,
 ) -> ResumenEscaneo:
     """Recorre la carpeta y procesa lo que corresponda.
 
@@ -855,12 +940,52 @@ async def escanear(
             por omision porque reescribir un ticket es una decision, no un
             efecto secundario de correr un escaneo.
         solo_pendientes: no tocar lo ya `PROCESADO` aunque haya cambiado.
+        archivar: mover a la carpeta de escaneados lo digitalizado. `None` usa
+            `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR`.
+        simular: decir que se moveria sin mover nada.
+
+    EL ARCHIVADO Y LA EMPRESA
+    =========================
+
+    Sin `company_id` no se crea ningun ticket, y sin ticket no hay nada que
+    archivar. `POST /scan` sin empresa es el modo de inventario —"que hay en la
+    carpeta?"— y en ese modo **no se mueve nada**, porque mover un archivo sin
+    que se haya guardado su contenido deja el comprobante en un sitio donde nadie
+    lo va a buscar y sin registro de lo que se leyo.
     """
     resumen = ResumenEscaneo(carpeta=str(raiz()))
+
+    if archivar is None:
+        archivar = settings.TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR
+    # Sin empresa no hay ticket, y sin ticket no hay nada archivable. Ver la nota.
+    if company_id is None:
+        archivar = False
+
+    if archivar:
+        resumen.carpeta_destino = str(carpeta_de_escaneados())
+        resumen.simulado = simular
+        if simular:
+            logger.info(
+                "SIMULACION de escaneo: no se creara ni se movera nada. "
+                "Lo que se moveria ira a %s",
+                resumen.carpeta_destino,
+            )
 
     async with _CANDADO_DE_ESCANEO:
         archivos = listar_archivos()
         resumen.archivos_vistos = len(archivos)
+
+        # El registro de la corrida se abre DENTRO del candado, no antes: si se
+        # abriera antes, dos escaneos simultaneos anunciarian ambos "en curso" y
+        # el canal mostraria el que perdio el candado como si trabajara, cuando
+        # en realidad esta esperando. El candado es la verdad de quien esta
+        # leyendo, y el registro tiene que decirlo.
+        corrida = scan_registry.abrir_corrida(
+            str(carpeta_de_escaneados()) if archivar else raiz().as_posix(),
+            actor,
+            simular,
+        )
+        resumen.corrida_id = corrida.id
 
         for indice, vista in enumerate(archivos):
             if indice >= settings.TICKETS_SCAN_MAX_ARCHIVOS:
@@ -872,11 +997,14 @@ async def escanear(
                 )
                 break
 
+            scan_registry.marcar_archivo(corrida, vista.relative_path)
+
             try:
                 contenido = vista.ruta.read_bytes()
             except OSError as exc:
                 logger.warning("no se pudo leer %s: %s", vista.relative_path, exc)
                 resumen.con_error += 1
+                scan_registry.marcar_error(corrida)
                 continue
 
             if solo_pendientes:
@@ -887,6 +1015,77 @@ async def escanear(
             detalle = await procesar_archivo(
                 db, vista, contenido, company_id, actor, forzar=reprocesar
             )
+
+            # El registro de la corrida se actualiza con el resultado de cada
+            # archivo. Solo `leidos` y `con_error` se llevan la cuenta: lo demas
+            # esta en el resumen del final.
+            if detalle.ticket_id is not None:
+                scan_registry.marcar_con_ticket(corrida)
+            elif detalle.accion == "ERROR":
+                scan_registry.marcar_error(corrida)
+
+            # --- El archivado, DESPUES de registrar el resultado ----------
+            #
+            # Despues y no antes, por dos razones concretas:
+            #
+            # 1. Si se moviera antes y la lectura fallara, el comprobante queda
+            #    en la carpeta de escaneados sin que nunca se haya guardado su
+            #    contenido: el papel desaparece de donde se revisa y no hay
+            #    ticket al que volver.
+            # 2. `detalle.accion` y `detalle.ticket_id` solo existen despues de
+            #    `procesar_archivo`. Antes no hay nada que archivar.
+            #
+            # Y se hace dentro del mismo paso del bucle para que el resumen y lo
+            # que hay en disco no puedan quedar desincronizados.
+            # --- Que se archiva -------------------------------------------
+            #
+            # La condicion NO es `accion in (CREADO, ACTUALIZADO)`. Es
+            # "este archivo tiene ticket", y son cosas distintas:
+            #
+            # Un archivo digitalizado en una corrida ANTERIOR a este feature
+            # reporta `SIN_CAMBIOS` en todas las corridas siguientes, porque su
+            # contenido no cambio. Si solo archivara CREADO/ACTUALIZADO, esos
+            # archivos nunca se moverian: quedarian en la carpeta de entrada para
+            # siempre, que es justo lo que el archivado viene a evitar.
+            #
+            # La condicion real es "tiene ticket y su estado no es de los que no
+            # producen nada": ERROR, DUPLICADO y NO_SOPORTADO no se archivan, y
+            # un archivo ilegible es precisamente el que alguien tiene que mirar.
+            if archivar and detalle.accion not in (
+                "ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO"
+            ) and detalle.ticket_id is not None:
+                # Por `scan_file_id`, NO por `ticket_id`: un ticket puede tener
+                # varios `scan_files` —el original y sus duplicados por
+                # contenido— y buscar por `ticket_id` devuelve varios y revienta
+                # con MultipleResultsFound. `procesar_archivo` ya sabe cual es la
+                # fila de ESTE archivo, y eso es lo que hay que mover.
+                fila = (
+                    await db.execute(
+                        select(ScanFileModel).where(
+                            ScanFileModel.id == detalle.scan_file_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                ticket = (
+                    await db.execute(
+                        select(TicketModel).where(TicketModel.id == detalle.ticket_id)
+                    )
+                ).scalar_one_or_none()
+
+                if fila is not None and ticket is not None:
+                    movido, ruta, pendiente = await archivar_tras_lectura(
+                        db, fila, ticket, actor=actor, simular=simular
+                    )
+                    detalle.archivado = movido
+                    detalle.ruta_archivo = ruta
+                    detalle.extraction_status = ticket.extraction_status
+                    detalle.estaba_pendiente = pendiente
+                    detalle.solo_simulado = movido and simular
+                    if movido:
+                        resumen.archivados += 1
+                        if pendiente:
+                            resumen.archivados_pendientes += 1
+
             resumen.detalles.append(detalle)
 
             if detalle.accion == "CREADO":
@@ -909,7 +1108,423 @@ async def escanear(
                     resumen.lecturas_por_motor.get(clave, 0) + 1
                 )
 
+    await _resolver_datos_de_tickets(db, resumen.detalles)
+
+    # El total va DESPUES de resolver los datos, porque necesita `datos` para
+    # poder separar lo leido de lo confiable. Calcularlo antes daria un resumen
+    # con todos los importes en cero, que es peor que no dar resumen.
+    resumen.resumen = _calcular_resumen(resumen.detalles)
+    scan_registry.cerrar_corrida(corrida, resumen.resumen)
+
     return resumen
+
+
+def _a_decimal(valor) -> Decimal | None:
+    """Un importe de `tickets.total_amount` a `Decimal`, o `None`.
+
+    Acepta `str` ademas de `Decimal` porque el valor viene de una fila de Postgres
+    —que da `Decimal`— pero el mismo dato aparece serializado como texto en la
+    respuesta de la API y en el JSON que consume el cliente. Un
+    `isinstance(v, Decimal)` sin mas deja el total en `None` si algun dia el tipo
+    cambia, y eso es un cero SILENCIOSO: el escaneo parece que no encontro
+    ningun importe y no dice por que.
+
+    `float` entra con `str()` y no con `float()` a proposito: el camino corto de
+    `Decimal(0.1)` no es el problema, pero `str()` deja el numero exacto que se
+    escribio, que es lo que importa en dinero.
+    """
+    if valor is None or isinstance(valor, bool):
+        # `bool` antes que `int`: `True` es un `int` en Python y `Decimal("True")`
+        # es un crash.
+        return None
+    if isinstance(valor, Decimal):
+        return valor
+    try:
+        return Decimal(str(valor).strip())
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return None
+
+
+def _calcular_resumen(detalles: list[ResumenArchivo]) -> dict:
+    """El total de la corrida: que salio, cuanto dinero y que hay que mirar.
+
+    POR QUE HAY TRES IMPORTES Y NO UNO
+    ----------------------------------
+    Porque un solo total es un numero peligroso con OCR al 33%: invita a sumarlo y
+    apuntarlo, y ese numero miente. Los tres separan lo que se LEYO de lo que se
+    PUEDE CONFIRMAR de lo que hay que MIRAR:
+
+    - `importe_total_leido` es lo que el sistema extrajo. Se muestra para que se
+      vea completo, y el nombre dice "leido" para que nadie lo tome por el gasto.
+    - `importe_total_confiable` cuenta SOLO lo que quedo `AUTO_APROBADO`, o sea
+      lo que paso todos los checks sin que nadie lo tocara.
+    - `importe_requiere_revision` es lo que NO se puede sumar sin mirar el papel.
+
+    Y los `APROBADO` a proposito NO entran en el confiable: son los que corrigio
+    una persona, y meterlos ahi haria que un dato humano pareciera automatico. Es
+    la confusion que el reporte de exactitud no puede tolerar.
+
+    EL DEDUPLICADO POR `ticket_id` NO ES OPCIONAL
+    --------------------------------------------
+    Un DUPLICADO no crea ticket: apunta al del otro archivo. Si la carpeta tiene
+    `foto.jpg` y `foto-copia.jpg` con los mismos bytes, los dos detalles traen el
+    MISMO `ticket_id` y `importe_leido` lo contaria dos veces. Con una factura de
+    $10 000 eso son $20 000 de gasto que no existe.
+
+    Es el mismo bug de otra forma que el indice unico de `scan_files` evita por
+    abajo: aqui la fila es una sola, pero la respuesta la cuenta por archivo.
+
+    `None` y no `0.00` cuando no hay ningun total: "no se leyo nada" y "se leyo
+    cero" son cosas distintas, y la segunda es un ticket que hay que revisar.
+    """
+    leidos = [d for d in detalles if d.ticket_id is not None and d.datos]
+
+    # Un ticket, una vez. Gana el primer detalle que lo menciona, que es el que
+    # se leyo de verdad; los demas son duplicados que apuntan al mismo.
+    por_ticket: dict[UUID, dict] = {}
+    for detalle in leidos:
+        if detalle.ticket_id not in por_ticket:
+            por_ticket[detalle.ticket_id] = detalle.datos or {}
+
+    total_leido = Decimal("0.00")
+    total_confiable = Decimal("0.00")
+    total_revision = Decimal("0.00")
+    tickets_con_total = 0
+    tickets_sin_total = 0
+
+    por_estado: dict[str, int] = {}
+    por_motor: dict[str, int] = {}
+    con_rfc = 0
+    con_lineas = 0
+
+    for datos in por_ticket.values():
+        estado = str(datos.get("extraction_status") or "")
+        por_estado[estado] = por_estado.get(estado, 0) + 1
+
+        motor = datos.get("confidence_source")
+        if motor:
+            por_motor[str(motor)] = por_motor.get(str(motor), 0) + 1
+        if datos.get("provider_tax_id"):
+            con_rfc += 1
+        if datos.get("items"):
+            con_lineas += 1
+
+        monto = _a_decimal(datos.get("total_amount"))
+        if monto is None or monto <= 0:
+            tickets_sin_total += 1
+            continue
+
+        tickets_con_total += 1
+        total_leido += monto
+        if estado == ExtractionStatus.AUTO_APROBADO.value:
+            total_confiable += monto
+        elif estado in (
+            ExtractionStatus.PENDIENTE.value,
+            ExtractionStatus.REQUIERE_REVISION.value,
+        ):
+            total_revision += monto
+
+    requiere_revision = (
+        por_estado.get(ExtractionStatus.PENDIENTE.value, 0)
+        + por_estado.get(ExtractionStatus.REQUIERE_REVISION.value, 0)
+    )
+
+    # Los contadores se derivan de `detalles` y no del `ResumenEscaneo` que
+    # envuelve, y es a proposito: el reproceso de UN archivo construye el mismo
+    # resumen sin tener una corrida, y si la funcion leyera los contadores de ahi
+    # habria que inventar una corrida de mentira para poder totalizar. Ademas
+    # "cuantos archivos dio error" tiene que salir de los mismos detalles que
+    # "cuantos importes hay", o los dos numeros pueden discrepar.
+    def _con(accion: str) -> int:
+        return len([d for d in detalles if d.accion == accion])
+
+    con_error = _con("ERROR")
+    no_soportados = len([d for d in detalles if d.status is ScanStatus.NO_SOPORTADO])
+    duplicados = len([d for d in detalles if d.status is ScanStatus.DUPLICADO])
+
+    # Lo accionable es lo que ninguna persona hizo y no se va a resolver solo:
+    # los que necesitan correccion, mas los que no se pudieron leer, mas los que
+    # ni siquiera produjeron ticket.
+    sin_ticket = len([d for d in detalles if d.ticket_id is None])
+    requiere_accion = requiere_revision + con_error + no_soportados + sin_ticket
+
+    return {
+        "archivos_vistos": len(detalles),
+        "leidos": len([d for d in detalles if d.accion in ("CREADO", "ACTUALIZADO")]),
+        "nuevos": _con("CREADO"),
+        "actualizados": _con("ACTUALIZADO"),
+        "sin_cambios": _con("SIN_CAMBIOS"),
+        "duplicados": duplicados,
+        "con_error": con_error,
+        "no_soportados": no_soportados,
+        "omitidos_por_tope": 0,
+        "importe_total_leido": total_leido if tickets_con_total else None,
+        "importe_total_confiable": total_confiable if tickets_con_total else None,
+        "importe_requiere_revision": total_revision if tickets_con_total else None,
+        "tickets_con_total": tickets_con_total,
+        "tickets_sin_total": tickets_sin_total,
+        "tickets_por_estado": por_estado,
+        "tickets_por_motor": por_motor,
+        "tickets_con_rfc": con_rfc,
+        "tickets_con_lineas": con_lineas,
+        "requiere_revision": requiere_revision,
+        "requiere_accion": requiere_accion,
+        "sin_ticket": sin_ticket,
+        # Rutas y no ids: el cliente puede ofrecer un boton que lleve a donde hay
+        # que actuar, en vez de que cada pantalla arme su propia URL y se
+        # desincronice de la API.
+        "colas": {
+            "revision": "/review-queue",
+            "inventario": "/inventario",
+            "escaneo": "/scan",
+        },
+    }
+
+
+async def _resolver_datos_de_tickets(
+    db: AsyncSession, detalles: list[ResumenArchivo]
+) -> None:
+    """Rellena `detalle.datos` con los datos del ticket de cada archivo.
+
+    Recibe la LISTA y no el `ResumenEscaneo` porque lo usan dos caminos con
+    alcances distintos: la corrida entera y el reproceso de un archivo suelto.
+    Los dos devuelven la misma `ScanItemResponse`, y por eso los dos tienen que
+    traer los mismos datos.
+
+    Va despues del bucle y no dentro por lo que dice el comentario de
+    `ResumenArchivo.datos`: hay una sola consulta para toda la corrida en vez de
+    una por archivo, y `procesar_archivo` —que tiene trece salidas— no tiene que
+    saber que esto existe.
+
+    Se leen los DATOS y el VEREDICTO de la misma fila, y no lo que devolvio el
+    lector, por una razon que es la que hace trustworthy la respuesta: si el
+    gate mando la lectura a revision, aqui `extraction_status` lo dice al lado de
+    los numeros. Un JSON con los datos pero sin el veredicto deja a quien lo
+    consume creyendo que el sistema afirmo esos numeros, que es justo lo que el
+    gate se nego a afirmar.
+
+    Los archivos sin ticket —ERROR, NO_SOPORTADO, sin `company_id`— se quedan
+    con `datos=None`, y eso es informacion, no un hueco.
+    """
+    pendientes = [d for d in detalles if d.ticket_id is not None]
+    if not pendientes:
+        return
+
+    tickets = (
+        await db.execute(
+            select(TicketModel).where(TicketModel.id.in_({d.ticket_id for d in pendientes}))
+        )
+    ).scalars().all()
+    por_id = {t.id: t for t in tickets}
+
+    for detalle in pendientes:
+        ticket = por_id.get(detalle.ticket_id)
+        if ticket is None:
+            # El ticket se borro entre el `procesar_archivo` y aqui. Se deja el
+            # `None` en vez de inventar un dato: `ticket_id` sigue en la
+            # respuesta y quien reintente lo vera como un 404 honesto.
+            continue
+        detalle.datos = {
+            "provider_name": ticket.provider_name,
+            "provider_tax_id": ticket.provider_tax_id,
+            "total_amount": ticket.total_amount,
+            "subtotal": ticket.subtotal,
+            "tax_amount": ticket.tax_amount,
+            "expense_date": ticket.expense_date,
+            "category": ticket.category,
+            "items": ticket.items,
+            "confidence": ticket.confidence,
+            "confidence_source": ticket.confidence_source,
+            "extraction_status": ticket.extraction_status,
+            "validation_errors": ticket.validation_errors,
+            "reviewed_by": ticket.reviewed_by,
+            "reviewed_at": ticket.reviewed_at,
+        }
+
+
+async def archivar_tras_lectura(
+    db: AsyncSession,
+    fila: ScanFileModel,
+    ticket: TicketModel | None,
+    *,
+    actor: str | None = None,
+    simular: bool = False,
+) -> tuple[bool, str | None, bool]:
+    """Mueve el comprobante a la carpeta de escaneados, ya digitalizado.
+
+    Devuelve `(movido, ruta_destino, estaba_pendiente)`. Los tres van juntos
+    porque el tercero es la advertencia: un archivo puede haberse movido SIN que
+    el sistema lo leyera bien, y quien mira el resultado necesita verlo, no
+    leerlo en un log.
+
+    `simular=True` calcula el destino y lo devuelve SIN mover. Es lo que permite
+    ver el efecto antes de que ocurra: con el archivado activo por omision, la
+    primera corrida deja la carpeta de entrada vacia, y eso conviene verlo antes.
+
+    QUE SE MUEVE Y QUE NO
+    =====================
+
+    Solo lo que produjo un ticket: `accion` CREADO o ACTUALIZADO. Un archivo
+    ilegible, duplicado o no soportado se queda en la carpeta de entrada, porque
+    no hay nada que archivar — y un archivo que el sistema no pudo leer es
+    precisamente el que alguien tiene que mirar.
+
+    LO QUE NO SE PIDE AQUI, Y ES A PROPOSITO
+    ==========================================
+
+    Que la lectura fuera *buena*. El OCR sobre fotos reales mide 33.3%
+    (`AGENTS.md`; los cuatro caminos para mejorarlo estan descartados con
+    medicion en `docs/known-issues.md` 21), asi que exigir un veredicto favorable
+    equivaldria a no mover casi nada: en la practica, casi todos los comprobantes
+    de una foto salen PENDIENTE.
+
+    Se mueve igual, y por eso la respuesta trae `archivados_pendientes`: la
+    carpeta de escaneados **no** significa "esto se leyo bien", significa "esto
+    el sistema ya lo intento y dejo registrado su veredicto". El veredicto esta
+    en `tickets.extraction_status` y en `scan_events`, que es donde se audita.
+
+    Un archivo movido se puede devolver —esta en otra carpeta, no se borro— y
+    `POST /scan/files/{id}/reprocess` lo vuelve a leer sin problema.
+    """
+    if ticket is None:
+        return False, None, False
+
+    # El estado del gate va en el evento, no solo en el log: es lo que responde
+    # "movi este papel aunque el sistema no lo entendiera?".
+    detalle_extra = ""
+    if ticket.extraction_status in (ExtractionStatus.PENDIENTE.value,
+                                   ExtractionStatus.REQUIERE_REVISION.value):
+        detalle_extra = (
+            f" (veredicto: {ticket.extraction_status}"
+            f"{'; ' + ticket.validation_errors if ticket.validation_errors else ''})"
+        )
+
+    if simular:
+        # Se calcula el destino sin tocar el disco. `carpeta_de_escaneados()`
+        # crea la carpeta si no existe, y eso si es un efecto: se acepta, porque
+        # una carpeta vacia no es un cambio de estado del sistema.
+        destino = carpeta_de_escaneados() / fila.relative_path
+        logger.info(
+            "[SIMULAR] %s se moveria a %s%s", fila.relative_path, destino, detalle_extra
+        )
+        return (
+            True,
+            str(destino),
+            ticket.extraction_status in (ExtractionStatus.PENDIENTE.value,
+                                         ExtractionStatus.REQUIERE_REVISION.value),
+        )
+
+    try:
+        resultado = archivar(ruta_de_relativo(fila.relative_path), fila.relative_path)
+    except (ErrorDeArchivado, ArchivoFueraDeLaCarpeta) as exc:
+        logger.warning("no se pudo archivar %s: %s", fila.relative_path, exc)
+        await _registrar(db, fila, "ERROR", f"no se pudo archivar: {exc}", actor)
+        return False, None, False
+
+    if not resultado.movido:
+        # No es un evento: es idempotencia. No se ensucia la linea de tiempo con
+        # un BORRADO de algo que no se movio.
+        return False, None, False
+
+    await _registrar(
+        db,
+        fila,
+        "BORRADO",
+        f"archivado en {resultado.ruta_destino} tras digitalizar{detalle_extra}",
+        actor,
+    )
+    return (
+        True,
+        str(resultado.ruta_destino),
+        ticket.extraction_status in (ExtractionStatus.PENDIENTE.value,
+                                     ExtractionStatus.REQUIERE_REVISION.value),
+    )
+
+
+async def archivar_si_ya_resuelto(
+    db: AsyncSession,
+    fila: ScanFileModel,
+    *,
+    actor: str | None = None,
+) -> bool:
+    """Mueve el comprobante a la carpeta de escaneados, si ya se resolvio.
+
+    LA CONDICION ES `PROCESADO`, Y NO ES COSA QUE SE PUEDA SIMPLIFICAR
+    =============================================================
+
+    El archivo se mueve cuando su COMPRA esta PROCESADO, o sea cuando una
+    persona confirmo que las lineas entraron al inventario. No cuando el ticket
+    salio AUTO_APROBADO, ni cuando el archivo se leyo bien.
+
+    La razon esta medida, no es prudencia generica. `AGENTS.md` mide la exactitud
+    del OCR sobre fotos reales en **33.3%**, y los cuatro caminos para mejorarla
+    estan descartados con medicion en `docs/known-issues.md` 21. Ademas:
+
+    - `AUTO_APROBADO` lo decide el gate sobre los campos del ENCABEZADO. Nunca ha
+      medido la confianza de una linea de producto, asi que no dice nada sobre si
+      las lineas son las correctas.
+    - La conciliacion bancaria valida el MONTO, nunca la COMPOSICION: un ticket
+      puede dar PERFECT contra el banco y tener las lineas equivocadas.
+
+    Asi que mover por veredicto de lectura habria enterrado dos de cada tres
+    comprobantes en una carpeta que dice "escaneados", sin que nadie los hubiera
+    revisado. `EN_REVISION` se queda donde esta: es exactamente el papel que
+    alguien tiene que mirar.
+
+    Idempotente: si el archivo ya no esta, no hace nada y devuelve False. Es el
+    caso normal de la segunda corrida.
+
+    Nunca tumba el escaneo: si el movimiento falla, se registra y se sigue. Un
+    archivo que no se pudo mover es un annoyance; un escaneo que se detiene por
+    eso deja de registrar gastos.
+    """
+    if not settings.TICKETS_SCAN_ARCHIVAR:
+        return False
+    if not settings.TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR:
+        # Con el archivado al escanear activo, este camino casi nunca dispara:
+        # el archivo ya se movio. Y con los dos apagados, no se mueve nada.
+        return False
+
+    ticket_id = fila.ticket_id
+    if ticket_id is None:
+        # Se leyo pero no produjo ticket. Sin compra no hay nada resuelto.
+        return False
+
+    compra = (
+        await db.execute(
+            select(CompraModel).where(CompraModel.ticket_id == ticket_id)
+        )
+    ).scalar_one_or_none()
+    if compra is None or compra.estado != EstadoCompra.PROCESADO:
+        return False
+
+    try:
+        resultado = archivar(
+            ruta_de_relativo(fila.relative_path), fila.relative_path
+        )
+    except (ErrorDeArchivado, ArchivoFueraDeLaCarpeta) as exc:
+        # Se anota y se sigue. Ver la docstring.
+        logger.warning("no se pudo archivar %s: %s", fila.relative_path, exc)
+        await _registrar(db, fila, "ERROR", f"no se pudo archivar: {exc}", actor)
+        return False
+
+    if not resultado.movido:
+        # No es un evento: es idempotencia. No se ensucia la linea de tiempo con
+        # un BORRADO de algo que no se movio.
+        return False
+
+    await _registrar(
+        db,
+        fila,
+        # `BORRADO` y no `MOVIDO`: la accion esta en la constraint cerrada
+        # `ck_scan_events_action`, y anadir un valor al enum del DDL sin migrar
+        # deja el INSERT rechazado en produccion. Ademas el nombre ya era
+        # exacto: de la carpeta de entrada, el archivo salio.
+        "BORRADO",
+        f"archivado en {resultado.ruta_destino}",
+        actor,
+    )
+    return True
 
 
 async def reprocesar_uno(
@@ -955,6 +1570,14 @@ async def reprocesar_uno(
         mtime=datetime.fromtimestamp(info.st_mtime, tz=timezone.utc),
         extension=ruta.suffix.lower(),
     )
-    return await procesar_archivo(
+    resumen = await procesar_archivo(
         db, vista, ruta.read_bytes(), company_id, actor, forzar=True
     )
+    # El reproceso devuelve la misma `ScanItemResponse` que el escaneo, asi que
+    # tiene que traer los mismos datos. Sin esto, la relectura de un archivo
+    # responderia sin `datos` mientras la corrida completa si los trae, y la
+    # diferencia pareceria un bug del gate cuando es que este camino nunca los
+    # resolvio.
+    await _resolver_datos_de_tickets(db, [resumen])
+    resumen.resumen = _calcular_resumen([resumen])
+    return resumen

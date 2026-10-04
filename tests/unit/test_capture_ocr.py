@@ -17,6 +17,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.config import settings
 from app.core.enums import ConfidenceSource
 from app.services import capture
 from app.services.capture import (
@@ -60,14 +61,41 @@ def _vision_que_falla(datos: bytes, mime_type: str = "image/png"):
     raise AssertionError("no se deberia llamar a vision en este caso")
 
 
+_llamadas_a_vision: list[bytes] = []
+
+
+async def _vision_que_si_lee(datos: bytes, mime_type: str = "image/png"):
+    """Vision que responde CON lineas de producto, que es lo que se busca."""
+    _llamadas_a_vision.append(datos)
+    from app.services.ai_extractor import ExtractedInvoice
+    from decimal import Decimal as _D
+
+    return ExtractedInvoice(
+        provider_name="Tiendas Ramirez SA de CV",
+        total=_D("1100.00"),
+        items=[
+            {"description": "Cafe en grano 1kg", "quantity": 2, "unit_price": 250.0,
+             "total": 500.0},
+            {"description": "Refresco 600ml", "quantity": 6, "unit_price": 100.0,
+             "total": 600.0},
+        ],
+    )
+
+
 class TestElOrdenDeLaEscalada:
 
-    async def test_una_foto_buena_no_toca_el_modelo(self):
+    async def test_una_foto_buena_no_toca_el_modelo(self, monkeypatch):
         """OCR primero significa que una foto legible no cuesta un modelo.
 
         Es el ahorro entero de la feature. Antes de este escalon, TODA foto iba
         a vision, aunque Tesseract la leyera sin equivocarse.
+
+        Con `ESCALAR_A_IA_SIN_LINEAS=false`, que es la politica de "bueno es
+        bueno". Por omision el ajuste es `true` y una foto sin lineas de producto
+        SI va al modelo —ver `test_sin_escalar_una_foto_sin_lineas_no_toca_el
+        _modelo`—, porque sin lineas no hay inventario.
         """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
         ocr = OcrFalso(TEXTO_OCR)
 
         resultado = await capture_ticket(
@@ -78,6 +106,36 @@ class TestElOrdenDeLaEscalada:
         assert resultado.provider_name == "Tiendas Ramirez SA de CV"
         assert resultado.total_amount == Decimal("1100.00")
         assert resultado.confidence_source is ConfidenceSource.OCR
+
+    async def test_por_omision_una_foto_sin_lineas_si_va_al_modelo(
+        self, monkeypatch
+    ):
+        """EL OTRO LADO DE LA MONEDA, y el que decide el inventario.
+
+        El OCR lee el encabezado —proveedor y total— pero no produce lineas de
+        producto, y sin lineas no hay compra que confirmar. Antes, ese resultado
+        "servia de algo" y la cascada devolvia sin preguntar a nadie: el ticket
+        quedaba en la cola sin contenido y no habia forma de que el inventario lo
+        supiera.
+
+        Con el ajuste en `true`, se le pregunta al modelo. Y eso significa que
+        una foto sin lineas cuesta una llamada —ver `ESCALAR_A_IA_SIN_LINEAS`,
+        donde esta la tension—.
+        """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", True)
+        ocr = OcrFalso(TEXTO_OCR)
+        _llamadas_a_vision.clear()
+
+        resultado = await capture_ticket(
+            b"\xff\xd8\xfffoto", "image",
+            ocr_reader=ocr, extract_from_image=_vision_que_si_lee,
+        )
+
+        assert len(ocr.llamadas) == 1, "el OCR se lee una vez"
+        assert _llamadas_a_vision, "la foto tiene que llegar al modelo"
+        # Y lo que devuelve el modelo es lo que queda: con lineas.
+        assert resultado.items, "el modelo trajo lineas de producto"
+        assert resultado.confidence_source is ConfidenceSource.LLM
 
     async def test_el_ocr_disenado_va_a_vision(self):
         """Si el OCR no lee nada util, vision es el escalon que queda.

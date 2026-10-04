@@ -229,15 +229,27 @@ def gate_manual_ticket(
     tax_amount: Decimal | None,
     expense_date: date | None,
     provider_tax_id: str | None = None,
+    subtotal: Decimal | None = None,
 ) -> GateDecision:
     """Captura manual: una persona tecleo los datos, asi que no hay confianza
     que medir. Pasa los mismos checks por consistencia y queda APROBADO.
 
     La confianza se deja en None a proposito. Poner 1.0 seria mentir: la
     confianza mide lectura automatica, y un dedo humano no se mide.
+
+    `subtotal` entra y antes no pasaba, y eso era un agujero: una correccion con
+    `subtotal 97.56` y `total 234.00` con `IVA 0.00` llegaba a `APROBADO` sin que
+    nadie mirara que la aritmetica no cuadraba. `validate_extraction` ya hacia el
+    check `subtotal + IVA == total` — el unico que no depende de nada externo— y
+    se estaba aplicando solo porque aqui no le llegaba el subtotal.
+
+    Que el dato lo ponga una persona NO lo exime del check. El check no es "el
+    sistema lee bien": es "estas tres cifras dicen lo mismo", y eso no depende de
+    quien las escribio.
     """
     validation = validate_extraction(
-        provider_name, total_amount, tax_amount, expense_date, provider_tax_id,
+        provider_name, total_amount, tax_amount, expense_date,
+        provider_tax_id, subtotal,
     )
     if validation.ok:
         return GateDecision(

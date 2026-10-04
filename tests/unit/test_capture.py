@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.config import settings
 from app.core.enums import (
     AUTO_APPROVE_CONFIDENCE,
     UNKNOWN_PROVIDER,
@@ -201,7 +202,7 @@ def _invoice(**kw) -> ExtractedInvoice:
 
 
 class TestPdfConTexto:
-    async def test_se_lee_con_reglas_y_no_se_llama_al_modelo(self, pdf_impreso):
+    async def test_sin_escalar_un_pdf_no_toca_el_modelo(self, pdf_impreso, monkeypatch):
         """El caso que hace que esto valga la pena.
 
         Un PDF impreso tiene el texto ahi, al alcance. Mandarlo a un modelo
@@ -209,7 +210,15 @@ class TestPdfConTexto:
         equivoca. Ademas se pierde la trazabilidad: si se guardara como lectura
         de modelo, no habria forma de medir la exactitud de la IA porque el
         regex se contaria como acierto de la IA.
+
+        Con `ESCALAR_A_IA_SIN_LINEAS=false` ese comportamiento se conserva: las
+        reglas aciertan el encabezado y no se paga un modelo. Es la politica
+        "una foto buena no toca ningun modelo", y sigue disponible.
         """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        # Sin lineas de producto, por omision se le pregunta al modelo y esto
+        # mediria la confianza DEL MODELO, que no es lo que mide este test.
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
         espia = Espia(_invoice())
         resultado = await capture_ticket(
             pdf_impreso, "pdf",
@@ -217,7 +226,7 @@ class TestPdfConTexto:
             extract_from_text=espia.texto,
         )
 
-        assert espia.llamadas == [], "un PDF con texto no debe tocar el modelo"
+        assert espia.llamadas == [], "sin escalar, un PDF con texto no toca el modelo"
         # Mayuscula inicial, no versalitas: asi los emite un sistema de
         # facturacion de verdad, y es justo el caso que el parser perdia.
         assert resultado.provider_name == "Tiendas Ramirez SA de CV"
@@ -225,7 +234,7 @@ class TestPdfConTexto:
         assert resultado.expense_date == date(2025, 3, 15)
         assert resultado.confidence_source is ConfidenceSource.PDF_TEXT
 
-    async def test_el_origen_y_la_confianza_no_se_confunden(self, pdf_impreso):
+    async def test_el_origen_y_la_confianza_no_se_confunden(self, pdf_impreso, monkeypatch):
         """`pdf_text` con una confianza de reglas, no de modelo.
 
         El numero de confianza sale de lo que el parser encontro, no de una
@@ -233,6 +242,9 @@ class TestPdfConTexto:
         muestra para medir el 96%, los tickets de regex tienen que ser
         separables de los de la IA, o la medicion no mide nada.
         """
+        # Sin lineas de producto, por omision se le pregunta al modelo y esto
+        # mediria la confianza DEL MODELO, que no es lo que mide este test.
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
         espia = Espia(_invoice())
         resultado = await capture_ticket(pdf_impreso, "pdf", extract_from_text=espia.texto)
 
@@ -241,7 +253,15 @@ class TestPdfConTexto:
         assert resultado.confidence == confianza_por_campos(True, True, True)
         assert resultado.confidence >= AUTO_APPROVE_CONFIDENCE
 
-    async def test_confianza_menor_cuando_encuentra_menos(self, pdf_impreso):
+    async def test_confianza_menor_cuando_encuentra_menos(self, pdf_impreso, monkeypatch):
+        """Compara reglas-contra-reglas, asi que la escalada no interviene.
+
+        Sin lineas, por omision se le preguntaria al modelo y `completo` traeria
+        la confianza de un modelo de mentira, mas alta que la de las reglas, y la
+        comparacion no diria nada. Se apaga la escalada para que las dos puntas
+        de la comparacion sean del mismo lector.
+        """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
         espia = Espia(_invoice())
         completo = await capture_ticket(pdf_impreso, "pdf", extract_from_text=espia.texto)
 

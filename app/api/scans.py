@@ -51,9 +51,10 @@ from app.schemas.scan import (
     ScanItemResponse,
     ScanRequest,
     ScanResponse,
+    ResumenScan,
     ScanStatsResponse,
 )
-from app.services import scan_service
+from app.services import scan_registry, scan_service
 from app.services.ocr import disponibilidad as disponibilidad_ocr
 
 router = APIRouter(tags=["Scan"])
@@ -102,12 +103,76 @@ def _de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
         confianza=detalle.confianza,
         origen=detalle.origen.value if detalle.origen is not None else None,
         detalle=detalle.detalle,
+        archivado=detalle.archivado,
+        ruta_archivo=detalle.ruta_archivo,
+        extraction_status=detalle.extraction_status,
+        estaba_pendiente=detalle.estaba_pendiente,
+        solo_simulado=detalle.solo_simulado,
+        # El servicio lo arma como `dict` para no importar schemas; aqui es
+        # donde se valida. `None` cuando el archivo no produjo ticket.
+        datos=detalle.datos,
     )
 
 
 # ---------------------------------------------------------------------------
 # Literales primero. Ver la nota de orden al inicio del modulo.
 # ---------------------------------------------------------------------------
+
+
+@router.get("/runs")
+async def listar_corridas(
+    usuario: UsuarioActual,
+    limite: int = Query(10, ge=1, le=50, description="Cuantas corridas recientes."),
+) -> dict:
+    """Las corridas de escaneo recientes, la que esta corriendo primero.
+
+    Es el canal de progreso. `POST /scan` es sincrono y con fotos tarda minutos,
+    asi que sin esto el cliente no tiene nada que mostrar mientras espera: solo un
+    `cargando` que puede ser "va bien" o "se trabo en el archivo 3 de 200".
+
+    Lo que responde, en una linea: `terminada=false` con `actual` puesto es una
+    corrida en marcha, y `actual` es el archivo que se esta leyendo ahora.
+
+    EN MEMORIA, Y POR QUE NO ES UN TRABAJO EN COLA
+    ----------------------------------------------
+    Al reiniciar el contenedor esta lista sale vacia aunque la carpeta tenga 200
+    archivos a medio leer. Es correcto: un proceso que murio no sigue trabajando,
+    y fingir lo contrario seria peor. Lo que NO se pierde es el estado real de cada
+    archivo, que esta en `scan_files` y `scan_events` y es lo que evita repetir
+    trabajo en la proxima pasada.
+    """
+    del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
+    corridas = scan_registry.listar(limite)
+    return {
+        "corridas": [c.a_dict() for c in corridas],
+        "en_curso": [c.id for c in corridas if not c.terminada],
+    }
+
+
+@router.get("/runs/{corrida_id}")
+async def ver_una_corrida(corrida_id: str, usuario: UsuarioActual) -> dict:
+    """El progreso de UNA corrida.
+
+    Es la llamada que hace el cliente cada dos o tres segundos mientras el
+    `POST /scan` sigue abierto. Devuelve el resumen final cuando ya termino, asi
+    que el mismo endpoint sirve para el progreso y para el resultado.
+
+    Un 404 aqui NO es "no existio": el registro es en memoria y se descarta a las
+    dos horas, y tambien al reiniciar. El mensaje lo dice, para que el cliente no
+    lo presente como un error del servidor.
+    """
+    del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
+    corrida = scan_registry.consultar(corrida_id)
+    if corrida is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Esta corrida no esta en el registro. Puede haber terminado hace "
+                "mas de dos horas, o el servidor se reinicio mientras corria. "
+                "Los datos de cada archivo siguen en /scan/files."
+            ),
+        )
+    return corrida.a_dict()
 
 
 @router.get("/ocr")
@@ -234,6 +299,21 @@ async def escanear(
     Sin `company_id` el escaneo inventaria y NO crea tickets. Es a proposito, y
     es el primer paso que conviene: correrlo para ver que hay en la carpeta antes
     de atribuir los gastos a una empresa.
+
+    Y sin `company_id` NO se archiva nada, aunque `archivar` veniga en `true`:
+    mover un comprobante sin que se haya guardado su contenido deja el papel en
+    un sitio donde nadie lo va a buscar y sin registro de lo que se leyo.
+
+    COMO USAR `simular`
+    ====================
+
+    Con `archivar` activo por omision, la primera corrida deja la carpeta de
+    entrada vacia. Eso conviene verlo antes de que ocurra:
+
+        POST /scan {"company_id": "...", "simular": true}
+
+    Devuelve exactamente lo que moveria, con la ruta de destino de cada archivo
+    y si su lectura quedo pendiente, y no mueve nada.
     """
     actor = usuario.email or "sistema"
 
@@ -251,6 +331,8 @@ async def escanear(
         actor,
         reprocesar=cuerpo.reprocesar,
         solo_pendientes=cuerpo.solo_pendientes,
+        archivar=cuerpo.archivar,
+        simular=cuerpo.simular,
     )
 
     return ScanResponse(
@@ -265,7 +347,15 @@ async def escanear(
         omitidos_por_tope=resumen.omitidos_por_tope,
         leidos=resumen.leidos,
         lecturas_por_motor=resumen.lecturas_por_motor,
+        archivados=resumen.archivados,
+        archivados_pendientes=resumen.archivados_pendientes,
+        carpeta_destino=resumen.carpeta_destino,
+        simulado=resumen.simulado,
         detalles=[_de_resumen(d) for d in resumen.detalles],
+        # El total, validado aqui: el servicio lo arma como `dict` para no
+        # importar de `schemas/`.
+        resumen=resumen.resumen,
+        corrida_id=resumen.corrida_id,
     )
 
 

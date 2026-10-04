@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ticketsApi, companiesApi, type Company, type Ticket, type ExtractionStatus } from '../services/api';
+import { ticketsApi, companiesApi, type Company, type Ticket, type ExtractionStatus, type LineaTicketUpdate } from '../services/api';
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import {
   STATUS_ORDEN, explainValidationErrors, confidenceLabel, sourceLabel,
@@ -344,6 +344,8 @@ export function EditorTicket({
     total_amount: string;
     tax_amount?: string;
     expense_date: string;
+    subtotal?: string;
+    items?: LineaTicketUpdate[];
   }) => void | Promise<void>;
 }) {
   const [form, setForm] = useState({
@@ -352,10 +354,39 @@ export function EditorTicket({
     total_amount: ticket.total_amount,
     tax_amount: ticket.tax_amount,
     expense_date: ticket.expense_date,
+    subtotal: ticket.subtotal ?? '',
   });
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }));
+
+  // Las lineas viven en su propio estado y NO en `form`, porque son una lista:
+  // meterlas en el objeto del formulario las mezclaria con los campos de texto y
+  // el `set` de arriba (`e.target.value`) no aplicaria.
+  //
+  // Se siembran con las del ticket si las hay. Si `items` es `null` se arranca
+  // con UNA fila vacia, no con cero: un ticket sin lineas es el caso normal de la
+  // ruta OCR, y una tabla vacia no dice "agrega las tuyas" — parece que no hay
+  // nada que capturar.
+  const [lineas, setLineas] = useState<LineaTicketUpdate[]>(
+    ticket.items && ticket.items.length > 0
+      ? ticket.items.map(l => ({
+          description: l.description ?? '',
+          quantity: l.quantity ?? '',
+          unit_price: l.unit_price ?? '',
+          total: l.total ?? '',
+        }))
+      : [{ description: '', quantity: '', unit_price: '', total: '' }]
+  );
+
+  const setLinea = (i: number, k: keyof LineaTicketUpdate) => (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => setLineas(ls => ls.map((l, j) => (j === i ? { ...l, [k]: e.target.value } : l)));
+
+  const agregarLinea = () =>
+    setLineas(ls => [...ls, { description: '', quantity: '', unit_price: '', total: '' }]);
+
+  const quitarLinea = (i: number) => setLineas(ls => ls.filter((_, j) => j !== i));
 
   return (
     <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
@@ -375,9 +406,87 @@ export function EditorTicket({
         <Input label="Proveedor" value={form.provider_name} onChange={set('provider_name')} required />
         <Input label="RFC" value={form.provider_tax_id} onChange={set('provider_tax_id')} />
         <Input label="Total" value={form.total_amount} onChange={set('total_amount')} required />
+        {/* El subtotal no estaba, y sin el `subtotal + IVA == total` no se puede
+            comprobar despues de corregir el total. Es el campo que hace falta
+            para que el sistema pueda volver a decirte si los numeros cuadran. */}
+        <Input
+          label="Subtotal"
+          value={form.subtotal}
+          onChange={set('subtotal')}
+          placeholder="opcional"
+        />
         <Input label="IVA" value={form.tax_amount} onChange={set('tax_amount')} />
         <Input label="Fecha" value={form.expense_date} onChange={set('expense_date')} required type="date" />
       </div>
+
+      {/* Las partidas del comprobante.
+          Es la parte que hace que el inventario tenga entrada: sin lineas, la
+          compra no se abre y el stock no se puede contar. Y hay una razon para
+          que sea opcional y no obligatoria: muchos tickets de gasto NO son de
+          inventario (una nota, un casero, una tarifa), y exigir detalle ahi
+          obligaria a inventar lineas para poder guardar el gasto. */}
+      <fieldset className="border-t border-gray-200 pt-3">
+        <legend className="text-xs font-semibold text-gray-700">
+          Partidas del comprobante
+          <span className="font-normal text-gray-500">
+            {' '}(opcional — solo si el comprobante lista artículos)
+          </span>
+        </legend>
+
+        {lineas.length === 0 ? (
+          <p className="text-xs text-gray-500 my-2">
+            Sin partidas. Si el comprobante no lista artículos, déjalo así: el gasto se guarda
+            igual y solo no entra al inventario.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {lineas.map((l, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2 items-end">
+                <div className="col-span-5">
+                  <Input
+                    label="Descripción"
+                    value={l.description ?? ''}
+                    onChange={setLinea(i, 'description')}
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Input label="Cant." value={l.quantity ?? ''} onChange={setLinea(i, 'quantity')} />
+                </div>
+                <div className="col-span-2">
+                  <Input
+                    label="P. unit"
+                    value={l.unit_price ?? ''}
+                    onChange={setLinea(i, 'unit_price')}
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Input label="Importe" value={l.total ?? ''} onChange={setLinea(i, 'total')} />
+                </div>
+                <div className="col-span-1">
+                  <button
+                    type="button"
+                    onClick={() => quitarLinea(i)}
+                    disabled={ocupado}
+                    className="text-xs text-red-600 hover:text-red-800 disabled:opacity-40 py-2"
+                    aria-label={`Quitar la partida ${i + 1}`}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={agregarLinea}
+          disabled={ocupado}
+          className="mt-2 text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
+        >
+          + Agregar partida
+        </button>
+      </fieldset>
 
       <div className="flex gap-2 justify-end">
         <Button onClick={onCancelar} variant="secondary" disabled={ocupado}>Cancelar</Button>
@@ -388,8 +497,22 @@ export function EditorTicket({
             // backend distingue "no hay RFC" de "el RFC esta en blanco".
             provider_tax_id: form.provider_tax_id.trim() || undefined,
             tax_amount: form.tax_amount.trim() || undefined,
+            subtotal: form.subtotal.trim() || undefined,
             total_amount: form.total_amount.trim(),
             expense_date: form.expense_date,
+            // Solo se mandan las lineas que tienen ALGO. La fila vacia que se
+            // siembra para invites a escribir no puede acabar en la base como una
+            // partida sin descripcion: `interpretar_items` la descartaria con
+            // motivo, y el ruido en la cola de productos es peor que no tener la
+            // fila.
+            items: lineas
+              .filter(l => (l.description ?? '').trim() || (l.total ?? '').trim())
+              .map(l => ({
+                description: (l.description ?? '').trim() || undefined,
+                quantity: (l.quantity ?? '').trim() || undefined,
+                unit_price: (l.unit_price ?? '').trim() || undefined,
+                total: (l.total ?? '').trim() || undefined,
+              })),
           })}
           disabled={ocupado}
         >

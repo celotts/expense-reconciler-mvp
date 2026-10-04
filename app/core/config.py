@@ -92,11 +92,97 @@ class Settings(BaseSettings):
     # completa con los que alcanza, y el siguiente `POST /scan` sigue.
     TICKETS_SCAN_MAX_ARCHIVOS: int = 200
 
+    # --- Archivado: donde va un comprobante ya resuelto -------------------
+    #
+    # FUERA de `TICKETS_INPUT_DIR`, y no como una subcarpeta. Es lo unico que
+    # hace falta para que el escaneo recursivo no vuelva a leer lo archivado: si
+    # `Ticket_Scan` estuviera dentro, el siguiente `POST /scan` veria los
+    # archivos movidos, su `relative_path` habria cambiado, el ledger no los
+    # reconoceria y re-OCRearia cada corrida.
+    #
+    # Con Docker, esta es la ruta DENTRO del contenedor, no la del host. La del
+    # host va en `TICKETS_SCAN_OUTPUT_HOST_DIR` y la monta `docker-compose.yml`,
+    # por el mismo motivo que `TICKETS_INPUT_DIR`: montar `.:/app` y usar una
+    # ruta del host seria buscar `/Users/...` dentro del contenedor.
+    #
+    # VACIA significa "una carpeta hermana de `TICKETS_INPUT_DIR`", y se resuelve
+    # en `archivado_service.carpeta_de_escaneados()`.
+    #
+    # No se pone `/tickets_scan` como omision a proposito: esa ruta solo existe
+    # DENTRO del contenedor. Fuera de Docker —los tests, `uvicorn` directo— es un
+    # path del sistema y crearlo da "Read-only file system" en macOS. Medido: 24
+    # tests caidos por esto. La omision tiene que funcionar en los dos lados, y
+    # "hermano de la carpeta de entrada" funciona en los dos.
+    TICKETS_SCAN_OUTPUT_DIR: str = ""
+
+    # Apagar el archivado sin tocar la ruta. Con `false`, nada se mueve: util
+    # para comparar el comportamiento con y sin, y para un operador que todavia
+    # no se fia del movimiento automatico.
+    #
+    # NO es lo mismo que vaciar la carpeta a mano: con esto apagado el archivo
+    # se queda donde estaba y se puede volver a escanear.
+    TICKETS_SCAN_ARCHIVAR: bool = True
+
+    # Mover al digitalizar, en vez de esperar a que alguien confirme la compra.
+    #
+    # Los dos caminos existen y no son lo mismo:
+    #
+    # - `true` (este): el comprobante se va de la carpeta de entrada en cuanto el
+    #   sistema lo intento y guardo su veredicto. La carpeta de entrada queda
+    #   como bandeja de trabajo real: lo que hay ahi es lo que NO se ha
+    # digitalizado todavia.
+    # - `false`: el archivo se queda hasta que alguien confirma la compra
+    #   (`TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR`). Con mas seguridad —solo se mueve
+    #   lo que una persona autorizo— y la carpeta de entrada se llena de papel ya
+    #   resuelto que hay que distinguir a ojo.
+    #
+    # Por que `true` por omision, cuando la exactitud del OCR es 33.3%: porque la
+    # carpeta de escaneados NO significa "esto se leyo bien", significa "esto ya
+    # se intento". El veredicto sigue en `tickets.extraction_status` y la respuesta
+    # del escaneo trae `archivados_pendientes`, que es justamente el numero de los
+    # que se movieron sin leerse bien. Es un numero visible, no un silencio.
+    #
+    # Con `false`, la carpeta de entrada mezcla lo pendiente con lo ya resuelto y
+    # no hay forma de distinguirlos sin consultar la base.
+    TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR: bool = True
+
+    # Mover al confirmar la compra. Es el camino de `false` en el ajuste de
+    # arriba, y se puede tener el sincrónico o el otro: con los dos en `true`, el
+    # segundo casi nunca dispara, porque el archivo ya se movio al escanear.
+    TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR: bool = True
+
     # Tesseract necesita el binario del sistema, no solo el paquete de Python.
     # Si no esta, `OCR_ENABLED=true` no da error al arrancar: da error por cada
     # foto, y el operador ve "fallo de OCR" en lugar de "no instalaste
     # tesseract-ocr". Por eso se comprueba al arrancar y se avisa una vez.
     OCR_ENABLED: bool = True
+    # --- Cuando hay que preguntarle a la IA -------------------------------
+    #
+    # El ajuste que decide si una lectura SIN lineas de producto se acepta o se
+    # le vuelve a pedir a la IA. Y hay una tension real detrás, que conviene
+    # tener escrita:
+    #
+    # - Por un lado, la regla de la cascada dice que "una foto buena no toca
+    #   ningun modelo": el OCR local lee un ticket impreso sin equivocarse y
+    #   pagar un modelo por eso es tirar dinero. Es la razon de que el OCR sea el
+    #   primer escalon y no una optimizacion menor.
+    # - Por otro, un total sin lineas de producto no describe una compra, la
+    #   describe a medias. Y sin lineas no hay inventario: que es el motivo de
+    #   que exista el modulo.
+    #
+    # Con `true` (por omision) se le pregunta a la IA **siempre que falten las
+    # lineas**, y eso significa que una foto sin lineas cuesta una llamada al
+    # modelo. Con una carpeta de 3,000 comprobantes son 3,000 llamadas.
+    #
+    # Con `false` se aplica la regla de siempre —"bueno es bueno"— y se acepta la
+    # lectura sin lineas. El ticket queda sin compra, y eso es correcto para un
+    # gasto pero deja el inventario vacio.
+    #
+    # NO HAY UNA OPCION QUE SEA LAS DOS COSAS: se elige quien paga y quien lee.
+    # Lo que no hay es decidir sin saberlo, y por eso el comportamiento viene
+    # de aqui y no de una condicion escondida en la cascada.
+    ESCALAR_A_IA_SIN_LINEAS: bool = True
+
     OCR_IDIOMA: str = "spa+eng"
     OCR_PSM: int = 6  # bloque unico: el cuerpo del ticket, sin columnas
 

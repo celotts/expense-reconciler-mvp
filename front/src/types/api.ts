@@ -75,6 +75,11 @@ export interface Ticket {
   expense_date: string;
   category: string | null;
   raw_text: string | null;
+  /** Las lineas del comprobante, crudas. `null` NO es lo mismo que `[]`: `null`
+   *  es "el lector no produjo lineas" (la ruta OCR no las extrae) y `[]` es
+   *  "produjo lineas y no eran ninguna". Sin la distincion no se puede saber si
+   *  hay que volver a mirar el papel o no. */
+  items: LineaTicketUpdate[] | null;
   /** `null` es real, no un descuido: la columna admite NULL y un ticket sin
    *  fecha de creacion tiene que poder existir, porque es justamente el que
    *  mas importa ver (no se puede calcular su antiguedad). Pintar `null` como
@@ -229,6 +234,13 @@ export interface TicketCreate {
   raw_text?: string;
 }
 
+export interface LineaTicketUpdate {
+  description?: string;
+  quantity?: string;
+  unit_price?: string;
+  total?: string;
+}
+
 export interface TicketUpdate {
   provider_name?: string;
   provider_tax_id?: string;
@@ -237,6 +249,12 @@ export interface TicketUpdate {
   expense_date?: string;
   category?: string;
   raw_text?: string;
+  /** El subtotal entra en la correccion: sin el, `subtotal + IVA == total` no
+   *  se puede comprobar despues de corregir el total a mano. */
+  subtotal?: string;
+  /** Las lineas del comprobante. Sin esto el inventario por foto no tiene
+   *  entrada: la ruta OCR llega con `items` en null y no habia por donde cargarlas. */
+  items?: LineaTicketUpdate[];
 }
 
 export interface BankTransaction {

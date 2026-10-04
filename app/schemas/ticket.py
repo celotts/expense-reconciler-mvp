@@ -66,6 +66,31 @@ class TicketCreate(TicketBase):
     company_id: UUID
 
 
+class LineaTicketUpdate(BaseModel):
+    """Una linea del comprobante, tal como la escribe una persona.
+
+    `Decimal` y no `float` por la convencion del proyecto, y porque aqui la
+    aritmetica decide si la compra cuadra con su total: `0.1 + 0.2` en binario no
+    es `0.3`.
+
+    Todos los campos del importe son opcionales y se guardan tal cual, en
+    `Decimal`, sin normalizar a dos decimales. Cutrar un importe a dos decimales
+    es una decision de negocio y no del que transcribe; lo que hace
+    `inventario_service.interpretar_items` es rejecting lo que no se puede leer, no
+    inventar el que falta.
+    """
+
+    description: str | None = Field(None, max_length=300)
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    total: Decimal | None = None
+
+    @field_validator("description")
+    @classmethod
+    def _descripcion_no_vacia_si_esta(cls, v: str | None) -> str | None:
+        return v.strip() or None if v is not None else None
+
+
 class TicketUpdate(BaseModel):
     provider_name: str | None = Field(None, min_length=1, max_length=150)
     provider_tax_id: str | None = Field(None, max_length=50)
@@ -74,6 +99,36 @@ class TicketUpdate(BaseModel):
     expense_date: date | None = None
     category: str | None = Field(None, max_length=100)
     raw_text: str | None = None
+    # El subtotal entra en la correccion porque es lo que permite comprobar
+    # `subtotal + IVA == total` DESPUES de que una persona corrigio el total. Sin
+    # el, corregir el total a mano deja el ticket sin forma de verificar su propia
+    # aritmetica, que es el unico check que no depende de nada externo.
+    subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+
+    # LAS LINEAS, Y POR QUE ESTAN AQUI
+    # -------------------------------
+    # `PATCH /tickets/{id}` aceptaba el encabezado y NO las lineas. Eso hacia
+    # imposible cerrar el circulo de inventario: la ruta OCR llega con
+    # `items=NULL`, `registrar_compra` devuelve `None` por eso, y la unica forma de
+    # que una persona aportara las lineas —leyendo el papel— era escribirlas en un
+    # lado que la API no guardaba.
+    #
+    # Sin esto, el inventario por foto no tiene entrada: no por falta de datos en
+    # el papel, sino porque no habia por donde meterlos.
+    #
+    # Y `None` NO borra: es "no me digas nada de las lineas". Para vaciarlas hay
+    # que mandar `[]` explicito, que es una distincion que hace falta porque
+    # `exclude_unset` no distingue "no lo mande" de "lo mande vacio".
+    items: list[LineaTicketUpdate] | None = None
+
+    @field_validator("items")
+    @classmethod
+    def _limita_las_lineas(cls, v: list[LineaTicketUpdate] | None) -> list[LineaTicketUpdate] | None:
+        # Un ticket real con 500 lineas no existe, y un JSON de 50 000 si puede
+        # llegar. El tope es de pedido, no una regla fiscal.
+        if v is not None and len(v) > 500:
+            raise ValueError("Un comprobante no tiene 500 lineas. Revisa el archivo.")
+        return v
 
     @field_validator("provider_name")
     @classmethod
@@ -183,6 +238,24 @@ class TicketResponse(BaseModel):
     expense_date: date
     category: str | None = None
     raw_text: str | None = None
+    # LAS LINEAS DEL COMPROBANTE, y por que van en la respuesta.
+    #
+    # `list[dict] | None` y NO un modelo de linea: las lineas se guardan CRUDAS
+    # (`tickets.items` es JSON sin normalizar y `compra_items` es la version
+    # revisada, que todavia no existe). Tiparlas aqui afirmaria una estructura
+    # que el sistema nunca verifico, y con OCR al 33% esa afirmacion seria falsa
+    # seguido.
+    #
+    # `None` y `[]` NO son lo mismo y la distincion viaja: `None` es "el lector no
+    # produjo lineas" —la ruta OCR no las extrae, solo el LLM— y `[]` es "produjo
+    # lineas y no eran ninguna". Con las dos en `[]` no se puede distinguir "este
+    # comprobante no tiene detalle" de "no lo sabemos", y la segunda es la que
+    # obliga a mirar el papel.
+    #
+    # Y sin esto en la respuesta, el formulario de revision no puede sembrarse con
+    # las lineas que ya estan: habria que recargar el papel y volver a escribirlas
+    # para corregir un rfc.
+    items: list[dict] | None = None
     # La columna admite NULL, asi que la respuesta lo admite. Declararla
     # obligatoria convertia una fila con created_at nulo en un 500 al serializar,
     # y la fila con created_at nulo es justamente la que uno no quiere perder:

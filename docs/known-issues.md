@@ -13,6 +13,223 @@ Severidad:
 
 ## 🔴 Bugs activos
 
+### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — 🔴 **ABIERTO, preexistente**
+**No lo introdujo el inventario.** Verificado con `git stash`: en `HEAD`, sin los modelos nuevos,
+`db.delete(empresa)` con **un solo ticket** ya falla. Encontrado de paso porque el E2E del
+inventario necesitaba limpiar su empresa de prueba.
+
+**Síntoma:** `DELETE /api/v1/companies/{id}` responde `500` con
+`NotNullViolationError: null value in column "company_id" of relation "tickets"`.
+
+**Causa medida (con `echo=True` sobre el engine):**
+
+```sql
+UPDATE tickets SET company_id=$1::UUID WHERE tickets.id = $2::UUID     -- $1 = NULL
+```
+
+La FK declara `ON DELETE CASCADE`, y la cascada de Postgres sí está en el DDL. Pero la **cascada
+por omisión de SQLAlchemy en un uno-a-muchos es `save-update, merge`, que NO borra**: desasocia,
+y desasociar es un `UPDATE` que pone la FK en `NULL`. La columna es `NOT NULL`, así que el UPDATE
+revienta **antes** de que la cascada de la base llegue a correr.
+
+**Por qué `passive_deletes=True` en el muchos-a-uno NO lo arregla.** Se probó y no funciona, y es
+el primer intento razonable, así que conviene saber por qué: `passive_deletes` gobierna la
+relación **uno-a-muchos** (`CompanyModel.tickets`), no la **muchos-a-uno** (`TicketModel.company`).
+Un `backref="tickets"` declarado desde el hijo crea la relación del padre **sin heredar
+`passive_deletes`**. Ponerlo en `TicketModel.company` no tiene efecto — verificado, sigue fallando.
+
+**Lo que sí lo arregla** es declarar la relación en `company.py`:
+
+```python
+tickets = relationship("TicketModel", back_populates="company", passive_deletes=True)
+```
+
+y cambiar `backref` por `back_populates` en el hijo. **No se ha aplicado**, porque toca cinco
+modelos que hoy funcionan y es un cambio fuera de lo que pidió la feature de inventario. Manda
+alguien que lo mida.
+
+**Amplificado por el inventario:** las cuatro tablas nuevas (`productos`, `compras`,
+`compra_items`, `movimientos_inventario`) son hijas de `companies`, así que ahora hay más tablas
+en la misma situación. El `DELETE` por SQL directo **sí funciona** —deja que la cascada de
+`postgres` corra—, y `scripts/probar_inventario_e2e.py` limpia por SQL por eso, con el motivo
+escrito en el propio script.
+
+---
+
+### 0.b. El inventario no tiene entrada de ventas, y eso es una asimetría real — 🟠 **ABIERTO por decisión**
+
+El diseño implementa **solo la mitad de la regla de negocio**: la compra suma stock. `TipoMovimiento`
+ya trae `SALIDA` y la constraint `referencia_tipo` ya acepta `'VENTA'`, **pero no hay endpoint ni
+forma de registrar una venta.** No es un olvido: la compra viene de un papel y la venta viene de
+otro sitio, y esa otra fuente de datos no está definida.
+
+**Consecuencia concreta y medible:** con solo entradas, `stock_de()` es monótono creciente y el
+inventario no puede cuadrar con un conteo físico — grows sin techo. El día que se cargue la salida,
+el estado actual ya tiene lo necesario (`SALIDA` en el enum, el trigger que impide bajar de cero,
+el índice `ix_movimientos_producto` para la suma), pero **falta la entrada**.
+
+---
+
+### 0.d. La ruta de escaneados es un path del contenedor si nadie la fija — ✅ CORREGIDO (y pasó)
+`TICKETS_SCAN_OUTPUT_DIR` tiene que estar en el `environment:` de `docker-compose.yml`. Sin eso
+resuelve "una carpeta hermana de `TICKETS_INPUT_DIR`" y acierta en `/Tickets_Scan`, que es un
+directorio **del contenedor** y no el segundo montaje. Los comprobantes se mueven ahí y
+desaparecen de la máquina.
+
+**Medido, no supuesto:** 8 comprobantes se movieron a `/Tickets_Scan` y `~/Documents/Tickets_Scan`
+quedó vacío. Los archivos seguían existiendo y se devolvieron a la entrada con `mv`, sin pérdida de
+bytes.
+
+Es la misma trampa que `TICKETS_INPUT_DIR`, y por el mismo motivo: la ruta del host no existe
+dentro del contenedor. El arreglo está en `docker-compose.yml`, junto al de `TICKETS_INPUT_DIR`, y
+documentado en `.env.example`.
+
+**Y el mismo defaults que no funcionaba fuera de Docker:** la omision ahora es *vacía* = "hermano
+de la carpeta de entrada", no `/tickets_scan`. Con un default de contenedor, `uvicorn` directo y los
+tests intentan `mkdir` en `/` y macOS responde "Read-only file system" (medido: 24 tests caídos).
+
+---
+
+### 0.c. El OCR no extrae líneas: el inventario por foto no tiene entrada — 🔴 **ABIERTO, es el techo**
+
+La línea se pierde en `ocr.py` / `parser_service.py`: no hay código que arme `items` desde el
+texto de Tesseract. Solo el LLM produce `items` (`ai_extractor.ExtractedInvoice.items`), y de los
+3 comprobantes escaneados en la base, **2 se leyeron con `read_by = ocr`**.
+
+Consecuencia: un comprobante leído por OCR entra al gasto con su total, y **no abre compra**. Es
+el caso normal y no un error —`registrar_compra` devuelve `None` con un `logger.info`—, pero
+significa que **la mayor parte de las fotos no genera líneas de inventario.**
+
+**Por qué no se arregla aquí:** es el mismo techo de §21 (33.3% de exactitud), y las líneas son un
+problema peor que los totales porque son más números por documento y se multiplican. Arreglarlo
+exige un segundo motor de OCR o resolver antes el problema de fondo; agregar un regex de líneas
+sobre texto de Tesseract al 33% produciría cantidades plausibles y equivocadas, que es peor que
+no producir nada.
+
+**Lo que sí funciona hoy:** PDF con texto (va al LLM, trae líneas) y la compra de esos sí llega a
+`EN_REVISION`.
+
+---
+
+### 26. `Decimal` en `tickets.items` = ticket perdido en silencio — ✅ CORREGIDO
+**Medido, no supuesto.** Un `ticket_mercado_simple.pdf` con 4 líneas de detalle volvió del escaneo
+como `accion=ERROR`, `datos=null`, y sin ticket en la base.
+
+**La causa.** `ai_extractor.py:346-348` convierte a `Decimal` `quantity`, `unit_price`, `total`,
+`tax_rate` y `tax_amount` de cada línea —que es lo correcto para dinero—. Pero `tickets.items` es
+una columna `JSON`, y `Decimal` no existe en JSON:
+
+```
+TypeError: Object of type Decimal is not JSON serializable
+[SQL: INSERT INTO tickets (... items ...) VALUES (...)]
+```
+
+`procesar_archivo` lo capturaba, hacía un `rollback` y devolvía `ERROR`. El comprobante se perdía y
+lo único que quedaba era `scan_files.last_error`, que además se iba con el rollback: la fila del
+archivo ni siquiera se creaba, así que tampoco había forma de reintentar desde el registro.
+
+**Por qué el test verde no lo veía — y esto es lo importante.** Solo falla cuando el lector
+produce líneas. Un comprobante sin detalle viene con `items=[]`, que serializa bien. El camino del
+LLM se podía dar por bueno entero —tests incluidos— mientras no se le pasara una factura con
+partidas, que es exactamente el caso de uso del inventario. El fallo no era raro: era invisible
+hasta que llegó un caso de uso de verdad.
+
+**El arreglo** es `JSONConDecimal` en `app/core/json_decimal.py`: un `TypeDecorator` sobre la
+columna que serializa `Decimal` como **texto**, recursivo, porque las líneas son `list[dict]` y el
+`Decimal` vive dos niveles dentro —un recorrido de un solo nivel deja el bug entero, más estrecho y
+más difícil de ver.
+
+**Texto y no `float`, a propósito.** `float` "por compatibilidad" se comería centavos en la capa
+que decide si una compra cuadra con su total: `0.1 + 0.2` en binario no es `0.3`. Con texto,
+`"12.50"` vuelve a `Decimal("12.50")` sin haber pasado por binario, y `interpretar_items` ya
+aceptaba strings porque el modelo devuelve `"3"` y `"12.50"` con frecuencia —este fix no le agrega
+un caso, lo completa.
+
+No se definió un `json_encoder` global a propósito: habría cambiado el comportamiento de todas las
+columnas JSON de la app sin que nadie lo pidiera, y el bug reaparecería en cualquier sitio nuevo sin
+que nadie lo estuviera mirando.
+
+**Dos tests que mueren si se quita el arreglo** (`tests/unit/test_scan_datos_json.py`): el INSERT con
+líneas, y el round-trip por `interpretar_items` que comprueba que `85.00 + 70.00` sigue dando
+`155.00` exacto.
+
+---
+
+### 28. Las fotos no se veían en la UI: dos bugs que making falta uno al otro — ✅ CORREGIDO
+**Medido.** 7 de 9 documentos guardados tenían `content_type=NULL` y se servían como
+`application/octet-stream`. El navegador **descarga** eso en vez de pintarlo: la foto existía, se
+podía bajar, y el revisor veía un recuadro vacío — la misma pantalla que muestra un ticket sin
+comprobante, que es justo la confusión que este endpoint existe para evitar.
+
+**Por qué no lo vio nadie antes.** Los 2 documentos que sí tenían tipo habían entrado por una subida
+HTTP. El escáner —el otro camino, y el que produce los tickets de foto— no declara nada, así que sus
+documentos nacieron con la columna en `NULL`. El camino de la API se veía bien y el del escáner no.
+
+**Bug 2, en el front:** `TicketDocumento.tsx` ponía `<object type="application/pdf">` para **todos**
+los documentos. Un JPEG declarado como PDF no se pinta ni con el `Content-Type` correcto. Los dos
+bugs juntos son lo que producía el recuadro vacío.
+
+**El arreglo va al SERVIR, no al guardar, y no por gusto.** `ticket_documents` es append-only por
+trigger, así que backfillear la columna exige un `UPDATE` que Postgres rechaza:
+
+```
+ERROR:  ticket_documents es append-only: un documento no se actualiza, se agrega una version nueva
+```
+
+Un backfill habría pedido un `ALTER` o apagar el trigger — saltarse la regla de que el papel no se
+altera— y escribir sobre una columna que es un hecho del papel. El tipo que se **sirve** es una
+decisión de ahora, no un atributo de lo que se subió en marzo.
+
+**Lo que decide esto es que también arregla las fotos viejas.** Un backfill habría dejado las 7
+sirviendo como descarga para siempre, con el bug visible solo en las nuevas. Así se esconden estos
+fallos, y por eso el test lee una fila **ya guardada** y le pone la columna en `NULL` a mano.
+
+**El nombre del archivo tampoco decide — con el caso que lo prueba.** `IMG_4253 2.HEIC` está
+guardado y por sus bytes es un **JPEG**: la cámara del teléfono lo nominó así. Keyear por extensión
+lo habría servido como HEIC. La foto es la misma; lo que falla es la etiqueta.
+
+**La lista cerrada sigue mandando.** `media_type_real()` dice **qué es**; el allowlist de
+`content_type_servible()` decide **si se puede pintar**. Un HEIC deduce `image/heic`, cae fuera de
+`CONTENT_TYPES_SERVIBLES` y sale como octet-stream, que es lo correcto porque ningún navegador de
+escritorio lo pinta. Separar las dos mitades es lo que deja la lista cerrada siendo la única que
+manda.
+
+En el front, el tipo sale del `Blob` y una imagen va en `<img>`: `<object>` vuelve a pedir el
+recurso **sin `Authorization`** y sale 401.
+
+**Verificado en la API viva**, sobre los documentos que ya estaban en la base y sin tocar ninguno:
+el PDF sigue saliendo `application/pdf`, las 7 fotos salen `image/jpeg` (incluida la del `.HEIC`),
+y todas con `Content-Disposition: inline`. `tsc` y `vite build` en verde.
+
+**Lo que NO se comprobó: el render en un navegador.** El `Content-Type` correcto y el `<img>` correcto
+son la condición necesaria, no la suficiente. Nadie abrió la pantalla de revisión con una foto
+mirándola —el navegador no estaba conectado en esta sesión—, así que la prueba de que la imagen se
+**pinta** sigue pendiente de una mirada. Lo que sí está probado es que el backend entrega el tipo
+bien y que el front ya no declara PDF a un JPEG.
+
+---
+
+### 27. `POST /scan` no devolvía los datos del ticket — ✅ CORREGIDO
+`detalles[]` traía `relative_path`, `accion`, `confidence` y `status`, pero **no los datos del
+comprobante**. Quien quisiera el JSON tenía que pedir un `GET /tickets/{id}` por cada archivo de la
+corrida y pegar los campos a mano.
+
+Ahora cada elemento trae `datos`, con los datos **y el veredicto juntos**, resuelto en una sola
+consulta después del bucle (`_resolver_datos_de_tickets`). Tres decisiones que no son de estilo:
+
+- Los datos salen de la **fila de `tickets`**, no de la lectura cruda. Si el gate mandó la lectura
+  a revisión, `extraction_status` aparece al lado de los números. Un JSON con los datos sin el
+  veredicto deja a quien lo consume creyendo que el sistema respondió por ellos.
+- `datos` se resuelve al final y no dentro de `procesar_archivo`, que tiene trece salidas y cuyo
+  ticket a veces todavía no existe (DUPLICADO apunta al de otro, OMITIDO por `company_id` no creó
+  ninguno, ACTUALIZADO pudo encontrarlo borrado).
+- `datos=null` sin ticket, **no** un objeto de campos vacíos: un objeto lleno de `None` parece una
+  lectura que no encontró nada, y es otra cosa distinta.
+
+`raw_text` sigue fuera a propósito: hasta 20 000 caracteres por ticket, y es evidencia, no un dato.
+
+---
+
 ### 1. `GET /reconciliations/mappings` devolvía 422, no 200 — ✅ CORREGIDO
 **Orden inverso de rutas.** `GET /{reconciliation_id}` se declaraba **antes** de `GET /mappings`.
 Starlette resuelve en orden de declaración y gana el primer match, así que `/mappings`

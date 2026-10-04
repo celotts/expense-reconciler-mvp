@@ -138,6 +138,77 @@ CABECERA = 16
 # La decision final la toma `capture.py:292` con la cascada de texto.
 
 
+# El `Content-Type` MEDIO de cada firma, para cuando lo que se necesita es el tipo
+# que se sirve y no la ruta de lectura.
+#
+# Es una tabla aparte y no un campo de `_FIRMAS_IMAGEN` a proposito: las dos
+# preguntas son distintas y las dos respuestas son correctas. `_FIRMAS_IMAGEN` sabe
+# "esto es una imagen" y por eso mete BMP, PSD, TIFF y HEIC en la misma respuesta;
+# para ELEGIR QUE SE SIRVE hace falta distinguir el JPEG del PNG, y peor aun, hay
+# que saber cuales de esos formatos puede pintar un navegador. Un solo formato con
+# dos campos dejaria una de las dos preguntas sin responder.
+#
+# Lo que NO esta aqui es lo que decide el formato del resto: HEIC/AVIF comparten
+# la caja `ftyp` con el video, asi que `_FIRMA_MEDIA_HEIC` se aplica a los tres y el
+# navegador tampoco los pinta. None de los dos usos necesita separarlos, y
+# separarlos por marca de FourCC exigiria leer mas bytes de los que se leen.
+_MEDIA_TYPE_PDF = "application/pdf"
+_MEDIA_TYPE_JPEG = "image/jpeg"
+_MEDIA_TYPE_PNG = "image/png"
+_MEDIA_TYPE_GIF = "image/gif"
+_MEDIA_TYPE_WEBP = "image/webp"
+# HEIC, HEIF y AVIF. No hay `image/heic` servible: ningun navegador de escritorio
+# lo pinta, asi que servirlo como tal solo produce un recuadro roto con un
+# `Content-Type` que parece correcto. Caera a octet-stream, que es lo honesto.
+_MEDIA_TYPE_HEIC = "image/heic"
+
+# Orden importante: `_MEDIA_TYPE_POR_FIRMA` se recorre de arriba abajo y gana el
+# primer match, asi que las firmas mas especificas van primero. WEBP esta en el
+# byte 8 y PNG en el 0, y no se solapan; HEIF/AVIF y JPEG tampoco. El orden es el
+# de las firmas del archivo, para que las dos tablas se puedan leer en paralelo.
+_MEDIA_TYPE_POR_FIRMA: tuple[tuple[bytes, int, str], ...] = (
+    (b"\xff\xd8\xff", 0, _MEDIA_TYPE_JPEG),
+    (b"\x89PNG\r\n\x1a\n", 0, _MEDIA_TYPE_PNG),
+    (b"GIF87a", 0, _MEDIA_TYPE_GIF),
+    (b"GIF89a", 0, _MEDIA_TYPE_GIF),
+    (b"WEBP", 8, _MEDIA_TYPE_WEBP),
+    (b"ftyp", 4, _MEDIA_TYPE_HEIC),
+)
+
+
+def media_type_real(contenido: bytes) -> str | None:
+    """El `Content-Type` que dicen los BYTES, o `None` si no se reconoce.
+
+    Es la otra mitad de `detectar_tipo_real`, y existe por lo mismo que
+    `content_type_servible()`: el `Content-Type` que declara el cliente no decide
+    como se sirve el comprobante. Por la razon de siempre —viene de fuera y decide
+    como lo interpreta el navegador— y por una medida mas: aqui el nombre del
+    archivo tampoco decide.
+
+    **Lo del nombre no es hipotetico en este repo.** Hay un comprobante guardado
+    como `IMG_4253 2.HEIC` que por sus bytes es un JPEG: la camara del telefono lo
+    escribio asi. Keyear el tipo a la extension habria servido un JPEG como HEIC, y
+    el navegador no lo habria pintado. La foto es la misma; lo que falla es la
+    etiqueta.
+
+    Lo que sale aqui pasa despues por `content_type_servible()`, que es la lista
+    cerrada. Esta funcion NO decide que se sirve: dice que ES, y el allowlist
+    decide si se sirve como tal o cae a octet-stream. Separar las dos cosas es lo
+    que permite que la lista cerrada siga siendo la unica que manda.
+    """
+    if not contenido:
+        return None
+
+    if contenido[0:4] == _FIRMA_PDF[0]:
+        return _MEDIA_TYPE_PDF
+
+    for firma, desplazamiento, media_type in _MEDIA_TYPE_POR_FIRMA:
+        if contenido[desplazamiento : desplazamiento + len(firma)] == firma:
+            return media_type
+
+    return None
+
+
 @dataclass(frozen=True)
 class TipoDetectado:
     """Lo que dicen los bytes, y con cuanto margen se dice.

@@ -7,6 +7,7 @@ from app.api.bank_transactions import router as bank_transactions_router
 from app.api.categorias import router as categorias_router
 from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
+from app.api.inventario import router as inventario_router
 from app.api.reconciliations import router as reconciliations_router
 from app.api.scans import router as scan_router
 from app.api.tickets import router as tickets_router
@@ -79,5 +80,18 @@ api_router.include_router(
     reconciliations_router,
     prefix="/reconciliations",
     tags=["Reconciliations"],
+    dependencies=[Depends(get_current_user)],
+)
+# Inventario. El token obligatorio por el mismo motivo que el resto.
+#
+# El prefijo va aqui y NO en el APIRouter del router, a diferencia de
+# `dashboard.py` y `categorias.py`, que ya lo declaran en su propio lado. La
+# regla es la misma en los dos casos y esta escrita arriba: el prefijo se
+# declara en UN solo sitio. Este router declara el suyo aqui porque no tiene
+# razon para hardcodear "/inventario" dentro del modulo que lo implementa.
+api_router.include_router(
+    inventario_router,
+    prefix="/inventario",
+    tags=["Inventario"],
     dependencies=[Depends(get_current_user)],
 )

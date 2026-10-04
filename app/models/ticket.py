@@ -9,6 +9,7 @@ from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 from app.core.enums import OPEN_STATUSES, SETTLED_STATUSES, ExtractionStatus, SourceType
+from app.core.json_decimal import JSONConDecimal
 from app.core.time import utcnow
 
 # Las condiciones se construyen desde el enum para que la constraint y el indice
@@ -128,6 +129,39 @@ class TicketModel(Base):
     # subtotal. Un 0 aqui haria que la cuenta pareciera cuadrar cuando en
     # realidad no hay nada que comprobar.
     subtotal = Column(Numeric(12, 2), nullable=True)
+    # Las lineas del comprobante. El modelo las pedia desde antes de que
+    # existiera el inventario (`ai_extractor.py`), devolvia la respuesta entera
+    # con ellas, y `capture.py:invoice_to_result` las dejaba fuera del
+    # `TicketExtractionResult`: el gasto se guardaba y el contenido se perdia.
+    # Ver db/migrations/0010_inventario.sql.
+    #
+    # NULL y no lista vacia, y la diferencia importa: NULL = el lector no produjo
+    # lineas (la ruta OCR no las extrae, solo el LLM). `[]` = produjo lineas y no
+    # eran ninguna. Con las dos en `[]` no se puede distinguir "este comprobante
+    # no tiene detalle" de "no lo sabemos", y la segunda es la que obliga a
+    # revisar el papel.
+    # `none_as_null=True` NO es cosmetico, y sin el esta columna MIENTE.
+    #
+    # SQLAlchemy guarda un `None` de Python como el literal JSON `null`, no como
+    # SQL NULL, porque `none_as_null` viene en False por omision. Medido sobre la
+    # base real: `items IS NULL` daba falso para 5 tickets que en realidad no
+    # tienen lineas, y `jsonb_typeof(items)` daba `null`.
+    #
+    # Consecuencia: cualquier `WHERE items IS NULL` — que es exactamente lo que
+    # la documentacion de esta columna promete— no devuelve nada. El codigo que
+    # lee el atributo si funciona, porque `json 'null'` vuelve a Python `None` al
+    # deserializar, asi que el fallo es silencioso: el comportamiento parece
+    # correcto y la columna no cumple lo que dice.
+    # `JSON(none_as_null=True)` y NO `Column(JSON, none_as_null=True)`: en el
+    # constructor de `Column` el argumento se ignora con un SAWarning, y el
+    # arreglo "aplica" sin aplicar. `none_as_null` es una opcion del tipo `JSON`,
+    # y va ahi.
+    # `JSONConDecimal` y no `JSON` pelado: las lineas del LLM traen `Decimal`
+    # en cantidad, precio e importe (`ai_extractor.py:346-348`), y `Decimal` no
+    # es JSON. Con `JSON` a secas, un INSERT de cualquier factura CON detalle de
+    # partidas revienta con "Object of type Decimal is not JSON serializable" y el
+    # ticket se pierde como `accion=ERROR`. Ver `app/core/json_decimal.py`.
+    items = Column(JSONConDecimal(none_as_null=True), nullable=True)
     expense_date = Column(Date, nullable=False)
     category = Column(String(100), nullable=True)
     raw_text = Column(Text, nullable=True)

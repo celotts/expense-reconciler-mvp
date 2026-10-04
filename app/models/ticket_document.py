@@ -86,6 +86,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
+from app.core.archivo_real import media_type_real
 from app.core.database import Base
 from app.core.time import utcnow
 
@@ -246,4 +247,32 @@ class TicketDocumentModel(Base):
 
     @property
     def content_type_servible(self) -> str:
-        return content_type_servible(self.content_type)
+        """El `Content-Type` con el que se sirve ESTE documento.
+
+        Es `content_type_servible()` sobre lo declarado, y si no hay nada declarado
+        se deduce de los BYTES. Ese segundo paso es lo que hace que las fotos del
+        escaner se vean: el escaner no declara `Content-Type` —no tiene de donde—
+        asi que sus documentos llegaron con la columna en `NULL` y se servian como
+        `application/octet-stream`, que el navegador descarga en vez de pintar.
+        Medido: 7 de 9 documentos guardados, y ninguno de los 2 con tipo habia
+        entrado por el escaner.
+
+        **Se deduce al servir y no al guardar**, y hay una razon que es del
+        proyecto y no mia: `ticket_documents` es append-only por trigger
+        (`trg_ticket_documents_no_actualizar`), y backfillear la columna necesita un
+        `UPDATE` que Postgres rechaza a proposito —"un documento no se actualiza, se
+        agrega una version nueva". Un `ALTER` o un trigger desactivado parallo
+        seria saltarse la regla de que el papel no se altera, y ademas el
+        `UPDATE` habria escrito sobre una columna que es un hecho del papel.
+
+        El tipo que se SIRVE es una decision de ahora, no un atributo de lo que se
+        subio en marzo, y por eso se calcula en cada lectura.
+
+        Y esto no arregla solo lo que se guarde de aqui en adelante: arregla tambien
+        los documentos que ya estan en la base sin tocar ninguno. Un
+        backfill habria dejado las 7 fotos viejas sirviendo como descarga para
+        siempre, con el bug visible solo en las nuevas.
+        """
+        if self.content_type:
+            return content_type_servible(self.content_type)
+        return content_type_servible(media_type_real(self.contenido))

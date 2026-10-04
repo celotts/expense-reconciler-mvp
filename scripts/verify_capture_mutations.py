@@ -35,15 +35,19 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "un PDF con texto se manda a vision igualmente",
         "app/services/capture.py",
-        "    return await _cascada_texto(texto, ConfidenceSource.PDF_TEXT, extract_from_text)",
+        # Un PDF con texto va a `_cascada_texto` con `exigir_items=True`. Si se
+        # manda a vision, un ticket impreso pago un modelo para nada.
+        "    return await _cascada_texto(\n"
+        "        texto, ConfidenceSource.PDF_TEXT, extract_from_text, exigir_items=True\n"
+        "    )",
         "    return await _vision_pdf(content, extract_from_image)",
         ["tests/unit/test_capture.py::TestPdfConTexto"],
     ),
     (
         "el modelo se consulta antes que las reglas",
         "app/services/capture.py",
-        "    reglas = _marcar_por_reglas(_parse_receipt_text(texto), source)\n\n    if _es_extraccion_util(reglas):\n        return reglas",
-        "    if extract_from_text is not None:\n        return invoice_to_result(await extract_from_text(texto))\n    reglas = _marcar_por_reglas(_parse_receipt_text(texto), source)\n\n    if _es_extraccion_util(reglas):\n        return reglas",
+        "    if _es_extraccion_util(reglas) and not (exigir_items and _exige_items(reglas)):\n        return reglas",
+        "    if extract_from_text is not None:\n        return invoice_to_result(await extract_from_text(texto))\n    if _es_extraccion_util(reglas) and not (exigir_items and _exige_items(reglas)):\n        return reglas",
         ["tests/unit/test_capture.py::TestPdfConTexto"],
     ),
     (
@@ -89,8 +93,8 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "un documento ilegible se pierde en vez de ir a la cola",
         "app/services/capture.py",
-        "    return resultado.provider_name != UNKNOWN_PROVIDER and resultado.total_amount > 0",
-        "    return resultado.provider_name != UNKNOWN_PROVIDER and resultado.total_amount > 1000000",
+        "    if resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0:\n        return False\n    return True",
+        "    if resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0:\n        return False\n    return resultado.total_amount > 1000000",
         [
             "tests/unit/test_capture.py::TestPdfConTexto",
             "tests/unit/test_capture.py::TestTiposDeArchivo",

@@ -207,3 +207,69 @@ class SpotCheckStatus(str, Enum):
 # muestra grande es AFIRMAR un numero, y para eso el reporte dice cuantos
 # faltan en vez de dejar que se reporte un porcentaje sin respaldo.
 SPOT_CHECK_RATE = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Compra: de la factura digitalizada a la entrada al inventario
+# ---------------------------------------------------------------------------
+#
+# NO CONFUNDIR CON `ExtractionStatus` (arriba). Son dos maquinas de estado
+# distintas y estan en tablas distintas, por una razon concreta:
+#
+# `ExtractionStatus` responde "como se leyo el papel". `EstadoCompra` responde
+# "el inventario ya conto esto". Un ticket puede estar AUTO_APROBADO —el
+# sistema se responsabiliza de la lectura— y aun asi su compra estar en
+# EN_REVISION, porque que la lectura sea buena no dice nada sobre si las LINEAS
+# son las correctas. El gate evalua los campos del encabezado y nunca miro una
+# linea de producto. Fusionarlos seria afirmar que una lectura buena del total
+# es una lectura buena del contenido, que es justo el salto que este proyecto
+# no puede sostener (AGENTS.md, "Gate de confianza").
+#
+# La transicion que importa es EN_REVISION -> PROCESADO: es la unica que suma
+# stock, y la unica que hace una persona.
+
+
+class ProductoOrigen(str, Enum):
+    """Quien puso el producto en el catalogo.
+
+    No es decorativo: decide si el producto merece fe. `MANUAL` lo creo una
+    persona, mirando el producto. `OCR` salio de una linea de comprobante leida
+    a las 11 de la noche.
+
+    La lista tiene que coincidir con la constraint `ck_productos_origen` de
+    db/migrations/0011_productos_origen.sql, por el mismo motivo que
+    `SpotCheckStatus` con la suya.
+    """
+
+    MANUAL = "MANUAL"
+    OCR = "OCR"
+
+
+class EstadoCompra(str, Enum):
+    """Donde esta la orden de compra en su camino al inventario.
+
+    La lista tiene que coincidir con la constraint `ck_compras_estado` de
+    db/migrations/0010_inventario.sql, por el mismo motivo que
+    `SpotCheckStatus` con la suya: si divergen, se escribe un estado nuevo en
+    Python y la base lo rechaza al registrarlo, en produccion.
+    """
+
+    PROCESAR = "PROCESAR"        # se esta digitalizando y extrayendo
+    EN_REVISION = "EN_REVISION"  # extraida; esperando que alguien la autorice
+    PROCESADO = "PROCESADO"      # autorizada; YA sumo stock
+
+
+class TipoMovimiento(str, Enum):
+    """El signo del movimiento en el kardex.
+
+    `cantidad` SIEMPRE positiva. El signo lo da el tipo, no el numero, para que
+    una resta nunca se confunda con "no hay cantidad" y para que el kardex se
+    pueda sumar con un simple SUM sin depender del signo almacenado.
+
+    ENTRADA suma stock (compra). SALIDA lo resta (venta). AJUSTE es la correccion
+    manual cuando el conteo fisico y el sistema no coinciden.
+    """
+
+    ENTRADA = "ENTRADA"
+    SALIDA = "SALIDA"
+    AJUSTE = "AJUSTE"

@@ -44,6 +44,10 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
   const [url, setUrl] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // El tipo con el que el backend sirvio los bytes. Lo decide el backend desde una
+  // lista cerrada (`content_type_servible`) y no el cliente: ver
+  // `app/models/ticket_document.py`. Un `undefined` significa octet-stream.
+  const [tipo, setTipo] = useState<string | undefined>(undefined);
 
   // El `Blob` URL se libera al cerrar o al cambiar de ticket. Sin este efecto,
   // abrir cinco comprobantes deja los cinco en memoria: un comprobante de
@@ -62,6 +66,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
     setAbierto(false);
     setUrl(null);
     setError(null);
+    setTipo(undefined);
   }, [ticket.id]);
 
   if (!ticket.tiene_documento) {
@@ -79,6 +84,14 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
     ? `${(ticket.documento_tamano / 1024).toFixed(0)} KB`
     : null;
 
+  // El backend decide si esto se puede pintar como imagen, y no esta pantalla: el
+  // `Content-Type` sale de una lista cerrada de tipos que el navegador no ejecuta
+  // (`content_type_servible`). Lo que no esta en ella llega como
+  // `application/octet-stream` y cae al visor de PDF, que para un octet-stream
+  // muestra un recuadro vacio con su mensaje de "no se puede mostrar" — el
+  // mismo mensaje que veria alguien a quien de verdad no se le puede pintar.
+  const esImagen = tipo?.startsWith('image/') ?? false;
+
   const alternar = async () => {
     if (abierto) {
       setAbierto(false);
@@ -91,6 +104,9 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
     setError(null);
     try {
       const blob = await ticketsApi.documento(ticket.id);
+      // El `Blob` conserva el `Content-Type` de la respuesta, asi que el tipo real
+      // viaja con los bytes sin pedirlo por separado.
+      setTipo(blob.type || undefined);
       setUrl(URL.createObjectURL(blob));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo cargar el comprobante');
@@ -120,10 +136,27 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
         </p>
       )}
 
-      {abierto && url && (
+      {abierto && url && esImagen && (
+        /* Una foto con `<object type="application/pdf">` no se ve: el navegador
+           intenta pintar un JPEG con el visor de PDF y sale un recuadro vacio. Es
+           lo que pasaba con todas las fotos del escaner —no con los PDF, que si
+           se veian— y por eso el tipo sale del Blob y no de una constante.
+
+           `<img>` y no `<object>` porque `<object>` descarga el recurso por su
+           cuenta con una segunda peticion sin cabecera `Authorization`, que sale
+           401 y tampoco lo pinta. El `Blob` ya viene autenticado y el
+           `createObjectURL` no vuelve a pedirlo. */
+        <img
+          src={url}
+          alt={`Comprobante original de ${ticket.provider_name}`}
+          className="mt-2 max-h-96 w-full rounded border border-gray-200 object-contain"
+        />
+      )}
+
+      {abierto && url && !esImagen && (
         <object
           data={url}
-          type="application/pdf"
+          type={tipo ?? 'application/pdf'}
           className="mt-2 w-full h-96 border border-gray-200 rounded"
           aria-label={`Comprobante original de ${ticket.provider_name}`}
         >

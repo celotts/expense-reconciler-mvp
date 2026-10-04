@@ -79,6 +79,26 @@ class ResultadoOCR:
     texto: str
     motor: str
     confianza_media: float | None = None
+    # Las MISMAS lineas de `texto`, pero con la geometria: cada palabra con su
+    # `x0`/`x1`/`y0`/`y1`. Antes `_lineas_desde_cajas` calculaba esas cajas y las
+    # tiraba, dejando solo el texto pegado.
+    #
+    # POR QUE SE CONSERVAN
+    # ===================
+    #
+    # Para leer lineas de producto no hace falta entender el texto: hace falta
+    # saber DONDE esta cada palabra. En un ticket, la descripcion esta a la
+    # izquierda y los numeros alineados a la derecha, y eso es geometria.
+    #
+    # Y el detalle que hace que sirva con OCR mediocre: una `l` leida donde iba
+    # un `1` **no mueve la caja**. Las coordenadas son tan fiables como el resto,
+    # y el texto puede estar destruido mientras la posicion es correcta. En el
+    # caso real de la base (`IMG_4220.jpeg`) el texto sale como
+    # "G 1.028 HILANESA DE PECHU 94.90" pero los tres numeros —1.028, 94.90,
+    # 97.56— son los correctos, y `1.028 * 94.90 == 97.56` cuadra al centavo.
+    #
+    # Ver `app/services/parser_lineas.py`, que es quien lo usa.
+    lineas: tuple[dict, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +280,19 @@ def _variantes(imagen: "object") -> list[tuple[int, "object"]]:
 
 @dataclass(frozen=True)
 class Lectura:
-    """Una lectura completa, con su nota de por que se puntua asi."""
+    """Una lectura completa, con su nota de por que se puntua asi.
+
+    `lineas` es la geometria de ESA lectura —la de la rotacion que gano—, no la
+    de todas. Se propaga al `ResultadoOCR` para que `parser_lineas.py` pueda
+    trabajar con las coordenadas del texto que realmente se eligio, que es el unico
+    que se guardo.
+    """
 
     texto: str
     confianza: float | None
     rotacion: int
     puntos: int
+    lineas: tuple[dict, ...] = ()
 
 
 def _calidad_del_texto(texto: str) -> int:
@@ -472,6 +499,7 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
         texto=mejor.texto,
         motor="tesseract",
         confianza_media=mejor.confianza,
+        lineas=tuple(mejor.lineas),
     )
 
 
@@ -517,6 +545,14 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
     confianza_total = 0.0
     palabras_con_confianza = 0
 
+    # La geometria de la MISMA pasada, con la misma clave de linea. Se construye
+    # aqui y no aparte para que no puedan desincronizarse: si el texto se agrupa
+    # por (bloque, parrafo, linea) y las cajas por otra cosa, `parser_lineas.py`
+    # leeria las palabras de una linea con las coordenadas de otra, que es peor
+    # que no devolver nada.
+    geometria: dict[tuple[int, int, int], list[dict]] = {}
+    ys_por_clave: dict[tuple[int, int, int], tuple[int, int]] = {}
+
     for i, palabra in enumerate(datos_ocr.get("text", [])):
         if not palabra or not str(palabra).strip():
             continue
@@ -526,7 +562,33 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
             int(datos_ocr["par_num"][i]),
             int(datos_ocr["line_num"][i]),
         )
-        lineas.setdefault(clave, []).append(str(palabra).strip())
+        limpio = str(palabra).strip()
+        lineas.setdefault(clave, []).append(limpio)
+
+        # La geometria es MEJOR ESFUERZO y la confianza NO depende de ella.
+        #
+        # Antes esta parte iba con un `continue` en el `except`, y eso hacia que
+        # un `image_to_data` sin claves `left`/`top`/`width`/`height` dejara la
+        # confianza en `None` —porque el `continue` se comia tambien la palabra
+        # que venia justo despues—. Medido: `test_la_confianza_del_ocr_se_promedia
+        #_por_palabra` devolvio `None` en vez de `0.8`.
+        #
+        # Aqui el fallo se registra como lo que es: la palabra entra al texto,
+        # sin caja. `parser_lineas.py` working con menos geometria es mejor que
+        # perder la confianza de una lectura que si funciono.
+        try:
+            x0 = int(datos_ocr["left"][i])
+            y0 = int(datos_ocr["top"][i])
+            w = int(datos_ocr["width"][i])
+            h = int(datos_ocr["height"][i])
+        except (TypeError, ValueError, KeyError, IndexError):
+            x0 = None
+        if x0 is not None:
+            geometria.setdefault(clave, []).append(
+                {"x0": x0, "x1": x0 + w, "texto": limpio}
+            )
+            y0p, y1p = ys_por_clave.get(clave, (y0, y0 + h))
+            ys_por_clave[clave] = (min(y0p, y0), max(y1p, y0 + h))
 
         try:
             valor = float(datos_ocr["conf"][i])
@@ -552,10 +614,28 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
         confianza=media,
         rotacion=rotacion,
         puntos=_puntuar(texto, media),
+        # La geometria de ESTA lectura, ordenada igual que el texto. Se va con
+        # ella a `ResultadoOCR` para que `parser_lineas.py` tenga las coordenadas
+        # de la rotacion que gano, que es la unica que importa.
+        lineas=tuple(
+            {
+                "clave": list(clave),
+                # `y0` y `y1` se recuperan de `datos_ocr` con los indices de la
+                # linea, porque `geometria` guarda solo `x0`/`x1`: la coordenada
+                # vertical es lo que `parser_lineas.py` usa para saber si dos
+                # palabras estan en la misma fila.
+                "y0": ys_por_clave.get(clave, (0, 0))[0],
+                "y1": ys_por_clave.get(clave, (0, 0))[1],
+                "palabras": sorted(
+                    geometria.get(clave, []), key=lambda c: c["x0"]
+                ),
+            }
+            for clave in sorted(lineas)
+        ),
     )
 
 
-def _lineas_desde_cajas(detecciones: list) -> tuple[str, float | None]:
+def _lineas_desde_cajas(detecciones: list) -> tuple[str, float | None, tuple[dict, ...]]:
     """Reconstruye las LINEAS de una lista de cajas de EasyOCR.
 
     Por que hace falta, y por que no es un detalle de forma.
@@ -649,7 +729,25 @@ def _lineas_desde_cajas(detecciones: list) -> tuple[str, float | None]:
     media = (
         round(confianza_total / con_confianza, 4) if con_confianza else None
     )
-    return "\n".join(textos), media
+    # La geometria viaja con el texto. Antes se descartaba aqui, y
+    # `parser_lineas.py` no tenia con que trabajar.
+    geometria = tuple(
+        {
+            "y0": linea["y0"],
+            "y1": linea["y1"],
+            "palabras": [
+                {
+                    "x0": c["x0"],
+                    "x1": c["x1"],
+                    "texto": c["texto"],
+                    "conf": c["conf"],
+                }
+                for c in sorted(linea["cajas"], key=lambda c: c["x0"])
+            ],
+        }
+        for linea in lineas
+    )
+    return "\n".join(textos), media, geometria
 
 
 def _leer_easyocr(datos: bytes) -> ResultadoOCR:
@@ -684,8 +782,10 @@ def _leer_easyocr(datos: bytes) -> ResultadoOCR:
     except Exception as exc:
         raise OCRNoDisponible(f"EasyOCR no pudo leer la imagen: {exc}") from exc
 
-    texto, confianza = _lineas_desde_cajas(detecciones)
-    return ResultadoOCR(texto=texto, motor="easyocr", confianza_media=confianza)
+    texto, confianza, geometria = _lineas_desde_cajas(detecciones)
+    return ResultadoOCR(
+        texto=texto, motor="easyocr", confianza_media=confianza, lineas=geometria
+    )
 
 
 def disponibilidad() -> dict[str, object]:

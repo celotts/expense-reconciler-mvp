@@ -24,8 +24,6 @@ RFC_CANDIDATO_RE = re.compile(
     r"\b([A-Z&Ñ]{3,4})\s?-?\s?(\d{6})\s?-?\s?([A-Z0-9]{3})\b",
     re.IGNORECASE,
 )
-
-# La forma "RFC: XXX..." con el valor pegado al label, que es como lo imprimen
 # los tickets. El patron del candidato va dentro de un grupo que NO captura, y
 # los tres grupos del RFC quedan libres para poder rearmarlos.
 RFC_LABEL_RE = re.compile(
@@ -445,6 +443,19 @@ class TicketExtractionResult(BaseModel):
     # Subtotal del documento, si el documento lo trae. Permite verificar
     # subtotal + IVA == total en el gate, que es el check mas barato que hay.
     subtotal: Decimal | None = None
+    # Las lineas del comprobante, crudas, tal como las devuelve el lector.
+    #
+    # NULL y no `[]`, y la diferencia es de significado: NULL = el lector no
+    # produjo lineas (la ruta OCR no las extrae, solo el LLM). `[]` = produjo
+    # lineas y no eran ninguna. Con las dos en `[]` no se puede distinguir "este
+    # comprobante no tiene detalle" de "no lo sabemos", y la segunda es la que
+    # obliga a mirar el papel.
+    #
+    # No se normaliza aqui a proposito: `inventario_service.interpretar_items` es
+    # el unico que sabe que hacer con una cantidad en texto o ausente, y duplicar
+    # esa logica en el parser daria dos respuestas distintas a "de que forma
+    # vienen las lineas". Ver db/migrations/0010_inventario.sql.
+    items: list[dict] | None = None
     # De donde salio lo que hay en estos campos. Sin esto, todo se guardaba
     # como `llm`, incluso un parseo de regex, y la columna miente sobre de
     # donde salio el dato. Sin esa verdad no se puede medir la exactitud de la

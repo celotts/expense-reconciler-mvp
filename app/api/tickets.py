@@ -9,6 +9,8 @@ from fastapi import (
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from decimal import Decimal
+
 from app.core.archivo_real import resolver_tipo
 from app.core.subida import leer_ticket
 from app.core.database import get_db
@@ -36,6 +38,7 @@ from app.services.document_service import (
 )
 from app.services.parser_service import TicketExtractionResult
 from app.services.ai_extractor import ai_extractor
+from app.services.inventario_service import registrar_compra
 from app.services.ticket_persistence import persistir_extraccion
 
 router = APIRouter(tags=["Tickets"])
@@ -464,6 +467,11 @@ async def review_ticket(
             tax_amount=ticket.tax_amount,
             expense_date=ticket.expense_date,
             provider_tax_id=ticket.provider_tax_id,
+            # El subtotal se pasa porque el aprobador puede acabarlo de corregir, y
+            # sin el `subtotal + IVA == total` no se comprueba. Medido: con el
+            # total en 234.00 y el subtotal en 97.56 la aprobacion pasaba sin que
+            # nadie notara que la aritmetica no cuadraba.
+            subtotal=ticket.subtotal,
         )
         if not decision.validation.ok:
             raise HTTPException(
@@ -1172,8 +1180,21 @@ async def update_ticket(
         )
 
     update_data = ticket_in.model_dump(exclude_unset=True)
+    # `items` se aparta antes del bucle: sus elementos son `LineaTicketUpdate`, y
+    # un `model_dump` los deja como diccionarios, que es justo lo que espera la
+    # columna JSON. Setearlo como objeto y dejar que lo caste el driver seria
+    # escribir `[{'LineaTicketUpdate': ...}]`.
+    lineas = update_data.pop("items", None)
     for field, value in update_data.items():
         setattr(ticket, field, value)
+
+    if lineas is not None:
+        # El `JSONConDecimal` de la columna convierte los importes a texto al
+        # guardar; `_sin_decimal` es ese mismo paso y se hace aqui para que el
+        # objeto que se devuelve en la respuesta sea el mismo que quedo guardado.
+        # Sin esto, la respuesta y la fila discreparían en el formato del importe.
+        lineas = [{k: str(v) if isinstance(v, Decimal) else v for k, v in l.items()} for l in lineas]
+        ticket.items = lineas
 
     # Un ticket en cola se revalida con los datos nuevos. Si ahora ya cuadran,
     # sale de la cola: dejarlo pending cuando ya no necesita nada es como se
@@ -1188,6 +1209,11 @@ async def update_ticket(
             tax_amount=ticket.tax_amount,
             expense_date=ticket.expense_date,
             provider_tax_id=ticket.provider_tax_id,
+            # El subtotal se pasa porque la correccion puede acabarlo de traer, y
+            # sin el `subtotal + IVA == total` no se comprueba. Medido: con el
+            # total corregido a 234.00 y el subtotal en 97.56, la correccion pasaba
+            # a APROBADO sin que nadie notara que la aritmetica no cuadraba.
+            subtotal=ticket.subtotal,
         )
         if not decision.validation.ok:
             ticket.extraction_status = ExtractionStatus.REQUIERE_REVISION.value
@@ -1199,6 +1225,30 @@ async def update_ticket(
             ticket.confidence = decision.persisted_confidence
             ticket.confidence_source = decision.confidence_source.value
             ticket.validation_errors = None
+
+    await db.commit()
+
+    # La compra se (re)intenta SOLO si el ticket quedo con lineas.
+    #
+    # Va despues del commit del ticket y no antes, por una razon que es de este
+    # endpoint y no de `registrar_compra`: si la compra fallara, el ticket
+    # corregido tiene que estar guardado igual. Perder la correccion de una
+    # persona por un problema de inventario es peor que tener un gasto sin compra
+    # asociada, que ademas se ve en la cola de inventario.
+    #
+    # Y va porque `items` acaba de cambiar y con el: antes, un ticket de OCR con
+    # `items=NULL` no podia tener compra, porque no habia forma de cargar las
+    # lineas. Ahora si, y esta llamada es la que abre el inventario por foto.
+    #
+    # Idempotente por `compras.ticket_id` UNIQUE: una segunda correccion devuelve
+    # la compra existente en vez de reventar con IntegrityError.
+    if lineas is not None and lineas:
+        compra = await registrar_compra(db, ticket)
+        if compra is not None:
+            logger.info(
+                "Ticket %s abrio la compra %s en %s al corregirlo a mano.",
+                ticket.id, compra.id, compra.estado,
+            )
 
     await db.commit()
     await db.refresh(ticket)

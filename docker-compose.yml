@@ -79,17 +79,40 @@ services:
       # Cache de HuggingFace persistente: evita volver a bajar el modelo de
       # embeddings (~470MB) cada vez que se recrea el contenedor.
       - hf_cache:/opt/hf-cache
-      # Carpeta de tickets del host, montada en SOLO LECTURA.
+      # Carpeta de tickets del host.
       #
-      # `:ro` no es descuido: el escaner no borra ni escribe nada, y montarla de
-      # lectura lo hace imposible aunque un bug lo intentara. Un comprobante
-      # original que se borre porque el OCR salio mal es irreversible.
+      # `:ro` fue la regla desde el principio y el motivo sigue aqui: "el
+      # escaner no borra ni escribe nada, y montarla de lectura lo hace
+      # imposible aunque un bug lo intentara. Un comprobante original que se
+      # borre porque el OCR salio mal es irreversible."
+      #
+      # AHORA ES `:rw`, y es un cambio consciente:
+      #
+      # 1. Lo que se necesita es MOVER un comprobante ya resuelto, no borrarlo.
+      #    El archivo sigue existiendo y sus bytes no cambian: se cambia de
+      #    sitio. La garantia de "no se altera el comprobante" se conserva.
+      # 2. Mover exige permiso de escritura, y con `:ro` no hay forma. Un
+      #    archivado simulado que dice "movido" sin mover seria exactamente el
+      #    tipo de mentira que este proyecto no sostiene.
+      # 3. El movimiento NO sale de un veredicto de lectura. Solo corre cuando la
+      #    compra esta PROCESADO, o sea cuando una persona confirmo que las
+      #    lineas entraron al inventario. Con la exactitud de OCR medida
+      #    (33.3%), mover tambien lo PENDIENTE habria enterrado dos de cada tres
+      #    comprobantes sin que nadie los hubiera revisado.
+      # 4. `archivado_service` NUNCA sobreescribe: si el destino existe, agrega
+      #    un sufijo. Un comprobante pisado es un comprobante perdido, y se
+      #    pierde en silencio.
+      # 5. El destino es un SEGUNDO montaje, fuera de la carpeta que se escanea.
+      #    Con el escaneo recursivo, una subcarpeta aqui dentro haria que cada
+      #    archivo movido se volviera a leer en cada corrida.
       #
       # La ruta del host va primero y la del contenedor despues, que es la que ve
       # la app. Por eso `TICKETS_INPUT_DIR` dentro del contenedor es `/tickets` y
       # no la ruta del host: montar `.:/app` y usar la ruta del host seria buscar
       # `/Users/...` dentro del contenedor, donde no existe.
-      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets_app}:/tickets:ro
+      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets_app}:/tickets:rw
+      # La carpeta de escaneados. SEPARADA a proposito, por el punto 5 de arriba.
+      - ${TICKETS_SCAN_OUTPUT_HOST_DIR:-/Users/carloslott/Documents/Tickets_Scan}:/tickets_scan:rw
     env_file:
       # El orden importa: con la misma variable en los dos archivos gana el
       # ULTIMO, asi que .env.local pisa a .env.dev. Es lo que permite tener
@@ -113,6 +136,18 @@ services:
       # dentro del contenedor, y sin esto la app crearia `/Users/carloslott/...`
       # en el sistema de archivos del contenedor, como root.
       - TICKETS_INPUT_DIR=/tickets
+      # La carpeta de escaneados, DENTRO del contenedor. Sin esta linea el
+      # archivado resuelve "una carpeta hermana de la de entrada" y acerta en
+      # `/Tickets_Scan`, que es un directorio del contenedor y no el segundo
+      # montaje: los comprobantes se mueven ahi y desaparecen de la maquina.
+      #
+      # Medido, no supuesto: 8 comprobantes se movieron a `/Tickets_Scan` y la
+      # carpeta del host quedo vacia. El archivo seguia existiendo y se devolvio,
+      # pero desde el punto de vista de quien lo espera, desaparecio.
+      #
+      # Es el mismo motivo por el que `TICKETS_INPUT_DIR` va aqui: la ruta del
+      # host no existe dentro del contenedor.
+      - TICKETS_SCAN_OUTPUT_DIR=/tickets_scan
     depends_on:
       postgres-reconciler:
         condition: service_healthy

@@ -7,6 +7,12 @@ from app.models.ticket_document import TicketDocumentModel
 from app.models.user import UserModel
 from app.models.cierre_periodo import CierrePeriodoModel
 from app.models.scan_file import ScanFileModel, ScanEventModel
+from app.models.inventario import (
+    CompraItemModel,
+    CompraModel,
+    MovimientoInventarioModel,
+    ProductoModel,
+)
 
 __all__ = [
     "CompanyModel",
@@ -19,4 +25,8 @@ __all__ = [
     "CierrePeriodoModel",
     "ScanFileModel",
     "ScanEventModel",
+    "ProductoModel",
+    "CompraModel",
+    "CompraItemModel",
+    "MovimientoInventarioModel",
 ]

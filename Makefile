@@ -1,4 +1,4 @@
-.PHONY: build up up-force down logs ps stats disk clean
+.PHONY: build up up-force down logs ps stats disk clean insomnia insomnia-check
 
 build:
 	docker compose build
@@ -29,6 +29,17 @@ stats:
 # Espacio que ocupa Docker en disco.
 disk:
 	docker system df
+
+# Regenera la coleccion de Insomnia desde el OpenAPI de la API viva. El
+# archivo se versiona, asi que sin esto se queda viejo solo: la coleccion
+# anterior estaba exportada de 2025-01-21 y le faltan 27 de las 52 rutas.
+insomnia:
+	python3 scripts/generar_insomnia.py
+
+# Falla si el archivo no corresponde a la API actual. Para CI, o para cuando
+# anades una ruta y te quieres acordar de que hay que regenerar.
+insomnia-check:
+	python3 scripts/generar_insomnia.py --check
 
 # Borra contenedores, red y volumenes (INCLUYE la base de datos y los modelos).
 clean:
