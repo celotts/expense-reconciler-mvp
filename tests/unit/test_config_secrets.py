@@ -32,22 +32,22 @@ CLAVE_CORTA = "k" * 31
 
 # Claves distintas para distinguir QUE ARCHIVO gano. Todas de 32 o mas, que es
 # el minimo que `config.py` exige.
-CLAVE_DE_DEV = "clave-de-dev-00000000000000000000"
+CLAVE_DE_ENV = "clave-de-dev-00000000000000000000"
 CLAVE_DE_LOCAL = "clave-de-local-000000000000000000"
 CLAVE_DEL_ENTORNO = "clave-del-entorno-0000000000000000"
-assert min(len(c) for c in (CLAVE_DE_DEV, CLAVE_DE_LOCAL, CLAVE_DEL_ENTORNO)) >= 32
+assert min(len(c) for c in (CLAVE_DE_ENV, CLAVE_DE_LOCAL, CLAVE_DEL_ENTORNO)) >= 32
 
 BASE = {"DATABASE_URL": "postgresql+asyncpg://x@localhost/x"}
 
 
 def _settings(**extra):
-    """Construye settings ignorando el entorno y el `.env.dev`.
+    """Construye settings ignorando el entorno y los archivos `.env`.
 
-    Sin esto, quien tenga `SECRET_KEY` en su `.env.dev` no puede probar la rama
+    Sin esto, quien tenga `SECRET_KEY` en su `.env` no puede probar la rama
     de "no esta definida": el test pasaria por el motivo equivocado, y solo en
     la maquina de quien si la tiene.
 
-    `_env_file=None` apaga el `.env.dev`. Los valores que llegan como argumento
+    `_env_file=None` apaga los `.env`. Los valores que llegan como argumento
     tienen prioridad sobre las variables de entorno en `pydantic-settings`, asi
     que pasar los dos de forma explicita es lo que hace que el resultado no
     dependa de quien corra el test.
@@ -135,7 +135,7 @@ class TestLaLongitudDeLaClave:
     @pytest.mark.parametrize("corta", ["c", "corta", "k" * 16, "k" * 31])
     def test_corta_se_rechaza_en_cualquier_entorno(self, corta):
         """En produccion Y en desarrollo. Una clave corta es adivinable, y en
-        desarrollo tambien: el `.env.dev` esta en el repositorio de todo el
+        desarrollo tambien: el archivo de entorno esta en el repositorio de todo el
         equipo, y un despliegue de prueba en una maquina de alguien queda
         expuesta igual que uno de produccion.
 
@@ -224,7 +224,7 @@ class TestElCorsNoPuedeSerComodin:
 
 
 class TestElOrdenDeLosArchivosDeEntorno:
-    """`.env.dev` y luego `.env.local`, y el ultimo manda.
+    """`.env` y luego `.env.local`, y el ultimo manda.
 
     No es cosmetico. `docker-compose.yml` carga los dos en ese orden, asi que si
     `config.py` los leiera al reves, correr `uvicorn` en la maquina firmaria con
@@ -236,11 +236,11 @@ class TestElOrdenDeLosArchivosDeEntorno:
 
     def test_el_archivo_correcto_es_el_que_gana(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".env.dev").write_text(f"SECRET_KEY={CLAVE_DE_DEV}\n")
+        (tmp_path / ".env").write_text(f"SECRET_KEY={CLAVE_DE_ENV}\n")
         (tmp_path / ".env.local").write_text(f"SECRET_KEY={CLAVE_DE_LOCAL}\n")
 
         resultado = Settings(
-            _env_file=(".env.dev", ".env.local"),
+            _env_file=(".env", ".env.local"),
             DATABASE_URL=BASE["DATABASE_URL"],
         )
 
@@ -249,26 +249,26 @@ class TestElOrdenDeLosArchivosDeEntorno:
     def test_sin_local_se_lee_dev(self, tmp_path, monkeypatch):
         """Clone nuevo: no hay `.env.local` y la app tiene que levantar igual."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".env.dev").write_text(f"SECRET_KEY={CLAVE_DE_DEV}\n")
+        (tmp_path / ".env").write_text(f"SECRET_KEY={CLAVE_DE_ENV}\n")
 
         resultado = Settings(
-            _env_file=(".env.dev", ".env.local"),
+            _env_file=(".env", ".env.local"),
             DATABASE_URL=BASE["DATABASE_URL"],
         )
 
-        assert resultado.SECRET_KEY == CLAVE_DE_DEV
+        assert resultado.SECRET_KEY == CLAVE_DE_ENV
 
     def test_la_variable_de_entorno_gana_sobre_los_dos(self, tmp_path, monkeypatch):
         """Lo que usa Compose: pone `DATABASE_URL` en `environment:`, y eso tiene
         que pisar a los dos archivos. Si no, la ruta de la BD del host ganaria
         dentro del contenedor, donde no existe."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".env.dev").write_text(f"SECRET_KEY={CLAVE_DE_DEV}\n")
+        (tmp_path / ".env").write_text(f"SECRET_KEY={CLAVE_DE_ENV}\n")
         (tmp_path / ".env.local").write_text(f"SECRET_KEY={CLAVE_DE_LOCAL}\n")
         monkeypatch.setenv("SECRET_KEY", CLAVE_DEL_ENTORNO)
 
         resultado = Settings(
-            _env_file=(".env.dev", ".env.local"),
+            _env_file=(".env", ".env.local"),
             DATABASE_URL=BASE["DATABASE_URL"],
         )
 
@@ -278,9 +278,24 @@ class TestElOrdenDeLosArchivosDeEntorno:
 class TestLaPlantillaDeLosEnv:
     """Los archivos del repo tienen que seguir siendo secretos-free y claros.
 
-    Es la unica defensa contra volver a poner una clave real en `.env.dev`. El
-    archivo esta en `.gitignore`, asi que `git status` no lo delata ni cuando se
-    rompe la regla; y `git diff` tampoco lo muestra.
+    Es la unica defensa contra volver a poner una clave real en el archivo de
+    configuracion. El archivo esta en `.gitignore`, asi que `git status` no lo
+    delata ni cuando se rompe la regla; y `git diff` tampoco lo muestra.
+
+    NOTA DE POR QUE ESTE TEST SIGUE VIVO CON `.env` Y `.env.local`
+    =============================================================
+    Se fusionaron tres archivos en dos: `.env` tiene ahora la contrasena de la
+    base Y la configuracion, en vez de solo la contrasena. Con eso, la defensa
+    "el archivo de configuracion no lleva secretos" ya no se puede aplicar al
+    archivo entero, porque su unico secreto (`POSTGRES_PASSWORD`) esta ahi a
+    proposito.
+
+    Lo que SI se sigue defendiendo es mas estrecho y mas util: **la contrasena
+    no se duplica**. Sigue habiendo un unico lugar donde existe una
+    `DATABASE_URL` con contrasena, que es la linea que `docker-compose.yml`
+    arma por interpolacion. Por eso la `DATABASE_URL` de `.env` va sin
+    contrasena, aunque `.env` tenga la contrasena de la base treinta lineas mas
+    arriba.
     """
 
     def _leer(self, nombre: str) -> str:
@@ -289,17 +304,20 @@ class TestLaPlantillaDeLosEnv:
         raiz = Path(__file__).resolve().parents[2]
         return (raiz / nombre).read_text(encoding="utf-8")
 
-    def test_env_dev_no_tiene_contrasena_de_la_base(self):
-        """La `DATABASE_URL` de `.env.dev` no lleva contrasena.
+    def test_env_no_tiene_contrasena_en_la_url_de_la_base(self):
+        """La `DATABASE_URL` de `.env` no lleva contrasena, AUNQUE `.env` la tenga.
 
-        Dentro de Docker la sobrescribe `docker-compose.yml`, asi que la que este
-        aqui no se usa: es un segundo lugar donde vive el mismo secreto, con
-        permisos de lectura para el grupo. La plantilla `.env.example` ya lo
-        explica; este test lo hace cumplir.
+        Es el test que sobrevive a la fusion de los tres `.env` en dos, y el
+        que mas trabajo hace: el archivo contiene `POSTGRES_PASSWORD` a proposito,
+        asi que la tentacion de escribir la URL completa con la contrasena
+        economiza cuatro caracteres y duplica el secreto.
+
+        Dentro de Docker la sobrescribe `docker-compose.yml` en su `environment:`
+        (que pisa al `env_file:`), asi que la que este aqui no se usa para el
+        contenedor. La plantilla `.env.example` ya lo explica; este test lo hace
+        cumplir.
         """
-        import re
-
-        for linea in self._leer(".env.dev").splitlines():
+        for linea in self._leer(".env").splitlines():
             if linea.startswith("DATABASE_URL="):
                 usuario_y_host, _, _ = linea.partition("@")
                 # `usuario:password@host` -> la parte antes de la arroba no lleva
@@ -319,13 +337,20 @@ class TestLaPlantillaDeLosEnv:
     def test_la_plantilla_explica_cuantos_archivos_hay(self):
         """La plantilla dice para que es cada archivo.
 
-        Cuatro archivos `.env` sin explicar cual es cual es como acaba la clave
+        Varios archivos `.env` sin explicar cual es cual es como acaba la clave
         en dos sitios y la contrasena en tres: no por descuido, sino porque nadie
         sabe quien gana. Este test no mira el texto completo, solo que nombrelos.
+
+        `.env.dev` ya no se nombra porque el archivo ya no existe: la plantilla
+        tiene que describir la disposicion REAL, y una que mentiona un archivo
+        borrado manda al que la lee a buscarselo.
         """
         texto = self._leer(".env.example")
-        for nombre in (".env.dev", ".env.local"):
+        for nombre in (".env", ".env.local"):
             assert nombre in texto, f"{nombre} no se menciona en .env.example"
+        assert ".env.dev" not in texto, (
+            ".env.example todavia menciona .env.dev, que ya no existe"
+        )
 
     def test_la_plantilla_avisa_de_lo_del_cors(self):
         """El comentario de `CORS_ORIGINS` tiene que estar junto a la variable.

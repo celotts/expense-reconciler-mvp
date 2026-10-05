@@ -73,6 +73,16 @@ class ExtractedInvoice:
     exchange_rate: Optional[float] = None
     subtotal: Decimal = Decimal("0")
     tax_amount: Decimal = Decimal("0")
+    # El IEPS, en pesos, y SEPARADO del IVA. No antes de esto: `tax_amount` era
+    # "total de impuestos" en el prompt pero se guardaba y se exportaba bajo el
+    # encabezado "IVA" (`export_service.CONTPAQI_COLUMNS`). Un comprobante con
+    # IVA 8.14 e IEPS 8.59 llegaba al contador como IVA 16.73, sin marca de error.
+    # Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+    #
+    # `None` y no `Decimal("0")`: `0.00` es "el papel dice que el IEPS es cero" y
+    # `None` es "el papel no trae IEPS o no lo lei". El gate necesita la
+    # diferencia, porque `subtotal + IVA == total` solo cuadra con el segundo.
+    ieps_amount: Optional[Decimal] = None
     tax_breakdown: List[Dict[str, Any]] = field(default_factory=list)
     total: Decimal = Decimal("0")
     payment_method: Optional[str] = None
@@ -131,9 +141,33 @@ CAMPOS REQUERIDOS EN EL JSON:
 - currency: moneda (default "MXN")
 - exchange_rate: tipo de cambio (number o null)
 - subtotal: subtotal sin impuestos (number)
-- tax_amount: total de impuestos (number)
+- tax_amount: SOLO el IVA, nunca la suma de IVA+IEPS (number)
+- ieps_amount: SOLO el IEPS, o null si el comprobante no lo trae (number o null)
 - tax_breakdown: array de objetos con rate y amount
 - total: total con impuestos (number)
+
+REGLAS DE LOS IMPUESTOS, Y POR QUE NO SON SUGERENCIAS
+-----------------------------------------------------
+`tax_amount` e `ieps_amount` van separados porque se guardan y se exportan en
+columnas distintas: `tax_amount` sale bajo el encabezado "IVA" del archivo que se
+le entrega al contador. Si metes los dos impuestos en `tax_amount`, el contador
+recibe un IVA que no existe y no hay forma de que lo note.
+
+Medido sobre un ticket real de supermercado:
+
+    SUBTOTAL       217.27
+    IVA 16.0%        8.14     -> tax_amount
+    IEPS 8.0%        8.59     -> ieps_amount
+    TOTAL          234.00    y 217.27 + 8.14 + 8.59 = 234.00 exacto
+
+Ojo con esto, que es el error facil: el IVA NO es el 16% del subtotal. Aqui el
+IVA es 8.14 porque solo una parte de las partidas esta tasa 16% y el resto a 0%
+(el papel lo marca con una letra al final de cada linea: T, C, A). Copia los
+IMPORTES que imprime el papel, nunca los recalcules con una tasa: la tasa que el
+papel imprime es la de la partida, no la del comprobante.
+
+Y si el comprobante no trae IEPS, `ieps_amount` es `null`. No es `0`: `0` dice
+"lei el IEPS y es cero", y `null` dice "no hay IEPS aqui".
 - payment_method: "EFECTIVO" | "TARJETA" | "TRANSFERENCIA" | null
 - payment_terms: condiciones de pago (string o null)
 - items: array de objetos con description, quantity, unit_price, total, tax_rate, tax_amount
@@ -291,7 +325,7 @@ class AIExtractor:
             m = re.search(r'"currency"\s*:\s*"([^"]+)"', raw)
             if m:
                 salvaged["currency"] = m.group(1)
-            for field in ["subtotal", "tax_amount", "total"]:
+            for field in ["subtotal", "tax_amount", "ieps_amount", "total"]:
                 m = re.search(rf'"{field}"\s*:\s*"?([\d,]+\.?\d*)"?', raw)
                 if m:
                     salvaged[field] = m.group(1)
@@ -336,6 +370,15 @@ class AIExtractor:
                     data[field] = _to_decimal(data[field])
                 elif field not in data:
                     data[field] = Decimal("0")
+
+            # El IEPS NO entra en el bucle de arriba a proposito. Ahi, un campo
+            # ausente se rellena con `Decimal("0")`, porque para el subtotal, el
+            # IVA y el total un 0 es un numero y el modelo siempre los trae. Para
+            # el IEPS no: `0.00` significa "el comprobante no tiene IEPS" y lo
+            # haria parecer un dato leido. Se convierte si vino, y si no se
+            # queda en None.
+            if data.get("ieps_amount") is not None:
+                data["ieps_amount"] = _to_decimal(data["ieps_amount"])
 
             # Convert items
             if not data.get("items"):

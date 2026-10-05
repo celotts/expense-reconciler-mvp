@@ -27,8 +27,8 @@ publicada. Se pega una vez en el environment de Insomnia y ya. El resto de
 variables tampoco llevan secretos: `token` se llena solo con el script del
 endpoint de login.
 
-El mismo criterio que ya aplica el repo a `.env.dev` (AGENTS.md: "`.env.dev` no
-lleva secretos"), extendido al cliente de API.
+El mismo criterio que ya aplica el repo a los `.env` (AGENTS.md: "una sola URL con
+contraseña"), extendido al cliente de API.
 """
 
 from __future__ import annotations

@@ -1,0 +1,222 @@
+{
+  "info": {
+    "name": "Digitalización - Facturas y Tickets (Postman)",
+    "_postman_id": "a1b2c3d4-0000-4000-8000-000000000001",
+    "description": "El flujo COMPLETO para llevar un ticket fotografiado hasta la base de datos.\n\nSon 5 pasos y se corren en orden. El paso 2 borra los comprobantes que se leyeron bien de `Tickets_app`, asi que el paso 1 va PRIMERO.\n\n--------------------------------------------------------------------------------\nCOMO SE USA\n--------------------------------------------------------------------------------\n1. Importa este archivo en Postman (Import > Link/Upload).\n2. En la pestana Environments, elige **Local** y pon tus valores:\n   - `email`       tu correo\n   - `password`    tu contrasena\n   - `company_id`  el id de tu empresa (lo tienes en el paso 0)\n3. Ejecuta **Get token**. Postman guarda el token solo.\n4. Ejecuta los pasos 1 a 5 en orden.\n\n--------------------------------------------------------------------------------\nPOR QUE EL PASO 1 ESTA PRIMERO\n--------------------------------------------------------------------------------\nEl paso 2 **borra del disco** los comprobantes que se leyeron bien. Despues, lo\nunico que queda de ellos es lo que este en la base. Por eso hay que exportar\nantes de escanear: si despues corres `make clean` (que borra el volumen de la\nbase), esos comprobantes no estan en ninguna parte.\n\n--------------------------------------------------------------------------------\nTIEMPO: EL PASO 2 TARDA MINUTOS\n--------------------------------------------------------------------------------\nCon fotos, cada comprobante paga OCR. Con 10 fotos pueden ser 15 minutos. El\ntimeout de Postman es 0 (sin limite) en todas las peticiones de este archivo, y\npor eso la de scan se manda en segundo plano.\n\n`simular: true` hace lo MISMO de trabajo: lee igual de lento, solo no borra. No es\nuna prueba de que no cueste nada.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000/api/v1"
+    },
+    {
+      "key": "ticket_id_pendiente",
+      "value": ""
+    },
+    {
+      "key": "scan_file_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Empresa (solo si no sabes tu company_id)",
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/companies/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "companies",
+            ""
+          ]
+        },
+        "description": "Devuelve tus empresas con su `id`. El que uses como `company_id` en el paso 2 es la empresa a la que se atribuyen los tickets."
+      }
+    },
+    {
+      "name": "1. Respaldar los comprobantes (ANTES de escanear)",
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "docker compose exec expense-api python scripts/exportar_documentos.py /tickets_export",
+          "options": {
+            "raw": {
+              "language": "text"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/scan/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "scan",
+            ""
+          ]
+        },
+        "description": "NO es un endpoint de la API: es un comando de terminal.\n\nSaca los comprobantes guardados a `~/Documents/Tickets/comprobantes/` y **verifica el sha256 de cada uno releyéndolo del disco**. Si algo no cuadra, lo dice.\n\nCorre esto ANTES del paso 2, cada vez.\n\nEQUIVALENTE POR FUERA DE POSTMAN:\n  cd ~/expense-reconciler-mvp\n  docker compose exec expense-api python scripts/exportar_documentos.py /tickets_export"
+      }
+    },
+    {
+      "name": "2. Escanear la carpeta (lee y guarda)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company_id\": \"{{company_id}}\",\n  \"simular\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/scan/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "scan",
+            ""
+          ]
+        },
+        "description": "Recorre `Tickets_app/`, lee cada comprobante y guarda los datos.\n\n**POST /sin barra final.** Con barra da 307 y Postman no lo sigue en algunos casos.\n\n**QUE HACE, POR ARCHIVO**\n- Lee el comprobante (PDF con texto, o OCR si es foto).\n- Guarda los datos en la tabla `tickets` y el comprobante original en `ticket_documents`.\n- Si tiene lineas de producto, abre la compra en `compras` + `compra_items`.\n- Si quedo **resuelto** (AUTO_APROBADO o APROBADO): **borra el archivo** de la carpeta.\n- Si quedo **PENDIENTE o REQUIERE_REVISION**: el archivo **se queda** para que lo revises.\n\n**`simular: true`** hace lo mismo pero no borra nada. Tarda lo mismo: lee igual.\n\n**LA RESPUESTA** trae lo que tienes que mirar:\n\n  resumen.quedan_en_bandeja      -> los que necesitan tu revision\n  resumen.borrados_de_entrada    -> los que se borraron por estar bien\n  resumen.tickets_por_estado     -> AUTO_APROBADO / PENDIENTE / REQUIERE_REVISION\n  resumen.requiere_accion        -> total de papeles que dependen de ti\n\n  detalles[].ticket_id           -> el id para corregirlo en el paso 3\n  detalles[].extraction_status    -> por que NO se borro, si no se borro\n\n**Revisa `detalles[].detalle`:** ahi esta el motivo de cada archivo que se quedo."
+      }
+    },
+    {
+      "name": "3. Ver la cola de lo que falta por revisar",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/tickets/review-queue?extraction_status=PENDIENTE",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "tickets",
+            "review-queue"
+          ],
+          "query": [
+            {
+              "key": "extraction_status",
+              "value": "PENDIENTE"
+            }
+          ]
+        },
+        "description": "Los tickets que el gate dejo pendientes.\n\nDe cada uno mira el comprobante en `GET /tickets/{id}/documento` y corrijelo en el paso 4."
+      }
+    },
+    {
+      "name": "4. Corregir un ticket (lo que se leyo mal)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider_name\": \"CARNE MART (CMT QUERETARO REVOLUCION)\",\n  \"provider_tax_id\": \"OCO030116UR4\",\n  \"total_amount\": \"97.56\",\n  \"subtotal\": \"97.56\",\n  \"tax_amount\": \"0.00\",\n  \"expense_date\": \"2026-09-28\",\n  \"items\": [\n    {\n      \"description\": \"MILANESA DE PECHU\",\n      \"quantity\": \"1.028\",\n      \"unit_price\": \"94.90\",\n      \"total\": \"97.56\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/tickets/{{ticket_id_pendiente}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "tickets",
+            "{{ticket_id_pendiente}}"
+          ]
+        },
+        "description": "Corrige el ticket contra el papel.\n\n**`ticket_id_pendiente`:** pon aqui el `ticket_id` de un ticket que se haya quedado en la bandeja (del paso 2 o del paso 3).\n\n**`items` es lo que abre el inventario.** Sin lineas, `compras` no se crea. Con lineas, se abre la compra en `EN_REVISION`.\n\n**`subtotal` importa:** sin el no se puede comprobar `subtotal + IVA == total` despues de corregir el total.\n\n**`items: null` o ausente** = no toques las lineas. **`items: []`** = borralas.\n\n**El RFC tiene que estar en forma**: 3-4 letras, 6 digitos y 3 alfanumericos (12 o 13 caracteres). Un RFC mexicano que no cabe en eso no es un RFC, y el sistema lo rechaza con 422 en vez de guardarlo.\n\nMedido con tus propios comprobantes: el de OXXO imprime algo como `FLORESQRM6205231H4`, que tiene 17 caracteres y **no es un RFC valido**. El sistema lo rechaza:\n\n    422: RFC invalido: 'FLORESQRM6205231H4'. Formato esperado: 3-4 letras,\n         6 digitos (YYMMDD) y 3 caracteres alfanumericos.\n\n**Deja el RFC en null en ese caso.** Es preferible un RFC ausente que uno inventado: un identificador fiscal falso sale en el export a CONTPAQI y no hay forma de distinguirlo de uno leido. Este ejemplo usa `OCO030116UR4`, que si es real.\n\nEl sistema vuelve a validar. Si los numeros siguen sin cuadrar, el ticket queda en `REQUIERE_REVISION` y te dice por que."
+      }
+    },
+    {
+      "name": "5. Confirmar la compra (para que el stock cuente)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"notas\": \"Revisado contra el comprobante\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/inventario/compras/{{compra_id}}/confirmar",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "inventario",
+            "compras",
+            "{{compra_id}}",
+            "confirmar"
+          ],
+          "query": [
+            {
+              "key": "company_id",
+              "value": "{{company_id}}"
+            }
+          ]
+        },
+        "description": "**Solo si el comprobante es de inventario** (tiene lineas de producto).\n\nUna compra nace en `EN_REVISION` y solo sale de ahi con esta llamada, que exige una persona. `PROCESADO` es lo unico que hace que el stock empiece a contar.\n\n**`compra_id`:** sacalo de `GET /inventario/compras` o de `GET /tickets/{id}` si el ticket trae su compra.\n\n**FALLA si queda alguna linea sin producto asignado.** No es un aviso: es un bloqueo, porque esas lineas no entrarian al inventario y el stock quedaria incompleto sin rastro.\n\nSi el comprobante es un gasto que NO es de inventario (una nota, un casero, una tarifa), **no llames a este endpoint**: la compra se queda en `EN_REVISION` y no molesta."
+      },
+      "description": "**TIENE `company_id` EN LA URL.** Sin el responde 422 con `'company_id': Field required`.\n\n"
+    },
+    {
+      "name": "6. Ver el estado de una corrida mientras corre",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/scan/runs",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "scan",
+            "runs"
+          ]
+        },
+        "description": "El escaneo tarda minutos con fotos. Para no mirar el reloj, consulta esto desde OTRA pestana mientras el paso 2 sigue abierto.\n\nTe dice cuantos archivos lleva, cual esta leyendo ahora (`actual`), y cuando termina, el `resumen` completo.\n\n`terminada: false` = sigue trabajando. `terminada: true` = ya salio el `resumen`.\n\nEl registro es **en memoria**: si reinicias el servidor, sale vacio. Eso es correcto, un proceso que murio no sigue trabajando. Lo que no se pierde es `GET /scan/files`, que es el estado real de cada archivo."
+      }
+    }
+  ]
+}

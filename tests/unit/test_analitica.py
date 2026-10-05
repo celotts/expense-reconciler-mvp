@@ -306,7 +306,7 @@ class TestPorCategoria:
         """
         from datetime import date
         await _sembrar(sesion, [
-            #很多人的 caso: la categoria "grande" es una y la "chica" es otra, y
+            # Caso de varias veces: la categoria "grande" es una y la "chica" es
             # el orden tiene que ser el de la lista, no el del monto.
             {"provider_name": "A", "total_amount": Decimal("10"), "tax_amount": Decimal("0"),
              "expense_date": date(2026, 3, 5), "extraction_status": "APROBADO", "category": "RENTA"},

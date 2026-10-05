@@ -72,7 +72,16 @@ class Settings(BaseSettings):
     # conoce, y no se acepta ninguna otra por parametro: ver la nota de
     # seguridad de `app/services/scan_service.py`, porque aceptar un
     # `folder_path` del cliente es lectura arbitraria del disco del servidor.
-    TICKETS_INPUT_DIR: str = "/Users/carloslott/Documents/Tickets_app"
+    #
+    # BAJO `Documents/Tickets/`, y no suelta en `Documents`. La entrada y la de
+    # escaneados son **hermanas** dentro de ese padre, y esa hermandad es la que
+    # hace funcionar el archivado sin configurarlo: `carpeta_de_escaneados()`
+    # resuelve `entrada.parent / "Tickets_Scan"` cuando la salida esta vacia.
+    #
+    # El padre comun no es estetica: deja las dos carpetas del sistema juntas,
+    # arrastrables como una unidad, y separadas de cualquier otra carpeta de
+    # papel que haya en `Documents`.
+    TICKETS_INPUT_DIR: str = "/Users/carloslott/Documents/Tickets/Tickets_app"
 
     # Se crea si no existe. Un escaner que aborta porque la carpeta todavia no
     # esta es un escaner que nadie ejecuta la primera vez: el primer arranque
@@ -298,23 +307,35 @@ class Settings(BaseSettings):
 
     # Los dos archivos, y en ESTE orden.
     #
-    # `docker-compose.yml` carga `.env.dev` y despues `.env.local`, y con la
-    # misma variable en los dos gana el ULTIMO. `config.py` hacia lo contrario:
-    # leia solo `.env.dev`. Ese desajuste tiene una consecuencia concreta: la
-    # `SECRET_KEY` de `.env.local` solo valia dentro de Docker, y correr
-    # `uvicorn` en la maquina para depurar firmaba tokens con la de `.env.dev`.
-    # Dos claves, dos sesiones, y un "mi sesion se cae" que no se reproducia
-    # donde se reproducia.
+    # `docker-compose.yml` carga `.env` y despues `.env.local`, y con la misma
+    # variable en los dos gana el ULTIMO. `config.py` hacia lo contrario: leia
+    # solo el archivo de configuracion, sin el de la clave. Ese desajuste tiene
+    # una consecuencia concreta: la `SECRET_KEY` de `.env.local` solo valia
+    # dentro de Docker, y correr `uvicorn` en la maquina para depurar firmaba
+    # tokens con la de `.env`. Dos claves, dos sesiones, y un "mi sesion se
+    # cae" que no se reproducia donde se reproducia.
     #
     # Ahora los dos leen los dos archivos y en el mismo orden, asi que el token
     # que firma Docker es el mismo que firma `uvicorn` local. Si `.env.local` no
-    # existe, se lee solo `.env.dev`: es la configuracion de un clone nuevo.
+    # existe, se lee solo `.env`: es la configuracion de un clone nuevo.
+    #
+    # ANTES ERAN TRES ARCHIVOS. `.env` tenia la contrasena de la base, `.env.dev`
+    # la configuracion y `.env.local` la clave de firma. Ahora son dos, y la
+    # fusion no es cosmetica.
+    #
+    # Lo que cambia de verdad es que `POSTGRES_PASSWORD` y `PROJECT_NAME` estan
+    # en el MISMO archivo. Antes esa separacion era lo que permitia decir "el
+    # archivo de configuracion no lleva secretos", y ese criterio ya no se
+    # puede aplicar asi. Lo que si se sigue aplicando, y por eso el bloque de
+    # `DATABASE_URL` de `.env` lleva su propia nota, es que la contrasena se
+    # interpola UNA sola vez (en `docker-compose.yml`) para armar la URL del
+    # contenedor. Ese es el unico lugar donde vive una URL con contrasena.
     #
     # Lo que NO se hace es intentar ser clever con la precedencia. Las variables
-    # de entorno reales gana sobre los dos archivos, y `docker-compose` pone
+    # de entorno reales ganan sobre los dos archivos, y `docker-compose` pone
     # `DATABASE_URL` y `TICKETS_INPUT_DIR` en `environment:` justamente para eso.
     model_config = SettingsConfigDict(
-        env_file=(".env.dev", ".env.local"),
+        env_file=(".env", ".env.local"),
         extra="ignore",
     )
 

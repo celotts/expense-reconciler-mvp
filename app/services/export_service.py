@@ -23,6 +23,7 @@ CONTPAQI_COLUMNS = [
     "Nombre",
     "Importe",
     "IVA",
+    "IEPS",
     "Total",
     "Cuenta",
     "Referencia",
@@ -42,6 +43,7 @@ EXCEL_STANDARD_COLUMNS = [
     "Concepto",
     "Subtotal",
     "IVA",
+    "IEPS",
     "Total",
     "Fecha Banco",
     "Descripcion Banco",
@@ -228,6 +230,8 @@ async def _get_reconciliation_data(
         TicketModel.category,
         TicketModel.total_amount,
         TicketModel.tax_amount,
+        TicketModel.subtotal,
+        TicketModel.ieps_amount,
         BankTransactionModel.transaction_date,
         BankTransactionModel.description,
         BankTransactionModel.reference,
@@ -278,14 +282,41 @@ async def _get_reconciliation_data(
         amount_diff = abs(row.total_amount - row.amount)
         date_diff = abs((row.expense_date - row.transaction_date).days)
 
+        # EL SUBTOTAL DEJA DE SER UN CALCULO, Y POR QUE
+        # -------------------------------------------
+        # Era `float(row.total_amount - (row.tax_amount or Decimal(0)))`. Es
+        # decir, "el subtotal es lo que sobra del total después del IVA".
+        #
+        # Con IEPS eso es MENTIRA y no un redondeo. Medido sobre un ticket real:
+        #
+        #     el papel dice   SUBTOTAL 217.27 | IVA 8.14 | IEPS 8.59 | TOTAL 234.00
+        #     la exportaba    SUBTOTAL 225.86 | IVA 8.14 |            | TOTAL 234.00
+        #
+        # La cuenta del archivo daba (225.86 + 8.14 = 234.00), asi que el
+        # descuadre quedaba invisible y el contador nunca tenia forma de saber
+        # que el subtotal era otro. Un archivo que cuadra con numeros que no
+        # son los del papel es peor que uno que no cuadra: el error se ve.
+        #
+        # Ahora sale `tickets.subtotal`, que es lo que se leyo del papel. Y si
+        # no hay subtotal leido, se deriva SOLO cuando sabemos que no hay IEPS,
+        # que es el caso en que el calculo viejo era correcto. Con IEPS sin
+        # subtotal la celda queda VACIA, que es lo que el resto de este archivo
+        # ya hace con TipoCambio y MetodoPago: una celda vacia dice "no lo se"
+        # y una celda con 225.86 diria "lo se".
+        subtotal_celda = row.subtotal
+        ieps = row.ieps_amount or Decimal(0)
+        if subtotal_celda is None and ieps == 0:
+            subtotal_celda = row.total_amount - (row.tax_amount or Decimal(0))
+
         data.append(
             [
                 row.expense_date.strftime("%d/%m/%Y"),
                 row.provider_name,
                 row.provider_tax_id or "",
                 row.category or "",
-                float(row.total_amount - (row.tax_amount or Decimal(0))),
+                float(subtotal_celda) if subtotal_celda is not None else "",
                 float(row.tax_amount or Decimal(0)),
+                float(ieps),
                 float(row.total_amount),
                 row.transaction_date.strftime("%d/%m/%Y"),
                 row.description,
@@ -314,6 +345,11 @@ def _transform_to_contpaqi(
         "Nombre": ("Proveedor", True),
         "Importe": ("Subtotal", True),
         "IVA": ("IVA", True),
+        # El IEPS sale a columna propia y no dentro del IVA. Meterlo en la
+        # columna "IVA" seria el error de origen: el contador subiria un IVA que
+        # el comprobante no tiene. Y no se deja de lado porque "es raro": es el
+        # 8% de alimentos preparados y bebidas, que es un supermercado entero.
+        "IEPS": ("IEPS", True),
         "Total": ("Total", True),
         "Referencia": ("Referencia Banco", True),
         # Las ocho columnas siguientes NO tienen de donde sacarse.

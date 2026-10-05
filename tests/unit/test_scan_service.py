@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from app.core.enums import ScanStatus
+from app.core.enums import ExtractionStatus, ScanStatus, SourceType
 from app.models.scan_file import ScanFileModel
 from app.models.ticket import TicketModel
 from app.services import scan_service
@@ -45,6 +45,15 @@ Subtotal: 948.28
 IVA (16%): 151.72
 TOTAL: 1100.00
 """
+
+# Un comprobante cuya ARITMETICA NO CUADRA, que es el caso real de una foto mal
+# leida: el OCR lee un subtotal que no suma con el IVA y el total. El gate lo
+# manda a REQUIERE_REVISION por `subtotal_plus_tax_mismatch`, y ese es el estado
+# que tiene que quedarse en la bandeja.
+#
+# Se construye partiendo de `COMPROBANTE` y cambiándole el subtotal, para que
+# los dos comprobantes sean identicos salvo en lo que el test necesita.
+COMPROBANTE_ARITMETICA_ROTA = COMPROBANTE.replace("948.28", "948.00")
 
 
 @pytest.fixture
@@ -446,7 +455,250 @@ class TestEscanearEsIdempotente:
 
 
 # ---------------------------------------------------------------------------
-# 4. La regla que protege el trabajo humano
+# 4. Que solo salga de la bandeja lo que se leyo bien
+# ---------------------------------------------------------------------------
+
+
+class TestSoloSeArchivaLoResuelto:
+    """La regla, probada sobre el ARCHIVADO REAL y no sobre la constante.
+
+    Hay un test aparte (`test_archivado_por_verdicto.py`) que comprueba que
+    `PENDIENTE` no esta en `SETTLED_STATUSES`. Ese pasaria aunque el archivado no
+    mirara el veredicto en absoluto, asi que NO alcanza. Este de aqui escanea de
+    verdad, comprueba DONDE quedo el archivo, y muere si la regla no se aplica.
+
+    Es la diferencia entre "la constante es correcta" y "el sistema obeyece la
+    constante". Solo la segunda es la que el operador va a notar en su carpeta.
+
+    LOS DOS MONTajes SON REALES, NO FORZADOS
+    ----------------------------------------
+    Ninguno de los dos tests fabrica un ticket con `db.add` para ponerlo en el
+    estado que quiere. Eso se intento y es un mal montaje por dos razones: el
+    archivo con el mismo contenido se marca `DUPLICADO` en vez de `SIN_CAMBIOS`,
+    y `DUPLICADO` no se archiva por otra regla —asi que el test probaba el
+    equivocado sin que se notara—.
+
+    En vez de eso cada test usa un comprobante que el gate resuelve solo: uno con
+    la aritmetica cuadrada y otro con el subtotal descuadrado. Los dos pasan por
+    el camino real de lectura, que es el que importa.
+    """
+
+    @staticmethod
+    def _archivar_encendido(monkeypatch, tmp_path):
+        """Enciende el archivado y apunta el destino a un `tmp_path`.
+
+        SIN ESTO ESTOS TESTS SON VACIOS. La fixture `carpeta` apaga el archivado
+        a proposito ("estas pruebas son de LECTURA y mover archivos las haria
+        depender del orden de ejecucion"), y con el archivado apagado NADA se
+        mueve nunca. Entonces "el pendiente se queda en la bandeja" pasaba sin
+        comprobar nada, porque la carpeta de destino estaba vacia por la razon
+        equivocada.
+
+        Ese es el modo de falla que hace un test inutil parecer verde: no mira lo
+        que dice mirar. Se comprobo con una mutacion —quitar el filtro de
+        veredicto NO hacia fallar nada— y por eso el archivado se enciende aqui
+        explicitamente.
+        """
+        from app.core.config import settings
+
+        destino = tmp_path / "escaneados_test"
+        destino.mkdir(exist_ok=True)
+        monkeypatch.setattr(settings, "TICKETS_SCAN_OUTPUT_DIR", str(destino))
+        monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR", True)
+        return destino
+
+    async def test_un_requiere_revision_se_queda_en_la_bandeja(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
+    ):
+        """El caso central: lo que el gate paro, NO se mueve.
+
+        Con OCR al 33-57% de exactitud casi todo cae en REQUIERE_REVISION. Si eso
+        se moviera, `Tickets_Scan` se llenaria de papeles que nadie reviso y el
+        nombre de la carpeta diria una cosa que su contenido desmiente.
+
+        El comprobante lleva `Subtotal: 948.28` con `IVA: 151.72` y
+        `TOTAL: 1100.00`: `948.28 + 151.72 = 1100.00` no es lo que el gate
+        comprueba, porque el total que el OCR leyo no cuadra con lo que el
+        propio papel declara. Es el caso real de una foto mal leida.
+        """
+        destino = self._archivar_encendido(monkeypatch, tmp_path)
+        _pdf_con_texto(monkeypatch, COMPROBANTE_ARITMETICA_ROTA)
+        archivo = carpeta / "foto.pdf"
+        archivo.write_bytes(b"%PDF-1.7 " + COMPROBANTE_ARITMETICA_ROTA.encode())
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        ticket = (await db_session.execute(select(TicketModel))).scalar_one()
+        assert ticket.extraction_status == ExtractionStatus.REQUIERE_REVISION.value
+        assert archivo.exists(), (
+            "un ticket que necesita revision tiene que SEGUIR en la bandeja de "
+            "entrada: es el unico lugar donde se ve que falta mirarlo"
+        )
+        assert list(destino.iterdir()) == [], "no deberia haberse movido nada"
+        assert resumen.quedan_en_bandeja == 1
+
+    async def test_un_auto_aprobado_se_borra_de_la_entrada(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
+    ):
+        """Lo resuelto DESAPARECE de la bandeja. No se mueve: se borra.
+
+        Es lo pedido: la carpeta de entrada queda con solo lo que no se digitalizo
+        bien, para reintentarlo. Lo que si se leyo ya no se vuelve a usar, y por
+        eso no debe quedar una copia suelta en el disco.
+
+        Y NO aparece en `Tickets_Scan`: antes se movia ahi y ahora no se mueve.
+        El documento vive en `ticket_documents`, con su `sha256`, que es el
+        respaldo que hace seguro el borrado.
+        """
+        destino = self._archivar_encendido(monkeypatch, tmp_path)
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        archivo = carpeta / "bien.pdf"
+        archivo.write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        ticket = (await db_session.execute(select(TicketModel))).scalar_one()
+        assert ticket.extraction_status == ExtractionStatus.AUTO_APROBADO.value
+        assert not archivo.exists(), "lo digitalizado no puede seguir en la entrada"
+        assert list(destino.iterdir()) == [], "no se mueve nada a Tickets_Scan"
+        assert resumen.borrados_de_entrada == 1
+        assert resumen.quedan_en_bandeja == 0
+
+    async def test_sin_respaldo_en_la_base_NO_se_borra(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
+    ):
+        """EL TEST MAS IMPORTANTE DE ESTA REGLA.
+
+        Si el comprobante no esta guardado en `ticket_documents`, el archivo del
+        disco es el UNICO que existe y no se borra. Perderlo deja el ticket sin
+        papel para siempre, y sin papel el muestreo de exactitud deja de tener
+        respuesta.
+
+        El caso real es `guardar_documento` devolviendo `False`: el ticket se
+        creo pero su comprobante no se pudo guardar, y eso es deliberado — el
+        ticket sobrevive sin comprobante, el papel no.
+
+        Aqui se monta ese caso: el ticket existe y esta resuelto, pero no tiene
+        fila en `ticket_documents`. El archivo tiene que seguir ahi.
+        """
+        self._archivar_encendido(monkeypatch, tmp_path)
+
+        # Se reproduce el fallo REAL: `guardar_documento` devuelve False.
+        #
+        # Montarlo "a mano" con un ticket sin documento no probaria el caso: el
+        # escaner crea su propia fila de `scan_files` y su propio ticket a partir
+        # del archivo, y el ticket prefabricado no participa. La lectura seria
+        # PENDIENTE y el archivo se quedaria por otra razon — la correcta pero no
+        # la que se quiere comprobar. Se fuerza el fallo donde ocurre de verdad.
+        from app.services import ticket_persistence
+
+        async def _no_guarda(db, ticket, contenido, **kwargs):
+            return False
+
+        monkeypatch.setattr(ticket_persistence, "guardar_documento", _no_guarda)
+
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        archivo = carpeta / "sin_respaldo.pdf"
+        archivo.write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        ticket = (await db_session.execute(select(TicketModel))).scalar_one()
+        assert ticket.extraction_status == ExtractionStatus.AUTO_APROBADO.value, (
+            "el ticket esta resuelto: si no, el archivo se queda por el veredicto "
+            "y el test no probaria lo que dice"
+        )
+        assert archivo.exists(), (
+            "el archivo NO se puede borrar si el comprobante no esta guardado en la "
+            "base: seria el unico que queda"
+        )
+        assert resumen.borrados_de_entrada == 0
+        detalle = next(d for d in resumen.detalles if d.relative_path == archivo.name)
+        assert "respaldo" in (detalle.detalle or "").lower() or "conserva" in (detalle.detalle or "").lower(), (
+            "tiene que decir POR QUE no se borro: sin el, un archivo que se queda "
+            "parece un bug del escaner"
+        )
+
+    async def test_el_que_se_queda_aparece_en_la_respuesta(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
+    ):
+        """Quedarse en la bandeja NO es desaparecer de la respuesta.
+
+        Este test existe por un bug real: el filtro usaba `continue`, y ese
+        `continue` se comia el `resumen.detalles.append(detalle)` que esta mas
+        abajo en el bucle. El archivo se quedaba en la bandeja CORRECTAMENTE y al
+        mismo tiempo salia del JSON — una corrida de 9 archivos reportaba
+        `archivos_vistos: 3`.
+
+        Y lo que lo hace peligroso es que no se venia: los que quedaban en la
+        respuesta eran justo los que si se movieron, o sea el filtro funcionaba a
+        la vista. Un filtro que esconde los casos a los que se aplica parece un
+        filtro que funciona.
+
+        El numero de `detalles` tiene que ser el de archivos vistos. Es la misma
+        cifra que el operador usa para saber si la carpeta se vacio.
+        """
+        destino = self._archivar_encendido(monkeypatch, tmp_path)
+
+        # Uno que se queda (aritmetica rota) y uno que sale (bien leido).
+        _pdf_con_texto(monkeypatch, COMPROBANTE_ARITMETICA_ROTA)
+        (carpeta / "roto.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE_ARITMETICA_ROTA.encode())
+
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "bien.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        assert len(resumen.detalles) == resumen.archivos_vistos, (
+            "todos los archivos vistos tienen que aparecer en la respuesta; "
+            f"vistos={resumen.archivos_vistos} detalles={len(resumen.detalles)}"
+        )
+        assert resumen.quedan_en_bandeja == 1
+        assert resumen.archivados == 1
+        assert (carpeta / "roto.pdf").exists()
+
+    async def test_el_motivo_no_dice_error_para_un_pendiente(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
+    ):
+        """`PENDIENTE` no es un fallo del sistema, y el motivo no debe decirlo.
+
+        Decirle "error" al usuario lo manda a buscar un bug donde lo que hay es un
+        papel que necesita un ojo humano: uno se arregla en el codigo y el otro en
+        la cola de revision. Confundirlos le hace perder el tiempo a la persona que
+        reporto el problema.
+        """
+        from app.services.scan_service import _motivo_de_bandeja
+
+        for estado in (
+            ExtractionStatus.PENDIENTE.value,
+            ExtractionStatus.REQUIERE_REVISION.value,
+        ):
+            motivo = _motivo_de_bandeja(estado).lower()
+            assert "queda en la bandeja" in motivo
+
+            # Lo que se PROHIBE es afirmar que el sistema fallo, no la palabra
+            # "error": "el campo de errores de validacion" es correcto y
+            # contiene la palabra. Buscar la subcadena suelta rechazaria el
+            # texto bien escrito, que es como un test empieza a empujar al
+            # codigo a decir menos de lo que debe.
+            for prohibido in ("no se pudo leer", "fallo", "falló", "error del sistema"):
+                assert prohibido not in motivo, (
+                    f"{estado}: '{prohibido}' manda al usuario a buscar un fallo del "
+                    "sistema donde lo que hay es un papel que necesita un ojo humano"
+                )
+
+            # Y tiene que decir que el sistema SI lo leyo: es lo que lo
+            # distingue de un papel ilegible.
+            assert "leyo" in motivo or "gate" in motivo or "lectura" in motivo, (
+                f"{estado}: el motivo no dice que el sistema leyo el comprobante, "
+                "y sin eso no se distingue de un archivo ilegible"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 5. La regla que protege el trabajo humano
 # ---------------------------------------------------------------------------
 
 

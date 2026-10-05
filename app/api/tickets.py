@@ -472,6 +472,12 @@ async def review_ticket(
             # total en 234.00 y el subtotal en 97.56 la aprobacion pasaba sin que
             # nadie notara que la aritmetica no cuadraba.
             subtotal=ticket.subtotal,
+            # El IEPS tambien se pasa, y por la misma razon: es lo que hace que
+            # un ticket con IVA e IEPS pueda aprobarse. Sin esta linea, una
+            # persona tendria que haber puesto un `tax_amount` que NO es el IVA
+            # para que la cuenta cuadrara, y entonces el contador recibiria un
+            # IVA inventado. Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+            ieps_amount=ticket.ieps_amount,
         )
         if not decision.validation.ok:
             raise HTTPException(
@@ -1214,6 +1220,12 @@ async def update_ticket(
             # total corregido a 234.00 y el subtotal en 97.56, la correccion pasaba
             # a APROBADO sin que nadie notara que la aritmetica no cuadraba.
             subtotal=ticket.subtotal,
+            # El IEPS tambien se pasa, y por la misma razon: es lo que hace que
+            # un ticket con IVA e IEPS pueda aprobarse. Sin esta linea, una
+            # persona tendria que haber puesto un `tax_amount` que NO es el IVA
+            # para que la cuenta cuadrara, y entonces el contador recibiria un
+            # IVA inventado. Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+            ieps_amount=ticket.ieps_amount,
         )
         if not decision.validation.ok:
             ticket.extraction_status = ExtractionStatus.REQUIERE_REVISION.value

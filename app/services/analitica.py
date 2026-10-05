@@ -90,7 +90,7 @@ def ultimos_meses(meses: int, ahora: Optional[datetime] = None) -> list[tuple[in
 
     Se devuelve la lista completa aunque un mes no tenga datos. Una serie de
     barras con los meses vacios saltados no se puede leer: no se ve si el mes sin
-    gasto fue un mes sin actividad o un mes del que nadie上报. Un hueco es
+    gasto fue un mes sin actividad o un mes del que nadie reporto. Un hueco es
     informacion.
     """
     ahora = ahora or utcnow()

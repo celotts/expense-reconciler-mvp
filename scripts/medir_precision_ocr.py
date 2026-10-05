@@ -192,8 +192,8 @@ def compara(esperado: Any, obtenido: Any, campo: str) -> tuple[str, str]:
     return ("acierto" if (o is not None and _normaliza(o) == _normaliza(e)) else "fallo"), f"esperaba {e!r}, leyo {o!r}"
 
 
-def _carga_verdad(carpeta: Path) -> dict[str, dict[str, Any]]:
-    ruta = carpeta / "verdad.json"
+def _carga_verdad(carpeta: Path, ruta_verdad: Path | None = None) -> dict[str, dict[str, Any]]:
+    ruta = ruta_verdad or carpeta / "verdad.json"
     if not ruta.is_file():
         raise SystemExit(
             f"No esta {ruta}.\n"
@@ -261,7 +261,18 @@ def _corre_una(foto: Path) -> Any:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Exactitud de la ruta de OCR contra verdad conocida.")
-    ap.add_argument("carpeta", nargs="?", type=Path, help="Carpeta con las fotos y verdad.json")
+    ap.add_argument("carpeta", nargs="?", type=Path, help="Carpeta con las fotos")
+    ap.add_argument(
+        "--verdad",
+        type=Path,
+        default=None,
+        help=(
+            "Donde esta verdad.json, si NO esta en la carpeta de las fotos. "
+            "Se separa porque un .json dentro de la carpeta de entrada lo ve el "
+            "escaner: lo reporta NO_SOPORTADO en cada corrida y ensucia el "
+            "conteo de la cola."
+        ),
+    )
     ap.add_argument("--init", type=Path, help="Escribe el esqueleto de verdad.json y sale")
     ap.add_argument(
         "--min-exactitud-total",
@@ -279,7 +290,7 @@ def main() -> int:
         ap.error("hace falta la carpeta, o --init para crearla")
 
     sys.path.insert(0, str(RAIZ))
-    verdad = _carga_verdad(args.carpeta)
+    verdad = _carga_verdad(args.carpeta, args.verdad)
     fotos = sorted(
         f for f in args.carpeta.iterdir()
         if f.is_file() and f.suffix.lower() in EXTENSIONES and f.name in verdad

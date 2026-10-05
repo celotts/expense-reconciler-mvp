@@ -110,12 +110,32 @@ services:
       # la app. Por eso `TICKETS_INPUT_DIR` dentro del contenedor es `/tickets` y
       # no la ruta del host: montar `.:/app` y usar la ruta del host seria buscar
       # `/Users/...` dentro del contenedor, donde no existe.
-      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets_app}:/tickets:rw
+      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_app}:/tickets:rw
       # La carpeta de escaneados. SEPARADA a proposito, por el punto 5 de arriba.
-      - ${TICKETS_SCAN_OUTPUT_HOST_DIR:-/Users/carloslott/Documents/Tickets_Scan}:/tickets_scan:rw
+      - ${TICKETS_SCAN_OUTPUT_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_Scan}:/tickets_scan:rw
+      # El RESPALDO de los comprobantes que el escaner borra de la entrada.
+      #
+      # Montado en su propia carpeta y NO en la de entrada por una razon que se
+      # midio: `make clean` es `docker compose down -v`, que destruye el volumen de
+      # la base. Sin esta carpeta, un comprobante borrado de `Tickets_app` tendria
+      # UNA sola copia, en el volumen que ese comando borra. Con ella, hay dos.
+      #
+      # Se escribe con `scripts/exportar_documentos.py`, que ademas relee cada
+      # archivo del disco y compara su sha256 con el de la base: un respaldo sin
+      # verificar no es un respaldo.
+      - ${TICKETS_EXPORT_HOST_DIR:-/Users/carloslott/Documents/Tickets/comprobantes}:/tickets_export:rw
+      # La VERDAD de la medicion de exactitud: los valores leidos a mano del papel,
+      # fuera de las carpetas que el escaner recorre.
+      #
+      # Montada aparte y en SOLO LECTURA por dos razones concretas. La primera es
+      # que un `.json` dentro de `Tickets_app` lo ve el escaner y lo reporta
+      # NO_SOPORTADO en cada corrida. La segunda es que es la referencia contra la
+      # que se mide el OCR, y si la app pudiera escribirla, un error de la app
+      # podria reescribir el termometro con el que se mide a si misma.
+      - ${TICKETS_VERDAD_HOST_DIR:-/Users/carloslott/Documents/Tickets/verdad}:/verdad:ro
     env_file:
       # El orden importa: con la misma variable en los dos archivos gana el
-      # ULTIMO, asi que .env.local pisa a .env.dev. Es lo que permite tener
+      # ULTIMO, asi que .env.local pisa a .env. Es lo que permite tener
       # SECRET_KEY fuera del repo sin renombrar nada de lo que ya existe.
       #
       # `required: false` para que un clone nuevo, que no tiene .env.local, siga
@@ -123,7 +143,7 @@ services:
       # secreto, config.py genera uno efimero y avisa: molesto (cada reinicio
       # cierra las sesiones) pero no roto, que es justo el criterio para no
       # impedir el arranque.
-      - path: .env.dev
+      - path: .env
         required: true
       - path: .env.local
         required: false
@@ -132,7 +152,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}@postgres-reconciler:5432/expense_db
       - HF_HOME=/opt/hf-cache
       # Dentro del contenedor la carpeta SIEMPRE es /tickets. Se sobrescribe aqui
-      # a proposito: el `.env.dev` del host tiene la ruta del host, que no existe
+      # a proposito: el `.env` del host tiene la ruta del host, que no existe
       # dentro del contenedor, y sin esto la app crearia `/Users/carloslott/...`
       # en el sistema de archivos del contenedor, como root.
       - TICKETS_INPUT_DIR=/tickets
@@ -147,6 +167,21 @@ services:
       #
       # Es el mismo motivo por el que `TICKETS_INPUT_DIR` va aqui: la ruta del
       # host no existe dentro del contenedor.
+      #
+      # LAS DOS CARPETAS VIVEN BAJO `~/Documents/Tickets/`
+      # -----------------------------------------------
+      # `Tickets_app` (entrada) y `Tickets_Scan` (salida) son **hermanas** dentro
+      # de `Tickets/`, y esa hermandad es la que sostiene el archivado:
+      # `archivado_service.carpeta_de_escaneados()` resuelve, cuando
+      # `TICKETS_SCAN_OUTPUT_DIR` esta vacia, `entrada.parent / "Tickets_Scan"` —
+      # o sea, el hermano de la entrada. Encapsular las dos bajo un mismo padre
+      # no cambia esa relacion; las separa del resto de `Documents` para que se
+      # puedan arrastrar juntas y no se confundan con otra carpeta de papel.
+      #
+      # Lo que NO se puede es colgar `Tickets_Scan` DENTRO de `Tickets_app`:
+      # el escaneo es recursivo, asi que el siguiente `POST /scan` volveria a ver
+      # lo archivado, su `relative_path` habria cambiado, el ledger no lo
+      # reconoceria y re-OCRearia cada corrida. sibling, no hijo.
       - TICKETS_SCAN_OUTPUT_DIR=/tickets_scan
     depends_on:
       postgres-reconciler:

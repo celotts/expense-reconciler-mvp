@@ -76,7 +76,7 @@ resuelve "una carpeta hermana de `TICKETS_INPUT_DIR`" y acierta en `/Tickets_Sca
 directorio **del contenedor** y no el segundo montaje. Los comprobantes se mueven ahí y
 desaparecen de la máquina.
 
-**Medido, no supuesto:** 8 comprobantes se movieron a `/Tickets_Scan` y `~/Documents/Tickets_Scan`
+**Medido, no supuesto:** 8 comprobantes se movieron a `/Tickets_Scan` y `~/Documents/Tickets/Tickets_Scan`
 quedó vacío. Los archivos seguían existiendo y se devolvieron a la entrada con `mv`, sin pérdida de
 bytes.
 
@@ -275,6 +275,82 @@ el confidence gate. Ver el punto 14.
 **Tests:** `tests/unit/test_contract_sync.py::TestElComprobanteOriginalLlegaAGuardado`
 (5 tests). Verificado por mutación: quitar el `subirDocumento` los hace fallar.
 
+### 29. `subtotal + IVA == total` rechazaba comprobantes correctos (arreglado)
+
+**Qué pasaba.** El gate comprobaba que `subtotal + IVA == total`, con una tolerancia de un
+centimo. Eso asume que un comprobante tiene **una** tasa de impuesto, y en México es falso.
+
+Medido sobre el ticket real de esta máquina (`FC3CB9F8-5AB1-4546-B9A9-016C69A158C5`):
+
+```
+SUBTOTAL       217.27
+IVA 16.0%        8.14
+IEPS 8.0%        8.59
+TOTAL          234.00        217.27 + 8.14 = 225.41   <- faltan 8.59
+```
+
+El comprobante era **correcto** y el gate lo mandaba a revisión. Con la tolerancia de un
+centimo, no había forma de pasarlo aunque los tres números se leyeran perfecto.
+
+**Por qué es peor que un check flojo.** `subtotal_plus_tax_mismatch` dejó de significar
+"leíste mal" y pasó a significar "el modelo no tiene un campo para lo que dice el papel". Con
+esa señal corrupta, el resto de los checks dejan de ser creíbles: si el único check aritmético
+avisa por un motivo que no es un error de lectura, ¿cuál de los otros sí lo es?
+
+**El error de fondo: el IVA no es una tasa del subtotal.** En ese ticket el IVA es 8.14 sobre
+217.27, o sea **3.7%**, no 16%. Solo una parte de las partidas está a 16% y el resto a 0%: el
+papel lo marca con una letra al final de cada línea (`T`, `C`, `A`). El IEPS de 8.59 es **4.0%**
+del subtotal, tampoco 8%.
+
+**El camino que se probó y se descartó.** Un heurístico: "si `subtotal + IVA` no da el total,
+busca una tasa fiscal conocida que explique la diferencia". Se descartó porque es falso — la
+diferencia no es una tasa del subtotal sino la **suma de impuestos de líneas con tasas
+distintas**. En la práctica marcaba como "un impuesto raro" a cualquier total mal leído que se
+desviara alrededor del 4%, que es justo el caso que tiene que seguir fallando: la foto de DSW,
+donde el OCR leyó el precio ya descontado (`119.97` en vez de `279.93`).
+
+Un clasificador que hace pasar errores de lectura es peor que no clasificar.
+
+**Arreglo.** El dato exacto: `tickets.ieps_amount` y `compra_items.iva_linea` /
+`ieps_linea` (migración `0012`). El gate prueba `subtotal + IVA + IEPS == total` cuando hay
+IEPS, y sigue exigiendo que cuadre — no se relajó nada.
+
+**Lo que salió en el camino, y es lo importante:**
+
+1. **`tax_amount` es el IVA, y el prompt pedía "total de impuestos".** `export_service` manda
+   `tax_amount` bajo el encabezado **"IVA"** del archivo que ve el contador. Un comprobante con
+   IVA 8.14 e IEPS 8.59 llegaba al contador como **IVA 16.73**, sin marca de error. No era un
+   dato inventado como `TipoCambio: 1.0000`: era un dato real con la etiqueta equivocada, que
+   es peor porque no se ve.
+2. **El `Subtotal` del Excel era `total - IVA`.** Con IEPS daba 225.86 en vez de 217.27, y la
+   cuenta del archivo **cuadraba** (225.86 + 8.14 = 234.00), así que el error quedaba
+   invisible. Ahora sale `tickets.subtotal`, y si no hay subtotal leído se deriva solo cuando
+   se sabe que no hay IEPS; con IEPS sin subtotal la celda queda vacía.
+3. **`TicketReviewRequest` no aceptaba `subtotal` ni `ieps_amount`.** Aprobar desde la cola de
+   revisión era imposible para un ticket con IVA+IEPS, con un `422` que no decía qué número
+   faltaba.
+
+**Por qué el campo costó tres intentos.** `TicketExtractionResult` **no está en
+`app/schemas/ticket.py`**: está en `parser_service.py:427`. El campo se agregó dos veces a
+`TicketResponse` y ninguna a la clase que el escaner consume, y el error apareció como
+`AttributeError` en `scan_service`, tres capas más abajo. Un test por capa habría pasado en
+los tres casos — que es exactamente lo que ya había pasado con `items` y con el `Decimal` de
+`items`.
+
+**Verificado por mutación** (`tests/integration/test_ieps_extremo_a_extremo.py`, 6 tests):
+
+| Mutación | Resultado |
+|---|---|
+| `capture` no copia el `ieps_amount` | mueren 4 de 6 |
+| `ticket_persistence` no lo guarda en la fila | mueren 2 de 6 |
+| `review_ticket` no lo relee al aprobar | muere el de aprobar |
+
+**Lo que NO se arregló, y sigue pendiente:** tu ticket real tiene `IVA 0.00` — el OCR no leyó
+mal el IVA, lo leyó **como cero**. El descuadro son 16.73 (IVA 8.14 + IEPS 8.59), así que el
+campo `ieps_amount` solo no lo resuelve: necesita corrección humana mirando el papel.
+
+---
+
 ---
 
 ## 🟠 Trampas
@@ -413,7 +489,7 @@ La medición de si dos motores juntos valen la pena está en `scripts/medir_dos_
 y su resultado en §21.
 
 ### 20. `TICKETS_INPUT_DIR` por omisión es una ruta de una máquina concreta
-`config.py` usa `/Users/carloslott/Documents/Tickets_app`, que es lo que pide el
+`config.py` usa `/Users/carloslott/Documents/Tickets/Tickets_app`, que es lo que pide el
 enunciado. En cualquier otra máquina, en el contenedor o en la de otra persona hay que
 cambiar la variable, y la app no falla: **crea la carpeta**. En un servidor eso
 significaría crear `/Users/carloslott/...` como root. `GET /api/v1/scan/config` expone
@@ -434,7 +510,7 @@ contenedor. Es aceptable para "una máquina, un contador" y no para un despliegu
 ### 21. El OCR cambia cifras y el gate no lo detecta — **el peor defecto medido**
 
 **Medido con `scripts/medir_precision_ocr.py` sobre las tres fotos reales de
-`~/Documents/Tickets_app`, rotuladas a mano mirando el papel:**
+`~/Documents/Tickets/Tickets_app`, rotuladas a mano mirando el papel:**
 
 | Archivo | El papel | El sistema leyó | Veredicto |
 |---|---|---|---|

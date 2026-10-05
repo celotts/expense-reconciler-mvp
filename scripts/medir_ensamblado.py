@@ -4,7 +4,7 @@ La pregunta: con las lineas reconstruidas, ¿el parser por reglas encuentra el
 total que EasyOCR si lee? Antes del ensamblado devolvia 0.00 en las tres.
 
     docker run --rm --memory 5g -v "$PWD:/app" \
-        -v "$HOME/Documents/Tickets_app:/tickets:ro" -w /app \
+        -v "$HOME/Documents/Tickets/Tickets_app:/tickets:ro" -w /app \
         expense-ocr-lab:local python scripts/medir_ensamblado.py
 """
 

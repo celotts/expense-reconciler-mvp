@@ -55,6 +55,7 @@ class DatosTicketResponse(BaseModel):
     total_amount: Decimal | None = None
     subtotal: Decimal | None = None
     tax_amount: Decimal | None = None
+    ieps_amount: Decimal | None = None
     expense_date: date | None = None
     category: str | None = None
     items: list[dict] | None = None
@@ -307,6 +308,25 @@ class ResumenScan(BaseModel):
     requiere_revision: int = 0
     requiere_accion: int = 0
     sin_ticket: int = 0
+    # Los que se quedan en la carpeta de ENTRADA porque su ticket aun no esta
+    # resuelto. Es el numero que dice si la bandeja se vacia o se llena, y va
+    # aparte de `sin_ticket` porque estos SI se leyeron: hay papel y hay ticket,
+    # lo que falta es que alguien mire. `sin_ticket` es "no se leyo nada".
+    #
+    # Con la regla de archivado actual, `archivados` y `quedan_en_bandeja` son
+    # las dos caras: lo que se retiro porque se leyo bien, y lo que se quedo
+    # porque no. Los dos suman `archivos_vistos`.
+    #
+    # `archivados` y `borrados_de_entrada` son hoy el MISMO numero y se
+    # declaran los dos: se separan para el dia en que el movimiento vuelva a
+    # existir, sin cambiar la forma de la respuesta.
+    #
+    # Y van declarados aqui porque **Pydantic descarta lo que el schema no
+    # declara**. Un campo que existe en el servicio y no en el schema no llega
+    # con valor cero: no llega. No es un default, es que desaparece sin avisar.
+    quedan_en_bandeja: int = 0
+    archivados: int = 0
+    borrados_de_entrada: int = 0
 
     # --- Donde mirar ---
     #

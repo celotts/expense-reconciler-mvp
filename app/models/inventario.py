@@ -327,6 +327,15 @@ class CompraItemModel(Base):
     descripcion = Column(String(300), nullable=False)
     cantidad = Column(Numeric(14, 3), nullable=False)
     costo_unitario = Column(Numeric(12, 2), nullable=True)
+    # El impuesto POR LINEA. Es aqui donde vive la tasa fiscal: un mismo
+    # comprobante puede tener partidas a 0%, a 16% y con IEPS, y un unico
+    # `tickets.tax_amount` no puede representar eso. Ver migracion 0012.
+    #
+    # IMPORTE y no tasa: `iva_linea = 8.14` son 8.14 pesos de IVA sobre esta
+    # linea, no un 8.14%. Confundirlo es la forma mas rapida de que el total
+    # deje de cuadrar sin que nadie sepa por que.
+    iva_linea = Column(Numeric(12, 2), nullable=True)
+    ieps_linea = Column(Numeric(12, 2), nullable=True)
     total = Column(Numeric(12, 2), nullable=True)
     # La posicion en el papel. Sin esto no se puede cotejar la linea con la
     # linea, que es la operacion completa cuando hay una diferencia.

@@ -9,7 +9,7 @@ asignar productos, confirmar, mover el papel— funciona junto y no solo por par
     python3 scripts/probar_inventario_e2e.py
 
 Deja: una empresa, un producto, una compra y un archivo en
-      ~/Documents/Tickets_Scan/ (con prefijo `e2e-`). Los limpia al final.
+      ~/Documents/Tickets/Tickets_Scan/ (con prefijo `e2e-`). Los limpia al final.
 """
 
 from __future__ import annotations

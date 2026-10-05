@@ -137,19 +137,22 @@ Sirve para (a) rotular la exactitud y (b) cargar lo que el OCR no pudo.
 
 ```json
 {
-  "provider_name": "CADENA COMERCIAL OXXO, S.A. DE C.V.",
-  "provider_tax_id": "FLORESQRM6205231H4",
+  "provider_name": "CADENA COMERCIAL OXXO",
+  "provider_tax_id": null,
   "expense_date": "2026-09-19",
-  "subtotal": "47.78",
-  "tax_amount": "3.72",
-  "total_amount": "51.50",
-  "items": [
-    {"description": "ARTICULOS VARIOS", "quantity": "1", "total": "47.78"}
-  ]
+  "subtotal": "51.50",
+  "tax_amount": "0.00",
+  "total_amount": "51.50"
 }
 ```
 
-El sistema leyó `31.50` (total correcto) y `null` en todo lo demás.
+**Este comprobante NO lleva RFC.** El `(CC0-860523-1H4)` del encabezado es un
+identificador de sociedad, no un RFC mexicano, y `LAS FLORES` es el nombre de la
+**sucursal**, no parte del RFC. La primera versión de esta tabla ponía un RFC
+inventado y un IVA de 3.72; el papel imprime `IVA incluido: $0.00`, así que el
+subtotal es igual al total. Corregido el 2026-10-04.
+
+El sistema leyó `31.50` (el total real es `51.50`) y `null` en todo lo demás.
 
 ### `AA4D0E8F-EC9C-4159-9A9F-C4C84C22303E 2.JPG` — carneMart, Ahumada
 
@@ -305,7 +308,7 @@ Sin esto, la corrección manual sigue sin poder alimentar el inventario — y es
 único camino que funciona hoy con fotos.
 
 **2. Rotular los 8 a mano para medir la exactitud real.**
-`scripts/medir_precision_ocr.py --init ~/Documents/Tickets_app` y luego
+`scripts/medir_precision_ocr.py --init ~/Documents/Tickets/Tickets_app` y luego
 `--min-exactitud-total 0.985`. El 33.3% anotado en `AGENTS.md` no es el número
 real.
 
@@ -323,7 +326,7 @@ medición (`known-issues.md` §21). No los vuelvas a intentar sin una razón nue
 ## 6. El flujo que funciona hoy
 
 ```
-Foto o PDF → Tickets_app/
+Foto o PDF → Tickets/Tickets_app/
      ↓
 POST /scan  →  lee, guarda en BD, devuelve datos + veredicto
      ↓

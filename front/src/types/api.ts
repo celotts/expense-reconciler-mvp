@@ -72,6 +72,13 @@ export interface Ticket {
    *  responderse. `null` cuando el comprobante no lo trae, nunca "0.00": un
    *  cero haría que la cuenta `subtotal + IVA == total` pareciera cuadrar. */
   subtotal: string | null;
+  /** El IEPS, SEPARADO del IVA. Hace falta porque `tax_amount` se exporta bajo el
+   *  encabezado "IVA" del archivo que ve el contador: meter los dos impuestos ahi
+   *  le entregaria un IVA que el comprobante no tiene. Sin este campo, un ticket
+   *  con IVA e IEPS se ve como `Subtotal 217.27 / IVA 8.14 / Total 234.00` y no
+   *  hay donde poner los 8.59 que sobran. `null` nunca "0.00": un cero dira que
+   *  se leyo el IEPS y era cero. */
+  ieps_amount: string | null;
   expense_date: string;
   category: string | null;
   raw_text: string | null;
@@ -134,6 +141,11 @@ export interface TicketReviewRequest {
   provider_tax_id?: string;
   total_amount?: string;
   tax_amount?: string;
+  /** El subtotal y el IEPS son lo que hace aprobable un comprobante con IVA+IEPS:
+   *  sin ellos, el gate corre `subtotal + IVA + IEPS == total` sobre numeros que
+   *  la persona no puede escribir y el approve falla siempre. */
+  subtotal?: string;
+  ieps_amount?: string;
   expense_date?: string;
   notes?: string;
 }
@@ -252,6 +264,10 @@ export interface TicketUpdate {
   /** El subtotal entra en la correccion: sin el, `subtotal + IVA == total` no
    *  se puede comprobar despues de corregir el total a mano. */
   subtotal?: string;
+  /** El IEPS entra en la correccion por lo mismo que el subtotal, y porque es el
+   *  dato que hace que un ticket con IVA e IEPS pueda aprobarse sin que alguien
+   *  tenga que inventar un IVA para que la cuenta cuadre. */
+  ieps_amount?: string;
   /** Las lineas del comprobante. Sin esto el inventario por foto no tiene
    *  entrada: la ruta OCR llega con `items` en null y no habia por donde cargarlas. */
   items?: LineaTicketUpdate[];

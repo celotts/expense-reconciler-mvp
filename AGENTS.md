@@ -35,7 +35,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **1068** — 796 unit + escáner, 256 integration, 1 skip |
+| Tests | **1141** — 864 unit + escáner, 277 integration, 1 skip |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario`
@@ -75,7 +75,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 982
+python3 -m pytest tests/ -q           # 1141
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 ```
@@ -139,6 +139,83 @@ columna `stock` es una copia, y una copia se desincroniza siempre sin que nadie 
 armado solo se llena de variantes (`Reginen de` / `Regin de`) que el sistema contaría como tres
 y entre las que el stock se repartiría. La cola es `compra_items WHERE producto_id IS NULL` — no
 hay tabla de "pendientes", y por eso no se puede desincronizar.
+
+### El impuesto es de la partida, y el gate lo tiene que saber
+El gate comprobaba `subtotal + IVA == total`, lo que asume que un comprobante tiene **una**
+tasa de impuesto. En México es falso, y medido sobre el ticket real de esta máquina:
+
+```
+SUBTOTAL       217.27
+IVA 16.0%        8.14
+IEPS 8.0%        8.59   <- no tenía dónde meterse
+TOTAL          234.00    y 217.27 + 8.14 + 8.59 = 234.00 EXACTO
+```
+
+Con `MONEY_TOLERANCE` de un centimo, ese comprobante **no podía pasar** aunque los tres
+números se leyeran perfecto. Y un gate que rechaza lecturas correctas es peor que un gate
+flojo: hace que `subtotal_plus_tax_mismatch` deje de significar "leíste mal".
+
+**El IVA NO es una tasa del subtotal, y por eso no se puede "detectar la tasa que falta".**
+En ese Walmart el IVA es 8.14 sobre un subtotal de 217.27, o sea 3.7%, no 16%: solo una parte
+de las partidas está a 16% y el resto a 0% (el papel lo marca con una letra al final de cada
+línea: T, C, A). El IEPS de 8.59 es 4.0% del subtotal, tampoco 8%.
+
+Se probó un heurístico —"si `subtotal + IVA` no da el total, busca una tasa fiscal conocida que
+explique la diferencia"— y **se descartó porque es falso**: en la práctica marcaba como "un
+impuesto raro" a cualquier total mal leído que se desviara alrededor del 4%, que es justo el
+caso que tiene que seguir fallando (la foto de DSW, donde el OCR leyó el precio ya
+descontado). Un clasificador que hace pasar errores de lectura es peor que no clasificar. El
+test que lo fija está en `test_impuestos.py:TestElHeuristicoQueSeDescarto`, y comprueba que el
+comportamiento descartado no se reintroduzca por accidente.
+
+Lo que quedó es el dato exacto: **`ieps_amount`**, en pesos, y la suma de los tres números que
+el papel imprime. No adivina nada. Y `ValidationOutcome` sigue teniendo **dos** cubos, no
+tres: se intentó agregar `warnings` para el caso "no me square pero no es error de lectura" y se
+quitó junto con el heurístico, porque sin él nadie lo llenaba.
+
+**`tax_amount` es el IVA, y el prompt pedía "total de impuestos".** Eso no era cosmético:
+`export_service` manda `tax_amount` bajo el encabezado **"IVA"** del archivo que ve el contador,
+así que un comprobante con IVA 8.14 e IEPS 8.59 llegaba como **IVA 16.73**, sin marca de error.
+El prompt ahora pide los dos separados y explica por qué (en `ai_extractor`, bloque "REGLAS DE
+LOS IMPUESTOS"). El IEPS sale a **columna propia** en el Excel y en el CONTPAQI.
+
+**El `Subtotal` del Excel dejó de ser un cálculo.** Era `total - IVA`, que con IEPS da 225.86
+en vez de 217.27: la cuenta del archivo cuadraba (225.86 + 8.14 = 234.00) y el error quedaba
+invisible. Ahora sale `tickets.subtotal`, y si no hay subtotal leído se deriva **solo cuando
+sabemos que no hay IEPS**; con IEPS sin subtotal la celda queda vacía, que es lo que el resto
+del archivo ya hace con `TipoCambio` y `MetodoPago`.
+
+**El IEPS del comprobante NO va a `CAMPOS_VERIFICABLES`.** El muestreo pregunta "se leyó bien
+este campo", y `ieps_amount` es `NULL` en la mayoría de los tickets porque casi nadie trae
+IEPS: el que lo trae es un supermercado, y el resto del papeleo no lo tiene. Meterlo ahí
+haría que el revisor marcara "incorrecto" en cada comprobante sin IEPS, y la exactitud medida
+bajaría por la ausencia del campo y no por la calidad del
+automatismo. Si algún día se agrega, hace falta primero una forma de decir "NULL era la
+respuesta correcta".
+
+**`TicketExtractionResult` NO está en `app/schemas/ticket.py`.** Está en `parser_service.py:427`,
+que es donde uno lo busca por el nombre y no lo encuentra. Por eso el campo se agregó dos
+veces a `TicketResponse` y ninguna a la clase que el escaner consume: el error seuprofen
+manifestó como `AttributeError` en el escaner, tres capas más abajo y sin ninguna pista de
+dónde venía. **Un test por capa habría pasado en los tres casos.**
+
+**Cuatro vías, cuatro schemas.** `TicketUpdate` (el `PATCH /{id}`), `TicketReviewRequest` (la
+cola de revisión), `TicketResponse` y `DatosTicketResponse` (el `datos` del escaneo). El campo
+tenía que estar en **las cuatro** y en los dos sitios donde el gate se **vuelve a correr**
+(`review_ticket` y `update_ticket`), porque en esos dos se releen los datos **guardados**: si
+no, un ticket corregido no se puede aprobar nunca. `TicketReviewRequest` no aceptaba ni
+`subtotal` ni `ieps_amount`; eso hacía que aprobar un ticket con IVA+IEPS desde la cola fuera
+imposible, con un `422` que no decía qué número faltaba.
+
+La defensa está en `tests/integration/test_ieps_extremo_a_extremo.py`, que prueba la
+**recorrida** —del `ExtractedInvoice` del modelo hasta el JSON que ve el cliente— y no una
+función. Tres mutaciones verificadas a mano y todas mueren:
+
+| Mutación | Test que muere |
+|---|---|
+| `capture` no copia el `ieps_amount` | 4 de 6 |
+| `ticket_persistence` no lo guarda en la tabla | 2 de 6 |
+| `review_ticket` no lo relee al aprobar | el de aprobar |
 
 ### `items` se extraía y se tiraba (arreglado en `0010`)
 El modelo ya pedía las líneas (`ai_extractor.ExtractedInvoice.items`) desde antes de que
@@ -247,6 +324,23 @@ que normaliza es `inventario_service.interpretar_items`.
 que se escanea: con `TICKETS_SCAN_RECURSIVO=True`, una subcarpeta haría que cada archivo movido
 se volviera a leer en cada corrida (su `relative_path` cambia, el ledger no lo reconoce).
 
+**Las dos carpetas son HERMANAS bajo `~/Documents/Tickets/`** (`medido` al reorganizar):
+`Tickets/Tickets_app` es la entrada y `Tickets/Tickets_Scan` la de los ya digitalizados. Esa
+hermandad es lo que hace que el archivado funcione **sin configurarlo**:
+`archivado_service.carpeta_de_escaneados()` resuelve `entrada.parent / "Tickets_Scan"` cuando la
+salida está vacía.
+
+El padre común es para que las dos carpetas se arrastren juntas y no se confundan con otra
+carpeta de papel de `Documents`. **Lo que no se puede es anidarlas**: `Tickets_Scan` colgando de
+`Tickets_app` hace que el escaneo recursivo vuelva a leer lo archivado cada corrida.
+`test_entrada_y_escaneados_son_hermanas` fija esa relación: si alguien cambia el default de la
+entrada a una ruta que no termina en `Tickets_app`, el archivado deja de caer donde se espera.
+
+Moviendo las carpetas enteras **no se rompió el ledger**: los 8 archivos siguieron saliendo
+`SIN_CAMBIOS` con los mismos totales. Eso es porque `relative_path` es relativo a la entrada, no
+absoluto, y cambiar la carpeta de la máquina no lo cambia. Lo que **sí** lo rompería es mover los
+archivos *dentro* de la entrada.
+
 Se mueve **solo cuando la compra está `PROCESADO`**, nunca por veredicto de lectura — con 33.3%
 de exactitud, mover también lo `PENDIENTE` habría enterrado dos de cada tres comprobantes en una
 carpeta que dice "escaneados", sin que nadie los hubiera revisado. `archivado_service` **nunca
@@ -299,7 +393,7 @@ Un archivo que no sabe que hay rutas nuevas no avisa; por eso es generado.
 
 Dos cosas que el generador respeta y que no hay que romper al tocarlo:
 - **`password` sale vacía.** El archivo está versionado con remoto en GitHub; una contraseña
-  escrita ahí queda publicada. Mismo criterio que `.env.dev` (regla de *Reglas que no se rompen*).
+  escrita ahí queda publicada. Mismo criterio que `.env` (regla de *Reglas que no se rompen*).
 - **`base_url` ya trae `/api/v1` y las rutas del spec también.** Sumar las dos da
   `/api/v1/api/v1/...`, que es un 404 limpio, no un error de sintaxis. Es la misma trampa que
   documenta `api_router.py` vista desde el cliente, y salió al verificar, no al leer.
@@ -311,7 +405,7 @@ filas `confidence_source='ocr'` tienen `spot_check_status = NULL`). Para eso est
 
 ```bash
 # La verdad se rotula a mano mirando el papel, y vive FUERA del repo.
-python3 scripts/medir_precision_ocr.py --init ~/Documents/Tickets_app
+python3 scripts/medir_precision_ocr.py --init ~/Documents/Tickets/Tickets_app
 python3 scripts/medir_precision_ocr.py /tickets --min-exactitud-total 0.985
 ```
 
@@ -439,7 +533,9 @@ costumbre — el porqué está en el comentario junto al código.
 
 14. **La aritmética del documento se comprueba antes que RFC y fecha.**
     Es el único check que no depende de nada externo; si va después, un total malformado
-    cortocircuita la validación.
+    cortocircuita la validación. Y ahora con **dos** sumas posibles: `subtotal + IVA == total`
+    y, si el comprobante trae IEPS, `subtotal + IVA + IEPS == total`. Ver *El impuesto es de la
+    partida*.
 
 15. **Una relectura escribe lo que leyó, también cuando no leyó nada.**
     `_actualizar_ticket` ponía la fecha solo `if extracted.expense_date is not None`, y
@@ -587,15 +683,32 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   nullable en `init.sql:126` y `NOT NULL` en `models/bank_transaction.py:24`. Los tests corren
   contra SQLite construyendo desde los modelos, así que no lo detectan.
 
-- **Hay cuatro `.env` y sólo uno se versiona.** `.env.example` es la plantilla (versionada);
-  `.env` lleva `POSTGRES_PASSWORD` y lo lee `docker compose`; `.env.dev` lleva la configuración
-  de la app y **no lleva secretos**; `.env.local` lleva la `SECRET_KEY` y **gana** sobre
-  `.env.dev`. `config.py` lee los dos últimos en ese orden, el mismo de `docker-compose.yml`:
-  antes leía solo `.env.dev` y por eso `uvicorn` local firmaba con una clave distinta a la del
-  contenedor. Los dos con secretos van en `chmod 600`. Regla: **`.env.dev` no lleva
-  contraseña ni clave**; la `DATABASE_URL` de ahí va sin contraseña porque Docker la
-  sobrescribe. Un test (`TestLaPlantillaDeLosEnv`) lo hace cumplir, porque `.gitignore` y
+- **Hay dos `.env` y sólo uno se versiona.** `.env.example` es la plantilla (versionada);
+  `.env` lleva `POSTGRES_PASSWORD` **y toda la configuración** de la app; `.env.local` lleva la
+  `SECRET_KEY` y **gana** sobre `.env`. `config.py` y `docker-compose.yml` leen los dos en ese
+  mismo orden: antes `config.py` leía sólo el de configuración y `docker-compose` los dos, así
+  que `uvicorn` local firmaba con una clave distinta a la del contenedor ("la sesión se cae,
+  pero sólo cuando depuro en local"). Los dos con secretos van en `chmod 600`.
+
+  **Eran cuatro y se fusionaron en dos** (`.env` + `.env.dev` → `.env`). Con cuatro archivos
+  sin explicar cuál era cuál, la clave acababa en dos sitios y la contraseña en tres: no por
+  descuido, sino porque nadie sabía quién ganaba. `.env.dev` ya no existe.
+
+  Lo único que sigue fuera de `.env` es la `SECRET_KEY`, y por un motivo concreto: con ella se
+  firman tokens válidos sin pasar por el login, así que si estuviera en `.env`, compartir la
+  configuración de IA significaría compartir la clave.
+
+  **La regla que sobrevive a la fusión, y es más estrecha: la contraseña no se duplica.** La
+  `DATABASE_URL` de `.env` va **sin contraseña, aunque `POSTGRES_PASSWORD` esté treinta líneas
+  más arriba en el mismo archivo**. La sola línea que arma una URL con contraseña es la de
+  `docker-compose.yml`, por interpolación de `${POSTGRES_PASSWORD}`. Dentro de Docker la de
+  `.env` no se usa: `environment:` pisa siempre a `env_file:`. Fuera de Docker sí se usa, y ahí
+  la rellenas tú. Un test (`TestLaPlantillaDeLosEnv`) lo hace cumplir, porque `.gitignore` y
   `git status` no delatan nada de esto.
+
+  Lo que **ya no** se puede afirmar es "el archivo de configuración no lleva secretos": con la
+  fusión, su único secreto (`POSTGRES_PASSWORD`) está ahí a propósito. No reescribas la
+  defensa en esa forma; defiéndela como "una sola URL con contraseña".
 
 - **El puerto de Ollama publicado es 11435.** En esta máquina hay un Ollama nativo en
   `127.0.0.1:11434` y publicar el mismo puerto en loopback no arranca. La app habla con

@@ -32,7 +32,29 @@ MAX_PAST_YEARS = 3
 
 @dataclass
 class ValidationOutcome:
-    """Resultado de los checks deterministas sobre una extraccion."""
+    """Resultado de los checks deterministas sobre una extraccion.
+
+    SOLO DOS CUBOS, Y POR QUE NO HAY UN TERCIO
+    ==========================================
+
+    Se probo agregar `warnings` para decir "no me square, pero hay un impuesto que
+    no tengo en el modelo" sin tratarlo como error de lectura. **Se quito**,
+    porque la forma de decidir "hay un impuesto que no modelo" que se probo
+    (buscar una tasa conocida que explique la diferencia) es FALSA. Medido:
+
+        diferencia = 234.00 - 225.41 = 8.59
+        8.59 / 217.27 = 4.0%
+
+    El IEPS del ticket es de 8%, y 4.0% no es 8%: el impuesto se aplica a cada
+    PARTIDA, y en ese comprobante hubo lineas a 0%, a 16% y con IEPS. Buscar una
+    tasa sobre el subtotal no tiene fundamento, y en la practica marcaba como
+    "un impuesto raro" a cualquier total mal leido que se desviara alrededor del
+    4% — que es justo el caso que tiene que seguir fallando.
+
+    Un clasificador que hace pasar errores de lectura es peor que no clasificar.
+    Lo que se hizo en su lugar es el dato exacto: `ieps_amount`, y la suma
+    `subtotal + IVA + IEPS == total`. No adivina nada.
+    """
 
     passed: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
@@ -96,9 +118,16 @@ def validate_extraction(
     expense_date: date | None,
     provider_tax_id: str | None = None,
     subtotal: Decimal | None = None,
+    ieps_amount: Decimal | None = None,
 ) -> ValidationOutcome:
     """Checks deterministas. Cada uno atrapa un modo de falla concreto y
-    barato de detectar."""
+    barato de detectar.
+
+    `ieps_amount` es el IEPS del comprobante, en PESOS. Lo acepta `validate_extraction`
+    y NO lo acepta todavia `gate_ticket`, porque el lector todavia no lo produce: se
+    anade por el camino de correccion, que es donde una persona lo escribe mirando
+    el papel. Ver `db/migrations/0012_el_impuesto_es_de_la_partida.sql`.
+    """
     out = ValidationOutcome()
 
     name = (provider_name or "").strip()
@@ -119,17 +148,38 @@ def validate_extraction(
     else:
         out.passed.append("tax_within_range")
 
-    # Aritmetica del documento. Solo si vino subtotal: no todos los tickets lo traen.
+    # --- Aritmetica del documento -----------------------------------------
+    #
+    # El caso de siempre, que es el que funciona: subtotal + IVA == total.
     if subtotal is not None and tax_amount is not None and total_amount is not None:
         esperado = subtotal + tax_amount
-        if abs(esperado - total_amount) > MONEY_TOLERANCE:
+        if abs(esperado - total_amount) <= MONEY_TOLERANCE:
+            out.passed.append("arithmetic_consistent")
+
+        elif ieps_amount is not None:
+            # CON IEPS leido. Es el caso de un comprobante con los dos
+            # impuestos, que es normal en supermercado: alimentos preparados y
+            # bebidas tienen IVA 16% y IEPS 8%.
+            #
+            # Antes esto caia en `subtotal_plus_tax_mismatch` aunque los tres
+            # numeros estuvieran bien leidos, porque el IEPS no tinha donde
+            # meterse. Medido: `217.27 + 8.14 + 8.59 = 234.00` exacto sobre un
+            # Walmart real, y el gate lo rechazaba.
+            esperado_con_ieps = esperado + ieps_amount
+            if abs(esperado_con_ieps - total_amount) <= MONEY_TOLERANCE:
+                out.passed.append("arithmetic_consistent_with_ieps")
+            else:
+                out.failures.append(
+                    f"subtotal_plus_tax_mismatch("
+                    f"leido={total_amount},esperado={esperado},ieps={ieps_amount})"
+                )
+
+        else:
             # Se guardan los dos numeros. Con solo el esperado, revisar 500
             # tickets es comparar a ciegas contra el documento original.
             out.failures.append(
                 f"subtotal_plus_tax_mismatch(leido={total_amount},esperado={esperado})"
             )
-        else:
-            out.passed.append("arithmetic_consistent")
 
     if provider_tax_id:
         from app.schemas.ticket import RFC_REGEX  # import local: evita ciclo
@@ -212,13 +262,14 @@ def gate_ticket(
     expense_date: date | None,
     provider_tax_id: str | None = None,
     subtotal: Decimal | None = None,
+    ieps_amount: Decimal | None = None,
     confidence: float | None = None,
     source: ConfidenceSource = ConfidenceSource.LLM,
 ) -> GateDecision:
     """Entrada unica: valida y decide en una sola llamada."""
     validation = validate_extraction(
         provider_name, total_amount, tax_amount, expense_date,
-        provider_tax_id, subtotal,
+        provider_tax_id, subtotal, ieps_amount,
     )
     return decide_status(confidence, validation, source)
 
@@ -230,6 +281,7 @@ def gate_manual_ticket(
     expense_date: date | None,
     provider_tax_id: str | None = None,
     subtotal: Decimal | None = None,
+    ieps_amount: Decimal | None = None,
 ) -> GateDecision:
     """Captura manual: una persona tecleo los datos, asi que no hay confianza
     que medir. Pasa los mismos checks por consistencia y queda APROBADO.
@@ -249,7 +301,7 @@ def gate_manual_ticket(
     """
     validation = validate_extraction(
         provider_name, total_amount, tax_amount, expense_date,
-        provider_tax_id, subtotal,
+        provider_tax_id, subtotal, ieps_amount,
     )
     if validation.ok:
         return GateDecision(

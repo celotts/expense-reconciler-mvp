@@ -443,6 +443,20 @@ class TicketExtractionResult(BaseModel):
     # Subtotal del documento, si el documento lo trae. Permite verificar
     # subtotal + IVA == total en el gate, que es el check mas barato que hay.
     subtotal: Decimal | None = None
+    # El IEPS del comprobante, en pesos, SEPARADO del IVA. El gate lo necesita
+    # para que `subtotal + IVA + IEPS == total` cuadre en un comprobante de
+    # supermercado, que es donde el IVA solo nunca alcanza.
+    #
+    # `None` y no `Decimal("0.00")`: `0.00` es "el papel dice que el IEPS es
+    # cero" y `None` es "no hay IEPS aqui o no se leyo". El gate usa la
+    # diferencia: con `None` prueba `subtotal + IVA == total`, que es el caso de
+    # siempre, y solo recurre a la suma con IEPS cuando hay un numero que sumar.
+    #
+    # Esta clase NO estaba en `app/schemas/ticket.py`, que es donde uno lo busca
+    # por el nombre. Por eso el campo llego dos veces a `TicketResponse` y aqui
+    # ninguna: el error se manifesto como `AttributeError` en el escaner, tres
+    # capas mas abajo. Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+    ieps_amount: Decimal | None = None
     # Las lineas del comprobante, crudas, tal como las devuelve el lector.
     #
     # NULL y no `[]`, y la diferencia es de significado: NULL = el lector no

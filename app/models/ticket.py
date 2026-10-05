@@ -129,6 +129,11 @@ class TicketModel(Base):
     # subtotal. Un 0 aqui haria que la cuenta pareciera cuadrar cuando en
     # realidad no hay nada que comprobar.
     subtotal = Column(Numeric(12, 2), nullable=True)
+    # El IEPS del comprobante. Es IMPORTE y no tasa, y es NULL cuando el papel no
+    # lo imprime. Sin esta columna, un ticket con IVA + IEPS no puede cuadrar con
+    # `subtotal + IVA == total` ni aunque los tres numeros esten bien leidos.
+    # Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+    ieps_amount = Column(Numeric(12, 2), nullable=True)
     # Las lineas del comprobante. El modelo las pedia desde antes de que
     # existiera el inventario (`ai_extractor.py`), devolvia la respuesta entera
     # con ellas, y `capture.py:invoice_to_result` las dejaba fuera del

@@ -75,6 +75,7 @@ from app.core.archivo_real import detectar_tipo_real
 from app.services import scan_registry
 from app.core.config import settings
 from app.core.enums import (
+    SETTLED_STATUSES,
     ConfidenceSource,
     EstadoCompra,
     ExtractionStatus,
@@ -153,10 +154,9 @@ def ruta_de_relativo(relative_path: str) -> Path:
     candidata = (base / relative_path).resolve()
 
     # `is_relative_to` y no `str(candidata).startswith(str(base))`: el segundo
-    # da True para `/Users/carlos/Documents/Tickets_app_secreto` cuando la base
-    # es `/Users/carlos/Documents/Tickets_app`, porque una ruta es prefijo
-    # textual de otra. Ese es el error clasico de un `startswith` aplicado a
-    # rutas, y aqui abriria la carpeta hermana.
+    # da True para `.../Tickets_app_secreto` cuando la base es `.../Tickets_app`,
+    # porque una ruta es prefijo textual de otra. Ese es el error clasico de un
+    # `startswith` aplicado a rutas, y aqui abriria la carpeta hermana.
     if not candidata.is_relative_to(base):
         raise ArchivoFueraDeLaCarpeta(
             f"la ruta {candidata} queda fuera de la carpeta de tickets ({base})"
@@ -376,6 +376,12 @@ class ResumenEscaneo:
     # los leyera bien. `simulado` dice si lo que se lee ya ocurrio o es un plan.
     archivados: int = 0
     archivados_pendientes: int = 0
+    # Los que NO se movieron porque su ticket aun necesita a una persona. Es el
+    # numero que dice si la bandeja se esta vaciando o si se esta llenando.
+    quedan_en_bandeja: int = 0
+    # Los que se BORRARON de la carpeta de entrada por estar ya respaldados. Antes
+    # esta carpeta se vaciaba moviendo a `Tickets_Scan`; ahora se vacia borrando.
+    borrados_de_entrada: int = 0
     carpeta_destino: str | None = None
     simulado: bool = False
 
@@ -469,6 +475,7 @@ async def _actualizar_ticket(
         expense_date=extracted.expense_date,
         provider_tax_id=extracted.provider_tax_id,
         subtotal=extracted.subtotal,
+        ieps_amount=extracted.ieps_amount,
         confidence=extracted.confidence,
         source=extracted.confidence_source,
     )
@@ -478,6 +485,11 @@ async def _actualizar_ticket(
     ticket.total_amount = extracted.total_amount
     ticket.tax_amount = extracted.tax_amount
     ticket.subtotal = extracted.subtotal
+    # El IEPS tambien se reescribe. Sin esto, reprocesar un comprobante con IEPS
+    # lo dejaria con el IEPS de la lectura anterior (o en NULL) mientras el total
+    # y el IVA si se actualizan: la fila se contradiria a si misma y el gate ya
+    # no podria comprobarla.
+    ticket.ieps_amount = extracted.ieps_amount
     # Las LINEAS DE PRODUCTO tambien se actualizan. Antes no se copiaban, y eso
     # hacia que reprocesar un comprobante no sirviera de nada para el inventario:
     # el ticket se actualizaba (total, IVA, proveedor) pero `items` se quedaba en
@@ -1048,9 +1060,41 @@ async def escanear(
             # archivos nunca se moverian: quedarian en la carpeta de entrada para
             # siempre, que es justo lo que el archivado viene a evitar.
             #
-            # La condicion real es "tiene ticket y su estado no es de los que no
-            # producen nada": ERROR, DUPLICADO y NO_SOPORTADO no se archivan, y
-            # un archivo ilegible es precisamente el que alguien tiene que mirar.
+            # La condicion real es "tiene ticket, no hay error, y el veredicto es
+            # de los que ya no necesitan a nadie".
+            #
+            # EL TICKET TIENE QUE ESTAR RESUELTO, Y ESO ES UN CAMBIO DE FONDO
+            # ===================================================================
+            # Antes se archivaba cualquier archivo que tuviera ticket, y eso
+            # movia a `Tickets_Scan` comprobantes en `PENDIENTE` y
+            # `REQUIERE_REVISION`. Con OCR al 33-57% de exactitud eso era casi
+            # todos: la carpeta de "escaneados" se llenaba de papeles que NADIE
+            # habia revisado, y el nombre de la carpeta decia una cosa que el
+            # contenido desmentia.
+            #
+            # El proyecto ya lo admitia y lo rodeaba de avisos
+            # (`archivados_pendientes`, "el sistema ya lo intento"), que es una
+            # forma de no romper la promesa sin cumplirla. Con esta regla la
+            # promesa se cumple: **lo que esta en `Tickets_Scan` se leyo bien.**
+            #
+            # LO QUE NO SE MUEVE, Y POR QUE
+            # ----------------------------
+            # - ERROR / NO_SOPORTADO: no se pudo leer. Obvio: se quedan.
+            # - DUPLICADO: ya esta en `Tickets_Scan` por el otro archivo. Moverlo
+            #   otra vez lo duplica con sufijo, y `archivados` contaria dos veces
+            #   el mismo comprobante.
+            # - PENDIENTE / REQUIERE_REVISION: el gate lo paro. **ESTE ES EL QUE
+            #   IMPORTA**: son los que alguien tiene que mirar, y un papel que
+            #   necesita a una persona tiene que seguir en la bandeja, visible.
+            #
+            # Y el efectoPractico es el que hace util la bandeja: la de entrada
+            # es la COLA DE TRABAJO. Un comprobante corregido a mano queda
+            # `APROBADO`, y en la siguiente corrida si se mueve. Se vacia sola a
+            # medida que se resuelve el trabajo, sin que nadie mueva archivos.
+            #
+            # Sin coste: el archivo que se queda ya esta en `scan_files` con su
+            # `content_hash`, asi que la proxima corrida lo reporta `SIN_CAMBIOS`
+            # sin volver a pagar OCR.
             if archivar and detalle.accion not in (
                 "ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO"
             ) and detalle.ticket_id is not None:
@@ -1073,18 +1117,46 @@ async def escanear(
                 ).scalar_one_or_none()
 
                 if fila is not None and ticket is not None:
-                    movido, ruta, pendiente = await archivar_tras_lectura(
-                        db, fila, ticket, actor=actor, simular=simular
-                    )
-                    detalle.archivado = movido
-                    detalle.ruta_archivo = ruta
-                    detalle.extraction_status = ticket.extraction_status
-                    detalle.estaba_pendiente = pendiente
-                    detalle.solo_simulado = movido and simular
-                    if movido:
-                        resumen.archivados += 1
-                        if pendiente:
-                            resumen.archivados_pendientes += 1
+                    # El filtro de veredicto va AQUI y no en la condicion de
+                    # arriba, porque el ticket se carga justo debajo: sin el no hay
+                    # `extraction_status` que mirar. Y va aqui para que un archivo
+                    # no resuelto conserve su `ruta_archivo` en None, que es como
+                    # el cliente distingue "se movio" de "se queda en la bandeja".
+                    #
+                    # `if/else` Y NO `continue`: un `continue` aqui se comia el
+                    # resto del bucle, y el resto del bucle es donde se hace
+                    # `resumen.detalles.append(detalle)`. El archivo se quedaba
+                    # correctamente en la bandeja pero DESAPARECIA de la respuesta:
+                    # una corrida de 9 archivos reportaba `archivos_vistos: 3`.
+                    #
+                    # Medido, y hacia falta mirar el numero de la respuesta para
+                    # notarlo: los 3 que quedaban eran justo los que si se
+                    # movieron. Un filtro que esconde los casos que aplica parece
+                    # un filtro que funciona.
+                    if ExtractionStatus(ticket.extraction_status) not in SETTLED_STATUSES:
+                        # No se toca, y se dice POR QUE: sin este motivo, un
+                        # `ruta_archivo: null` no distingue "aun no toca" de "no
+                        # se pudo leer", que son cosas distintas.
+                        detalle.extraction_status = ticket.extraction_status
+                        detalle.detalle = _motivo_de_bandeja(ticket.extraction_status)
+                        resumen.quedan_en_bandeja += 1
+                    else:
+                        borrado, motivo = await _retirar_si_esta_respaldo(
+                            db, fila, ticket, actor=actor, simular=simular
+                        )
+                        detalle.archivado = borrado
+                        detalle.extraction_status = ticket.extraction_status
+                        detalle.solo_simulado = borrado and simular
+                        if motivo:
+                            # El motivo va SIEMPRE, tambien cuando NO se borro.
+                            # Un ticket resuelto que se queda en la bandeja sin
+                            # explicación parece un bug del escaner, y el operador
+                            # no tiene forma de saber que el sistema se nego a
+                            # borrar porque no habia respaldo.
+                            detalle.detalle = motivo
+                        if borrado:
+                            resumen.archivados += 1
+                            resumen.borrados_de_entrada += 1
 
             resumen.detalles.append(detalle)
 
@@ -1113,7 +1185,11 @@ async def escanear(
     # El total va DESPUES de resolver los datos, porque necesita `datos` para
     # poder separar lo leido de lo confiable. Calcularlo antes daria un resumen
     # con todos los importes en cero, que es peor que no dar resumen.
-    resumen.resumen = _calcular_resumen(resumen.detalles)
+    resumen.resumen = _calcular_resumen(
+        resumen.detalles,
+        quedan_en_bandeja=resumen.quedan_en_bandeja,
+        archivados=resumen.archivados,
+    )
     scan_registry.cerrar_corrida(corrida, resumen.resumen)
 
     return resumen
@@ -1145,7 +1221,12 @@ def _a_decimal(valor) -> Decimal | None:
         return None
 
 
-def _calcular_resumen(detalles: list[ResumenArchivo]) -> dict:
+def _calcular_resumen(
+    detalles: list[ResumenArchivo],
+    *,
+    quedan_en_bandeja: int = 0,
+    archivados: int = 0,
+) -> dict:
     """El total de la corrida: que salio, cuanto dinero y que hay que mirar.
 
     POR QUE HAY TRES IMPORTES Y NO UNO
@@ -1246,6 +1327,15 @@ def _calcular_resumen(detalles: list[ResumenArchivo]) -> dict:
     # los que necesitan correccion, mas los que no se pudieron leer, mas los que
     # ni siquiera produjeron ticket.
     sin_ticket = len([d for d in detalles if d.ticket_id is None])
+    # `quedan_en_bandeja` y `archivados` VIENEN del escaneo y no se recalculan.
+    #
+    # Se intento deducirlos de los detalles —"tiene ticket y no tiene ruta de
+    # archivo"— y es incorrecto desde que el borrado sustituyo al movimiento: el
+    # borrado no tiene ruta de destino, asi que `ruta_archivo` es None en TODOS
+    # los casos y la cuenta daba 10 de 10 con 2 que si se iban. Medido.
+    #
+    # La cuenta correcta es la que lleva el escaneo, que es el unico sitio donde
+    # se decide de verdad si un archivo se retiro o no.
     requiere_accion = requiere_revision + con_error + no_soportados + sin_ticket
 
     return {
@@ -1270,6 +1360,14 @@ def _calcular_resumen(detalles: list[ResumenArchivo]) -> dict:
         "requiere_revision": requiere_revision,
         "requiere_accion": requiere_accion,
         "sin_ticket": sin_ticket,
+        "quedan_en_bandeja": quedan_en_bandeja,
+        # Los dos que van juntos y dicen lo mismo con palabras distintas:
+        # `archivados` son los que se movieron, `borrados_de_entrada` los que
+        # desaparecieron del disco. Hoy son el mismo numero porque el archivado
+        # es un borrado, y se separan para que un dia el movimiento vuelva a
+        # existir sin que el resumen tenga que cambiar de forma.
+        "archivados": archivados,
+        "borrados_de_entrada": archivados,
         # Rutas y no ids: el cliente puede ofrecer un boton que lleve a donde hay
         # que actuar, en vez de que cada pantalla arme su propia URL y se
         # desincronice de la API.
@@ -1279,6 +1377,106 @@ def _calcular_resumen(detalles: list[ResumenArchivo]) -> dict:
             "escaneo": "/scan",
         },
     }
+
+
+async def _retirar_si_esta_respaldo(
+    db: AsyncSession,
+    fila: ScanFileModel,
+    ticket: TicketModel,
+    *,
+    actor: str | None = None,
+    simular: bool = False,
+) -> tuple[bool, str]:
+    """Retira el archivo de la carpeta de entrada, pero SOLO si está respaldado.
+
+    QUE ES ESTO Y POR QUE NO ES MOVER
+    ===============================
+    Antes el archivo se MOVIA a `Tickets_Scan`. Se pedia lo contrario: la carpeta
+    de entrada debe quedar con **solo lo que no se digitalizo bien**, para
+    reintentarlo, y lo que si se digitalizo desaparece de ahi porque ya no se
+    vuelve a usar.
+
+    La diferencia entre mover y borrar no es de estilo: es que **mover deja el
+    archivo en el disco y borrar no**. Por eso el borrado necesita una prueba
+    antes, y la prueba es que el comprobante este en `ticket_documents` con el
+    MISMO `sha256` que el archivo que se va a borrar. Es lo unico que separa
+    "ya tengo una copia fiel" de "estaba Nombre y ya no".
+
+    SI NO HAY RESPALDO, NO SE BORRA Y SE DICE POR QUE
+    -------------------------------------------------
+    El caso real es `guardar_documento` devolviendo `False`: el ticket se creo
+    pero su comprobante no se pudo guardar. Ahi el archivo del disco es el unico
+    comprobante que existe, y borrarlo deja el ticket sin papel para siempre — y
+    sin papel no hay muestreo de exactitud posible.
+
+    `simular` calcula y devuelve lo que PASSARIA sin tocar el disco. Es lo que
+    permite ver el efecto de una corrida antes de que ocurra, y con un borrado
+    irreversible no es opcional.
+    """
+    from app.services import archivado_service
+
+    if not fila.relative_path:
+        return False, None
+
+    respaldado, motivo = await archivado_service.esta_respaldado(
+        db, ticket, fila.relative_path
+    )
+
+    if not respaldado:
+        # No es un fallo del escaneo: es el sistema negandose a destruir la
+        # unica copia. Se registra como evento para que la decision sea
+        # auditable, y el archivo se queda donde esta.
+        logger.info(
+            "Ticket %s: %s se conserva en la carpeta de entrada (%s)",
+            ticket.id, fila.relative_path, motivo,
+        )
+        return False, motivo
+
+    if simular:
+        return True, f"se borraria de la entrada: {motivo}"
+
+    resultado = archivado_service.eliminar_de_la_entrada(fila.relative_path)
+    if not resultado.movido:
+        return False, resultado.motivo
+
+    await _registrar(db, fila, "BORRADO", motivo, actor)
+    return True, motivo
+
+
+def _motivo_de_bandeja(extraction_status: str) -> str:
+    """Por que este comprobante se queda en la bandeja en vez de archivarse.
+
+    Va en el `detalle` del item y no solo en un contador porque la pregunta que
+    responde es "este papel mio, por que sigue ahi?", y sin el motivo hay que
+    abrir la cola de revision para Averiguarlo. Es el mismo motivo que ya lleva
+    `archivados_pendientes`, pero al reves: ese decia cuantos se movieron sin
+    leerse bien, y ahora lo relevante es cuantos NO se movieron porque falta
+    que alguien los mire.
+
+    El texto NO dice "error", y esa es la distincion que importa: un
+    `PENDIENTE` no es un fallo del sistema, es una lectura que el gate no se
+    atrevio a dar por buena. Decirle "error" al usuario seria pedirle que vaya a
+    buscar un bug donde lo que hay es un papel que necesita un ojo humano.
+    """
+    if extraction_status == ExtractionStatus.PENDIENTE.value:
+        return (
+            "queda en la bandeja: el sistema leyo el comprobante pero el gate "
+            "no lo dio por bueno. Corrigelo en la cola de revision y en la "
+            "siguiente corrida se archiva solo."
+        )
+    if extraction_status == ExtractionStatus.REQUIERE_REVISION.value:
+        return (
+            "queda en la bandeja: la lectura tiene datos que no cuadran entre si. "
+            "El motivo esta en el campo de errores de validacion del ticket. "
+            "Corrigelo en la cola de revision y en la siguiente corrida se "
+            "archiva solo."
+        )
+    if extraction_status == ExtractionStatus.RECHAZADO.value:
+        return (
+            "queda en la bandeja: el comprobante fue descartado por una persona "
+            "y se conserva aqui para que la decision sea revisable."
+        )
+    return f"queda en la bandeja: el veredicto es {extraction_status}, no uno resuelto."
 
 
 async def _resolver_datos_de_tickets(
@@ -1579,5 +1777,9 @@ async def reprocesar_uno(
     # diferencia pareceria un bug del gate cuando es que este camino nunca los
     # resolvio.
     await _resolver_datos_de_tickets(db, [resumen])
+    # `ResumenArchivo` NO tiene los contadores de la corrida: son de
+    # `ResumenEscaneo`, y el reproceso de un archivo suelto no construye una.
+    # Se pasan en cero a proposito —no hubo corrida, no hay nada que archivara—
+    # en vez de inventar una `ResumenEscaneo` de mentira para poder contarlo.
     resumen.resumen = _calcular_resumen([resumen])
     return resumen

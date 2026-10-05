@@ -4,7 +4,8 @@ Por que existe
 --------------
 Una grafica de doce barras no se interpreta sola. Alguien tiene que mirar y
 concluir, y cada persona concluye distinto. Un tablero que obliga a cada
-visitante a sacar su propia結論 es un tablero que no comunica: es un exercise.
+visitante a sacar su propia conclusion es un tablero que no comunica: es un
+ejercicio.
 
 La version de este tablero era exactamente eso. Doce barras, un color distinto
 en la ultima, y ninguna palabra. El lector tenia que adivinar por que esa barra

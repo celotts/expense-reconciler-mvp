@@ -304,6 +304,12 @@ def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
         category=None,
         raw_text=invoice.raw_text,
         subtotal=invoice.subtotal if invoice.subtotal is not None else None,
+        # El IEPS que el modelo separo del IVA. Si aqui no se copiara, el gate
+        # recibiria `ieps_amount=None` en todos los casos y el check con IEPS
+        # no se activaria nunca: la columna nueva existiria y estaria siempre
+        # vacia. Es el mismo bug que las lineas, que el modelo pedia y este
+        # constructor no copiaba.
+        ieps_amount=invoice.ieps_amount if invoice.ieps_amount is not None else None,
         # Las lineas del comprobante. Antes se perdian aqui: el modelo las
         # devolvia (`ai_extractor.ExtractedInvoice.items`) y este constructor no
         # las copiaba, de modo que la linea desaparecia antes de llegar al

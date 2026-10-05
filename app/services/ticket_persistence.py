@@ -70,6 +70,9 @@ async def persistir_extraccion(
         expense_date=extracted.expense_date,
         provider_tax_id=extracted.provider_tax_id,
         subtotal=extracted.subtotal,
+        # Sin esto, un comprobante con IVA e IEPS bien leidos llega al gate como
+        # si solo tuviera IVA y se rechaza por `subtotal_plus_tax_mismatch`.
+        ieps_amount=extracted.ieps_amount,
         confidence=extracted.confidence,
         source=extracted.confidence_source,
     )
@@ -106,6 +109,9 @@ async def persistir_extraccion(
         # documento no trae subtotal: un 0 seria un dato falso con apariencia
         # de dato, y haria que la cuenta pareciera cuadrar sin comprobar nada.
         subtotal=extracted.subtotal,
+        # El IEPS del comprobante, en pesos. `None` cuando el papel no lo trae:
+        # ver la razon de por que no es `0.00` en `ai_extractor.ExtractedInvoice`.
+        ieps_amount=extracted.ieps_amount,
         # Las lineas, crudas. Antes no se guardaban porque no habia donde: el
         # inventario no existia. Ahora si, y sin ellas una compra no tiene
         # contenido — un comprobante dice que se gasto $4,093.80, no que se

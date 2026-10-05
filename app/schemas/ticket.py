@@ -104,6 +104,12 @@ class TicketUpdate(BaseModel):
     # el, corregir el total a mano deja el ticket sin forma de verificar su propia
     # aritmetica, que es el unico check que no depende de nada externo.
     subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    # El IEPS entra en la correccion por la misma razon que el subtotal, y por
+    # una mas: en un comprobante con IVA e IEPS es el unico dato que hace que
+    # `subtotal + IVA + IEPS == total` cuadre. Sin el, la persona tendria que
+    # resolver un `subtotal_plus_tax_mismatch` usando un numero que el
+    # comprobante SI imprime: es escribir a mano lo que el OCR no lee.
+    ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
 
     # LAS LINEAS, Y POR QUE ESTAN AQUI
     # -------------------------------
@@ -235,6 +241,14 @@ class TicketResponse(BaseModel):
     # El revisor tendria que buscarlo dentro de `raw_text`, que en la ruta de
     # vision es lo que devolvio el modelo y no siempre lo trae.
     subtotal: Decimal | None = None
+    # El IEPS separado del IVA, igual que en la tabla. Va en la respuesta porque
+    # sin el, quien mira el ticket ve `Subtotal 217.27 / IVA 8.14 / Total 234.00`
+    # y no tiene donde poner los 8.59 que sobran: el descuadre se ve pero no se
+    # explica, y eso es peor que un dato de mas.
+    #
+    # Y lo necesita el muestreo, igual que el subtotal: sin el, la pregunta de
+    # "se leyo bien el IEPS" no tiene con que compararse.
+    ieps_amount: Decimal | None = None
     expense_date: date
     category: str | None = None
     raw_text: str | None = None
@@ -401,6 +415,15 @@ class TicketReviewRequest(BaseModel):
     tax_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
     expense_date: date | None = None
     category: str | None = Field(None, max_length=100)
+    # El subtotal y el IEPS faltaban aqui, y el endpoint de revision es por donde
+    # una persona corrige de verdad: es la pantalla de la cola de pendientes.
+    #
+    # Sin ellos, aprobar un ticket con IVA e IEPS es imposible: el gate corre
+    # `subtotal + IVA + IEPS == total` sobre datos que la persona no tiene forma
+    # de escribir, y el `422` no dice que falta un numero que el comprobante si
+    # imprime. El ticket se queda en la cola para siempre.
+    subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
 
 
 class TicketReviewQueueResponse(BaseModel):

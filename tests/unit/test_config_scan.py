@@ -148,7 +148,7 @@ class TestElValorPorOmision:
         """
         s = Settings(DATABASE_URL="sqlite+aiosqlite:///:memory:")
 
-        assert s.TICKETS_INPUT_DIR == "/Users/carloslott/Documents/Tickets_app"
+        assert s.TICKETS_INPUT_DIR == "/Users/carloslott/Documents/Tickets/Tickets_app"
 
     def test_el_default_esta_tambien_en_env_example(self):
         """La plantilla dice lo mismo que el codigo.
@@ -161,7 +161,63 @@ class TestElValorPorOmision:
         texto = ruta.read_text(encoding="utf-8")
 
         assert "TICKETS_INPUT_DIR=" in texto
-        assert "TICKETS_INPUT_DIR=/Users/carloslott/Documents/Tickets_app" in texto
+        assert "TICKETS_INPUT_DIR=/Users/carloslott/Documents/Tickets/Tickets_app" in texto
+
+    def test_entrada_y_escaneados_son_hermanas(self):
+        """La entrada y la de escaneados comparten padre, y no es decorativo.
+
+        `archivado_service.carpeta_de_escaneados()` resuelve, cuando
+        `TICKETS_SCAN_OUTPUT_DIR` esta vacia, `entrada.parent / "Tickets_Scan"`.
+        Ese "hermano" es lo que hace que el archivado funcione sin configurarlo.
+
+        Si alguien cambia el default de la entrada a una ruta que no termina en
+        `Tickets_app`, el hermano deja de ser `Tickets_Scan` y los comprobantes
+        se van a una carpeta con otro nombre — o, peor, a un sitio que nadie mira.
+        Este test no puede saber si el nombre es el que uno quiere; puede saber
+        que la relacion de hermandad tiene que seguir siendo la que el servicio
+        asume.
+        """
+        s = Settings(DATABASE_URL="sqlite+aiosqlite:///:memory:")
+
+        entrada = Path(s.TICKETS_INPUT_DIR)
+        hermano = entrada.parent / "Tickets_Scan"
+
+        assert entrada.parent == hermano.parent, (
+            "la carpeta de escaneados se resuelve como el hermano de la entrada; "
+            "si dejan de ser hermanos, el archivado deja de caer donde se espera"
+        )
+        assert hermano.name == "Tickets_Scan"
+
+    def test_ninguna_ruta_del_repo_apunta_a_la_ubicacion_vieja(self):
+        """Ninguna ruta queda colgando de la ubicacion anterior.
+
+        Una ruta vieja no rompe nada por si sola —el default del codigo manda— pero
+        si desorienta: alguien copia un valor de la documentacion, lo pone en su
+        `.env`, monta la carpeta vieja en el contenedor y no ve ningun
+        comprobante, sin ningun error que lo diga.
+
+        Se comprueba sobre los archivos que el proyecto usa para DOCUMENTAR las
+        rutas. No sobre todo el repo: un ejemplo historico en una nota de un
+        defecto ya corregido es informacion, no un error.
+        """
+        raiz_repo = Path(__file__).resolve().parents[2]
+        objetivos = [
+            raiz_repo / ".env.example",
+            raiz_repo / "README.md",
+            raiz_repo / "docker-compose.yml",
+            raiz_repo / "app" / "core" / "config.py",
+        ]
+
+        for ruta in objetivos:
+            texto = ruta.read_text(encoding="utf-8")
+            assert "Documents/Tickets_app" not in texto, (
+                f"{ruta.name} todavia apunta a la ubicacion vieja "
+                "(Documents/Tickets_app). Ahora es Documents/Tickets/Tickets_app."
+            )
+            assert "Documents/Tickets_Scan" not in texto, (
+                f"{ruta.name} todavia apunta a la ubicacion vieja "
+                "(Documents/Tickets_Scan). Ahora es Documents/Tickets/Tickets_Scan."
+            )
 
 
 class TestLosTopes:

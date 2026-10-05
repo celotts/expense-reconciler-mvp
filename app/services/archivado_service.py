@@ -72,6 +72,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -147,6 +149,145 @@ def _destino_libre(destino: Path) -> Path:
         f"hay mas de 1000 archivos llamados {destino.name} en "
         f"{destino.parent}; no se elige uno al azar."
     )
+
+
+def eliminar_de_la_entrada(relative_path: str) -> ResultadoDelMovimiento:
+    """Borra un comprobante YA respaldado en la base, de la carpeta de entrada.
+
+    LA REGLA DE ESTA FUNCION
+    ========================
+    **Solo borra si el documento ya esta en `ticket_documents`.** Esa comprobacion
+    la hace el que llama —`scan_service`, que tiene la sesion de base— y esta
+    funcion es el ultimo paso: el `unlink`.
+
+    No es un detalle de implementacion. El archivo del disco es la COPIA; la
+    evidencia es la fila de `ticket_documents`, con sus bytes y su `sha256`. Sin
+    esa fila, borrar el archivo deja un ticket sin comprobante y un muestreo de
+    exactitud que ya no se puede hacer nunca — porque la pregunta "la lectura
+    coincidio con el papel?" deja de tener respuesta.
+
+    Y hay un caso real donde la fila NO esta: `guardar_documento` usa un savepoint
+    y devuelve `False` si el documento no se pudo guardar (por ejemplo, siTodavia
+    no cabe). El ticket sobrevive sin su comprobante, es un fallo deliberado, y
+    ese ticket tiene su archivo intacto justamente por eso.
+
+    NUNCA borra la carpeta. Solo un archivo, y solo del nivel que dice
+    `relative_path`. Un `shutil.rmtree` por un nombre mal formado seria la forma
+    mas corta de perder la carpeta de entrada entera.
+
+    `FileNotFoundError` no es un fallo: es la segunda corrida, o el archivo ya se
+    borro. Se devuelve como "no borrado, ya no estaba", que es lo que es.
+    """
+    # `scan_service` importa a este modulo, asi que la importacion de
+    # `ruta_de_relativo` va DENTRO de la funcion. A nivel de modulo seria un
+    # ciclo, y el fallo aparece como "partially initialized module", que no
+    # senala el archivo que lo Provoco. Es el mismo patron que
+    # `capture._ocr_por_defecto`.
+    from app.services.scan_service import ruta_de_relativo
+
+    origen = ruta_de_relativo(relative_path)
+
+    if not origen.exists():
+        return ResultadoDelMovimiento(
+            movido=False,
+            ruta_origen=origen,
+            ruta_destino=None,
+            motivo="el archivo ya no esta en la carpeta de entrada",
+        )
+
+    if not origen.is_file():
+        # Un symlink o un directorio con el nombre del comprobante. No se toca.
+        return ResultadoDelMovimiento(
+            movido=False,
+            ruta_origen=origen,
+            ruta_destino=None,
+            motivo="no es un archivo regular: no se borra",
+        )
+
+    try:
+        origen.unlink()
+    except OSError as exc:
+        return ResultadoDelMovimiento(
+            movido=False,
+            ruta_origen=origen,
+            ruta_destino=None,
+            motivo=f"no se pudo borrar: {exc}",
+        )
+
+    return ResultadoDelMovimiento(
+        movido=True,
+        ruta_origen=origen,
+        # No hay destino: el archivo desaparecio de proposito, no esta en otra
+        # carpeta. Se dice explicitamente para que nadie lo busque en
+        # `Tickets_Scan`, donde no va a estar nunca.
+        ruta_destino=None,
+        motivo="borrado de la entrada: el comprobante esta respaldado en la base",
+    )
+
+
+async def esta_respaldado(db, ticket, relative_path: str) -> tuple[bool, str]:
+    """¿Está el comprobante de este archivo guardado en `ticket_documents`?
+
+    Y no solo "¿hay un documento?": el `sha256` del archivo tiene que COINCIDIR
+    con el guardado. Un ticket puede tener varias versiones del comprobante
+    (regla 18: el papel se apila, nunca se altera), y borrar el archivo cuya
+    version no es la vigente dejaria al ticket con un papel que no es el que se
+    leyo. La coincidencia de bytes es lo que dice "este archivo es exactamente el
+    que respaldamos".
+
+    La ultima version es la que importa: `version` mas alto del ticket.
+
+    Devuelve `(respaldo, motivo_si_no)`. El motivo va al log y al evento, porque
+    "no borre porque no habia respaldo" es una decision que alguien tiene que
+    poder revisar despues: es la diferencia entre "se borro lo que ya estaba
+    guardado" y "no se borro nada porque no habia nada guardado".
+    """
+    import hashlib
+
+    from app.models.ticket_document import TicketDocumentModel
+
+    documento = (
+        await db.execute(
+            select(TicketDocumentModel)
+            .where(TicketDocumentModel.ticket_id == ticket.id)
+            .order_by(TicketDocumentModel.version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if documento is None:
+        return False, (
+            "el ticket no tiene documento guardado; el archivo se conserva porque "
+            "es el unico comprobante que existe"
+        )
+
+    # `scan_service` importa a este modulo, asi que `ruta_de_relativo` va
+    # importado DENTRO de la funcion. A nivel de modulo seria un ciclo de
+    # importacion cuyo error dice "partially initialized module", sin senalar
+    # este archivo. Es el mismo patron que `capture._ocr_por_defecto`.
+    from app.services.scan_service import ruta_de_relativo
+
+    if not documento.sha256:
+        # Sin hash guardado no hay forma de comparar, y comparar de mas es
+        # precisamente lo que este borrado tiene que impedir.
+        return False, "el documento guardado no tiene sha256; no se puede verificar"
+
+    ruta = ruta_de_relativo(relative_path)
+    if not ruta.exists():
+        return False, "el archivo ya no esta en la carpeta de entrada"
+
+    try:
+        digest = hashlib.sha256(ruta.read_bytes()).hexdigest()
+    except OSError as exc:
+        return False, f"no se pudo leer el archivo para verificarlo: {exc}"
+
+    if digest != documento.sha256:
+        return False, (
+            "el sha256 del archivo no coincide con el documento guardado: es una "
+            "version distinta y no se borra"
+        )
+
+    return True, "el comprobante esta guardado en la base con los mismos bytes"
 
 
 def archivar(

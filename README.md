@@ -128,31 +128,34 @@ Los dos suman 3.6 GB y caben juntos en la cuota de 4 GB. Si cambias alguno por u
 ajusta `mem_limit` de `ollama` y el de `expense-api` en `docker-compose.yml` para que el total
 siga cabiendo en la VM.
 
-> Si configuras un modelo en `.env.dev` que no esté descargado, Ollama devuelve 404 y el pipeline
+> Si configuras un modelo en `.env` que no esté descargado, Ollama devuelve 404 y el pipeline
 > degrada en silencio a "guarda lo parcial" — ves tickets guardados con importes en `0.00` y sin
 > error visible. Después de cambiar un modelo: `make up` y verifica con
 > `docker compose exec ollama ollama list`.
 
 ### Archivos de entorno
 
-Hay **cuatro** archivos y solo uno se versiona. Están repartidos así a propósito: un archivo
-con la clave de firma y la configuración de IA mezclados tiene que subirse para compartir la
-parte de IA, y entonces la clave sale con él.
+Hay **dos** archivos y solo uno se versiona. Antes eran cuatro y estaban repartidos en tres
+locales; la configuración de la app y la contraseña de la base viven ahora en el mismo `.env`,
+porque con cuatro archivos sin explicar cuál era cuál la clave acababa en dos sitios y la
+contraseña en tres — no por descuido, sino porque nadie sabía quién ganaba.
+
+Lo único que se queda fuera es la `SECRET_KEY`, y por un motivo concreto: con ella se firman
+tokens válidos sin pasar por el login. Si estuviera en `.env`, compartir la configuración de IA
+con otra persona significaría compartir la clave, porque los dos viajan en el mismo archivo.
 
 | Archivo | Versionado | Qué lleva | Quién lo lee |
 |---|---|---|---|
 | `.env.example` | **sí** | la plantilla | tú |
-| `.env` | no | solo `POSTGRES_PASSWORD` | `docker compose` (interpola `${POSTGRES_PASSWORD}`) |
-| `.env.dev` | no | configuración de la app: IA, carpeta de tickets, OCR. **Sin secretos** | `docker compose` y `app/core/config.py` |
-| `.env.local` | no | solo `SECRET_KEY` | `docker compose` y `app/core/config.py`, **gana** sobre `.env.dev` |
+| `.env` | no | `POSTGRES_PASSWORD` + toda la configuración: IA, carpeta de tickets, OCR | `docker compose` (interpola `${POSTGRES_PASSWORD}`) y `app/core/config.py` |
+| `.env.local` | no | solo `SECRET_KEY` | `docker compose` y `app/core/config.py`, **gana** sobre `.env` |
 
 ```bash
-cp .env.example .env.dev
 cp .env.example .env
-chmod 600 .env .env.dev     # con 644 cualquiera con una sesión en la máquina los lee
+chmod 600 .env             # con 644 cualquiera con una sesión en la máquina los lee
 ```
 
-La app lee `.env.dev` y después `.env.local`, en ese orden y con el último ganando — el mismo
+La app lee `.env` y después `.env.local`, en ese orden y con el último ganando — el mismo
 orden que usa `docker-compose.yml`. Correr `uvicorn` a mano firma los tokens con la misma clave
 que el contenedor; antes no era así, y se veía como "la sesión se cae, pero solo cuando depuro
 en local".
@@ -163,11 +166,13 @@ en local".
 > en `.env.local`. Con ella se pueden firmar tokens válidos sin pasar por el login, así que si
 > crees que salió del equipo, **rotarla** es lo único que sirve.
 
-> **`DATABASE_URL` en `.env.dev` va sin contraseña.** Dentro de Docker la sobrescribe
-> `docker-compose.yml` con la que arma desde `POSTGRES_PASSWORD`, así que la que esté ahí no se
-> usa. Dejarla con la contraseña puesta era tener el mismo secreto en dos archivos, uno de
-> ellos legible por el grupo. Fuera de Docker sí se usa: ahí apunta a una base que exista de
-> verdad y la rellenas tú.
+> **`DATABASE_URL` va sin contraseña, aunque `POSTGRES_PASSWORD` esté treinta líneas más
+> arriba en el mismo `.env`.** Dentro de Docker la sobrescribe `docker-compose.yml` en su
+> `environment:` con la que arma desde `${POSTGRES_PASSWORD}`, así que la del archivo no se usa
+> para el contenedor. Esa línea de `docker-compose.yml` es el **único** lugar del proyecto donde
+> existe una URL con contraseña; duplicarla en `.env` sería el mismo secreto en dos líneas.
+> Fuera de Docker sí se usa la del archivo: ahí apunta a una base que exista de verdad y
+> rellenas la contraseña tú (o exportas `DATABASE_URL` antes de levantar `uvicorn`).
 
 > **`CORS_ORIGINS` no admite `"*"`.** La app se sirve con `allow_credentials=True`, y esa
 > combinación hace que cualquier sitio web pueda leer la API con la sesión del navegador de
@@ -184,7 +189,7 @@ ni parámetro que acepte una carpeta, a propósito, porque eso sería lectura ar
 del disco del servidor.
 
 ```env
-TICKETS_INPUT_DIR=/Users/carloslott/Documents/Tickets_app
+TICKETS_INPUT_DIR=/Users/carloslott/Documents/Tickets/Tickets_app
 OCR_ENABLED=true
 ```
 
@@ -206,7 +211,7 @@ override `docker-compose.yml` crearía `/Users/carloslott/...` como root dentro 
 
 #### Qué sale de leer una foto, medido en las tres de esta máquina
 
-Las tres JPEG de `Tickets_app` se leen, pero ninguna auto-aprueba. Lo que decide el gate es
+Las tres JPEG de `Tickets/Tickets_app` se leen, pero ninguna auto-aprueba. Lo que decide el gate es
 el mismo en las tres: a un comprobante leído por OCR le falta RFC **y** subtotal **y** fecha, y
 sin las tres no se afirma que la lectura sea buena.
 

@@ -205,6 +205,75 @@ class TestElTotalNoMiente:
         assert r["tickets_sin_total"] == 1
         assert r["tickets_con_total"] == 0
 
+    def test_quedan_en_bandeja_y_archivados_vienen_del_escaneo(self):
+        """Los dos numeros NO se deducen de los detalles.
+
+        Se intentaron deducir —"tiene ticket y no tiene ruta de archivo"— y es
+        incorrecto desde que el borrado sustituyo al movimiento: el borrado no
+        deja ruta de destino, asi que `ruta_archivo` es None en TODOS los casos y
+        la cuenta daba "10 de 10 en bandeja" con 2 archivos que si se retiraban.
+        Medido contra la API viva, no supuesto.
+
+        Aqui se comprueba que los valores que salen son los que se le pasaron, no
+        un recalculo. Con los mismos detalles, dos entradas distintas tienen que
+        dar dos salidas distintas.
+        """
+        from app.services.scan_service import _calcular_resumen
+
+        detalles = [
+            self._detalle(ticket_id="a", accion="SIN_CAMBIOS",
+                          datos={"total_amount": "10.00", "extraction_status": "AUTO_APROBADO"}),
+            self._detalle(ticket_id="b", accion="SIN_CAMBIOS",
+                          datos={"total_amount": "20.00", "extraction_status": "PENDIENTE"}),
+        ]
+
+        # Uno se retira y el otro no.
+        uno = _calcular_resumen(detalles, quedan_en_bandeja=1, archivados=1)
+        # Ninguno se retira.
+        ninguno = _calcular_resumen(detalles, quedan_en_bandeja=2, archivados=0)
+
+        assert uno["quedan_en_bandeja"] == 1
+        assert uno["archivados"] == 1
+        assert uno["borrados_de_entrada"] == 1
+        assert ninguno["quedan_en_bandeja"] == 2
+        assert ninguno["archivados"] == 0
+        # Y el dinero NO depende de eso: se lee de los detalles.
+        assert uno["importe_total_leido"] == ninguno["importe_total_leido"]
+
+    def test_los_campos_nuevos_llegan_en_la_respuesta_de_la_api(self):
+        """Un campo en el servicio y no en el schema NO LLEGA. No llega en cero: no llega.
+
+        `borrados_de_entrada` se calculaba y se devolvia en el dict, y la API lo
+        peridia en silencio porque `ResumenScan` no lo declaraba: Pydantic
+        descarta lo que no conoce. La respuesta traia `KeyError` en vez de `0`.
+
+        Es el modo de falla mas incomodo que hay —no es un error, es un campo que
+        desaparece— asi que el test comprueba la respuesta COMPLETA, no el
+        servicio.
+        """
+        from app.schemas.scan import ResumenScan
+
+        completo = {
+            "archivos_vistos": 10, "leidos": 0, "nuevos": 0, "actualizados": 0,
+            "sin_cambios": 10, "duplicados": 0, "con_error": 0,
+            "no_soportados": 0, "omitidos_por_tope": 0,
+            "importe_total_leido": None, "importe_total_confiable": None,
+            "importe_requiere_revision": None, "tickets_con_total": 0,
+            "tickets_sin_total": 0, "tickets_por_estado": {},
+            "tickets_por_motor": {}, "tickets_con_rfc": 0, "tickets_con_lineas": 0,
+            "requiere_revision": 8, "requiere_accion": 8, "sin_ticket": 0,
+            "quedan_en_bandeja": 8, "archivados": 2, "borrados_de_entrada": 2,
+            "colas": {"revision": "/review-queue"},
+        }
+
+        r = ResumenScan(**completo)
+
+        assert r.borrados_de_entrada == 2
+        assert r.quedan_en_bandeja == 8
+        assert r.archivados == 2
+        # Los tres son consistentes entre si, que es lo que el operador lee.
+        assert r.borrados_de_entrada + r.quedan_en_bandeja == r.archivos_vistos
+
     def test_cuenta_lo_que_hay_que_mirar(self):
         """`requiere_accion` es la pregunta "¿tengo que hacer algo?"."""
         detalles = [

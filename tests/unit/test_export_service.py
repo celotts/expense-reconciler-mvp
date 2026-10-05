@@ -167,15 +167,18 @@ class TestExportService:
         assert "Importe Total" in df.columns
 
     def test_transform_to_contpaqi_applies_mapping(self):
+        # 14 campos de entrada: se agrega `IEPS` entre el IVA y el Total, asi
+        # que la fila tiene 14. El orden importa: `_transform_to_contpaqi` los
+        # positionalmente, y un campo corrido escribe el IEPS donde va el Total.
         sample_data = [
-            ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO", 215.40, 34.46, 249.86,
-             "15/01/2025", "PAGO WALMART", "REF123", "PERFECT", "0.00", 0]
+            ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO", 215.40, 34.46, 0.0,
+             249.86, "15/01/2025", "PAGO WALMART", "REF123", "PERFECT", "0.00", 0]
         ]
 
         # Sin mapping - usa defaults
         result = _transform_to_contpaqi(sample_data, None)
         assert len(result) == 1
-        assert len(result[0]) == 16  # 16 columnas CONTPAQI
+        assert len(result[0]) == 17  # 17 columnas CONTPAQI
         assert result[0][0] == "15/01/2025"  # Fecha
         assert result[0][1] == "SUPERMERCADO"  # Concepto (categoría)
         assert result[0][2] == "WAL910101XXX"  # RFC
