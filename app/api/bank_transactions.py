@@ -30,7 +30,7 @@ async def create_bank_transaction(
     if not company_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     transaction = BankTransactionModel(**transaction_in.model_dump())
@@ -101,7 +101,7 @@ async def import_bank_csv_and_create(
     if not company_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     content = await leer_csv_bancario(file, file.filename or "")
@@ -171,7 +171,7 @@ async def get_bank_transaction(
     if not transaction:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bank transaction not found"
+            detail="El movimiento bancario no existe"
         )
     return transaction
 
@@ -188,7 +188,7 @@ async def update_bank_transaction(
     if not transaction:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bank transaction not found"
+            detail="El movimiento bancario no existe"
         )
     
     update_data = transaction_in.model_dump(exclude_unset=True)
@@ -211,7 +211,7 @@ async def delete_bank_transaction(
     if not transaction:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bank transaction not found"
+            detail="El movimiento bancario no existe"
         )
     
     await db.delete(transaction)

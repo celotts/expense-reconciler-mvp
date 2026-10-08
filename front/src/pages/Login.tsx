@@ -87,7 +87,7 @@ export function Login({
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-blue-600">Expense Reconciler</h1>
-          <p className="text-sm text-gray-500 mt-1">Conciliacion de gastos</p>
+          <p className="text-sm text-gray-500 mt-1">Evidencia de cierre mensual</p>
         </div>
 
         {aviso && !error && (
@@ -116,7 +116,7 @@ export function Login({
           />
 
           <Input
-            label="Contrasena"
+            label="Contraseña"
             type="password"
             value={password}
             onChange={e => setPassword(e.target.value)}

@@ -16,6 +16,13 @@ Las defensas y el test que las mata:
   producto no duplicado        test_la_misma_linea_no_crea_un_producto_nuevo
   buscar antes de crear        test_el_ocr_que_altera_las_tildes_no_parte_el_producto
   la marca de lo automatico    test_los_productos_del_ocr_quedan_para_revisar
+  ENTRADA sin compra           test_una_entrada_sin_ajuste_no_se_puede_escribir
+  stock no negativo (Python)   test_no_se_puede_dejar_el_stock_negativo
+  el rechazo no se deshace     test_una_compra_rechazada_no_se_puede_confirmar
+  el rechazo no se resucita    test_una_compra_rechazada_no_registra_compra_otra_vez
+  PROCESADO no se revierte     test_una_compra_procesada_no_se_puede_rechazar
+  verificar no es declarar     test_verificar_un_producto_de_ocr_sin_codigo_no
+  el origen no se edita        test_no_se_puede_cambiar_el_origen
 
 Y los que no son defensas pero si tienen reglas:
 
@@ -37,6 +44,20 @@ de que un test verde sobre SQLite no dice nada de lo que SQLite ignora. Esos se
 comprueban contra Postgres real, en
 `scripts/verify_postgres_inventario.py`. Los tests de este archivo SON la
 defensa: si el trigger falla, ese script sale con 1.
+
+Y HAY UNA RAZON CONCRETA PARA QUE ESO IMPORTE AHORA
+---------------------------------------------------
+
+El trigger de stock negativo hacia `IF tipo = 'ENTRADA' THEN suma ELSE resta`, o
+sea que trataba `AJUSTE` como resta, mientras `stock_de` lo suma. Y su `SUM` de
+filas previas ignoraba el signo de las SALIDAS. Las dos cosas eran inertes porque
+la unica via que escribia movimientos era `confirmar_compra`, y esa solo produce
+`ENTRADA`: el `ELSE` del trigger no se ejecutaba nunca.
+
+`POST /inventario/movimientos` es el camino que lo vuelve vivo. Por eso la mitad
+de Python de esa regla (`TestElSignoDelKardex`) esta aqui y la de Postgres esta en
+`verify_postgres_inventario.py`: son dos implementaciones de la misma regla y
+pueden divergir sin que ninguna se entere.
 """
 
 from __future__ import annotations
@@ -49,7 +70,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import EstadoCompra, TipoMovimiento
+from app.core.enums import EstadoCompra, ProductoOrigen, TipoMovimiento
 from app.models.company import CompanyModel
 from app.models.inventario import (
     CompraItemModel,
@@ -868,3 +889,660 @@ class TestLaCompraYaSeConfirmaSola:
         stocks = await inv.stock_de(db_session, empresa.id)
         assert sum(stocks.values()) == Decimal("15")
         assert len(stocks) == 2
+
+
+# ---------------------------------------------------------------------------
+# El signo del kardex: `AJUSTE`, `SALIDA` y el trigger de Postgres
+# ---------------------------------------------------------------------------
+#
+# POR QUE ESTOS TESTS ESTAN AQUI Y NO EN UN ARCHIVO NUEVO
+# -------------------------------------------------------
+#
+# Porque el bug que los motiva estaba en el DDL de Postgres, no en Python, y su
+# sintoma en la API era un `AJUSTE` que restaba stock en la base y lo sumaba en la
+# respuesta. Los dos numeros describiendo la misma fila de dos maneras es
+# exactamente el fallo que `AGENTS.md` llama "el proyecto no puede sostener".
+#
+# LO QUE ESTA EN SQL Y NO SE PUEDE PROBAR AQUI
+# --------------------------------------------
+#
+# El trigger `trg_movimientos_no_negativo`, que antes hacia
+# `IF tipo = 'ENTRADA' THEN suma ELSE resta` mientras `stock_de` suma `AJUSTE`, y
+# cuyo `SUM` de filas previas ignoraba el signo de las SALIDAS. SQLite no tiene
+# triggers de este tipo, asi que la version *de Postgres* de estas reglas se
+# comprueba en `scripts/verify_postgres_inventario.py`, en
+# `TestElSignoEnPostgres`. Este archivo comprueba la mitad de Python: que
+# `stock_de`, `stock_de_una` y `TipoMovimiento.suma_stock` dicen lo mismo, que es
+# lo que hace que la comprobacion del 409 y el numero que ve el usuario coincidan.
+
+
+class TestElSignoDelKardex:
+    async def test_una_salida_resta_y_una_entrada_suma(self, db_session):
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Con salidas")
+        await db_session.commit()
+
+        for tipo, cantidad in (
+            (TipoMovimiento.ENTRADA, Decimal("10")),
+            (TipoMovimiento.SALIDA, Decimal("4")),
+        ):
+            db_session.add(
+                MovimientoInventarioModel(
+                    company_id=empresa.id,
+                    producto_id=producto.id,
+                    tipo=tipo.value,
+                    cantidad=cantidad,
+                    referencia_tipo="VENTA",
+                    actor="ana@empresa.mx",
+                )
+            )
+        await db_session.commit()
+
+        assert (await inv.stock_de(db_session, empresa.id))[producto.id] == Decimal("6")
+
+    async def test_suma_stock_dice_lo_mismo_que_el_tipo(self):
+        """La propiedad que el trigger de Postgres replica en SQL.
+
+        Si `suma_stock` y el trigger divergen, la base rechaza un movimiento que la
+        API acepto. Se fija aqui en Python y en Postgres en
+        `verify_postgres_inventario.py`, porque son dos implementaciones de la
+        misma regla y pueden divergir sin que ninguna se entere.
+        """
+        assert TipoMovimiento.ENTRADA.suma_stock is True
+        assert TipoMovimiento.SALIDA.suma_stock is False
+        # `AJUSTE` no se escribe nunca como `tipo`: se escribe como ENTRADA o
+        # SALIDA con `referencia_tipo='AJUSTE'`. Ver `registrar_movimiento`.
+        assert TipoMovimiento.AJUSTE.suma_stock is True
+
+    async def test_el_ajuste_hacia_arriba_suma_y_el_hacia_abajo_resta(self, db_session):
+        """Un AJUSTE en las dos direcciones, que es el caso que no cabe en un enum.
+
+        "Se conto de menos" y "se conto de mas" son el mismo `AJUSTE` para quien
+        lee, y signos opuestos para el stock. La distincion va en `tipo`, y por
+        eso `es_ajuste` y `tipo` son campos separados en `MovimientoCreate`.
+        """
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Ajustado")
+        await db_session.commit()
+
+        db_session.add(
+            MovimientoInventarioModel(
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.ENTRADA.value,
+                cantidad=Decimal("10"),
+                referencia_tipo="COMPRA",
+                actor="ana@empresa.mx",
+            )
+        )
+        await db_session.commit()
+
+        # Se conto de mas: el ajuste resta.
+        await inv.registrar_movimiento(
+            db_session,
+            company_id=empresa.id,
+            producto_id=producto.id,
+            tipo=TipoMovimiento.SALIDA,
+            cantidad=Decimal("3"),
+            actor="ana@empresa.mx",
+            referencia_tipo="AJUSTE",
+        )
+        # Se conto de menos: el ajuste suma.
+        await inv.registrar_movimiento(
+            db_session,
+            company_id=empresa.id,
+            producto_id=producto.id,
+            tipo=TipoMovimiento.ENTRADA,
+            cantidad=Decimal("2"),
+            actor="ana@empresa.mx",
+            referencia_tipo="AJUSTE",
+        )
+        await db_session.commit()
+
+        assert (await inv.stock_de(db_session, empresa.id))[producto.id] == Decimal("9")
+
+    async def test_stock_de_una_dice_lo_mismo_que_stock_de(self, db_session):
+        """La comprobacion del 409 y el stock del catalogo, sobre la misma fila.
+
+        `stock_de_una` existe para no recorrer el kardex entero en cada
+        `registrar_movimiento`. Si las dos contasen distinto, el "no hay stock
+        suficiente" se dispararia con un numero que no es el que ve el usuario en
+        el listado, y el 409 pareciese un bug.
+        """
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Comparado")
+        otro = await _producto(db_session, empresa, "Otro")
+        await db_session.commit()
+
+        for prod, tipo, cantidad in (
+            (producto, TipoMovimiento.ENTRADA, Decimal("10")),
+            (producto, TipoMovimiento.SALIDA, Decimal("4")),
+            (otro, TipoMovimiento.ENTRADA, Decimal("99")),
+        ):
+            db_session.add(
+                MovimientoInventarioModel(
+                    company_id=empresa.id,
+                    producto_id=prod.id,
+                    tipo=tipo.value,
+                    cantidad=cantidad,
+                    referencia_tipo="VENTA",
+                    actor="ana@empresa.mx",
+                )
+            )
+        await db_session.commit()
+
+        todos = await inv.stock_de(db_session, empresa.id)
+        assert await inv.stock_de_una(db_session, producto.id) == todos[producto.id]
+        assert await inv.stock_de_una(db_session, otro.id) == todos[otro.id]
+
+
+class TestRegistrarMovimiento:
+    async def _preparado(self, db_session, stock: str = "10"):
+        """Un producto con `stock` de entrada.
+
+        La entrada se inserta DIRECTAMENTE y no con `registrar_movimiento`, y no por
+        atajo: `registrar_movimiento` rechaza una `ENTRADA` que no sea de ajuste,
+        que es exactamente lo que estos tests tienen que comprobar. Escribirla a
+        mano es como se deja el estado inicial de un kardex que ya tiene historia,
+        que es el punto de partida de todos ellos.
+
+        `stock="0"` NO inserta la fila: `ck_movimientos_cantidad_positiva` lo
+        prohibe, y con razon —un movimiento de cero no es un movimiento, es ruido
+        en el kardex—. Para el caso "producto sin nada", esta misma funcion con
+        `stock=None`.
+        """
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Producto")
+        if stock is not None:
+            db_session.add(
+                MovimientoInventarioModel(
+                    company_id=empresa.id,
+                    producto_id=producto.id,
+                    tipo=TipoMovimiento.ENTRADA.value,
+                    cantidad=Decimal(stock),
+                    referencia_tipo="COMPRA",
+                    actor="ana@empresa.mx",
+                )
+            )
+        await db_session.commit()
+        return empresa, producto
+
+    async def test_una_venta_resta_el_stock(self, db_session):
+        empresa, producto = await self._preparado(db_session, stock="10")
+
+        await inv.registrar_movimiento(
+            db_session,
+            company_id=empresa.id,
+            producto_id=producto.id,
+            tipo=TipoMovimiento.SALIDA,
+            cantidad=Decimal("4"),
+            actor="ana@empresa.mx",
+            referencia_tipo="VENTA",
+        )
+        await db_session.commit()
+
+        assert (await inv.stock_de(db_session, empresa.id))[producto.id] == Decimal("6")
+
+    async def test_una_entrada_sin_ajuste_no_se_puede_escribir(self, db_session):
+        """LA DEFENSA. Si quitas el `if` de `registrar_movimiento`, este test muere.
+
+        Una `ENTRADA` con `referencia_tipo='VENTA'` o `'COMPRA'` escrita a mano
+        sumaria stock sin que hubiera compra, sin linea y sin que nadie mirara el
+        papel. `compras.ticket_id` UNIQUE deja de ser entonces la garantia de que
+        el inventario solo refleja compras de verdad, porque ya no todas las
+        entradas del kardex vienen de una compra.
+        """
+        empresa, producto = await self._preparado(db_session, stock=None)
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.ENTRADA,
+                cantidad=Decimal("100"),
+                actor="ana@empresa.mx",
+                referencia_tipo="VENTA",
+            )
+
+        assert "confirmar una compra" in str(exc.value)
+        await db_session.commit()
+        # `stock_de` no devuelve los productos sin movimientos —no aparecen con 0,
+        # no aparecen—, y esa es la distincion que `TestElStockEsLaSumaDelKardex`
+        # fija aparte. Aqui lo que importa es que no se movio nada.
+        assert await inv.stock_de(db_session, empresa.id) == {}
+        assert await inv.stock_de_una(db_session, producto.id) == Decimal("0")
+
+    async def test_una_entrada_de_ajuste_si_se_puede(self, db_session):
+        """El caso legitimo que el bloqueo anterior tiene que dejar pasar.
+
+        "Se conto de menos" suma stock y no viene de ninguna compra. Si el bloqueo
+        fuera "nada de entradas", el inventario no se podria corregir hacia arriba
+        y la unica salida seria editar el kardex, que el trigger prohibe.
+        """
+        empresa, producto = await self._preparado(db_session, stock=None)
+
+        await inv.registrar_movimiento(
+            db_session,
+            company_id=empresa.id,
+            producto_id=producto.id,
+            tipo=TipoMovimiento.ENTRADA,
+            cantidad=Decimal("7"),
+            actor="ana@empresa.mx",
+            referencia_tipo="AJUSTE",
+        )
+        await db_session.commit()
+
+        assert (await inv.stock_de(db_session, empresa.id))[producto.id] == Decimal("7")
+
+    async def test_no_se_puede_dejar_el_stock_negativo(self, db_session):
+        """LA DEFENSA, y su mitad de Python.
+
+        El trigger `trg_movimientos_no_negativo` es la garantia de Postgres y no se
+        puede probar aqui (SQLite no tiene triggers). Esta comprobacion es la que
+        existe para que el 409 diga "hay 6 y pediste restar 10" en vez de dejar que
+        reviente el INSERT con un IntegrityError sin traducir.
+        """
+        empresa, producto = await self._preparado(db_session, stock="6")
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("10"),
+                actor="ana@empresa.mx",
+                referencia_tipo="VENTA",
+            )
+
+        # El mensaje lleva los dos numeros: sin ellos no se puede decidir si se
+        # equivoco la cantidad o si el stock esta mal.
+        assert "6" in str(exc.value) and "10" in str(exc.value)
+
+    async def test_un_ajuste_hacia_abajo_tampoco_deja_negativo(self, db_session):
+        """Un AJUSTE que resta es el caso caro, y por eso va aparte.
+
+        La tentacion de "es solo un ajuste, dejalo pasar" es el error: el ajuste es
+        la via por la que un error de conteo se vuelve permanente. Con esta
+        comprobacion, la unica forma de bajar el stock es que haya stock.
+        """
+        empresa, producto = await self._preparado(db_session, stock="2")
+
+        with pytest.raises(inv.ErrorDeInventario):
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("5"),
+                actor="ana@empresa.mx",
+                referencia_tipo="AJUSTE",
+            )
+
+    async def test_una_cantidad_negativa_no_se_puede(self, db_session):
+        """El signo va en el tipo. Una cantidad negativa seria una SALIDA."""
+        empresa, producto = await self._preparado(db_session)
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("-4"),
+                actor="ana@empresa.mx",
+                referencia_tipo="VENTA",
+            )
+        assert "mayor que cero" in str(exc.value)
+
+    async def test_sin_actor_no_se_registra(self, db_session):
+        """LA DEFENSA. Sin actor no hay quien responda de la fila."""
+        empresa, producto = await self._preparado(db_session)
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("1"),
+                actor="  ",
+                referencia_tipo="VENTA",
+            )
+        assert "quien lo registre" in str(exc.value)
+
+    async def test_un_producto_de_otra_empresa_no_se_mueve(self, db_session):
+        """No hay multi-tenancy, asi que esta comparacion es la unica que hay."""
+        mia, _ = await self._preparado(db_session)
+        ajena = await _empresa(db_session, "Ajena")
+        suyo = await _producto(db_session, ajena, "De la otra")
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=mia.id,
+                producto_id=suyo.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("1"),
+                actor="ana@empresa.mx",
+                referencia_tipo="VENTA",
+            )
+        assert "otra empresa" in str(exc.value)
+
+    async def test_el_kardex_guarda_quien_y_que(self, db_session):
+        """El actor y la descripcion congelada son lo que hace auditable la fila."""
+        empresa, producto = await self._preparado(db_session)
+
+        movimiento = await inv.registrar_movimiento(
+            db_session,
+            company_id=empresa.id,
+            producto_id=producto.id,
+            tipo=TipoMovimiento.SALIDA,
+            cantidad=Decimal("2"),
+            actor="ana@empresa.mx",
+            referencia_tipo="VENTA",
+            descripcion_origen="dos piezas vendidas",
+        )
+        await db_session.commit()
+
+        assert movimiento.actor == "ana@empresa.mx"
+        assert movimiento.descripcion_origen == "dos piezas vendidas"
+        assert movimiento.referencia_tipo == "VENTA"
+
+
+class TestActualizarProducto:
+    async def test_renombrar_recalcula_el_nombre_normalizado(self, db_session):
+        """La defensa de por que la cola se puede limpiar.
+
+        "Reginen de" y "Regin de" son dos productos por el OCR. Quien mira el papel
+        decide que son el mismo y renombra; el `@validates` del modelo recalcula
+        `nombre_normalizado` para que las dos descripciones dejen de compararse
+        distintas. Sin esto, el siguiente reescaneo crearia un tercero.
+        """
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Reginen de")
+        await db_session.commit()
+        assert producto.nombre_normalizado == "reginen de"
+
+        await inv.actualizar_producto(db_session, producto.id, {"nombre": "Regina de"})
+        await db_session.commit()
+
+        assert producto.nombre == "Regina de"
+        assert producto.nombre_normalizado == "regina de"
+
+    async def test_verificar_un_producto_de_ocr_sin_codigo_no(self, db_session):
+        """LA DEFENSA. Si quitas el `if`, este test muere.
+
+        Un producto que salio de leer un papel no tiene identidad: hay una
+        descripcion que el sistema creyo. Marcarla como verificada sin que nadie la
+        mire seria afirmar que el sistema sabe lo que hay en el almacen, que es
+        justo el salto que `verificado` existe para no dar. Con codigo de barras si
+        se puede, porque un codigo es una identidad y no una opinion.
+        """
+        empresa = await _empresa(db_session)
+        producto = ProductoModel(
+            company_id=empresa.id,
+            nombre="Cinta industrial",
+            origen=ProductoOrigen.OCR.value,
+            verificado=False,
+        )
+        db_session.add(producto)
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.actualizar_producto(db_session, producto.id, {"verificado": True})
+        assert "no tiene codigo" in str(exc.value) or "sin codigo" in str(exc.value)
+
+        producto.codigo = "7501234567890"
+        await db_session.commit()
+
+        await inv.actualizar_producto(db_session, producto.id, {"verificado": True})
+        await db_session.commit()
+        assert producto.verificado is True
+
+    async def test_no_se_puede_cambiar_el_origen(self, db_session):
+        """LA DEFENSA. Si quitas el `if`, este test muere.
+
+        `origen` declara si lo puso una persona o si salio de leer un papel. Si
+        fuera editable, un producto de OCR podria declararse MANUAL y salir de la
+        cola de revision sin que nadie lo mirara. `ProductoUpdate` ni siquiera
+        ofrece el campo; esta es la red por si alguien lo anade.
+        """
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Normal")
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.actualizar_producto(
+                db_session, producto.id, {"origen": ProductoOrigen.MANUAL.value}
+            )
+        assert "origen" in str(exc.value)
+
+    async def test_no_se_puede_mover_de_empresa(self, db_session):
+        """El kardex lleva su propia copia de `company_id`.
+
+        Mover el producto de empresa dejaria sus movimientos en la empresa vieja y
+        contandose en la nueva: el stock apareceria en las dos, o en ninguna.
+        """
+        empresa = await _empresa(db_session)
+        otra = await _empresa(db_session, "Otra")
+        producto = await _producto(db_session, empresa, "Normal")
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.actualizar_producto(
+                db_session, producto.id, {"company_id": otra.id}
+            )
+        assert "company_id" in str(exc.value)
+
+    async def test_un_codigo_repetido_da_409_y_no_500(self, db_session):
+        """El indice unico `ix_productos_codigo` es `(company_id, codigo)`.
+
+        Sin la comprobacion previa, el codigo repetido llega al UPDATE y sale un
+        IntegrityError que el router no traduce. Un 500 sin contexto para un error
+        que el cliente puede corregir mandando otro codigo.
+        """
+        empresa = await _empresa(db_session)
+        primero = await _producto(db_session, empresa, "Primero")
+        segundo = ProductoModel(
+            company_id=empresa.id, nombre="Segundo", codigo="7501234567890"
+        )
+        db_session.add(segundo)
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.actualizar_producto(
+                db_session, primero.id, {"codigo": "7501234567890"}
+            )
+        assert "Segundo" in str(exc.value)
+
+    async def test_dar_de_baja_no_borra_el_kardex(self, db_session):
+        """Por que `activo` y no `DELETE`.
+
+        `movimientos_inventario.producto_id` tiene `ON DELETE CASCADE`, asi que
+        borrar un producto borra su historial entero y `stock_de` deja de poder
+        responder por el. Dar de baja lo saca del catalogo y lo deja en el kardex.
+        """
+        empresa, producto = await self._preparado_con_stock(db_session)
+
+        await inv.actualizar_producto(db_session, producto.id, {"activo": False})
+        await db_session.commit()
+
+        assert producto.activo is False
+        movimientos = await inv.stock_de(db_session, empresa.id)
+        assert producto.id in movimientos
+
+    async def _preparado_con_stock(self, db_session):
+        empresa = await _empresa(db_session)
+        producto = await _producto(db_session, empresa, "Con historial")
+        db_session.add(
+            MovimientoInventarioModel(
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.ENTRADA.value,
+                cantidad=Decimal("5"),
+                referencia_tipo="COMPRA",
+                actor="ana@empresa.mx",
+            )
+        )
+        await db_session.commit()
+        return empresa, producto
+
+    async def test_un_producto_inexistente_da_404(self, db_session):
+        with pytest.raises(inv.NoExiste):
+            await inv.actualizar_producto(
+                db_session, uuid.uuid4(), {"nombre": "X"}
+            )
+
+
+class TestRechazarYReabrirCompra:
+    async def _compra(self, db_session):
+        empresa = await _empresa(db_session)
+        ticket = await _ticket(db_session, empresa, items=ITEMS_DE_EJEMPLO)
+        compra = await inv.registrar_compra(db_session, ticket)
+        await db_session.commit()
+        return empresa, compra
+
+    async def test_rechazar_no_devuelve_la_compra_a_la_cola(self, db_session):
+        empresa, compra = await self._compra(db_session)
+
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        assert compra.estado == EstadoCompra.RECHAZADO
+
+    async def test_una_compra_rechazada_no_se_puede_confirmar(self, db_session):
+        """LA DEFENSA.
+
+        Si `confirmar_compra` no distinguiera RECHAZADO de EN_REVISION, el rechazo
+        seria solo cosmetico: bastaba con llamar al endpoint de confirmar para que
+        la compra entrara al inventario. Y el 409 de "ya esta PROCESADO" no
+        saltaria, porque todavia no lo esta.
+        """
+        empresa, compra = await self._compra(db_session)
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario):
+            await inv.confirmar_compra(db_session, compra.id, actor="ana@empresa.mx")
+
+        stocks = await inv.stock_de(db_session, empresa.id)
+        assert stocks == {}
+
+    async def test_una_compra_rechazada_no_registra_compra_otra_vez(self, db_session):
+        """LA DEFENSA, y la razon de que RECHAZADO sea un estado y no un borrado.
+
+        Sin estado, borrar la compra dejaria el ticket libre y el proximo
+        `registrar_compra` la volveria a crear en EN_REVISION: el rechazo se
+        deshecho solo en cuanto se tocaba el comprobante. Aqui la segunda llamada
+        devuelve la misma compra, rechazada.
+        """
+        empresa, compra = await self._compra(db_session)
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        # `compra.ticket` se relee del servidor en vez de usar el atributo: tras el
+        # commit, `expire_on_commit=False` deja el objeto vivo pero su relacion
+        # `lazy` no, y tocarla fuera de un `await` de SQLAlchemy lanza
+        # MissingGreenlet. Es un detalle del ORM, no del comportamiento probado.
+        ticket = await db_session.get(TicketModel, compra.ticket_id)
+        otra = await inv.registrar_compra(db_session, ticket)
+        await db_session.commit()
+
+        assert otra is not None
+        assert otra.id == compra.id
+        assert otra.estado == EstadoCompra.RECHAZADO
+
+    async def test_una_compra_rechazada_no_aparece_en_la_cola_de_productos(self, db_session):
+        """Una compra rechazada no genera trabajo de catalogo.
+
+        `lineas_sin_producto` filtra por `estado != PROCESADO`, y RECHAZADO no es
+        PROCESADO, asi que sus lineas SI aparecen en la cola. Es lo correcto: si
+        alguien la reabre, las lineas siguen ahi con sus productos. Lo que no debe
+        pasar es que el rechazo borre la informacion de las lineas.
+        """
+        empresa, compra = await self._compra(db_session)
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        cola = await inv.lineas_sin_producto(db_session, empresa.id)
+        assert cola == []  # las lineas ya tienen producto por resolucion automatica
+
+    async def test_rechazar_dos_veces_no_falla(self, db_session):
+        """Idempotente: un cliente que reintenta tras un timeout no recibe un error."""
+        empresa, compra = await self._compra(db_session)
+
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        assert compra.estado == EstadoCompra.RECHAZADO
+
+    async def test_una_compra_procesada_no_se_puede_rechazar(self, db_session):
+        """LA DEFENSA. El kardex ya tiene movimientos y no se reescribe.
+
+        El 409 dice que la via es el AJUSTE, porque sin ese camino en el mensaje
+        quien lo lea busca una pantalla que no existe.
+        """
+        empresa, compra = await self._compra(db_session)
+        await inv.confirmar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        assert "AJUSTE" in str(exc.value)
+
+    async def test_reabrir_devuelve_la_compra_a_revision(self, db_session):
+        empresa, compra = await self._compra(db_session)
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        await inv.reabrir_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        assert compra.estado == EstadoCompra.EN_REVISION
+
+    async def test_una_compra_reabierta_se_puede_confirmar(self, db_session):
+        """El ciclo completo del rechazo: rechazar, arrepentirse, autorizar."""
+        empresa, compra = await self._compra(db_session)
+        await inv.rechazar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await inv.reabrir_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        await inv.confirmar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        stocks = await inv.stock_de(db_session, empresa.id)
+        assert sum(stocks.values()) == Decimal("15")
+
+    async def test_una_compra_procesada_no_se_puede_reabrir(self, db_session):
+        """Reabrir y deshacer un rechazo son cosas distintas, y se separan.
+
+        Un unico "reabrir" que aceptara las dos necesitaria adivinar cual es, y el
+        error —dar por reversible una compra que ya movio stock— no tiene salida.
+        """
+        empresa, compra = await self._compra(db_session)
+        await inv.confirmar_compra(db_session, compra.id, actor="ana@empresa.mx")
+        await db_session.commit()
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.reabrir_compra(db_session, compra.id, actor="ana@empresa.mx")
+        assert "no se reabre" in str(exc.value)
+
+    async def test_sin_actor_no_se_rechaza(self, db_session):
+        """LA DEFENSA. Quien rechaza sale del token, nunca del cuerpo."""
+        empresa, compra = await self._compra(db_session)
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.rechazar_compra(db_session, compra.id, actor="")
+        assert "quien la rechace" in str(exc.value)
+
+    async def test_rechazar_sin_actor_no_cambia_el_estado(self, db_session):
+        """LA DEFENSA, y su mitad importante: el estado no se toca."""
+        empresa, compra = await self._compra(db_session)
+
+        with pytest.raises(inv.ErrorDeInventario):
+            await inv.rechazar_compra(db_session, compra.id, actor="   ")
+
+        assert compra.estado == EstadoCompra.EN_REVISION

@@ -410,12 +410,15 @@ def _linea_vertical(linea: dict) -> bool:
     texto = " ".join(
         str(p.get("texto") or "") for p in linea.get("palabras", [])
     ).strip()
-    if not texto:
-        return True
-    if ROTULOS_FINALES.match(texto):
-        return True
-    # Una linea sin ningun numero no aporta nada al inventario.
-    return False
+    # Una sola expresion, y no tres `return` en cadena. La diferencia practica:
+    # cada rama del `if` era un sitio donde anadir una condicion nueva hacia
+    # falta acordarse de a cual de los tres `return` tocar, y el que se
+    #olvidaba no fallaba — devolvia `False` como los demas.
+    return (
+        not texto
+        or bool(ROTULOS_FINALES.match(texto))
+        # Una linea sin ningun numero no aporta nada al inventario.
+    )
 
 
 def leer_lineas(

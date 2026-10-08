@@ -44,8 +44,17 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.core.config import settings
+
+if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
+    # Pillow se importa DENTRO de `_preparar`, y por una razon que no es de
+    # estilo: si el paquete falta, el OCR sigue funcionando con los bytes
+    # originales (ver el docstring de `_preparar`). Importarlo arriba para que el
+    # type checker lo viera haria que el modulo no se pudiera ni cargar en esa
+    # maquina, que es justo lo que se quiere evitar.
+    from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -197,12 +206,136 @@ def obtener_motor(nombre: str = "tesseract"):
 # `_preparar` que hoy no lo necesita.
 
 
-def _preparar(datos: bytes) -> "object":
-    """Escala, pasa a gris y sube contraste.
+# La caja del papel, por brillo. Ver `_recortar_el_papel`.
+_UMBRAL_PAPEL = 140
+# Se descartan estos quantiles de cada borde. No es un margen arbitrario: el
+# marco de una pantalla o el borde de una mesa tambien son claros, y sin
+# descartarlos la caja se sale del papel. Medido sobre IMG_4316: con el 2% la caja
+# es de 1521x3664 sobre 3024x4032, y sin el la caja se come la pantalla entera.
+_QUANTILES_BORDE = 0.02
+# Por debajo de esta fraccion del area, NO se recorta. Ver la guarda.
+_FRACCION_MINIMA = 0.15
+# Por ENCIMA tampoco se recorta, y esto se olvido en la primera version.
+#
+# MEDIDO sobre las siete fotos reales de la carpeta, con y sin recorte:
+#
+#     IMG_4316   papel al  46%   0.00 -> 51.50   GANA
+#     AA4D0E8F   papel al  90%   97.56 -> 0.00  PIERDE
+#     EE2C6866   papel al  85%   117 -> 0.00    PIERDE
+#     los otros cuatro                          igual
+#
+# Es decir: la primera version ARRASTRABA DOS comprobantes correctos por cada uno
+# que arreglaba. Solo se vio al medir los siete; con los tres de `IMG_*` el
+# resultado era "1 gana, 0 pierde" y el cambio habria entrado.
+#
+# La causa es que los quantiles al 2% recortan un 8-15% del area SIEMPRE. Cuando
+# el papel ya llena el cuadro, ese 8-15% no es fondo: es el borde del
+# comprobante, y ahi viven cosas como el importe de una linea de detalle. Por eso
+# el recorte solo tiene sentido cuando hay algo que descartar de verdad.
+_FRACCION_MAXIMA = 0.75
+
+
+def _recortar_el_papel(imagen):
+    """Recorta al papel claro. Devuelve la imagen sin tocar si no se puede.
+
+    ## POR QUE ESTO EXISTE
+
+    Medido sobre `IMG_4316.HEIC`, una foto real de un Oxxo: el comprobante
+    ocupa el 46% del cuadro y el resto es la pantalla de un editor, con texto de
+    alto contraste. Tesseract lee LAS DOS SUPERFICIES, y el parser agarra la
+    linea que reconoce. El total salia `1.50` —un fragmento de `51.50` que cayo
+    en la linea siguiente— cuando el papel decia `51.50`.
+
+    `1.50` es peor que `0.00`: con cero, el gate emite `total_not_positive` y hay
+    una razon para desconfiar. Con un positivo, ese check no dice nada y el
+    gasto queda subreportado sin que nada lo delate. Recortando, el mismo
+    archivo da `51.50`.
+
+    ## POR QUE NO SE USA UN MODELO DE VISION
+
+    Medido en esta maquina: `moondream` (1.7 GB) degenera en repeticiones y no
+    lee el comprobante, y un modelo que si lo lee necesita 8-11 GB de RAM contra
+    un tope de 4 GB. El recorte es CPU pura, no pide memoria, y dio el numero
+    correcto. Es la opcion que no degrada el equipo.
+
+    ## LA GUARDA, Y POR QUE NO ES OPCIONAL
+
+    El recorte por brillo tiene un fallo obvio: una foto OSCURA de un papel
+    claro deja poca region por encima del umbral, la caja sale diminuta y se
+    recorta el ticket en vez del fondo — o sea, se empeora justo el caso que se
+    queria arreglar.
+
+    Por eso, si la region clara cubre menos de `_FRACCION_MINIMA` del area, no
+    se recorta y se devuelve la imagen tal cual. Sin esa guarda, este cambio
+    arregla una foto y rompe otras, y nadie lo notaria porque las otras ya
+    salian mal.
+
+    ## POR QUE QUANTILES Y NO EL BBOX EXACTO
+
+    El rectangulo exacto de "pixeles claros" se va hasta el pixel que tenga
+    ruido, y una sola fila clara suelta (un brillo en el fondo) estira la caja
+    hasta el borde. Los quantiles tiran el 2% de cada lado, que es lo que se
+    midio que funciona en las fotos reales.
+    """
+    import numpy as np
+
+    gris = imagen if imagen.mode == "L" else imagen.convert("L")
+    claros = np.array(gris) > _UMBRAL_PAPEL
+    if not claros.any():
+        return imagen, 0.0
+
+    ys, xs = np.where(claros)
+    x0 = float(np.quantile(xs, _QUANTILES_BORDE))
+    x1 = float(np.quantile(xs, 1 - _QUANTILES_BORDE))
+    y0 = float(np.quantile(ys, _QUANTILES_BORDE))
+    y1 = float(np.quantile(ys, 1 - _QUANTILES_BORDE))
+
+    caja = (int(x0), int(y0), int(x1), int(y1))
+    fraccion = ((caja[2] - caja[0]) * (caja[3] - caja[1])) / (imagen.width * imagen.height)
+
+    # LA GUARDA, de los dos lados.
+    #
+    # Por abajo: una foto oscura de un papel claro deja poca region clara, la
+    # caja sale diminuta y se recorta el ticket en vez del fondo. Sin esta linea,
+    # este cambio arregla una foto y rompe otras, y nadie lo notaria porque las
+    # otras ya salian mal.
+    #
+    # Por arriba: si el papel ya llena el cuadro, el recorte de los quantiles se
+    # come el borde del comprobante. MEDIDO: con solo el piso, el recorte perdia
+    # `AA4D0E8F` (97.56 -> 0.00) y `EE2C6866` (117 -> 0.00) mientras arreglaba
+    # `IMG_4316` (0.00 -> 51.50). Arreglar uno y romper dos es peor que no
+    # arreglar ninguno.
+    if fraccion < _FRACCION_MINIMA or fraccion > _FRACCION_MAXIMA:
+        return imagen, fraccion
+
+    recortada = imagen.crop(caja)
+    # Una caja degenerada (un solo pixel de alto o de ancho) no es una foto: es
+    # ruido que paso el umbral, y recortar ahi deja una imagen que Tesseract
+    # rechaza. Se descarta igual que una region demasiado chica.
+    if recortada.width < 50 or recortada.height < 50:
+        return imagen, fraccion
+
+    return recortada, fraccion
+
+
+def _preparar(datos: bytes) -> "Image.Image | bytes":
+    """Recorta al papel, escala, pasa a gris y sube contraste.
 
     Devuelve una imagen de Pillow lista para Tesseract. Si Pillow no esta, se
     devuelven los bytes tal cual: Tesseract acepta la imagen original, va a
     leer peor, y es preferible a no leer nada.
+
+    Por eso el tipo de retorno es la union y no `Image.Image`: hay dos
+    respuestas legitimas y quien llama tiene que saber distinguirla. Tesseract
+    acepta las dos; EasyOCR no, y por eso `_leer_easyocr` comprueba antes de
+    llamar a `.convert` en vez de descubrirlo con un `AttributeError` dentro de
+    un `except` que dice "no se pudo preparar la imagen".
+
+    El recorte va DESPUES de `exif_transpose` y ANTES del reescalado. En ese
+    orden por dos motivos: la caja se mide con el papel derecho, que es donde
+    esta el texto; y recortar antes de reducir hace que los 2000 px finales
+    apunten al comprobante y no al escritorio entero, o sea que el total legible
+    mejora aunque el ancho final sea el mismo.
     """
     try:
         from PIL import Image, ImageOps
@@ -215,6 +348,16 @@ def _preparar(datos: bytes) -> "object":
     try:
         with Image.open(io.BytesIO(datos)) as original:
             imagen = ImageOps.exif_transpose(original) or original
+
+            recortada, fraccion = _recortar_el_papel(imagen)
+            if recortada is not imagen:
+                logger.info(
+                    "recorte de papel: %.0f%% del cuadro (%.0fx%.0f de %dx%d)",
+                    fraccion * 100, recortada.width, recortada.height,
+                    imagen.width, imagen.height,
+                )
+            imagen = recortada
+
             # Sin esto, una foto de celular queda en miles de pixeles y
             # Tesseract se toma segundos por imagen. 2000 px de ancho alcanza
             # para leer un total en letra pequena de ticket.
@@ -690,7 +833,13 @@ def _lineas_desde_cajas(detecciones: list) -> tuple[str, float | None, tuple[dic
         })
 
     if not cajas:
-        return "", None
+        # TRES valores, siempre. La llamada de arriba desempaqueta tres
+        # (`texto, confianza, geometria`) y este `return` devolvia dos: con
+        # EasyOCR sin detecciones —una foto en blanco, o texto que el detector no
+        # vio— eso era un `ValueError: not enough values to unpack` fuera del
+        # `try` que lo rodea, y el motor reportaba un fallo de lectura en vez de
+        # "no vi texto". La geometria vacia es la respuesta honesta.
+        return "", None, ()
 
     # De arriba abajo. El desempate por x es lo que hace que dos palabras en la
     # misma banda salgan en orden de lectura y no en el orden en que el detector
@@ -772,6 +921,11 @@ def _leer_easyocr(datos: bytes) -> ResultadoOCR:
         raise OCRNoDisponible("EasyOCR necesita numpy") from exc
 
     imagen = _preparar(datos)
+    # `_preparar` devuelve los bytes sin tocar cuando Pillow no esta, y EasyOCR
+    # no los acepta. Decirlo aqui evita que el error salga como "'bytes' object
+    # has no attribute 'convert'" debajo de un mensaje que habla de la imagen.
+    if isinstance(imagen, bytes):
+        raise OCRNoDisponible("EasyOCR necesita Pillow para preparar la imagen")
     try:
         rgb = np.array(imagen.convert("RGB"), dtype=np.uint8)
     except Exception as exc:

@@ -197,7 +197,9 @@ export function PanelEvidencia({ reporte }: { reporte: ReporteExactitud }) {
       <div className="mt-4">
         <button
           onClick={() => setDetalle(d => !d)}
-          className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+          // Mismo criterio que el boton de "Abrir cola": el texto es pequeno
+          // pero el area tiene que ser de 44. Medido en 20px sin esto.
+          className="text-sm text-blue-600 hover:text-blue-800 font-medium py-3 -my-3"
         >
           {detalle ? 'Ocultar el desglose por vía de lectura' : 'Ver el desglose por vía de lectura'}
         </button>

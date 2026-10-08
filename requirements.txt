@@ -38,6 +38,20 @@ numpy>=1.26.0
 
 pytesseract>=0.3.10
 
+# easyocr: el SEGUNDO motor de OCR, apagado por omision.
+#
+# Tesseract es el que corre por omision y el que da el 98.5% sobre PDF. Sobre
+# fotos el medido es 33.3% (`AGENTS.md`), y easyocr esta ahi para contrastar los
+# dos motores antes de aceptar que 33.3% es el piso. Se mide con
+# `scripts/medir_dos_motores.py` y `scripts/diagnostico_easyocr.py`.
+#
+# `torchvision` NO se declara aqui aunque easyocr la pida, y esa es la parte
+# importante: se instala en el Dockerfile, desde el indice CPU, junto a torch.
+# torchvision fija una version exacta de torch; si llegara por este archivo pip
+# la resolveria desde PyPI, cuya build de torch trae CUDA, y reinstalaria torch
+# encima de la version CPU. Ver el comentario del Dockerfile.
+easyocr>=1.7.2
+
 # AI / ML dependencies
 openai>=1.30.0
 tiktoken>=0.7.0

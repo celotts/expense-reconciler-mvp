@@ -170,11 +170,6 @@ def _importe_tras_la_etiqueta(linea: str, a_decimal) -> Decimal | None:
             continue
     return None
 
-    try:
-        return a_decimal(importe.group(1))
-    except (InvalidOperation, ValueError):
-        return None
-
 
 def _a_fecha(dia: str, mes: str, anio: str) -> date | None:
     """Une dia/mes/anio en una fecha, o `None` si no existe.

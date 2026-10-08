@@ -690,6 +690,19 @@ async def confirmar_compra(
             "Confirmarla otra vez no volveria a sumar."
         )
 
+    if compra.estado == EstadoCompra.RECHAZADO:
+        # LA DEFENSA DEL RECHAZO. Sin este `if`, `POST /rechazar` seria cosmetico:
+        # el rechazo se deshacia llamando a este endpoint, y el 409 de "ya esta
+        # PROCESADO" de arriba no saltaria porque la compra todavia no lo esta.
+        #
+        # El mensaje dice el camino: una compra rechazada se reabre, no se
+        # confirma. Sin eso, quien lo lea asume que el rechazo se perdio.
+        raise ErrorDeInventario(
+            "La compra esta RECHAZADA: alguien decidio que este comprobante no es "
+            "una compra. Si fue un error, reabrela con "
+            "POST /inventario/compras/{id}/reabrir y despues confirma."
+        )
+
     sin_producto = [i for i in compra.items if i.producto_id is None]
     if sin_producto:
         # Con la resolucion automatica de `registrar_compra` esto ya no deberia
@@ -733,6 +746,396 @@ async def confirmar_compra(
         len(compra.items),
     )
     await db.refresh(compra, ["items"])
+    return compra
+
+
+# ---------------------------------------------------------------------------
+# Administracion del catalogo: renombrar, verificar, dar de baja
+# ---------------------------------------------------------------------------
+
+
+async def actualizar_producto(
+    db: AsyncSession,
+    producto_id: UUID,
+    cambios: dict,
+) -> ProductoModel:
+    """Aplica cambios a un producto del catalogo. Lo que se le pide, se aplica.
+
+    Por que recibe un `dict` y no el modelo entero
+    ---------------------------------------------
+
+    Porque el endpoint tiene que distinguir "no lo mandaron" de "lo mandaron en
+    NULL", y `model_dump()` sin `exclude_unset` no lo distingue: en los dos
+    casos trae la clave. Un `PATCH /productos/{id}` que borrara `precio_referencia`
+    porque el cliente no lo mando seria un fallo de datos que no se ve en la
+    respuesta — el 200 llega igual, y el precio desaparecio. Ver
+    `ProductoUpdate` en `app/schemas/inventario.py`.
+
+    Lo que NO se puede cambiar por aqui, y por que
+    ----------------------------------------------
+
+    - **`id` y `company_id`.** Mover un producto de empresa sacaria su kardex con
+      el, porque `movimientos_inventario.company_id` es su propia copia del de la
+      compra. El stock pasaria a contarse en la empresa nueva y a seguir visible en
+      la vieja. No hay endpoint para eso, y no debe haberlo.
+    - **`origen`.** Dice si lo puso una persona o si salio de leer un papel. Si
+      fuera editable, un producto de OCR podria declararse MANUAL y sair de la
+      cola de revision sin que nadie lo mirara, que es exactamente la mentira que
+      `verificado` existe para decir que no.
+    - **`verificado` en un producto de OCR sin codigo.** Un codigo de barras es una
+      identidad; una descripcion es una opinion. Marcar como verificado un producto
+      de OCR sin codigo es afirmar que el sistema sabe lo que hay en el almacen, y
+      no lo sabe. Ver `test_verificar_ocr_sin_codigo_no`.
+
+    Lo que si se puede, y por que cada uno hace falta:
+
+    - **`nombre`.** Renombrar es lo que hace falta para limpiar la cola: el OCR
+      produce "Reginen de" y "Regin de" y la decision de si son el mismo producto
+      la toma una persona. `nombre_normalizado` se recalcula por el `@validates` del
+      modelo, asi que no hay que acordarse.
+    - **`activo`.** Dar de baja sin borrar: el kardex necesita el producto vivo, y
+      `ON DELETE CASCADE` de `movimientos_inventario.producto_id` borraria el
+      historial entero. Por eso NO hay `DELETE` de producto, y es la misma razon
+      por la que `producto.activo` existe en el modelo.
+
+    El producto tiene que ser de la misma empresa que la que se pide. Es la misma
+    comprobacion que hace `asignar_producto`, y por el mismo motivo: no hay
+    multi-tenancy y esta es la ultima linea antes de que un producto de otra
+    empresa se renombre desde aqui.
+    """
+    producto = (
+        await db.execute(select(ProductoModel).where(ProductoModel.id == producto_id))
+    ).scalar_one_or_none()
+    if producto is None:
+        raise NoExiste("El producto no existe")
+
+    if "company_id" in cambios or "origen" in cambios:
+        # No es un 422 de forma: el cuerpo es valido, el campo es que no se toca.
+        # Se responde en el router; aqui solo se deja constancia de que la
+        # condicion existe, porque un `continue` silencioso seria mas dificil de
+        # leer que un error explicito.
+        raise ErrorDeInventario(
+            "`company_id` y `origen` no se pueden cambiar por API"
+        )
+
+    if cambios.get("verificado") is True and not producto.verificado:
+        # Solo se bloquea el caso que la constraint no cubre. La constraint
+        # `ck_productos_verificado_ocr` dice "verificado = true OR origen = OCR",
+        # o sea que ya prohibe que un MANUAL deje de estar verificado; lo que NO
+        # prohibe es que un OCR sin codigo pase a verificado, y ese es el salto
+        # que este servicio no da.
+        if producto.origen == ProductoOrigen.OCR.value and not producto.codigo:
+            raise ErrorDeInventario(
+                "Un producto que salio de leer un papel y no tiene codigo no se "
+                "puede dar por verificado solo con llamarlo verificado: un codigo "
+                "de barras es una identidad, y una descripcion leida no lo es. "
+                "Asignale un codigo, o dejalo en la cola."
+            )
+
+    if "codigo" in cambios and cambios["codigo"] is not None:
+        # El indice unico `ix_productos_codigo` es `(company_id, codigo) WHERE codigo
+        # IS NOT NULL`. Sin esta comprobacion, un codigo repetido llega al INSERT y
+        # sale un IntegrityError, que el router no traduce: 500. El 409 con el
+        # nombre del producto que ya lo tiene es lo que un cliente puede usar.
+        repetido = (
+            await db.execute(
+                select(ProductoModel).where(
+                    ProductoModel.company_id == producto.company_id,
+                    ProductoModel.codigo == cambios["codigo"],
+                    ProductoModel.id != producto.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if repetido is not None:
+            raise ErrorDeInventario(
+                f'Ya existe el producto "{repetido.nombre}" con el codigo '
+                f'{cambios["codigo"]} en esta empresa.'
+            )
+
+    for campo, valor in cambios.items():
+        setattr(producto, campo, valor)
+    await db.flush()
+    return producto
+
+
+# ---------------------------------------------------------------------------
+# El kardex: escribir un movimiento que no venga de una compra
+# ---------------------------------------------------------------------------
+
+
+async def registrar_movimiento(
+    db: AsyncSession,
+    *,
+    company_id: UUID,
+    producto_id: UUID,
+    tipo: TipoMovimiento,
+    cantidad: Decimal,
+    actor: str,
+    referencia_tipo: str = "AJUSTE",
+    referencia_id: UUID | None = None,
+    descripcion_origen: str | None = None,
+) -> MovimientoInventarioModel:
+    """Escribe una fila del kardex a mano: una SALIDA (venta) o un AJUSTE.
+
+    POR QUE UNA `ENTRADA` SOLO SE ACEPTA CON `referencia_tipo='AJUSTE'`
+    ------------------------------------------------------------------
+
+    Porque `ENTRADA` sin mas significa "esto entro por una compra que alguien
+    autorizo", y la unica forma de que signifique eso es `confirmar_compra`. Si este
+    endpoint aceptara una `ENTRADA` a secas, existiria un camino que suma stock sin
+    compra, sin linea y sin que nadie mirara el papel — y entonces
+    `compras.ticket_id` UNIQUE, que es lo que impide contar dos veces un
+    comprobante, dejaria de ser la garantia de que el inventario solo refleja
+    compras de verdad.
+
+    Con `referencia_tipo='AJUSTE'` si se acepta, y por una razon concreta: una
+    correccion de conteo que SUMA es indistinguible de una compra si lo unico que
+    se guarda es el tipo. El par (tipo con signo, procedencia) es lo que las dos
+    necesitan, y es lo que se guarda. El error sale con 409 y no con 422 porque no
+    es un problema de forma del cuerpo: es un problema de lo que el cuerpo quiere
+    decir.
+
+    QUE ES UN AJUSTE Y POR QUE SE ESCRIBE CON OTRO `tipo`
+    ---------------------------------------------------
+
+    Un AJUSTE corrige una diferencia entre el conteo fisico y el sistema, y eso
+    pasa en las dos direcciones: se conto de mas, o se conto de menos. El enum
+    `AJUSTE` no puede decir cual de las dos es, y `cantidad` es positiva por
+    `ck_movimientos_cantidad_positiva`, asi que el signo no puede ir en el numero.
+
+    La fila se escribe con el tipo que SI tiene signo —`ENTRADA` si se conto de
+    menos, `SALIDA` si de mas— y con `referencia_tipo = 'AJUSTE'`, que es lo que
+    dice "esto es una correccion" sin tocar el stock. El enum conserva `AJUSTE`
+    como nombre de `referencia_tipo` porque de donde viene la fila y que le hace
+    al stock son dos preguntas distintas. Ver `TipoMovimiento`.
+
+    POR QUE SE COMPRUEBA EL STOCK AQUÍ Y NO SE DEJA SOLO AL TRIGGER
+    --------------------------------------------------------------
+
+    Porque el trigger es de Postgres y los tests corren sobre SQLite, que no tiene
+    triggers de este tipo. Si la comprobacion viviera solo en la base, la suite
+    pasaria y el fallo apareceria en produccion como un IntegrityError sin
+    traducir —un 500 que no dice "no hay stock"—. Aqui se comprueba y se responde
+    409 con el numero que hay y el que se pedia, que es lo que la persona necesita
+    para decidir si pidio de mas.
+
+    La comprobacion no reemplaza al trigger: corre en la misma transaccion y en el
+    mismo motor, asi que los dos ven el mismo estado. Si alguien meter la escritura
+    por otra via sin pasar por aqui, el trigger sigue bloqueando el negativo.
+
+    Un AJUSTE hacia abajo (`SALIDA`) tambien pasa por esta comprobacion de stock,
+    y es lo correcto: una correccion que deja el inventario negativo no es una
+    correccion, es el mismo error de captura que el trigger persigue.
+    """
+    if not actor or not actor.strip():
+        # Mismo criterio que `asignar_producto` y `confirmar_compra`: sin actor no
+        # hay quien_responga de la fila. `ck_movimientos_actor` lo prohibe en la
+        # base, pero aqui el mensaje es util y el 409 no un 500.
+        raise ErrorDeInventario("registrar un movimiento requiere quien lo registre")
+
+    if tipo is TipoMovimiento.ENTRADA and referencia_tipo != "AJUSTE":
+        raise ErrorDeInventario(
+            "Una ENTRADA solo puede venir de confirmar una compra, que es el "
+            "camino que escribe el kardex con una linea por linea del papel y "
+            "exige a alguien que la autorice. Registrar una entrada suelta "
+            "sumaria stock sin compra, y el inventario dejaria de reflejar lo "
+            "que se compro. Si lo que quieres es una correccion de conteo, mandala "
+            "con es_ajuste=true."
+        )
+
+    if cantidad is None or cantidad <= 0:
+        # La constraint `ck_movimientos_cantidad_positiva` lo prohibe igual, pero
+        # un 422 aqui dice "la cantidad tiene que ser mayor que cero" en vez de
+        # dejar que reviente el INSERT. Y el signo NO se mira: una cantidad
+        # negativa es una SALIDA con la cantidad positiva, no un numero negativo.
+        raise ErrorDeInventario(
+            "La cantidad tiene que ser mayor que cero. Si el movimiento resta "
+            "stock, el tipo es SALIDA y la cantidad va positiva."
+        )
+
+    producto = (
+        await db.execute(select(ProductoModel).where(ProductoModel.id == producto_id))
+    ).scalar_one_or_none()
+    if producto is None:
+        raise NoExiste("El producto no existe")
+    if producto.company_id != company_id:
+        raise ErrorDeInventario("El producto es de otra empresa")
+
+    if tipo is TipoMovimiento.SALIDA:
+        actual = await stock_de_una(db, producto.id)
+        if cantidad > actual:
+            raise ErrorDeInventario(
+                f'No hay stock suficiente: "{producto.nombre}" tiene {actual} y '
+                f"pediste restar {cantidad}. Un AJUSTE hacia abajo que deja el "
+                "inventario negativo no es una correccion."
+            )
+
+    movimiento = MovimientoInventarioModel(
+        company_id=company_id,
+        producto_id=producto.id,
+        tipo=tipo.value,
+        cantidad=cantidad,
+        referencia_tipo=referencia_tipo,
+        referencia_id=referencia_id,
+        actor=actor,
+        descripcion_origen=(descripcion_origen or producto.nombre)[:300],
+        created_at=utcnow(),
+    )
+    db.add(movimiento)
+    await db.flush()
+    logger.info(
+        "Movimiento %s de %s %s piezas sobre el producto %s, por %s.",
+        movimiento.tipo,
+        movimiento.cantidad,
+        referencia_tipo,
+        producto.id,
+        actor,
+    )
+    return movimiento
+
+
+async def stock_de_una(db: AsyncSession, producto_id: UUID) -> Decimal:
+    """El stock de UN producto, con el mismo signo que usa `stock_de`.
+
+    Existe para no recorrer el kardex entero de la empresa en cada comprobacion de
+    `registrar_movimiento`. Y replica el signo de `stock_de` a proposito, con la
+    misma unica pregunta (`¿es SALIDA?`): si esta cuenta y `stock_de` dieran
+    numeros distintos, el 409 de "no hay stock" y el stock que se muestra en el
+    catalogo estarian describiendo la misma fila de dos maneras.
+    """
+    entradas = await db.execute(
+        select(func.coalesce(func.sum(MovimientoInventarioModel.cantidad), 0)).where(
+            MovimientoInventarioModel.producto_id == producto_id,
+            MovimientoInventarioModel.tipo != TipoMovimiento.SALIDA.value,
+        )
+    )
+    salidas = await db.execute(
+        select(func.coalesce(func.sum(MovimientoInventarioModel.cantidad), 0)).where(
+            MovimientoInventarioModel.producto_id == producto_id,
+            MovimientoInventarioModel.tipo == TipoMovimiento.SALIDA.value,
+        )
+    )
+    return Decimal(entradas.scalar_one() or 0) - Decimal(salidas.scalar_one() or 0)
+
+
+# ---------------------------------------------------------------------------
+# La maquina de estados de la compra, hacia atras
+# ---------------------------------------------------------------------------
+
+
+async def rechazar_compra(
+    db: AsyncSession,
+    compra_id: UUID,
+    *,
+    actor: str,
+    motivo: str | None = None,
+) -> CompraModel:
+    """EN_REVISION -> RECHAZADO: este comprobante no es una compra.
+
+    QUE POR QUE NO SE BORRA
+    -----------------------
+
+    Porque `compras.ticket_id` es UNIQUE. Borrar la compra deja el ticket libre, y
+    el proximo reescaneo lo encuentra sin compra y vuelve a crearla desde
+    `registrar_compra`, con estado EN_REVISION y sin recordar que alguien ya la
+    habia mirado. Es un bucle: la compra descartada reaparece sola cada vez que se
+    toca el comprobante. Con RECHAZADO el veredicto queda escrito y
+    `registrar_compra` lo devuelve tal cual, que es lo idempotente.
+
+    POR QUE NO SE PUEDE RECHAZAR UNA PROCESADA
+    ------------------------------------------
+
+    Porque ya sumo stock, y el kardex es append-only por trigger: `UPDATE` nunca y
+    `DELETE` nunca mientras el producto exista. No hay forma de deshacer los
+    movimientos de una compra confirmada. Si el error es de conteo, la correccion
+    es un AJUSTE por producto —`POST /inventario/movimientos`— y es la unica via
+    que deja el rastro de por que el stock ya no cuadra con lo que dice el papel.
+
+    El mensaje de error lo dice, porque "no se puede" sin explicar el camino
+    alternativo hace que la persona busque una pantalla que no existe.
+    """
+    if not actor or not actor.strip():
+        raise ErrorDeInventario("rechazar una compra requiere quien la rechace")
+
+    compra = (
+        await db.execute(select(CompraModel).where(CompraModel.id == compra_id))
+    ).scalar_one_or_none()
+    if compra is None:
+        raise NoExiste("La compra no existe")
+
+    if compra.estado is EstadoCompra.PROCESADO or compra.estado == EstadoCompra.PROCESADO.value:
+        raise ErrorDeInventario(
+            "La compra ya esta PROCESADO y ya sumo stock, y el kardex no se "
+            "reescribe: no hay forma de deshacer sus movimientos. Si el error es "
+            "de conteo, corrige cada producto con un AJUSTE en "
+            "POST /inventario/movimientos, que es lo que deja rastro."
+        )
+
+    if compra.estado == EstadoCompra.RECHAZADO.value:
+        # Idempotente a proposito. Rechazar dos veces no es un error de forma: es
+        # la misma operacion, y un cliente que reintenta tras un timeout debe
+        # poder hacerlo sin que la segunda llame sea un 409 que no sabe leer.
+        return compra
+
+    compra.estado = EstadoCompra.RECHAZADO
+    await db.flush()
+    logger.info(
+        "Compra %s rechazada por %s%s.",
+        compra.id,
+        actor,
+        f": {motivo}" if motivo else "",
+    )
+    return compra
+
+
+async def reabrir_compra(
+    db: AsyncSession,
+    compra_id: UUID,
+    *,
+    actor: str,
+) -> CompraModel:
+    """RECHAZADO -> EN_REVISION. Deshace el rechazo, no la confirmacion.
+
+    Lo que NO hace, y por que no hay un solo endpoint para las dos cosas
+    ---------------------------------------------------------------------
+
+    No reabre una compra PROCESADA. `reabrir_compra` solo deshace un RECHAZADO, y
+    una compra que ya sumo stock no se puede reabrir: sus movimientos existen y el
+    trigger del kardex prohibe editarlos y borrarlos. Si el error es de conteo, la
+    via es el AJUSTE.
+
+    La separacion es deliberada: un endpoint "reabrir" que aceptara los dos casos
+    necesitaria adivinar cual de los dos es, y el caso equivocado —dar por
+    reversible una compra que ya movio stock— es el que no tiene salida. Con dos
+    funciones y un 409 explicito, el que se equivoca se da cuenta.
+    """
+    if not actor or not actor.strip():
+        raise ErrorDeInventario("reabrir una compra requiere quien la reabra")
+
+    compra = (
+        await db.execute(select(CompraModel).where(CompraModel.id == compra_id))
+    ).scalar_one_or_none()
+    if compra is None:
+        raise NoExiste("La compra no existe")
+
+    if compra.estado == EstadoCompra.PROCESADO.value:
+        raise ErrorDeInventario(
+            "Una compra PROCESADA no se reabre: ya sumo stock y el kardex no se "
+            "reescribe. Para corregir el conteo, registra un AJUSTE por producto."
+        )
+
+    if compra.estado != EstadoCompra.RECHAZADO.value:
+        raise ErrorDeInventario(
+            f"Solo una compra RECHAZADO se puede reabrir, y esta esta en "
+            f"{compra.estado}."
+        )
+
+    # A EN_REVISION y no a PROCESAR: PROCESAR significa "se esta digitalizando", y
+    # esta compra ya esta digitalizada y con sus lineas interpretadas. Volver a
+    # PROCESAR seria mandarla al principio del camino cuando ya esta casi al final.
+    compra.estado = EstadoCompra.EN_REVISION
+    await db.flush()
+    logger.info("Compra %s reabierta por %s.", compra.id, actor)
     return compra
 
 

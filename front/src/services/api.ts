@@ -11,7 +11,7 @@ import type {
 } from '../types/api';
 import type { Categoria, DashboardResponse } from '../types/dashboard';
 import type {
-  ScanConfig, ScanFileDetail, ScanFilePage, ScanItem, ScanOcrEstado,
+  ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanItem, ScanOcrEstado,
   ScanRequest, ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
 import { leerToken, notificarCaducidad, SesionVencida } from './sesion';
@@ -312,6 +312,17 @@ export const ticketsApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  /** Las corridas recientes, y cuales siguen en marcha.
+   *
+   *  Es el canal de progreso: `POST /scan` es sincrono y con fotos tarda
+   *  minutos, asi que el cliente necesita algo que consultar mientras espera. */
+  scanRuns: (limite = 10): Promise<{ corridas: ScanCorrida[]; en_curso: string[] }> =>
+    fetchApi<{ corridas: ScanCorrida[]; en_curso: string[] }>(`/scan/runs?limite=${limite}`),
+
+  /** El progreso de UNA corrida. El mismo endpoint sirve para el progreso y
+   *  para el resultado: cuando `terminada` es true, `resumen` ya esta lleno. */
+  scanRun: (id: string): Promise<ScanCorrida> => fetchApi<ScanCorrida>(`/scan/runs/${id}`),
 
   /** El registro de archivos, con `limit` y `offset` explicitos.
    *

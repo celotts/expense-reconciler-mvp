@@ -16,7 +16,7 @@ cuesta menos ser explicitos que demostrar que no hace falta.
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -28,24 +28,53 @@ logger = logging.getLogger(__name__)
 from app.core.deps import Sesion, UsuarioActual
 from app.core.enums import EstadoCompra, ProductoOrigen
 from app.models.inventario import (
-    CompraItemModel,
     CompraModel,
     MovimientoInventarioModel,
     ProductoModel,
 )
 from app.schemas.inventario import (
+    STOCK_SIN_MOVIMIENTOS,
     AsignarProductoRequest,
     CompraItemResponse,
     CompraResponse,
     ConfirmarCompraRequest,
     LineaSinProductoResponse,
+    MovimientoCreate,
     MovimientoResponse,
     ProductoConStock,
     ProductoCreate,
     ProductoResponse,
+    ProductoUpdate,
+    RechazarCompraRequest,
     _item_a_dict,
 )
 from app.services import inventario_service as inv
+
+# ---------------------------------------------------------------------------
+# POR QUE HAY `cast()` EN ESTE ARCHIVO
+# ---------------------------------------------------------------------------
+#
+# Los modelos se declaran con `Column(...)`, que en SQLAlchemy 2.0 se anota a
+# nivel de CLASE: `email` es `Column[str]`, no `str`. Al leer `usuario.email`
+# sobre una INSTANCIA el descriptor devuelve el valor de la fila, que es un
+# `str`, y el type checker ve la anotacion de la clase y no el descriptor.
+#
+# `cast()` dice eso sin mentir: no convierte nada en ejecucion, solo le dice al
+# checker lo que el ORM ya resolvio. Los cuatro sitios de este archivo son las
+# cuatro unicas cosas que aqui se USA una columna COMO VALOR y no como columna.
+#
+# ## POR QUE NO SE ARREGLA EN EL MODELO
+#
+# La forma correcta es `Mapped[str]` en vez de `Column(String)`, que es
+# justamente lo que SQLAlchemy 2.0 ofrece para esto. Se midio el alcance: son
+# **126 de los 173 errores de `app/`**, y las columnas a migrar son **143 en 11
+# modelos** (`app/models/`). Es un arreglo de raiz y merece su propio commit con
+# la suite entera en verde, no cuatro `cast` colados mientras se toca otra cosa.
+#
+# Con estos cuatro, `inventario.py` queda en cero errores de pyright; los otros
+# 122 viven en los sitios donde una columna se USA como columna, que no se
+# pueden arreglar sin tocar el modelo.
+
 
 router = APIRouter()
 
@@ -55,8 +84,10 @@ def _actor(usuario: UsuarioActual) -> str:
 
     Ver `ConfirmarCompraRequest`: un `confirmada_por` en el request seria una
     puerta para firmar la entrada al inventario de otra empresa.
+
+    El `cast` es por el modelo, no por este codigo. Ver `_COLUMNA_COMO_VALOR`.
     """
-    return usuario.email
+    return cast(str, usuario.email)
 
 
 def _conflictos(exc: inv.ErrorDeInventario) -> HTTPException:
@@ -76,6 +107,24 @@ def _conflictos(exc: inv.ErrorDeInventario) -> HTTPException:
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=codigo, detail=str(exc))
+
+
+def _compra_a_response(compra: CompraModel) -> CompraResponse:
+    """La compra con sus lineas aplanadas.
+
+    Vive aqui y no en el servicio porque el aplanado de `producto.nombre` es de
+    presentacion: `CompraItemResponse` es plano y la relacion `producto` no. Y
+    estaba copiado en `listar_compras`, `obtener_compra` y `confirmar_compra`, con
+    el riesgo de que las tres se desincronicen al anadir un campo a la linea.
+    """
+    respuesta = CompraResponse.model_validate(compra)
+    respuesta.items = [
+        CompraItemResponse.model_validate(
+            _item_a_dict(i, i.producto.nombre if i.producto else None)
+        )
+        for i in compra.items
+    ]
+    return respuesta
 
 
 async def _archivar_el_comprobante(db: Sesion, ticket_id: UUID, usuario) -> None:
@@ -156,7 +205,19 @@ async def listar_productos(
     salida = []
     for producto in productos:
         respuesta = ProductoConStock.model_validate(producto)
-        respuesta.stock = stocks.get(producto.id, ProductoConStock.model_fields["stock"].default)
+        # El defecto es `STOCK_SIN_MOVIMIENTOS`, la MISMA constante que declara el
+        # default del campo. Antes era
+        # `ProductoConStock.model_fields["stock"].default`, que hacia lo correcto
+        # pero rompia el type checker: `FieldInfo.default` esta tipado como
+        # `PydanticUndefined | Any`, y con ese tipo pyright no puede elegir el
+        # overload de `dict.get` — el error era "No overloads for get match the
+        # provided arguments". El problema no era el `.get`, era el centinela de
+        # pydantic en la posicion de defecto.
+        #
+        # Y el default NO es un centinela en ejecucion — se comprobo:
+        # `model_fields["stock"].default` vale `Decimal('0')`. O sea que el valor
+        # era correcto y solo la anotacion mentia.
+        respuesta.stock = stocks.get(cast(UUID, producto.id), STOCK_SIN_MOVIMIENTOS)
         salida.append(respuesta)
     return salida
 
@@ -212,14 +273,124 @@ async def crear_producto(
 
     respuesta = ProductoConStock.model_validate(producto)
     # Cero explicito, no ausente: ver el comentario del decorador.
-    respuesta.stock = Decimal("0")
+    #
+    # Y es la MISMA constante que usa el listado y que declara el default del
+    # campo. Estaba escrito a mano aqui, y mover el otro sitio a una constante
+    # mientras este se quedaba con un `Decimal("0")` literal no habria quitado
+    # la duplicacion: la habria movido. Con tres sitios (el campo del schema, el
+    # `.get()` del listado y este alta) son tres valores que pueden divergir en
+    # silencio, y el type checker no dice nada porque los tres estan bien
+    # tipados.
+    respuesta.stock = STOCK_SIN_MOVIMIENTOS
+    return respuesta
+
+
+@router.get(
+    "/productos/{producto_id}",
+    response_model=ProductoConStock,
+    tags=["Inventario"],
+    summary="Un producto con su stock",
+)
+async def obtener_producto(
+    producto_id: UUID,
+    db: Sesion,
+    _: UsuarioActual,
+    company_id: UUID = Query(...),
+) -> ProductoConStock:
+    """Un producto del catalogo, con el stock que le da el kardex.
+
+    El `company_id` es obligatorio y se comprueba contra el producto. No es
+    decorativo: `AGENTS.md` advierte que no hay multi-tenancy, asi que sin esta
+    comparacion un `producto_id` de otra empresa se leeria igual y el stock que
+    saliera en la respuesta seria el de la empresa equivocada —un 200 con el
+    numero de otro, que es peor que un 403 porque no parece un error.
+
+    Por que responde `ProductoConStock` y no `ProductoResponse`: el listado
+    devuelve stock, y que el detalle no lo devuelva obliga al cliente a hacer una
+    segunda llamada para saber el mismo numero.
+    """
+    producto = (
+        await db.execute(
+            select(ProductoModel).where(ProductoModel.id == producto_id)
+        )
+    ).scalar_one_or_none()
+    if producto is None:
+        raise HTTPException(status_code=404, detail="El producto no existe")
+    if cast(UUID, producto.company_id) != company_id:
+        # 404 y no 403: el recurso no existe PARA esta empresa, y un 403
+        # confirmaria que hay un producto con ese id en otra. Ver
+        # `inventario_service.NoExiste`.
+        raise HTTPException(status_code=404, detail="El producto no existe")
+
+    respuesta = ProductoConStock.model_validate(producto)
+    respuesta.stock = (await inv.stock_de_una(db, producto.id))
+    return respuesta
+
+
+@router.patch(
+    "/productos/{producto_id}",
+    response_model=ProductoConStock,
+    tags=["Inventario"],
+    summary="Renombrar, verificar, dar de baja o corregir el precio",
+)
+async def actualizar_producto(
+    producto_id: UUID,
+    datos: ProductoUpdate,
+    db: Sesion,
+    _: UsuarioActual,
+    company_id: UUID = Query(...),
+) -> ProductoConStock:
+    """Corrige el catalogo. Es lo que hace que la cola se pueda vaciar.
+
+    `GET /inventario/productos?solo_sin_verificar=true` devuelve la cola de
+    productos que salieron de leer un papel, y `AGENTS.md` le atribuye la tarea de
+    "revisar, renombrar o fusionar". Sin este endpoint la cola se podia mirar pero
+    no limpiar: el `verificado` de un producto de OCR no tenia ninguna puerta por
+    la que cambiarlo.
+
+    Lo que el servicio NO deja cambiar, y por que, esta en
+    `inventario_service.actualizar_producto`: `company_id`, `origen`, y poner
+    `verificado` a un producto de OCR sin codigo.
+
+    `exclude_unset=True` y no `exclude_none`: es la diferencia entre "no lo
+    mandaron" y "lo mandaron en null". Ver `ProductoUpdate`.
+    """
+    producto = (
+        await db.execute(
+            select(ProductoModel).where(ProductoModel.id == producto_id)
+        )
+    ).scalar_one_or_none()
+    if producto is None or cast(UUID, producto.company_id) != company_id:
+        raise HTTPException(status_code=404, detail="El producto no existe")
+
+    cambios = datos.model_dump(exclude_unset=True)
+    if not cambios:
+        # 422 y no un 200 con el producto sin cambios: un PATCH vacio no es una
+        # operacion, y responder 200 haria que un cliente que reenvia el objeto
+        # entero creyera que guardo algo.
+        raise HTTPException(
+            status_code=422,
+            detail="No mandaste ningún campo que se pueda cambiar",
+        )
+
+    try:
+        await inv.actualizar_producto(db, producto_id, cambios)
+    except inv.ErrorDeInventario as exc:
+        raise _conflictos(exc) from exc
+    await db.commit()
+
+    await db.refresh(producto)
+    respuesta = ProductoConStock.model_validate(producto)
+    respuesta.stock = await inv.stock_de_una(db, producto.id)
     return respuesta
 
 
 # ---------------------------------------------------------------------------
 # La cola, y las rutas con placeholder
 #
-# `cola` va primero: ver el docstring del modulo.
+# `cola` va primero: ver el docstring del modulo. Lo mismo para
+# `/productos/{producto_id}`: son dos segmentos y no colisionarian con `/cola`, pero
+# las literales declaradas antes cuestan menos que demostrar que no hace falta.
 # ---------------------------------------------------------------------------
 
 
@@ -292,18 +463,7 @@ async def listar_compras(
             )
         ).scalars()
     )
-
-    salida = []
-    for compra in compras:
-        respuesta = CompraResponse.model_validate(compra)
-        respuesta.items = [
-            CompraItemResponse.model_validate(
-                _item_a_dict(i, i.producto.nombre if i.producto else None)
-            )
-            for i in compra.items
-        ]
-        salida.append(respuesta)
-    return salida
+    return [_compra_a_response(compra) for compra in compras]
 
 
 @router.get(
@@ -321,15 +481,7 @@ async def obtener_compra(
     ).scalar_one_or_none()
     if compra is None:
         raise HTTPException(status_code=404, detail="La compra no existe")
-
-    respuesta = CompraResponse.model_validate(compra)
-    respuesta.items = [
-        CompraItemResponse.model_validate(
-            _item_a_dict(i, i.producto.nombre if i.producto else None)
-        )
-        for i in compra.items
-    ]
-    return respuesta
+    return _compra_a_response(compra)
 
 
 @router.post(
@@ -372,14 +524,72 @@ async def confirmar_compra(
     # 500 que hiciera dudar de una confirmacion que si ocurrio.
     await _archivar_el_comprobante(db, compra.ticket_id, usuario)
 
-    respuesta = CompraResponse.model_validate(compra)
-    respuesta.items = [
-        CompraItemResponse.model_validate(
-            _item_a_dict(i, i.producto.nombre if i.producto else None)
+    return _compra_a_response(compra)
+
+
+@router.post(
+    "/compras/{compra_id}/rechazar",
+    response_model=CompraResponse,
+    tags=["Inventario"],
+    summary="EN_REVISION -> RECHAZADO. Este comprobante no es una compra.",
+)
+async def rechazar_compra(
+    compra_id: UUID,
+    cuerpo: RechazarCompraRequest,
+    db: Sesion,
+    usuario: UsuarioActual,
+) -> CompraResponse:
+    """Descarta una compra sin borrarla.
+
+    Por que no se borra: `compras.ticket_id` es UNIQUE, asi que borrar deja el
+    ticket libre y el proximo reescaneo vuelve a crear la compra desde
+    `registrar_compra`. El bucle aparece cada vez que se toca el comprobante y no
+    recuerda que alguien ya la habia mirado. Con RECHAZADO el veredicto queda
+    escrito.
+
+    Una compra PROCESADA no se puede rechazar: ya sumo stock y el kardex es
+    append-only, no hay forma de deshacerlo. El 409 dice que la via es el AJUSTE.
+
+    Quien rechaza sale del token, nunca del body. Ver `RechazarCompraRequest`.
+    """
+    try:
+        compra = await inv.rechazar_compra(
+            db, compra_id, actor=_actor(usuario), motivo=cuerpo.motivo
         )
-        for i in compra.items
-    ]
-    return respuesta
+    except inv.ErrorDeInventario as exc:
+        raise _conflictos(exc) from exc
+
+    await db.commit()
+    await db.refresh(compra, ["items"])
+    return _compra_a_response(compra)
+
+
+@router.post(
+    "/compras/{compra_id}/reabrir",
+    response_model=CompraResponse,
+    tags=["Inventario"],
+    summary="RECHAZADO -> EN_REVISION. Deshace el rechazo, no la confirmacion.",
+)
+async def reabrir_compra(
+    compra_id: UUID,
+    db: Sesion,
+    usuario: UsuarioActual,
+) -> CompraResponse:
+    """Devuelve una compra rechazada a la cola de autorizacion.
+
+    No reabre una compra PROCESADA, y hay un endpoint distinto para cada cosa a
+    proposito: uno que aceptara las dos necesitaria adivinar cual es cual, y el
+    error —dar por reversible una compra que ya movio stock— es el que no tiene
+    salida. Ver `inventario_service.reabrir_compra`.
+    """
+    try:
+        compra = await inv.reabrir_compra(db, compra_id, actor=_actor(usuario))
+    except inv.ErrorDeInventario as exc:
+        raise _conflictos(exc) from exc
+
+    await db.commit()
+    await db.refresh(compra, ["items"])
+    return _compra_a_response(compra)
 
 
 @router.post(
@@ -417,6 +627,58 @@ async def asignar_producto_a_linea(
 # ---------------------------------------------------------------------------
 # El kardex
 # ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/movimientos",
+    response_model=MovimientoResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Inventario"],
+    summary="Registra una salida (venta) o un ajuste de conteo",
+)
+async def registrar_movimiento(
+    cuerpo: MovimientoCreate,
+    db: Sesion,
+    usuario: UsuarioActual,
+    company_id: UUID = Query(...),
+) -> MovimientoResponse:
+    """Escribe una fila del kardex a mano.
+
+    ES LA RESPUESTA A "el conteo fisico no cuadra, que movio este producto". El
+    kardex es append-only por trigger, asi que corregir un movimiento viejo es
+    agregar uno nuevo que diga lo contrario, y este endpoint es el unico camino
+    para hacerlo.
+
+    `es_ajuste=true` pone `referencia_tipo='AJUSTE'` y es lo que permite una
+    `ENTRADA`: sin el, una entrada seria indistinguible de una compra y el servicio
+    la rechaza con 409, porque `confirmar_compra` es la unica via que puede sumar
+    stock. Ver `inventario_service.registrar_movimiento`.
+
+    El cliente no manda `referencia_tipo`: sale de `es_ajuste`. Pedirlo seria
+    abrir la puerta a que alguien escriba `referencia_tipo='COMPRA'` a mano, y una
+    fila con esa etiqueta es lo que `export_service` y las auditorias toman como
+    "esto vino de una compra".
+    """
+    referencia_tipo = "AJUSTE" if cuerpo.es_ajuste else "VENTA"
+
+    try:
+        movimiento = await inv.registrar_movimiento(
+            db,
+            company_id=company_id,
+            producto_id=cuerpo.producto_id,
+            tipo=cuerpo.tipo,
+            cantidad=cuerpo.cantidad,
+            actor=_actor(usuario),
+            referencia_tipo=referencia_tipo,
+            referencia_id=cuerpo.referencia_id,
+            descripcion_origen=cuerpo.descripcion_origen,
+        )
+    except inv.ErrorDeInventario as exc:
+        raise _conflictos(exc) from exc
+
+    await db.commit()
+    await db.refresh(movimiento)
+    return MovimientoResponse.model_validate(movimiento)
 
 
 @router.get(

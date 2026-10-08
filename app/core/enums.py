@@ -257,6 +257,24 @@ class EstadoCompra(str, Enum):
     PROCESAR = "PROCESAR"        # se esta digitalizando y extrayendo
     EN_REVISION = "EN_REVISION"  # extraida; esperando que alguien la autorice
     PROCESADO = "PROCESADO"      # autorizada; YA sumo stock
+    RECHAZADO = "RECHAZADO"      # descartada por una persona; NO suma stock
+
+    @property
+    def mueve_stock(self) -> bool:
+        """Si estar en este estado significa que el inventario ya sumo.
+
+        Es la pregunta que hace `confirmar_compra` y la que hace el archivado, y
+        se responde con una propiedad y no con `== PROCESADO` repetido en cinco
+        sitios: la dia que haya un cuarto estado que tambien mueva stock, o una
+        transicion nueva, las cinco comparaciones no se actualizan juntas y
+        queda una que miente.
+
+        `RECHAZADO` y `PROCESAR` no mueven. `RECHAZADO` es el estado nuevo de
+        `POST /inventario/compras/{id}/rechazar`, y existe para que "esta compra
+        no es una compra" sea un dato guardable y no una compra olvidada en la
+        cola. Ver `db/migrations/0013_compras_rechazable.sql`.
+        """
+        return self is EstadoCompra.PROCESADO
 
 
 class TipoMovimiento(str, Enum):
@@ -268,8 +286,49 @@ class TipoMovimiento(str, Enum):
 
     ENTRADA suma stock (compra). SALIDA lo resta (venta). AJUSTE es la correccion
     manual cuando el conteo fisico y el sistema no coinciden.
+
+    EL SIGNO DE `AJUSTE` NO ESTA DEFINIDO, Y POR ESO NO SE ESCRIBE DIRECTO
+    ---------------------------------------------------------------------
+
+    `AJUSTE` es la correccion cuando el conteo fisico y el sistema no coinciden, y
+    eso pasa en las DOS direcciones: se conto de mas, o se conto de menos. Un
+    solo valor de enum no puede decir cual de las dos es, y `cantidad` es positiva
+    por `ck_movimientos_cantidad_positiva`, asi que el signo no puede viajar en el
+    numero.
+
+    Se resuelve en `inventario_service.registrar_ajuste`: un AJUSTE se escribe
+    como el tipo que SI tiene signo (`ENTRADA` si se conto de menos, `SALIDA` si
+    de mas) y con `referencia_tipo = 'AJUSTE'`, que es lo que dice que la fila es
+    una correccion y no una compra.
+
+    Por que no se agrega un tipo `AJUSTE_SALIDA`: porque entonces el signo
+    estaria en el tipo Y en el nombre del tipo, y "suma" y "resta" dejarian de
+    ser la pregunta de una sola palabra. Ver `TipoMovimiento.suma_stock`.
+
+    El enum conserva `AJUSTE` porque es el nombre de `referencia_tipo`, que si es
+    una categorizacion real: de donde viene la fila, no que le hace al stock.
     """
 
     ENTRADA = "ENTRADA"
     SALIDA = "SALIDA"
     AJUSTE = "AJUSTE"
+
+    @property
+    def suma_stock(self) -> bool:
+        """Si este tipo mueve el stock hacia arriba.
+
+        La unica fuente de verdad sobre el signo. `stock_de()` la consulta y el
+        trigger de Postgres la replica en SQL, y las dos tienen que decir lo
+        mismo: si divergen, la base rechaza un movimiento que la API acepto (o al
+        reves) y el sintoma es un 409 sin explicacion.
+
+        Y antes de que existiera esta propiedad, NO coincidian. Medido sobre el
+        DDL de `db/init.sql`: el trigger hacia `IF tipo = 'ENTRADA' THEN suma
+        ELSE resta`, o sea que trata `AJUSTE` como resta, mientras que `stock_de`
+        lo suma con `tipo IN ('ENTRADA', 'AJUSTE')`. Era inerte porque la unica
+        via que escribia movimientos era `confirmar_compra`, y esa solo produce
+        `ENTRADA`. Se volvio vivo con `POST /inventario/movimientos`.
+
+        Verificado contra Postgres real en `scripts/verify_postgres_inventario.py`.
+        """
+        return self is not TipoMovimiento.SALIDA

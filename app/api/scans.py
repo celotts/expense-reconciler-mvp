@@ -42,6 +42,7 @@ from app.core.deps import UsuarioActual
 from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
+from app.schemas.lectura import DiagnosticoLecturaResponse
 from app.schemas.scan import (
     ReprocessResponse,
     ScanEventResponse,
@@ -55,6 +56,7 @@ from app.schemas.scan import (
     ScanStatsResponse,
 )
 from app.services import scan_registry, scan_service
+from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ocr import disponibilidad as disponibilidad_ocr
 
 router = APIRouter(tags=["Scan"])
@@ -87,7 +89,7 @@ async def _archivo_o_404(db: AsyncSession, file_id: UUID) -> ScanFileModel:
     if fila is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"no hay ningun archivo escaneado con id {file_id}",
+            detail="Ese archivo no está en el historial de escaneos",
         )
     return fila
 
@@ -108,6 +110,13 @@ def _de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
         extraction_status=detalle.extraction_status,
         estaba_pendiente=detalle.estaba_pendiente,
         solo_simulado=detalle.solo_simulado,
+        # Que le paso AL ARCHIVO, que es distinto de lo que le paso al TICKET.
+        # Los tres van porque se contradecian entre si: `archivado` decia que si
+        # y `ruta_archivo` que no habia destino.
+        retiro=detalle.retiro,
+        motivo_retiro=detalle.motivo_retiro,
+        respaldo_verificado=detalle.respaldo_verificado,
+        recuperable_desde=detalle.recuperable_desde,
         # El servicio lo arma como `dict` para no importar schemas; aqui es
         # donde se valida. `None` cuando el archivo no produjo ticket.
         datos=detalle.datos,
@@ -285,6 +294,91 @@ async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
     )
 
 
+@router.post(
+    "/files/{file_id}/diagnostico",
+    response_model=DiagnosticoLecturaResponse,
+    tags=["Scan"],
+    summary="Relee UN archivo y explica como se leyo. No guarda nada.",
+)
+async def diagnosticar_archivo(
+    file_id: UUID,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> DiagnosticoLecturaResponse:
+    """La lectura de un archivo ya escaneado, paso por paso, sin escribir nada.
+
+    POR QUE ESTE Y NO SUBIR EL ARCHIVO DE NUEVO
+    --------------------------------------------
+
+    Por dos razones, y la segunda es la que importa:
+
+      1. Desde Insomnia es un click. `{{ file_id }}` ya se autocompleta con
+         `GET /scan/files`, y aqui no hay que elegir ningun archivo: la variable
+         `producto_id`-de-archivo ya esta. Subir el archivo obliga a ir al disco a
+         buscarlo en cada llamada.
+      2. **El archivo ya se movio.** Con `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR` en `true`
+         (la omision), `POST /scan` mueve cada comprobante a `Tickets_Scan` al
+         digitalizarlo. Volver a subirlo significaria que se puede diagnosticar un
+         comprobante que el sistema ya no tiene delante, que no es el caso que
+         interesa.
+
+    Y es el mismo archivo que leyo el escaner, con el mismo contenido: el diagnostico
+    no dice por que salio mal *ayer*, dice por que saldria mal ahora.
+
+    **No guarda nada**, ni actualiza `scan_files` ni sus `attempts`. Es la diferencia
+    con `POST /files/{id}/reprocess`, que si lo hace: ese es el unico camino que puede
+    sobreescribir un ticket con correcciones humanas, y por eso es explicito. Este solo
+    mira.
+
+    **No pide `company_id`.** No escribe nada, asi que no hay a quien atribuir el
+    ticket. Y el contraste con lo guardado sale del `ticket_id` que el propio registro
+    ya tiene, que es la atribucion que hizo el escaner.
+    """
+    fila = await _archivo_o_404(db, file_id)
+
+    # La comprobacion de contencion la hace `ruta_de_relativo`, con `is_relative_to`
+    # DESPUES de resolver. Ver la nota larga de ahi: comprobar la cadena antes de
+    # resolver daria una sensacion de seguridad que no existe, porque un symlink a
+    # `/etc` no tiene un solo `..` en el texto.
+    try:
+        ruta = scan_service.ruta_de_relativo(fila.relative_path)
+    except scan_service.ArchivoFueraDeLaCarpeta as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+
+    if not ruta.is_file():
+        # 409 y no 404: el REGISTRO existe, el archivo no. Son hechos distintos y el
+        # que importa es el segundo. Es el mismo codigo que usa `reprocesar_archivo`,
+        # y por el mismo motivo: reprocesar el registro de un archivo que alguien movio
+        # tiene que verse, no reportarse como leido.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"el archivo ya no esta en la carpeta de entrada: {ruta}. "
+                "Si se archivo, se puede diagnosticar por el ticket con "
+                "POST /tickets/extract-diagnostico, que lee el documento guardado."
+            ),
+        )
+
+    resultado = await diagnosticar_lectura(
+        db,
+        ruta.read_bytes(),
+        declarado=None,  # el registro ya sabe el formato; ver `detected_format`
+        nombre=fila.relative_path,
+        ticket_id=fila.ticket_id,
+    )
+    # El aplanado vive en `tickets.py`, junto a los demas, y se importa aqui para no
+    # duplicarlo. Es la unica importacion cruzada entre routers del proyecto, y la
+    # razon es que el diagnostico es el MISMO dato en los dos caminos: si cada uno
+    # tuviera el suyo,responderian con distinta forma y el que compara las dos
+    # tendria que saber cual es cual.
+    from app.api.tickets import _a_diagnostico
+
+    return _a_diagnostico(resultado)
+
+
 @router.post("/", response_model=ScanResponse)
 async def escanear(
     cuerpo: ScanRequest,
@@ -322,7 +416,7 @@ async def escanear(
         if existe is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"no hay ninguna empresa con id {cuerpo.company_id}",
+                detail="La empresa indicada no existe",
             )
 
     resumen = await scan_service.escanear(
@@ -333,6 +427,7 @@ async def escanear(
         solo_pendientes=cuerpo.solo_pendientes,
         archivar=cuerpo.archivar,
         simular=cuerpo.simular,
+        confirmar=cuerpo.confirmar,
     )
 
     return ScanResponse(
@@ -351,6 +446,15 @@ async def escanear(
         archivados_pendientes=resumen.archivados_pendientes,
         carpeta_destino=resumen.carpeta_destino,
         simulado=resumen.simulado,
+        # Los tres que separan "se movio", "salio de la bandeja" y "lo puedo
+        # recuperar". Sin ellos, `archivados: 1` con la carpeta de destino vacia
+        # no decia si el comprobante estaba a salvo o se habia perdido.
+        movidos_a_escaneados=resumen.movidos_a_escaneados,
+        retirados_de_entrada=resumen.retirados_de_entrada,
+        recuperables_desde_db=resumen.recuperables_desde_db,
+        quedan_en_bandeja=resumen.quedan_en_bandeja,
+        compras_confirmadas=resumen.compras_confirmadas,
+        compras_no_confirmadas=resumen.compras_no_confirmadas,
         detalles=[_de_resumen(d) for d in resumen.detalles],
         # El total, validado aqui: el servicio lo arma como `dict` para no
         # importar de `schemas/`.

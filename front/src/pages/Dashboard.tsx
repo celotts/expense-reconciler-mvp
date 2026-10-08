@@ -641,11 +641,46 @@ function Proveedores({ d }: { d: DashboardResponse }) {
         {proveedores.map((p) => {
           const valor = monto(p.monto);
           return (
-            <div key={p.proveedor} className="flex items-center gap-3">
-              <span className="text-sm text-gray-700 truncate flex-1" title={p.proveedor}>
+            // `flex-wrap` y las clases `sm:` de abajo son un arreglo MEDIDO, no
+            // una prevision. A 390px esta tarjeta pedia 403px y solo tenia 302,
+            // y eso hacia que TODO el tablero se pudiera desplazar de lado.
+            //
+            // La fila era `flex` con el nombre en `flex-1`, la barra en `w-24`
+            // y el monto en `w-20`. Con "CONCRETOS DEL VALLE" salen 161 + 96 +
+            // 80 + 24 de gaps = 361, y el `Card` es un grid item con
+            // `min-width:auto`, que es el min-content de su contenido: la
+            // columna implicita del grid se dimensionaba a 403 y el tablero
+            // entero se salia 37px.
+            //
+            // Lo que se midio para llegar aqui, y por que el arreglo NO es el
+            // que se suele poner:
+            //
+            //   - `min-w-0` en el span que trunca: NO cambia nada (403 -> 403).
+            //     `truncate` ya trae `overflow:hidden`, y eso ya pone su minimo
+            //     automatico en 0. El nombre no es lo que estira: estira su
+            //     *contribucion min-content*, que `min-width` no toca.
+            //   - `min-width:0` en linea: tampoco (403 -> 403). Mismo motivo.
+            //   - acortar la barra a `w-16`: 371. A `w-12`: 355. A `w-8`: 339.
+            //     Ni la mas pequena cabe, porque el nombre sigue pidiendo 163.
+            //   - quitar la barra: 295, y cabe — por 7px. Siete de holgura no es
+            //     una defensa: el siguiente nombre un poco mas largo la rompe, y
+            //     se vuelve a ver el mismo defecto.
+            //   - dos lineas (el nombre arriba, barra y monto abajo): 203, con
+            //     99px de holgura.
+            //
+            // Se eligio la de 99 porque las otras dos "caben" por unos pixeles.
+            // En escritorio el `flex-wrap` no hace nada —no hay que partir— y
+            // las clases `sm:` devuelven exactamente la fila de antes.
+            <div key={p.proveedor} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span
+                className="text-sm text-gray-700 truncate w-full sm:w-auto sm:flex-1"
+                title={p.proveedor}
+              >
                 {p.proveedor}
               </span>
-              <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden shrink-0">
+              {/* En movil la barra se estira para llenar la segunda linea; desde
+                  `sm` vuelve a su ancho fijo de 96px. */}
+              <div className="flex-1 sm:flex-none sm:w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-slate-400 rounded-full"
                   style={{ width: `${Math.max((valor / mayor) * 100, 2)}%` }}
@@ -733,7 +768,11 @@ function FilaPendiente({
         {accion && (
           <button
             onClick={accion.onClick}
-            className="text-xs text-blue-600 hover:text-blue-700 shrink-0"
+            // `py-3.5 -my-3.5`: da 44px de area pulsable sin mover la fila. El
+            // margen negativo es lo que permite eso — sin el, el boton
+            // empujaria hacia abajo la linea de 20px en la que vive. Medido a
+            // 16px sin esto. Con `py-2` daba 32, todavia corto.
+            className="text-xs text-blue-600 hover:text-blue-700 shrink-0 py-3.5 -my-3.5"
           >
             {accion.texto} →
           </button>

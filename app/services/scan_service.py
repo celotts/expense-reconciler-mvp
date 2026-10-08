@@ -70,6 +70,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.archivo_real import detectar_tipo_real
 from app.services import scan_registry
@@ -193,11 +194,14 @@ class ArchivoVista:
 
 
 def _es_ruido(nombre: str) -> bool:
-    if nombre.lower() in RUIDO_DE_SISTEMA:
-        return True
-    if nombre.startswith(PREFIJOS_TEMPORALES) or nombre.startswith("."):
-        return True
-    return False
+    # Un solo `return`. Con los tres en cadena, `startswith` aceptaba una tupla
+    # desde el principio (`PREFIJOS_TEMPORALES` ya lo es) y la segunda
+    # condicion aun asi armanaba dos `or` a mano — el `.` final, que es lo que
+    # descarta `.DS_Store`, estaba escondido dentro de una comparacion de
+    # cadenas.
+    return nombre.lower() in RUIDO_DE_SISTEMA or nombre.startswith(
+        (*PREFIJOS_TEMPORALES, ".")
+    )
 
 
 def listar_archivos() -> list[ArchivoVista]:
@@ -327,6 +331,37 @@ class ResumenArchivo:
     estaba_pendiente: bool | None = None
     solo_simulado: bool = False
 
+    # --- Que le pasa AL ARCHIVO EN DISCO --------------------------------
+    #
+    # Los cinco campos de arriba no distinguian DOS cosas muy distintas que la
+    # respuesta mezclaba bajo un solo booleano:
+    #
+    #   - MOVIDO a `Tickets_Scan`: el archivo sigue en el disco, en otra carpeta.
+    #   - RETIRADO de la entrada: el archivo se BORRO, porque sus bytes ya estan
+    #     en `ticket_documents` con el mismo sha256.
+    #
+    # Con un booleano, `archivado: true` con `ruta_archivo: null` era una
+    # respuesta contradictoria: el cliente leia "archivado" y buscaba el papel en
+    # `Tickets_Scan` para nada. Medido: una corrida reportaba `archivados: 1` con
+    # `Tickets_Scan` vacio, y no habia forma de saber que el comprobante estaba a
+    # salvo en la base. NO era perdida de datos —el respaldo lo impide, y se
+    # verifico extrayendo los bytes y comparando el sha256— pero la respuesta no
+    # lo decia, y una respuesta que no dice si algo se guardo o se perdio obliga a
+    # comprobarlo a mano.
+    #
+    # `retiro` es texto y no booleano porque son TRES estados y no dos: MOVIDO,
+    # RETIRADO, o NADA (se queda en la bandeja).
+    retiro: str = "NADA"
+    # El motivo, en texto. `esta_respaldado` devuelve una razon legible y es la
+    # que contesta "si se borro, donde quedo".
+    motivo_retiro: str | None = None
+    # La PRUEBA de que no se perdio nada: los bytes estan en la base y su sha256
+    # coincide con el del archivo. Es lo que convierte "se borro" en "se guardo".
+    respaldo_verificado: bool | None = None
+    # Donde se recupera el comprobante. Con esto, un `retiro` no es una despedida
+    # sino una mudanza con direccion de vuelta.
+    recuperable_desde: str | None = None
+
     # --- Los datos del ticket -------------------------------------------
     #
     # Lo que el lector afirmo que dice el papel, para no tener que pedir un
@@ -384,6 +419,41 @@ class ResumenEscaneo:
     borrados_de_entrada: int = 0
     carpeta_destino: str | None = None
     simulado: bool = False
+
+    # --- Los tres numeros que NO se confundian entre si ------------------
+    #
+    # `archivados` es el total de lo que salio de la entrada, y por si solo no
+    # dice nada util: un archivo que se borro con el respaldo en la base y uno
+    # que se movio a `Tickets_Scan` cuentan igual, y son cosas distintas para
+    # quien tiene que encontrar el papel despues.
+    #
+    # Estos tres separan los casos y contestan las tres preguntas que el operador
+    # se hace al terminar la corrida:
+    #
+    #   movidos_a_escaneados    -> ¿quedo en otra carpeta del disco?
+    #   retirados_de_entrada    -> ¿salio de la bandeja?
+    #   recuperables_desde_db   -> ¿lo puedo recuperar, y con que bytes?
+    #
+    # El tercero es el que convierte un borrado en un hecho tranquilizador: dice
+    # que los bytes estan en `ticket_documents` con el mismo sha256, o sea que
+    # el comprobante NO se perdio. Antes esa informacion no salia en la respuesta
+    # y habia que suponerla.
+    movidos_a_escaneados: int = 0
+    retirados_de_entrada: int = 0
+    recuperables_desde_db: int = 0
+
+    # --- La autorizacion de esta corrida ----------------------------------
+    #
+    # Es lo unico que `POST /scan {"confirmar": true}` agrega, y van DOS campos
+    # porque uno solo obliga a adivinar: cuantos entraron al kardex, y cuantos NO
+    # entraron y por que. Un contador sin motivos deja al operador pensando que
+    # la corrida se completo.
+    #
+    # `compras_confirmadas` cuenta las que pasaron a PROCESADO, que es lo unico
+    # que mueve stock. `compras_no_confirmadas` lleva el motivo por compra, y el
+    # motivo es lo que dice si hay que revisar el papel o arreglar el catalogo.
+    compras_confirmadas: int = 0
+    compras_no_confirmadas: list[dict] = field(default_factory=list)
 
     @property
     def leidos(self) -> int:
@@ -602,9 +672,14 @@ async def procesar_archivo(
         tipo = None  # se deja None a proposito: cae en NO_SOPORTADO, abajo
 
     fila = await _buscar(db, vista.relative_path)
-    nuevo = fila is None
 
-    if nuevo:
+    # `fila is None` y no un `nuevo = fila is None` guardado en una variable: el
+    # type checker no sigue el valor de una bandera booleana, asi que con el
+    # alias las 70 lineas siguientes quedan marcadas como si `fila` pudiera ser
+    # `None` —y no puede, porque las dos ramas de aqui lo dejan con fila—.
+    # Ademas el alias podia desincronizarse: `nuevo=True` con `fila` de antes.
+    if fila is None:
+        nuevo = True
         fila = ScanFileModel(
             relative_path=vista.relative_path,
             content_hash=hashlib.sha256(contenido).hexdigest(),
@@ -627,6 +702,7 @@ async def procesar_archivo(
             resumen.detalle = f"no se pudo registrar el archivo: {exc}"
             return resumen
     else:
+        nuevo = False
         hash_actual = hashlib.sha256(contenido).hexdigest()
         # `forzar` gana aqui, y es lo que hace que `POST /scan/files/{id}/
         # reprocess` sirva de algo para un archivo que NO cambio.
@@ -942,6 +1018,7 @@ async def escanear(
     solo_pendientes: bool = False,
     archivar: bool | None = None,
     simular: bool = False,
+    confirmar: bool = False,
 ) -> ResumenEscaneo:
     """Recorre la carpeta y procesa lo que corresponda.
 
@@ -955,6 +1032,8 @@ async def escanear(
         archivar: mover a la carpeta de escaneados lo digitalizado. `None` usa
             `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR`.
         simular: decir que se moveria sin mover nada.
+        confirmar: autorizar las compras de esta corrida en el mismo request.
+            Apagado por omision; ver la nota larga de `confirmar_compras_de_corrida`.
 
     EL ARCHIVADO Y LA EMPRESA
     =========================
@@ -975,13 +1054,26 @@ async def escanear(
 
     if archivar:
         resumen.carpeta_destino = str(carpeta_de_escaneados())
-        resumen.simulado = simular
-        if simular:
-            logger.info(
-                "SIMULACION de escaneo: no se creara ni se movera nada. "
-                "Lo que se moveria ira a %s",
-                resumen.carpeta_destino,
-            )
+
+    # `simulado` dice SI ESTO OCURRIO O ES UN PLAN, y va FUERA del `if archivar`
+    # por una razon medida: antes solo se ponia en `True` cuando el archivado
+    # estaba activo, asi que un `POST /scan {"simular": true}` con archivado
+    # apagado respondia `"simulado": false` habiendo escrito CERO. El cliente
+    # leia "no fue simulacion" y "`leidos: 1`", y la conclusion razonable —"se
+    # guardo"— era falsa: no habia ticket, ni compra, ni movimiento.
+    #
+    # Es el mismo criterio que sostiene al resto de la respuesta: un campo que
+    # no distingue "no ocurrio" de "ocurrio" hace que la respuesta no sea
+    # citable. Y aqui no hay notacion que lo salve: `simulado` es el unico
+    # sitio donde el cliente puede saber si lo que leyo ya paso.
+    resumen.simulado = simular
+
+    if archivar and simular:
+        logger.info(
+            "SIMULACION de escaneo: no se creara ni se movera nada. "
+            "Lo que se moveria ira a %s",
+            resumen.carpeta_destino,
+        )
 
     async with _CANDADO_DE_ESCANEO:
         archivos = listar_archivos()
@@ -1035,6 +1127,27 @@ async def escanear(
                 scan_registry.marcar_con_ticket(corrida)
             elif detalle.accion == "ERROR":
                 scan_registry.marcar_error(corrida)
+
+            # --- El feed en vivo, con los importes -------------------------
+            #
+            # Va DENTRO del bucle, que es lo que lo hace "en vivo": si se
+            # escribiera al final, el operador veria una pantalla vacia durante
+            # los cuatro minutos y despues una lista completa. Ya se intento al
+            # reves y el feed salia con `monto: null` en los 7 archivos reales,
+            # porque `datos` se resuelve despues del bucle.
+            #
+            # La salida de ese problema NO es esperar: es leer el importe del
+            # TICKET, que ya existe en la fila que `procesar_archivo` acaba de
+            # escribir. `datos` existe para no hacer una consulta por archivo
+            # (`_resolver_datos_de_tickets`), y para el feed —que corre una vez
+            # por archivo y solo mientras hay alguien mirando— eso no aplica: el
+            # ticket ya esta en la sesion.
+            #
+            # Con eso el feed tiene el importe desde el primer segundo, que es lo
+            # que lo hace util: el operador ve $97.56 aparecer mientras el
+            # escaner sigue con el archivo siguiente.
+            if detalle.ticket_id is not None:
+                await _registrar_en_el_feed(corrida, db, detalle)
 
             # --- El archivado, DESPUES de registrar el resultado ----------
             #
@@ -1139,24 +1252,47 @@ async def escanear(
                         # se pudo leer", que son cosas distintas.
                         detalle.extraction_status = ticket.extraction_status
                         detalle.detalle = _motivo_de_bandeja(ticket.extraction_status)
+                        detalle.retiro = "NADA"
                         resumen.quedan_en_bandeja += 1
                     else:
-                        borrado, motivo = await _retirar_si_esta_respaldo(
+                        borrado, motivo, respaldado = await _retirar_si_esta_respaldo(
                             db, fila, ticket, actor=actor, simular=simular
                         )
-                        detalle.archivado = borrado
                         detalle.extraction_status = ticket.extraction_status
                         detalle.solo_simulado = borrado and simular
+                        detalle.respaldo_verificado = respaldado
                         if motivo:
                             # El motivo va SIEMPRE, tambien cuando NO se borro.
                             # Un ticket resuelto que se queda en la bandeja sin
-                            # explicación parece un bug del escaner, y el operador
+                            # explicacion parece un bug del escaner, y el operador
                             # no tiene forma de saber que el sistema se nego a
                             # borrar porque no habia respaldo.
                             detalle.detalle = motivo
+                            detalle.motivo_retiro = motivo
                         if borrado:
+                            # `archivados` cuenta LO QUE SE RETIRO, que es lo que
+                            # el operador quiere saber para vaciar la carpeta. Se
+                            # mantiene el nombre por compatibilidad con el cliente
+                            # que ya lo lee, y `retiro` por item es lo que dice si
+                            # fue movimiento o borrado con respaldo.
+                            detalle.retiro = "RETIRADO"
+                            # La ruta de vuelta: el comprobante se recupera desde
+                            # la base, no desde `Tickets_Scan`. Sin esto, un
+                            # `RETIRADO` parece una perdida.
+                            detalle.recuperable_desde = (
+                                f"/api/v1/tickets/{ticket.id}/documento"
+                            )
                             resumen.archivados += 1
                             resumen.borrados_de_entrada += 1
+                            resumen.retirados_de_entrada += 1
+                            # El contador que da confianza: solo suma cuando los
+                            # bytes estan de verdad en la base con el mismo hash.
+                            if respaldado:
+                                resumen.recuperables_desde_db += 1
+                        elif not respaldado:
+                            # Resuelto pero SIN respaldo: el archivo se queda. Es
+                            # el caso que antes no se distinguia de "aun no toca".
+                            detalle.retiro = "NADA"
 
             resumen.detalles.append(detalle)
 
@@ -1182,6 +1318,34 @@ async def escanear(
 
     await _resolver_datos_de_tickets(db, resumen.detalles)
 
+    # La autorizacion va AL FINAL y FUERA del bucle, y las dos cosas importan.
+    #
+    # Al final: `confirmar_compra` escribe movimientos en el kardex, y el
+    # archivado de arriba ya se ejecuto con el estado del ticket ANTES de
+    # autorizar. Autorizar dentro del bucle haria que el archivado dependiera del
+    # orden, y un comprobante podria moverse por una compra que todavia no
+    # estaba resuelta.
+    #
+    # Fuera del bucle: una compra se confirma una vez. Si el loop autorizara en
+    # cada iteracion, una compra compartida por dos archivos intentaria confirmarse
+    # dos veces, y la segunda receberia un 409 que no es un fallo del escaneo sino
+    # de haberlo escrito de la manera equivocada.
+    if confirmar and not simular:
+        await confirmar_compras_de_corrida(db, resumen, actor=actor)
+    elif confirmar and simular:
+        # `simular` y `confirmar` juntos se contradicen en una cosa: decir "que
+        # pasaria" y a la vez autorizar. Se gana la simulacion, porque es la que
+        # no escribe, y se dice en el resumen para que la peticion no parezca
+        # ignorada.
+        resumen.compras_no_confirmadas.append(
+            {
+                "motivo": (
+                    "se pidio confirmar con simular=true. La simulacion gana: no "
+                    "se autorizo nada. Corre otra vez con simular=false."
+                )
+            }
+        )
+
     # El total va DESPUES de resolver los datos, porque necesita `datos` para
     # poder separar lo leido de lo confiable. Calcularlo antes daria un resumen
     # con todos los importes en cero, que es peor que no dar resumen.
@@ -1193,6 +1357,172 @@ async def escanear(
     scan_registry.cerrar_corrida(corrida, resumen.resumen)
 
     return resumen
+
+
+async def confirmar_compras_de_corrida(
+    db: AsyncSession,
+    resumen: ResumenEscaneo,
+    *,
+    actor: str,
+) -> None:
+    """Autoriza las compras que creo ESTA corrida. Solo si el endpoint lo pidio.
+
+    QUE HACE Y QUE ROMPE
+    ====================
+
+    Mueve el mismo camino que `POST /inventario/compras/{id}/confirmar`: escribe los
+    movimientos en el kardex y cambia el estado a PROCESADO. No hay una via nueva de
+    mover stock, y por eso este endpoint no puede saltarse las defensas de inventario:
+    sin productos en las lineas, no se confirma.
+
+    Lo que si cambia es **quien decide**. La regla del proyecto es que el stock lo
+    mueve alguien que miro el papel, y la razon esta medida: el OCR sobre fotos reales
+    da 33.3% de exactitud, y una linea mal leida infla el stock para siempre porque las
+    ventas las cuentas tu. Con `confirmar: true` la decision la toma quien llama al
+    escaneo, sin mirar el papel.
+
+    Es un intercambio explicito, no un descuido: digitalizar y autorizar en un solo
+    request es lo que pide un proceso que corre desatendido. Por eso el campo esta
+    APAGADO por omision —un default en `true` daria ese poder a cualquiera que llame al
+    escaneo, sin que se notara— y por eso `confirmada_por` sigue siendo el correo de
+    quien lo pidio. La firma no se inventa: si alguien audita esa compra, la respuesta
+    dice quien autorizo, y puede ser que no haya mirado el comprobante.
+
+    LO QUE NO SE CONFIRMA, Y POR QUE
+    ---------------------------------
+
+    - **Compras ya PROCESADO.** Confirmarlas otra vez no volveria a sumar, y el error
+      que devolverian seria "ya esta PROCESADO", que en una corrida de 30 archivos
+      parece un fallo del escaneo. Se cuentan aparte como motivo.
+    - **Compras sin lineas.** Una foto que dio solo encabezado no tiene partidas que
+      sumar. Autorizarla pondria la compra en PROCESADO sin mover nada, y contaria como
+      exito.
+    - **Compras RECHAZADO.** Alguien ya decidio que ese comprobante no es una compra.
+      Volver a autorizarla porque vino en la misma corrida deshace una decision
+      humana sin que nadie la viera.
+
+    Los tres van en `compras_no_confirmadas` CON su motivo, no solo en un contador. Un
+    numero sin motivo deja al operador creyendo que la corrida se completo.
+    """
+    from app.services import inventario_service as inv
+
+    if actor is None or not str(actor).strip():
+        # Mismo criterio que `asignar_producto` y `confirmar_compra`: sin actor no hay
+        # quien responda de la fila. `ck_compras_confirmacion` lo prohibe en la base,
+        # pero aqui el mensaje es util y el 409 no un 500.
+        raise ValueError("autorizar compras de una corrida requiere quien las autorice")
+
+    # Se Reunen primero y se confirman despues. Dos motivos:
+    #
+    # 1. El `id` de cada compra sale de los detalles de ESTA corrida, y leerlos
+    #    mientras se confirmaria ir mezclando estados: la segunda compra de la lista
+    #    ya veria la sesion con un commit a medias de la primera.
+    # 2. `confirmar_compra` hace `await db.flush()` por compra, asi que confirmar
+    #    en un solo commit deja la corrida atomica: o entra todo al kardex, o no
+    #    entra nada. Un commit por compra dejaria compras a medio confirmar si la
+    #    ultima falla.
+    candidatas: dict[UUID, ResumenArchivo] = {}
+    for detalle in resumen.detalles:
+        if detalle.ticket_id is None or detalle.scan_file_id is None:
+            continue
+        if detalle.accion in ("ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO", "OMITIDO"):
+            continue
+        candidatas[detalle.ticket_id] = detalle
+
+    if not candidatas:
+        return
+
+    compras = list(
+        (
+            await db.execute(
+                select(CompraModel)
+                .where(CompraModel.ticket_id.in_(list(candidatas)))
+                .options(selectinload(CompraModel.items))
+            )
+        )
+        .unique()
+        .scalars()
+    )
+
+    for compra in compras:
+        # Nombre propio y no `detalle`: ese nombre lo usa el bucle de arriba, que
+        # es de tipo `ResumenArchivo` y no de `ResumenArchivo | None`. Reusarlo
+        # hacia que el type checker viera una variable que en un punto no puede
+        # ser `None` y despues si — y, mas importante, que el nombre dijera dos
+        # cosas distintas en la misma funcion.
+        su_detalle = candidatas.get(compra.ticket_id)
+        nombre = su_detalle.relative_path if su_detalle else str(compra.ticket_id)
+
+        if compra.estado == EstadoCompra.PROCESADO.value:
+            resumen.compras_no_confirmadas.append(
+                {
+                    "compra_id": str(compra.id),
+                    "archivo": nombre,
+                    "motivo": "ya estaba PROCESADO y ya sumo stock",
+                }
+            )
+            continue
+
+        if compra.estado == EstadoCompra.RECHAZADO.value:
+            # No es un 409: el rechazo es una decision de otra persona y esta
+            # corrida no la revierte. Se reporta para que se vea que el archivo
+            # estaba y no se toco.
+            resumen.compras_no_confirmadas.append(
+                {
+                    "compra_id": str(compra.id),
+                    "archivo": nombre,
+                    "motivo": "alguien la rechazo antes: no se vuelve a autorizar sola",
+                }
+            )
+            continue
+
+        if not compra.items:
+            resumen.compras_no_confirmadas.append(
+                {
+                    "compra_id": str(compra.id),
+                    "archivo": nombre,
+                    "motivo": (
+                        "la lectura no produjo lineas de producto (foto sin detalle, "
+                        "o el OCR no las extrae). Autorizarla no moveria stock."
+                    ),
+                }
+            )
+            continue
+
+        try:
+            await inv.confirmar_compra(db, compra.id, actor=str(actor))
+        except inv.ErrorDeInventario as exc:
+            # El mensaje del servicio ya dice POR QUE: "tiene 2 lineas sin
+            # producto", "ya esta PROCESADO". Se copia tal cual porque es la
+            # informacion que necesita quien va a corregirlo.
+            resumen.compras_no_confirmadas.append(
+                {
+                    "compra_id": str(compra.id),
+                    "archivo": nombre,
+                    "motivo": str(exc),
+                }
+            )
+            continue
+
+        resumen.compras_confirmadas += 1
+        logger.info(
+            "Compra %s autorizada en la corrida de %s: %d lineas entraron al "
+            "inventario.",
+            compra.id,
+            actor,
+            len(compra.items),
+        )
+
+    await db.commit()
+
+    if resumen.compras_confirmadas:
+        logger.warning(
+            "%d compra(s) de esta corrida entraron al inventario SIN que nadie "
+            "revisara el papel: las autorizo %s. Es lo que pide "
+            "`POST /scan {\"confirmar\": true}`.",
+            resumen.compras_confirmadas,
+            actor,
+        )
 
 
 def _a_decimal(valor) -> Decimal | None:
@@ -1264,8 +1594,16 @@ def _calcular_resumen(
     # se leyo de verdad; los demas son duplicados que apuntan al mismo.
     por_ticket: dict[UUID, dict] = {}
     for detalle in leidos:
-        if detalle.ticket_id not in por_ticket:
-            por_ticket[detalle.ticket_id] = detalle.datos or {}
+        # El `ticket_id` se pasa a una variable propia porque el filtro de `leidos`
+        # —`if detalle.ticket_id is not None`— no le sirve al type checker de
+        # prueba dentro del cuerpo del bucle. Sin esto, la clave del diccionario
+        # podia ser `None` segun el tipo, y un `dict[UUID, ...]` con una clave
+        # `None` no se distingue de uno con UUID de verdad: el mismo defecto de
+        # "tickets contados por archivo", por el otro lado.
+        ticket_id = detalle.ticket_id
+        if ticket_id is None or ticket_id in por_ticket:
+            continue
+        por_ticket[ticket_id] = detalle.datos or {}
 
     total_leido = Decimal("0.00")
     total_confiable = Decimal("0.00")
@@ -1386,8 +1724,16 @@ async def _retirar_si_esta_respaldo(
     *,
     actor: str | None = None,
     simular: bool = False,
-) -> tuple[bool, str]:
+) -> tuple[bool, str | None, bool]:
     """Retira el archivo de la carpeta de entrada, pero SOLO si está respaldado.
+
+    Devuelve TRES cosas y en este orden: si se borro (o se borraria), el motivo
+    o `None`, y si el comprobante estaba respaldado. La anotacion decia
+    `tuple[bool, str]` y las cuatro salidas ya devolvian tres: el type checker
+    marcaba las cinco lineas del llamador y el codigo nunca estuvo roto,
+    porque el desempaquetado de mas es un `ValueError` que aqui no podia dar —
+    el que se podia dar era el contrario, un `motivo` de tipo `str` que en el
+    camino sin `relative_path` es `None`.
 
     QUE ES ESTO Y POR QUE NO ES MOVER
     ===============================
@@ -1416,7 +1762,7 @@ async def _retirar_si_esta_respaldo(
     from app.services import archivado_service
 
     if not fila.relative_path:
-        return False, None
+        return False, None, False
 
     respaldado, motivo = await archivado_service.esta_respaldado(
         db, ticket, fila.relative_path
@@ -1430,17 +1776,76 @@ async def _retirar_si_esta_respaldo(
             "Ticket %s: %s se conserva en la carpeta de entrada (%s)",
             ticket.id, fila.relative_path, motivo,
         )
-        return False, motivo
+        # El tercero del trio es `respaldado=False`: la respuesta dice NO se
+        # borro Y por que, que es distinto de "se borro" y de "no se toco".
+        return False, motivo, False
 
     if simular:
-        return True, f"se borraria de la entrada: {motivo}"
+        return True, f"se borraria de la entrada: {motivo}", True
 
     resultado = archivado_service.eliminar_de_la_entrada(fila.relative_path)
     if not resultado.movido:
-        return False, resultado.motivo
+        return False, resultado.motivo, True
 
     await _registrar(db, fila, "BORRADO", motivo, actor)
-    return True, motivo
+    return True, motivo, True
+
+
+async def _registrar_en_el_feed(
+    corrida,
+    db: AsyncSession,
+    detalle: ResumenArchivo,
+) -> None:
+    """Escribe UN archivo terminado en el feed en vivo de la corrida.
+
+    Se llama dentro del bucle del escaneo, y por eso el importe se lee del
+    TICKET y no de `detalle.datos`.
+
+    **POR QUE NO DE `detalle.datos`.** `datos` se resuelve DESPUES del bucle, en
+    `_resolver_datos_de_tickets`, y su docstring explica por que: hay trece
+    salidas y el dato depende de una fila que a veces todavia no existe. Leyendo
+    de ahi, el feed salia con `monto: null` en los 7 archivos reales. Medido.
+
+    **Y POR QUE NO ESPERAR AL FINAL.** Porque un feed que se llena entero al
+    terminar no es un feed en vivo: el operador ve una pantalla vacia durante los
+    cuatro minutos del escaneo. Se escribio al reves, con la pantalla vacia, y
+    tambien era inútil.
+
+    El ticket ya esta en la sesion: `procesar_archivo` lo acaba de insertar o de
+    actualizar. La regla de `datos` —una consulta para todos, no una por
+    archivo— es para la respuesta FINAL, que se arma una vez y se lee despues;
+    el feed se escribe una vez por archivo y solo mientras hay alguien mirando.
+
+    `Decimal` y nunca `float`: es dinero, y `0.1 + 0.2` en binario no es `0.3`.
+    """
+    from sqlalchemy import select as _select
+
+    ticket_id = detalle.ticket_id
+    if ticket_id is None:
+        return
+    ticket = (
+        await db.execute(
+            _select(TicketModel).where(TicketModel.id == ticket_id)
+        )
+    ).scalar_one_or_none()
+    if ticket is None:
+        return
+
+    scan_registry.registrar_procesado(
+        corrida,
+        relative_path=detalle.relative_path,
+        ticket_id=str(ticket_id),
+        monto=ticket.total_amount if ticket.total_amount is not None else None,
+        extraction_status=ticket.extraction_status,
+        motor=detalle.origen.value if detalle.origen is not None else None,
+        accion=detalle.accion,
+        # Confiable es lo que decidio el GATE, no si el monto "parece bien": un
+        # total de 0 no es confiable, y uno de 4,093.80 tampoco si nadie lo
+        # aprobo. Con OCR al 33% casi todo sale sin afirmar, y esa diferencia es
+        # la que el panel tiene que ensenar.
+        confiable=ExtractionStatus(ticket.extraction_status) in SETTLED_STATUSES,
+        es_duplicado=detalle.accion == "OMITIDO",
+    )
 
 
 def _motivo_de_bandeja(extraction_status: str) -> str:
@@ -1777,9 +2182,10 @@ async def reprocesar_uno(
     # diferencia pareceria un bug del gate cuando es que este camino nunca los
     # resolvio.
     await _resolver_datos_de_tickets(db, [resumen])
-    # `ResumenArchivo` NO tiene los contadores de la corrida: son de
-    # `ResumenEscaneo`, y el reproceso de un archivo suelto no construye una.
-    # Se pasan en cero a proposito —no hubo corrida, no hay nada que archivara—
-    # en vez de inventar una `ResumenEscaneo` de mentira para poder contarlo.
-    resumen.resumen = _calcular_resumen([resumen])
+    # Y NO se le pega un `resumen.resumen`: los contadores de la corrida son de
+    # `ResumenEscaneo`, y `ResumenArchivo` no tiene ese campo. La linea que
+    # estaba aqui lo fabricaba en memoria y lo tiraba —`_de_resumen` no lo lee
+    # y `ScanItemResponse` ni siquiera lo declara—, o sea que era trabajo
+    # hecho para nada. El type checker lo marco como lo que era: un atributo que
+    # no existe.
     return resumen

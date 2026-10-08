@@ -65,6 +65,117 @@ class TestLoQueSeGuardaDicenLaVerdad:
     """`confidence_source` no es metadato decorativo: es la base de la medicion."""
 
     @pytest.mark.asyncio
+    async def test_sin_proveedor_escala_a_la_ia_aunque_tenga_total(
+        self, db_session, test_company
+    ):
+        """LA DEFENSA. Si `_es_extraccion_util` cambia el `or` por un `and`, muere.
+
+        Es el unico caso donde las DOS mitades del "o" importan, y por eso
+        necesita un test propio en vez de quedar dentro de "el PDF se leyo bien".
+
+        Que falte el proveedor es motivo suficiente para escalar, y se ve con un
+        total PERFECTO al lado: `1,100.00` esta perfectamentelido. Con `and`, esa
+        lectura pasaria por buena y el ticket se guardaria con
+        `provider_name="UNKNOWN_PROVIDER"` y el total puesto — que es un gasto sin
+        emisor, que el gate mandaria a la cola pero sin motivo que lo explique,
+        y que en el dashboard aparece como un gasto mas.
+
+        La version con proveedor y sin total es la misma defensa por el otro
+        lado, y la comprueba `test_sin_total_escala_aunque_tenga_proveedor`.
+        """
+        from fpdf import FPDF
+        import io
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Courier", size=11)
+        # Sin la linea del proveedor, pero con el total intacto.
+        for linea in _texto_ticket().replace("Tiendas Ramirez SA de CV", "").strip().split("\n"):
+            pdf.cell(0, 6, text=linea, new_x="LMARGIN", new_y="NEXT")
+        buffer = io.BytesIO()
+        pdf.output(buffer)
+
+        llamado = []
+
+        async def extractor_que_no_esta(datos):
+            from app.services.ai_extractor import ExtractedInvoice
+
+            llamado.append(True)
+            return ExtractedInvoice(
+                provider_name="Tiendas Ramirez SA de CV",
+                total=Decimal("1100.00"),
+                confidence=0.93,
+                raw_text="leido por el modelo",
+            )
+
+        extracted = await capture_ticket(
+            buffer.getvalue(),
+            "pdf",
+            extract_from_text=extractor_que_no_esta,
+            extract_from_image=extractor_que_no_esta,
+        )
+
+        assert llamado, (
+            "sin proveedor NO se debe guardar la lectura de reglas: un total "
+            "leido sin saber de quien es no identifica un gasto."
+        )
+        assert extracted.provider_name != UNKNOWN_PROVIDER
+        assert extracted.confidence_source == ConfidenceSource.LLM
+
+    @pytest.mark.asyncio
+    async def test_sin_total_escala_aunque_tenga_proveedor(
+        self, db_session, test_company
+    ):
+        """LA DEFENSA, por el otro lado del mismo `or`.
+
+        Un proveedor sin total es el caso que mas se da en la practica: el
+        membrete se lee bien y las cifras no. Y es el que mas caro sale si se
+        deja pasar, porque "proveedor conocido, total 0" es un ticket que cuadra
+        con la aritmetica (`0 + 0 == 0`) y entraria a la cola sin un solo check
+        en rojo.
+        """
+        from fpdf import FPDF
+        import io
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Courier", size=11)
+        texto = (
+            _texto_ticket()
+            .replace("TOTAL 1,100.00", "TOTAL")
+            .replace("SUBTOTAL 964.00", "")
+            .replace("IVA (16%) 136.00", "")
+        )
+        for linea in texto.strip().split("\n"):
+            pdf.cell(0, 6, text=linea, new_x="LMARGIN", new_y="NEXT")
+        buffer = io.BytesIO()
+        pdf.output(buffer)
+
+        llamado = []
+
+        async def extractor_que_no_esta(datos):
+            from app.services.ai_extractor import ExtractedInvoice
+
+            llamado.append(True)
+            return ExtractedInvoice(
+                provider_name="Tiendas Ramirez SA de CV",
+                total=Decimal("1100.00"),
+                confidence=0.93,
+                raw_text="leido por el modelo",
+            )
+
+        extracted = await capture_ticket(
+            buffer.getvalue(),
+            "pdf",
+            extract_from_text=extractor_que_no_esta,
+            extract_from_image=extractor_que_no_esta,
+        )
+
+        assert llamado, "un total de 0 no es un gasto: hay que pedirlo al modelo."
+        assert extracted.total_amount > 0
+        assert extracted.confidence_source == ConfidenceSource.LLM
+
+    @pytest.mark.asyncio
     async def test_un_pdf_impreso_no_se_guarda_como_lectura_de_modelo(
         self, db_session, test_company
     ):
@@ -402,7 +513,7 @@ class TestLoQueLaIaNoPudoLeer:
         """
         from app.services.ai_extractor import ExtractedInvoice
 
-        async def extractor_que_no_esta(datos, mime_type="image/png"):
+        async def extractor_que_no_esta(datos):
             return ExtractedInvoice(
                 provider_name="AI_DISABLED", total=Decimal("0"), raw_text="",
             )
@@ -425,7 +536,7 @@ class TestLoQueLaIaNoPudoLeer:
     async def test_una_excepcion_del_modelo_no_borra_el_documento(
         self, db_session, test_company
     ):
-        async def extractor_que_explota(datos, mime_type="image/png"):
+        async def extractor_que_explota(datos):
             raise ConnectionResetError("connection reset by peer")
 
         contenido = b"\xff\xd8\xfffoto-de-otro-ticket"

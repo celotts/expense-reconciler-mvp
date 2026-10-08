@@ -25,9 +25,50 @@ class ReconciliationCreate(ReconciliationBase):
     pass
 
 
+class ReconciliationUpdate(BaseModel):
+    """La correccion a mano del veredicto que puso el motor.
+
+    SOLO CAMBIA `match_status`. NO el ticket ni el movimiento bancario, y la
+    razon es que un emparejamiento equivocado se corrige de dos maneras distintas
+    que no se pueden confundir:
+
+      - **El veredicto estaba mal** (el motor eligio bien los dos lados pero los
+        considero discrepantes, o al reves). Se corrige aqui, cambiando el estado.
+      - **El emparejamiento estaba mal** (este ticket no es este movimiento). Se
+        deshace con `DELETE` y se rehace con `POST`, porque las dos cosas son
+        afirmaciones distintas y una sola columna no puede decir cual se cambio.
+
+    Si `PATCH` aceptara los tres campos, "cambié el estado" y "moví el cruce" se
+    grabarian en la misma fila y no habria forma de saber que paso. Y el borrado
+    tiene un efecto que el update no: `bank_transactions.is_reconciled` vuelve a
+    `false`, asi que un cambio de estado a mano que no lo contemplate dejaria el
+    movimiento marcado como conciliado con otra fila.
+
+    `revisado_por` NO lo pide el cliente: sale del token y lo pone el router.
+    Aceptarlo en el body seria una puerta para firmar la revision de otra empresa,
+    y `AGENTS.md` ya advierte que no hay multi-tenancy. Ver
+    `app/models/reconciliation.py`.
+
+    `extra="forbid"`: un cliente que reenvie la fila entera recibe un 422 con el
+    nombre del campo en vez de un 200 que finge haber guardado algo que no se
+    guarda.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    match_status: str = Field(..., pattern=PATRON_MATCH_STATUS)
+
+
 class ReconciliationResponse(ReconciliationBase):
     id: UUID
     matched_at: datetime
+    # Quien toco el veredicto a mano, si alguien lo toco. `None` = lo puso el
+    # motor. Va en la respuesta y no solo en la base a proposito: es lo que
+    # distingue una conciliacion que el sistema decidio de una que una persona
+    # aprobo, y sin eso el export seria indistinguible. Ver
+    # `app/models/reconciliation.py`.
+    revisado_por: Optional[str] = None
+    revisado_at: Optional[datetime] = None
     ticket: Optional["TicketResponse"] = None
     bank_transaction: Optional["BankTransactionResponse"] = None
 

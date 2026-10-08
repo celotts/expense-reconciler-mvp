@@ -13,6 +13,78 @@ Severidad:
 
 ## 🔴 Bugs activos
 
+### 0.e. El PDF del informe imprimía `None` como si fuera un dato — ✅ CORREGIDO (y la mutación lo cazó)
+
+**Nació durante la construcción de la Fase 1 y no lo cazó ningún test hasta que la
+mutación sobrevivió.** Es el argumento de por qué el script de mutaciones existe.
+
+**Síntoma:** el informe salía con la fila
+
+```
+Motivo    El periodo NO se puede declarar cerrado: None.
+```
+
+en un documento que alguien firma y entrega a su cliente.
+
+**Causa medida — dos, y las dos son la misma:** `puede_cerrarse` era un **campo**
+(`bool = False`) del schema, separado de `pendientes`. Con cero pendientes,
+`pendientes.motivo` es `None` y `puede_cerrarse` es… lo que el constructor puso.
+El PDF imprimía la fila con `f"{motivo}"` sin mirar si el motivo existía:
+
+```python
+if not reporte.puede_cerrarse:            # el campo, no los pendientes
+    fila("Motivo", f"...: {reporte.pendientes.motivo}.")   # → "None"
+```
+
+**Por qué un campo aparte era el error, y no el `f`.** Se podría haber arreglado
+poniendo `if reporte.pendientes.motivo:` y ya. Se arregló **así y además** dejando
+`puede_cerrarse` como `@computed_field` derivado de `pendientes.hay_pendientes`:
+dos cubos con la misma verdad son dos que se pueden desincronizar, y ese era todo el
+defecto. Un campo derivado no puede mentir sobre sus propias entradas.
+
+**El `f"{motivo}"` sin condición también se corrigió**, por R6: un dato ausente
+impreso como texto *es* un dato inventado, y en PDF nadie distingue la palabra `None`
+de un valor.
+
+**Lo que costó encontrarlo:** `TestR3LosEstadosDelPeriodo` comprobaba los cuatro
+estados del periodo, y los cuatro eran correctos con `pendientes.motivo = None` —
+porque `NO_CIERRA` es el estado *correcto* cuando no hay periodo cerrable. El test
+afirmaba sobre el estado y no sobre el **texto**, que es lo que el contador lee.
+
+> **La mutación `el PDF imprime el motivo aunque no exista` sobrevivió a la primera
+> corrida del verificador.** Sobrevivió porque la clase de tests que la caza
+> (`TestElDocumentoNoSeInventaDatos`) **no existía todavía**: se escribió después, al
+> preguntar qué estaba mirando el test de R3. Y la primera vez que se escribió, la
+> mutación **volvió a sobrevivir** —porque no la añadí a la lista de `objetivos` del
+> script.
+>
+> Eso es la segunda mitad de la lección y no es menos importante: **la lista de
+> objetivos de un script de mutaciones es código que se queda viejo en silencio.**
+> Añadir un test no hace que el script lo sepa.
+
+### 0.f. El frente del informe no existe todavía: no hay página `Cierre.tsx` — 🟠 **ABIERTO, es lo siguiente**
+
+El backend de la Fase 1 está completo (`/api/v1/reports`, 105 tests, 15 mutaciones).
+Lo que falta es `front/src/pages/Cierre.tsx` con la ruta `/cierre`, el selector de
+periodo, el banner de estado y el botón de descarga (§5.2 del contrato).
+
+**El requisito que no es negociable** es este: **el preview y el PDF se pintan desde
+el mismo objeto serializado**, y se reutilizan `utils/veredicto.ts` y los componentes
+de `SpotCheck.tsx`. Si el front tiene su propia lógica de presentación de la
+exactitud, el contador ve dos números distintos en la misma pantalla y la promesa
+entera del producto se cae — que es exactamente el bug que R4 y el `@computed_field`
+de `puede_cerrarse` previenen en el backend, y que el front puede reintroducir solo.
+
+### 0.g. No hay forma de MARCAR un periodo como cerrado — 🟠 **ABIERTO, por diseño por ahora**
+
+`cierres_periodo` existe y el informe lo lee (`cerrado`, `cerrado_por`,
+`estado_periodo`), pero **no hay endpoint que escriba la fila**. El informe dice si el
+periodo *puede* cerrarse; cerrarlo sigue sin ser una operación.
+
+Es el criterio D1 de la Fase 4 y es correcto que no exista todavía: cerrar es una
+decisión, y la decisión la firma una persona. Lo que hay que evitar es que se lea como
+un olvido — por eso está aquí.
+
 ### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — 🔴 **ABIERTO, preexistente**
 **No lo introdujo el inventario.** Verificado con `git stash`: en `HEAD`, sin los modelos nuevos,
 `db.delete(empresa)` con **un solo ticket** ya falla. Encontrado de paso porque el E2E del
@@ -355,13 +427,33 @@ campo `ieps_amount` solo no lo resuelve: necesita corrección humana mirando el 
 
 ## 🟠 Trampas
 
-### 3. `app/modules/expenses/` — muerto **y** roto. No lo montes.
-- Su router **no está** en `api_router.py` → los 6 endpoints no existen.
-- `crud.py:136` referencia `SourceType.AUTO`, que **no existe** en el enum.
-- `pipeline.py:224-229` usa `select`/`and_` sin importar.
-- **Si lo montas tal cual:** `batch_upload` (`router.py:41-45`) acepta un `folder_path: str`
-  **del cliente** y hace `Path(folder_path).glob()` → lectura arbitraria de directorios del
-  servidor. Ninguno de sus 6 endpoints pide `get_current_user`.
+### 3. `app/modules/expenses/` — muerto **y** roto. — ✅ BORRADO (no lo montes)
+
+**Se borró entero.** No era una decisión de limpieza: era código que no tenía a nadie detrás y
+que, si se montaba, abría una puerta. Lo que tenía, medido:
+
+- Su router **no estaba** en `api_router.py` → los 6 endpoints no existían.
+- `crud.py:136` referenciaba `SourceType.AUTO`, que **no existe** en el enum.
+- `pipeline.py:224-229` usaba `select`/`and_` sin importar.
+- `batch_upload` (`router.py:41-45`) aceptaba un `folder_path: str` **del cliente** y hacía
+  `Path(folder_path).glob()` → lectura arbitraria de directorios del servidor. Ninguno de sus
+  6 endpoints pedía `get_current_user`.
+
+**Lo que costaba dejarlo quieto:** 1 110 líneas y **14 errores de tipo** que nadie iba a
+arreglar, porque no había a quién le importar. Un `mypy` del repo los reportaba todos y
+nadie los leía, que es exactamente cómo se normaliza un linter que no sirve para nada.
+
+**Lo que reemplaza su salida por el miedo correcto:** el camino de lectura por PDF con visión
+y OCR ya está cubierto, con tests y con mutaciones que mueren si algo se quita
+(`capture.py`, `verify_capture_mutations.py`). Ese camino —OCR por páginas del PDF, `vision`
+como último escalón, y el respaldo del comprobante guardado con su hash— era el que
+`pipeline.py` intentaba resolver y que hoy resuelve `capture.py`, que es el que está
+montado. Si alguien necesita esa lectura, no hay que resucitar `pipeline.py`: hay que llamar
+a `capture_ticket`.
+
+Lo que queda de esta entrada es la regla: **un módulo muerto no se arregla, se borra o se
+dice que existe.** Un módulo que parece arreglado invita a montarlo, y montarlo abre la
+lectura arbitraria de directorios.
 
 ### 4. Sin multi-tenancy: cualquier usuario autenticado toca cualquier empresa
 `get_current_user` no recibe `company_id` ni hay scoping por empresa. Con un token válido,
@@ -402,13 +494,50 @@ Los 3 endpoints de archivo declaran `file: UploadFile` **en singular** (`tickets
 Los `SourceType.BULK` / `DIRECTORY` / `CAMERA` del enum no tienen endpoint. La idempotencia
 por hash ya está lista, pero nada la llama en lote.
 
-### 9. `init.sql` y los modelos divergen (el test verde no lo ve)
+### 9. `init.sql` y los modelos divergen (el test verde no lo ve) — 🟡 PARCIALMENTE CERRADO
+
+**La clase de fallo está cerrada; las dos divergencias historicas siguen.**
+
 - `bank_transactions.company_id`: nullable en `init.sql:126`, `NOT NULL` en
-  `models/bank_transaction.py:24`.
+  `models/bank_transaction.py:24`. **Sigue abierta.** Exige una migración.
 - `users.email`: el modelo pide `unique+index` sobre la columna cruda
   (`models/user.py:26`); prod usa índice **funcional** `lower(email)` (`init.sql:32`).
-Los tests corren sobre SQLite **construido desde los modelos**, así que no detectan
-ninguna de las dos. Si alguna vez se genera el esquema desde el modelo, no coincide con prod.
+  **Sigue abierta**, y es correcta: el índice funcional es el que vale, porque el
+  login normaliza a minúsculas antes de buscar.
+
+**Lo que se encontró y se cerró:** `tickets.ieps_amount`, `compra_items.iva_linea`
+y `compra_items.ieps_linea` **no estaban en `init.sql`**, aunque los modelos las
+declaran y `ticket_persistence.py:114` escribe `ieps_amount` en cada INSERT. Una
+base creada desde cero —la única forma de que corra `init.sql`— reventaba con
+`column "ieps_amount" of relation "tickets" does not exist`, o sea un 500 por
+comprobante y el ticket perdido. Las tres son de la migración `0012`, replicadas
+ahora. Verificado comparando los 13 modelos contra el DDL.
+
+**Y ya no puede volver a pasar en silencio**, con `tests/unit/test_init_sql_espeja_los_modelos.py`
+(20 tests): recorre las columnas de cada modelo y comprueba que el DDL las
+**declare**. No verifica tipos ni nullability —para eso están los
+`verify_postgres_*.py`— sino existencia, que es lo que se rompió.
+
+**Los tests NO lo veían, y por eso el defecto era invisible:** la suite construye
+el esquema desde los modelos (`conftest.py`), nunca desde `db/init.sql`. Ese
+archivo solo corre una vez, con el volumen vacío. Los dos archivos pueden estar
+"bien" por separado y el test sigue verde.
+
+> **Y el test que lo cubre tuvo dos bugs antes de valer.** Ambos están escritos en
+> el propio archivo, porque son la parte que nadie adivina:
+> 1. Buscaba el nombre de la columna en el archivo entero. Los **comentarios** de
+>    `init.sql` mencionan `ieps_amount` larguísimo, así que daba verde con las
+>    columnas borradas. Se grepa sobre texto, no sobre comportamiento.
+> 2. Al quitar los comentarios, quitaba los cuerpos `$$...$$` **antes** que los
+>    comentarios, y hay un `$4,093.80` dentro de un comentario que desalineaba el
+>    emparejamiento: el archivo se encogía de 48 KB a 5 KB y `CREATE TABLE
+>    compra_items` desaparecía. 12 tests en rojo con el DDL íntegro.
+> 3. Y aun así daba verde: un `COMMENT ON COLUMN tickets.ieps_amount IS` dos
+>    líneas más abajo **menciona** la columna sin **crearla**.
+>
+> Tres versiones del test, y la tercera es la que sirve. Un test que no sabe
+> distinguir "esta columna no existe" de "no sé dónde está" es peor que ninguno:
+> alguien lee "todo en verde" y concluye que el DDL está bien.
 
 ### 10. `REVIEW_CONFIDENCE = 0.60` no hace nada
 `confidence_gate.py:198-203`: las dos ramas (`>= 0.60` y el `else`) producen
@@ -689,6 +818,137 @@ borra del archivo.
 
 ## 🟡 Deuda / data quality
 
+### 26. El trigger de stock negativo contaba con el signo equivocado — ✅ CORREGIDO
+Medido leyendo el DDL, y **inerte hasta que se escribieron ventas y ajustes**. Era el
+defecto mas caro de los que quedaban en pie, porque la defensa contra el stock negativo
+**no defendia** y nadie lo notaba.
+
+Las dos mitades, medidas:
+
+```
+                  stock_de()        trg_movimientos_no_negativo
+ENTRADA 10            +10                 +10
+SALIDA  4              -4                  -4
+AJUSTE  5              +5                  -5      <-- el trigger resta
+SUM de filas previas:                    sin signo: con ENTRADA 10 y SALIDA 4 decia 14
+                                        en vez de 6
+```
+
+Consecuencias, ambas reales:
+
+1. Un `AJUSTE` de "se conto de menos" se rechazaba con *"dejaria el stock en -5
+   (negativo)"* en una base donde la API ya lo habia aceptado con 201.
+2. Con `ENTRADA 10` y `SALIDA 4` quedan 6. Una `SALIDA` de 7 mas deja **-1** y el
+   trigger la dejaba pasar, porque su `SUM` sin signo creia que habia 14. La defensa
+   contra el stock negativo no bloqueaba el caso para el que existe.
+
+**Por que nadie lo noto.** La unica via que escribia en `movimientos_inventario` era
+`confirmar_compra`, y esa **solo produce `ENTRADA`**: el `ELSE` del trigger no se
+ejecutaba nunca y ningun test de ataque alcanzaba la rama. Es el mismo modo de fallo
+que §9 y §21: una defensa en su sitio y no probada, y lo que la sostenia es que nadie
+llego al camino.
+
+Arreglado en `db/migrations/0013_compras_rechazables.sql`: el signo sale de una sola
+pregunta (`tipo = 'SALIDA'`), que es la misma que hace `TipoMovimiento.suma_stock` en
+Python. El `SUM` de filas previas ahora aplica el signo.
+
+**Y la defensa nueva se rompio a proposito para comprobar que muerde.** Se revirtio la
+migracion al bug y el script debe salir con 1. La primera version de la comprobacion
+**daba verde con el bug puesto**, y el motivo esta escrito en
+`verify_postgres_inventario.py::_un_ajuste_suma_no_resta`: usaba `tipo='ENTRADA'` con
+`referencia_tipo='AJUSTE'`, que con el trigger viejo sumaba igual. La comprobacion
+tiene que insertar `tipo='AJUSTE'` de verdad, que es el valor que la constraint acepta
+y que un `psql` puede escribir aunque la API no lo haga nunca.
+
+Comprobado contra Postgres real (`make up` y el script dentro del contenedor):
+
+```
+un AJUSTE suma (el signo del trigger)              ok
+el stock descuenta las SALIDAS (el signo del SUM)  ok
+la salida que no alcanza sigue bloqueada           ok
+```
+
+### 27. Funciones documentadas sin endpoint — ✅ CORREGIDO
+La `cola` de productos (`GET /inventario/productos?solo_sin_verificar=true`) existia,
+`AGENTS.md` le atribuia la tarea de *"revisar, renombrar o fusionar"*, y **no habia
+ningun `PATCH` que la vaciara**. `TipoMovimiento.AJUSTE` estaba en el enum, `stock_de`
+lo sumaba, y no habia ninguna via para escribirlo: tres valores de tipo, uno
+producible.
+
+Lo mismo con `EstadoCompra`, que solo avanzaba: una compra rechazada se "rechazaba" no
+haciendo nada, porque `registrar_compra` la volvia a crear (y `compras.ticket_id` es
+UNIQUE, asi que borrarla tampoco servia: el reescaneo la resucitaba).
+
+Anadido en `0013`: `GET`/`PATCH /inventario/productos/{id}`, `POST
+/inventario/movimientos`, `POST /inventario/compras/{id}/rechazar` y `/reabrir`,
+`PATCH /reconciliations/{id}`, `PATCH`/`DELETE /reconciliations/mappings/{id}` y
+`GET`/`GET`/`PATCH`/`POST /usuarios`.
+
+Tres decisiones que no son obvias y estan en el codigo:
+
+- **`AJUSTE` no tiene signo, y no se le da.** Se escribe como `ENTRADA` o `SALIDA`
+  con `referencia_tipo='AJUSTE'`. Un unico valor de enum no puede decir "se conto de
+  mas" de "se conto de menos", y `cantidad` es positiva por constraint.
+- **Una `ENTRADA` sin `es_ajuste` se rechaza con 409.** Si existiera un camino que
+  suma stock sin compra, `compras.ticket_id` UNIQUE dejaria de ser la garantia de que
+  el inventario solo refleja compras de verdad.
+- **No hay `DELETE` de producto.** `movimientos_inventario.producto_id` tiene
+  `ON DELETE CASCADE`: borrar el producto borra su historial y `stock_de` deja de poder
+  responder por el. Se da de baja con `activo=false`.
+
+### 28. No hay roles, y ahora hay endpoints que tocan otras cuentas — 🟡 ABIERTO
+`PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` son los primeros endpoints
+del proyecto que **comprometen a otro usuario**. Sin `is_admin` ni scoping, **cualquier
+cuenta autenticada puede dar de baja a cualquier otra**, y eso no estaba disponible
+antes de anadirlos.
+
+Lo que si se hizo, y es lo unico que se puede sin inventar un modelo de roles:
+
+- **Token Y contrasena** (`X-Contrasena-Actual`, `deps.get_current_user_verificado`).
+  Un token robado no basta: es justo lo que el atacante de un token robado no tiene.
+- **La ultima cuenta activa no se puede dar de baja** (409). Sin eso, un sistema con
+  una sola cuenta se queda sin puerta de entrada y la unica recuperacion es entrar a
+  Postgres a mano.
+- **Cambiar la contrasena pide dos cosas distintas**: el header es la contrasena de
+  *quien llama*, y `contrasena_actual` del cuerpo es la de *la cuenta que se cambia*.
+  Con una sola, un atacante con un token robado rotaria la clave de cualquiera y el
+  dueno ya no podria recuperarla.
+- **El alta sigue en `scripts/crear_usuario.py`.** No hay `POST /usuarios`: un endpoint
+  de alta autenticado es autorregistro con un paso mas.
+
+Lo que **no** se hizo, y sigue siendo el problema de fondo: decidir *quien puede tocar
+a quien*. Eso necesita columnas de rol, y anadir una comprobacion de rol sin el modelo
+seria fingir que hay control de acceso donde solo hay autenticacion — y un control
+aparente es peor que ninguno, porque deja de revisarse. Mientras tanto, el producto
+sigue siendo de "una maquina, un contador".
+
+### 29. `verify_postgres_inventario.py` no se podia aplicar a una base ya creada
+`asyncpg` no acepta varias sentencias en una sentencia preparada
+(`cannot insert multiple commands into a prepared statement`), y el script hacia
+`conn.execute(texto_del_archivo_entero)`.
+
+Era **inerte**: `_aplicar_migracion` solo ejecutaba `0010` si `movimientos_inventario`
+no existia, y en una base creada con `db/init.sql` —que es lo normal— nunca hacia
+falta. El fallo estaba en el camino que nadie tomaba, igual que §26.
+
+Corregido con un partidor de sentencias que respeta bloques `$$` (el cuerpo de los
+triggers es plpgsql y tiene `;` dentro), comillas simples y comentarios `--`. Los
+comentarios importan de verdad: el SQL de estas migraciones cita codigo en prosa y hay
+cuatro lineas con un apostrofo que abrian una cadena sin cerrar.
+
+### 30. `PATCH /reconciliations/{id}` no decia quien habia corregido el veredicto
+Anadido junto con el endpoint, y por el mismo motivo que §26: `match_status` decide que
+se exporta (`MATCHED_STATUSES`), asi que un `PERFECT` que produjo el motor y uno que
+aprobo una persona son la misma fila en la base.
+
+Es el mismo motivo por el que existe `confidence_source` en `tickets` y por el que
+`compras.confirmada_por` es obligatorio para `PROCESADO`: **"lo automatico lo hizo" y
+"lo hizo una persona" no se suman**. Sin la columna, una conciliacion corregida a mano
+salia a CONTPAQI indistinguible de una que el motor aprobo sola.
+
+`revisado_por` sale del token y `revisado_at` lo pone el router: aceptar el autor en
+el body seria firmarlo por otro.
+
 ### 12. `VendorNormalizer` nunca se ejecuta
 Solo lo referencia el `pipeline.py` muerto. "Oxxo", "OXXO" y "OXXO EXPRESS" son **tres
 proveedores** distintos en el dashboard. El normalizador (`ai_client.py:246-350`) está escrito
@@ -887,6 +1147,12 @@ primera ronda y por qué:
 ---
 
 ## Arreglados en el pasado (no reabrir)
+- **El trigger de stock negativo contaba con el signo equivocado**, y la defensa no
+  bloqueaba la salida que dejaba el inventario en negativo — punto 26.
+- **Funciones documentadas sin endpoint**: la cola de productos no se podia limpiar,
+  `AJUSTE` no se podia escribir y una compra no se podia rechazar — punto 27.
+- `PATCH /reconciliations/{id}` sin decir quien habia corregido el veredicto — punto 30.
+- `verify_postgres_inventario.py` no se podia aplicar a una base ya creada — punto 29.
 - **El cliente elegía la ruta de lectura** (`file_type` sin validar) — punto 17.
 - **HEIC** con nombre de fallo en vez de basura silenciosa — punto 6.
 - **Credenciales en el repo público** — `SECRET_KEY` y password de Postgres en `.env.dev`,

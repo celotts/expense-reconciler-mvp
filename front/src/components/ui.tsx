@@ -1,6 +1,26 @@
 // UI Components
 
 // Button
+//
+// EL ALTO VIENE DE AQUI Y NO DE QUIEN LO USA — y por la misma razon que el
+// padding del `Card`: medido, no opinado.
+//
+// Las guias de plataforma (Apple HIG, Material) piden 44px CSS como minimo de
+// area tactil, y por debajo el error de pulsacion sube de forma medible. Se
+// midio en las ocho pantallas a 390px y el resultado fue que **ningun** control
+// llegaba: el `md` daba 40, el `sm` 32, y los `<select>` 38. No era un defecto
+// de una pantalla sino de la primitiva, y por eso se arregla aqui y no pagina
+// por pagina — que es exactamente lo que paso con el padding del `Card`.
+//
+// LOS DOS VALORES, Y POR QUE HAY DOS
+// ---------------------------------
+// En movil el boton es de 44px. En escritorio se queda en el alto compacto de
+// antes, porque una densidad alta es correcta con raton: 44px de alto en cada
+// boton de una tabla de 40 filas comeria la mitad de la pantalla, y nadie lo
+// pidio. `sm:` (640px) es donde se cambia, no `md:`.
+//
+// El numero no sale de un calculo: sale de medir. `py-2.5` + `text-base`
+// (16/24) = 44. `py-3` + `text-sm` (14/20) = 44.
 export function Button({ 
   children, 
   onClick, 
@@ -13,8 +33,8 @@ export function Button({
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost'; size?: 'sm' | 'md' }) {
   const base = 'rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   const sizes = {
-    sm: 'px-2.5 py-1.5 text-sm',
-    md: 'px-4 py-2',
+    sm: 'px-2.5 py-3 sm:py-1.5 text-sm',
+    md: 'px-4 py-2.5 sm:py-2',
   };
   const variants = {
     primary: 'bg-blue-600 text-white hover:bg-blue-700',
@@ -49,7 +69,13 @@ export function Input({
       {label && <label htmlFor={inputId} className="text-sm font-medium text-gray-700">{label}</label>}
       <input
         id={inputId}
-        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+        // `py-3` en movil y `py-2` desde `sm`, por la misma razon y con la
+        // misma medicion que el `Button`. El numero salio de dos rondas: `py-2.5`
+        // daba 42px —dos por debajo del minimo— y `py-3` da 46. Se eligio 46 y no
+        // un `py-[11px]` de 44 exacto porque dos pixeles por debajo del minimo no
+        // se ven, pero un selector de 2px mas alto que sus vecinos en el mismo
+        // formulario, si.
+        className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
           error ? 'border-red-500' : 'border-gray-300'
         } ${className}`}
         {...props}
@@ -74,7 +100,13 @@ export function Select({
       {label && <label htmlFor={selectId} className="text-sm font-medium text-gray-700">{label}</label>}
       <select
         id={selectId}
-        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+        // `py-3` en movil y `py-2` desde `sm`, por la misma razon y con la
+        // misma medicion que el `Button`. El numero salio de dos rondas: `py-2.5`
+        // daba 42px —dos por debajo del minimo— y `py-3` da 46. Se eligio 46 y no
+        // un `py-[11px]` de 44 exacto porque dos pixeles por debajo del minimo no
+        // se ven, pero un selector de 2px mas alto que sus vecinos en el mismo
+        // formulario, si.
+        className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
           error ? 'border-red-500' : 'border-gray-300'
         } ${className}`}
         {...props}

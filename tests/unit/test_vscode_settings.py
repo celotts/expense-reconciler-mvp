@@ -280,10 +280,23 @@ class TestTodaReglaCalladaEstaJustificada:
     def test_las_reglas_que_encuentran_bugs_no_estan_calladas(self):
         """Estas cuatro SI encuentran defectos en este codigo.
 
-        No es hipotesis: `reportUndefinedVariable` y `reportAttributeAccessIssue`
-        sacaron el `SourceType.AUTO` de `app/modules/expenses/crud.py:136` y el
-        `select`/`and_` sin importar de `pipeline.py:224-225`. Callarlas seria
-        apagar la unica defensa que aviso de codigo muerto.
+        No es hipotesis, y la evidencia esta medida con `pyright` (el mismo
+        motor que corre en el editor):
+
+        - `reportUndefinedVariable`/`reportCallIssue` sacaron el `ResultadoOCR`
+          y el `float is not callable` de `capture.py`, y el `Name "importe" is
+          not defined` de `parser_service.py`.
+        - `reportAttributeAccessIssue` saca `Cannot access attribute "rotate"
+          for class "object"` en `ocr.py:421` y `"readtext" for class "object"`
+          en `ocr.py:935`.
+
+        La primera pareja salio de codigo MUERTO —`SourceType.AUTO` de
+        `app/modules/expenses/crud.py` y el `select`/`and_` sin importar— que
+        ya no existe: se borro entero (ver `docs/known-issues.md` §3). Eso no
+        debilita la regla, cambia la evidencia: los tres hallazgos de arriba son
+        de la ruta que SI corre, y dos de ellos eran codigo que funcionaba mal
+        por una anotacion que mentia.
+        Callarlas seria apagar la unica defensa que aviso de codigo roto.
         """
         reglas = _leer_jsonc(SETTINGS).get(
             "python.analysis.diagnosticSeverityOverrides", {}

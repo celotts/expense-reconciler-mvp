@@ -109,6 +109,27 @@ class Corrida:
     # se trabo en uno concreto.
     actual: str | None = None
 
+    # --- El feed de lo que ya se LEYO, con sus importes --------------------
+    #
+    # `actual` dice en que archivo va. Esto dice que salio de ahi, cuanto
+    # encontro y si el sistema se atrevio a afirmarlo.
+    #
+    # Sin esto, la pantalla de un escaneo con 200 fotos muestra un contador que
+    # sube y un nombre de archivo: no hay forma de saber si lo que salio era un
+    # total de $4,093.80 o un cero. Y el operador no puede empezar a corregir
+    # mientras corre, que es justo cuando tiene el contexto fresco.
+    #
+    # Es una lista ACOTADA a proposito: se queda con las ultimas
+    # `MAX_PROCESADOS`. Un escaneo de 3 000 archivos no puede accumulation en
+    # memoria lo que encontro de los 3 000, y el operador quiere los ultimos,
+    # no el historico — el historico esta en `/scan/files` y en `scan_files`.
+    #
+    # `monto_confiable` NO es lo que hay: es lo que el sistema se atreve a
+    # afirmar. Con OCR al 33% eso es `0.00` la mayoria de las veces, y esa
+    # diferencia —lo leido contra lo afirmado— es la que hay que ensenar en la
+    # pantalla. Un operador que solo ve el total cree que leyeron bien.
+    procesados: list[dict] = field(default_factory=list)
+
     # El total, que se rellena al cerrar. `None` mientras corre, y eso es
     # intencional: un resumen a medias parece un resumen de una corrida corta.
     resumen: dict | None = None
@@ -141,6 +162,7 @@ class Corrida:
             "con_ticket": self.con_ticket,
             "con_error": self.con_error,
             "actual": self.actual,
+            "procesados": _json_safe(self.procesados),
             "segundos": round(self.segundos, 1),
             "resumen": _json_safe(self.resumen),
         }
@@ -214,6 +236,53 @@ def marcar_con_ticket(corrida: Corrida | None) -> None:
         return
     with _lock:
         corrida.con_ticket += 1
+
+
+# Cuantos archivos del feed se guardan. Es un techo de MEMORIA y tambien de lo
+# que cabe en una pantalla: 60 filas de las ultimas es lo que un operador llega
+# a mirar antes de que la lista se vuelva scroll. Lo que haya antes esta en
+# `scan_files`, que es donde vive el historico de verdad.
+MAX_PROCESADOS = 60
+
+
+def registrar_procesado(
+    corrida: Corrida | None,
+    *,
+    relative_path: str,
+    ticket_id: str | None = None,
+    monto: Decimal | None = None,
+    extraction_status: str | None = None,
+    motor: str | None = None,
+    accion: str | None = None,
+    confiable: bool = False,
+    es_duplicado: bool = False,
+) -> None:
+    """Un archivo terminado de leerse, con lo que el sistema leyo de el.
+
+    `confiable` es lo que separa "el sistema leyo 97.56" de "el sistema se
+    atreve a afirmar 97.56", y son dos afirmaciones distintas con OCR al 33%.
+    El front las pinta de otra forma por eso, y por eso viajan separadas en vez
+    de calcular el front si el monto "parece bien".
+
+    Se llama con el `Decimal` crudo y la conversion a texto pasa por
+    `_json_safe`, como todos los importes de este modulo. Un `float` en un
+    importe de dinero es exactamente lo que el proyecto no hace en ningun sitio.
+    """
+    if corrida is None:
+        return
+    with _lock:
+        corrida.procesados.append({
+            "relative_path": relative_path,
+            "ticket_id": ticket_id,
+            "monto": monto,
+            "extraction_status": extraction_status,
+            "motor": motor,
+            "accion": accion,
+            "confiable": bool(confiable),
+            "es_duplicado": bool(es_duplicado),
+        })
+        if len(corrida.procesados) > MAX_PROCESADOS:
+            del corrida.procesados[:-MAX_PROCESADOS]
 
 
 def marcar_error(corrida: Corrida | None) -> None:

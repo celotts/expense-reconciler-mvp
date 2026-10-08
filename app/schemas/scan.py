@@ -155,10 +155,39 @@ class ScanRequest(BaseModel):
     simular: bool = Field(
         False,
         description=(
-            "Decir QUE se moveria sin mover nada. Es el modo para ver el "
-            "efecto antes de que ocurra: con el archivado activado por omision, "
-            "la primera corrida deja la carpeta de entrada vacia, y conviene "
-            "ver eso antes de que ocurra."
+            "Decir QUE se moveria sin moverlo. Es el modo para ver el efecto "
+            "antes de que ocurra: con el archivado activado por omision, la "
+            "primera corrida deja la carpeta de entrada vacia, y conviene ver "
+            "eso antes de que ocurra.\n\n"
+            "**NO es un borrador en seco.** Apaga el archivado del disco y, si "
+            "viene `confirmar`, tambien la autorizacion de compras. Lo que sigue "
+            "escribiendo es el TICKET: la simulacion responde 'que habria leido "
+            "este comprobante', y para contestar eso hay que leerlo y guardarlo. "
+            "Los tickets de la simulacion se mezclan con los de verdad y se "
+            "reconcilian por igual. Para no dejar rastro hay que apuntar a otra "
+            "empresa de prueba, o borrar despues."
+        ),
+    )
+    confirmar: bool = Field(
+        False,
+        description=(
+            "Autorizar las compras de ESTA corrida en el mismo request, y que "
+            "sus lineas entren al inventario.\n\n"
+            "APAGADO POR OMISION Y NO POR CASUALIDAD. Todo lo demas de este "
+            "proyecto esta organizado alrededor de que el stock lo mueve una "
+            "persona que miro el papel, y el motivo esta medido: el OCR sobre "
+            "fotos reales da 33.3% de exactitud, y una linea mal leida infla el "
+            "stock para siempre porque las ventas las cuentas tu. Poner esto en "
+            "`true` por omision entregaria ese poder a cualquiera que llame al "
+            "escaneo.\n\n"
+            "Lo que se pierde al ponerlo en `true`: la compra queda PROCESADO sin "
+            "que nadie mire el comprobante, y `confirmada_por` es quien lo pidio, "
+            "no alguien que lo haya revisado. Lo que se gana: los tickets con "
+            "lineas legibles entran al kardex en un solo request.\n\n"
+            "Las compras cuyas lineas no tienen producto NO se autorizan y se "
+            "reportan en `compras_no_confirmadas` con el motivo. Es el mismo "
+            "bloqueo de `POST /inventario/compras/{id}/confirmar`: autorizar "
+            "lineas sin producto deja el stock incompleto sin rastro."
         ),
     )
 
@@ -193,6 +222,25 @@ class ScanItemResponse(BaseModel):
     estaba_pendiente: bool | None = None
     # Cuando fue `simular`, esto dice "se moveria aqui" sin que se mueva nada.
     solo_simulado: bool = False
+
+    # --- Que le pasa al archivo en disco, en claro ------------------------
+    #
+    # `archivado` + `ruta_archivo` no bastaban y se contradecian: una corrida
+    # reportaba `archivado: true` con `ruta_archivo: null`, porque lo que paso
+    # fue un RETIRO (el archivo se borro de la entrada, con los bytes ya
+    # respaldados en la base) y no un movimiento a `Tickets_Scan`. El cliente
+    # leia "archivado" y buscaba el papel en una carpeta donde no estaba.
+    #
+    # Estos cuatro campos lo dicen sin ambigüedad, y son la diferencia entre "el
+    # comprobante se guardo" y "no se sabe que paso con el".
+    retiro: str = "NADA"  # MOVIDO | RETIRADO | NADA
+    motivo_retiro: str | None = None
+    # `True` = los bytes estan en `ticket_documents` con el MISMO sha256 que el
+    # archivo. Es lo que hace que un RETIRO no sea una perdida. `False` = se
+    # resolvio pero NO habia respaldo, y el archivo se queda en la bandeja.
+    respaldo_verificado: bool | None = None
+    # Donde se recupera el comprobante original.
+    recuperable_desde: str | None = None
 
     # Los datos que el lector obtuvo del papel. Es `None` cuando este archivo no
     # produjo ticket —ERROR, NO_SOPORTADO, o leido sin `company_id`— y tambien
@@ -230,6 +278,38 @@ class ScanResponse(BaseModel):
     archivados_pendientes: int = 0
     carpeta_destino: str | None = None
     simulado: bool = False
+    # --- Que le paso a los ARCHIVOS, y donde quedaron ---------------------
+    #
+    # `archivados` solo es el total de lo que salio de la carpeta de entrada. No
+    # dice si se movio a `Tickets_Scan` o se borro con el respaldo ya en la base,
+    # y esa distincion es la que hace falta para no buscar un papel donde no esta.
+    # El detalle por archivo lo dice en `detalles[].retiro`; estos dos son el
+    # resumen para una pantalla.
+    #
+    # `retirados_de_entrada` y `recuperables_desde_db` son el par que da
+    # confianza: un archivo que se borro Y se puede recuperar de la base con el
+    # mismo sha256 no se perdio. Antes solo habia `archivados: 1` y una carpeta de
+    # destino vacia, que se leia como una perdida.
+    #
+    # `carpeta_destino` se mantiene porque el cliente lo muestra; se deja en None
+    # cuando no se movio nada, en vez de senalar una carpeta que no se toco.
+    #
+    # `quedan_en_bandeja` va aqui tambien (no solo en `resumen`) porque es la
+    # pregunta del operador al terminar: "me queda trabajo?".
+    #
+    # Los tres de arriba mas `archivados` suman `archivos_vistos`.
+    #
+    # `archivados` y `borrados_de_entrada` coinciden hoy porque el unico camino
+    # que retira es el borrado con respaldo. Se declaran los dos para que el dia
+    # que el movimiento vuelva a existir, la respuesta no tenga que cambiar de
+    # forma.
+    #
+    # Los tres valores de abajo son los que un operador necesita para decidir si
+    # la carpeta de entrada se esta vaciando de verdad o solo parece.
+    movidos_a_escaneados: int = 0
+    retirados_de_entrada: int = 0
+    recuperables_desde_db: int = 0
+    quedan_en_bandeja: int = 0
     # El total, que es lo que se pregunta al terminar. Va en la MISMA respuesta y
     # no en un endpoint aparte porque la pregunta es de una vez: "ya termino, que
     # salio". Pedirlo en una segunda llamada obliga a correlacionar dos respuestas
@@ -241,6 +321,25 @@ class ScanResponse(BaseModel):
     # que inventar una manera de correlacionar la corrida con su total: salen
     # juntos, y el total es el de ESTA corrida.
     corrida_id: str | None = None
+
+    # --- La autorizacion de la corrida -------------------------------------
+    #
+    # Solo se llenan con `{"confirmar": true}` en el request. En una corrida normal
+    # van en cero y vacio, y eso es lo que dice el operador: "no autorice nada".
+    #
+    # LOS DOS CAMPOS JUNTOS, Y POR QUE
+    # ================================
+    #
+    # `compras_confirmadas` dice cuantas entradas AL kardex. `compras_no_confirmadas`
+    # dice cuales NO y por que. Con el primero solo, un operador ve "3 confirmadas"
+    # y no sabe si eran las tres que queria; con el segundo sabe que una se quedo
+    # porque tenia lineas sin producto, que es un problema de catalogo, o porque
+    # alguien la habia rechazado, que es una decision que hay que no deshacer.
+    #
+    # Y la lista lleva `archivo` ademas del motivo: el motivo sin el archivo no
+    # dice a que comprobante hay que ir a mirar.
+    compras_confirmadas: int = 0
+    compras_no_confirmadas: list[dict] = Field(default_factory=list)
 
 
 class ResumenScan(BaseModel):

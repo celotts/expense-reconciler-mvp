@@ -6,6 +6,7 @@ import {
   statusMeta, nombreProvisorLegible,
 } from '../utils/extraction';
 import { VerDocumento } from '../components/TicketDocumento';
+import { ComprobanteAlLado, TextoLeido } from '../components/ComprobanteAlLado';
 
 /**
  * Cola de revision: todo lo que el sistema NO se atrevio a dar por bueno.
@@ -67,8 +68,19 @@ export function ReviewQueue() {
             Documentos que el sistema no se atrevió a aprobar solo.
           </p>
         </div>
-        <div className="flex gap-2">
-          <div className="w-56">
+        {/* Los dos filtros se envuelven y ocupan el ancho completo en movil.
+
+            MEDIDO, no previsto: a 390px el `div` de fuera ya tenia
+            `flex-wrap`, pero el de dentro no. Con dos selectores de ancho fijo
+            (`w-56` + `w-48` = 224 + 192) y 8 de gap, el interno pedia 424px
+            contra los 358 que dejan los `p-4`, y la pagina se salia 50px.
+
+            El detalle que lo hace easy de no ver: `flex-wrap` en el CONTENEDOR
+            exterior no ayuda, porque los hijos que no caben son los nietos del
+            `div` de dentro. Hay que envolver el nivel donde estan uno al lado
+            del otro. */}
+        <div className="flex flex-wrap gap-2">
+          <div className="w-full sm:w-56">
             <Select
               value={companyId}
               onChange={(e) => setCompanyId(e.target.value)}
@@ -78,7 +90,7 @@ export function ReviewQueue() {
               ]}
             />
           </div>
-          <div className="w-48">
+          <div className="w-full sm:w-48">
             <Select
               value={filtro}
               onChange={(e) => setFiltro(e.target.value as ExtractionStatus | '')}
@@ -266,12 +278,32 @@ export function TicketEnCola({
           </div>
 
           {editando ? (
-            <EditorTicket
-              ticket={ticket}
-              ocupado={ocupado}
-              onCancelar={onCancelarEdicion}
-              onAprobar={aprobar}
-            />
+            /* El comprobante al lado del formulario, y no debajo.
+             *
+             * Es la disposicion que hace que esta pantalla sea util o sea un
+             * formulario que hay que contrastar a ojo. La pregunta de la cola
+             * es "¿este importe es el del papel?": con el papel en otra columna,
+             * cuesta cero; con el papel debajo de la lista, cuesta alternar,
+             * hacer scroll y volver.
+             *
+             * El orden en movil es papel PRIMERO (`order-first`), y no es
+             * estetica: quien abre la cola en el celu lee el comprobante antes
+             * de tocar un solo campo.
+             */
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-3">
+              <div className="order-1 lg:order-2">
+                <EditorTicket
+                  ticket={ticket}
+                  ocupado={ocupado}
+                  onCancelar={onCancelarEdicion}
+                  onAprobar={aprobar}
+                />
+              </div>
+              <div className="order-2 lg:order-1 lg:border-r lg:border-gray-200 lg:pr-5">
+                <ComprobanteAlLado ticket={ticket} />
+                <TextoLeido texto={ticket.raw_text} />
+              </div>
+            </div>
           ) : (
             <>
               <p className="mt-2 text-lg font-semibold text-gray-900 truncate">

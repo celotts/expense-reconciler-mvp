@@ -169,7 +169,7 @@ class Espia:
         self.invoice = invoice
         self.llamadas: list[bytes] = []
 
-    async def imagen(self, datos: bytes, mime_type: str = "image/png") -> ExtractedInvoice:
+    async def imagen(self, datos: bytes) -> ExtractedInvoice:
         self.llamadas.append(datos)
         if isinstance(self.invoice, Exception):
             raise self.invoice

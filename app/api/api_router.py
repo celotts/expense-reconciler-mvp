@@ -9,8 +9,10 @@ from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.inventario import router as inventario_router
 from app.api.reconciliations import router as reconciliations_router
+from app.api.reports import router as reports_router
 from app.api.scans import router as scan_router
 from app.api.tickets import router as tickets_router
+from app.api.usuarios import router as usuarios_router
 from app.core.deps import get_current_user
 
 api_router = APIRouter()
@@ -93,5 +95,31 @@ api_router.include_router(
     inventario_router,
     prefix="/inventario",
     tags=["Inventario"],
+    dependencies=[Depends(get_current_user)],
+)
+# Cuentas. Token a nivel de router, como todos los demas.
+#
+# Los endpoints que dan de baja o rotan una contrasena piden ADEMAS la contrasena
+# del actor (`UsuarioVerificado`, o sea el header `X-Contrasena-Actual`), y no se
+# pone aqui como dependencia de router porque los de lectura no la necesitan y
+# ponerla aqui obligaria a escribirla para mirar una lista. Ver la nota larga de
+# `app/core/deps.py`.
+api_router.include_router(
+    usuarios_router,
+    prefix="/usuarios",
+    tags=["Usuarios"],
+    dependencies=[Depends(get_current_user)],
+)
+# El informe de cierre mensual. Token a nivel de router, como todos los demas.
+#
+# Es la ruta que hace que el producto entregue un DOCUMENTO y no solo datos, asi
+# que no se le abrevia nada: quien firma el informe es el contador, y su nombre
+# sale del token (`UsuarioActual`), nunca de un campo del cuerpo. Aceptarlo en el
+# body seria permitir que un informe salga firmado por quien no lo reviso, que es
+# exactamente lo que R5 y la regla 23 de `AGENTS.md` prohiben.
+api_router.include_router(
+    reports_router,
+    prefix="/reports",
+    tags=["Reports"],
     dependencies=[Depends(get_current_user)],
 )

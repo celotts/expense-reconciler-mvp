@@ -10,6 +10,26 @@ tiene triggers. Dos de las defensas del inventario viven en triggers de Postgres
   trg_movimientos_no_reescribir   UPDATE y DELETE prohibidos en el kardex
   trg_movimientos_no_negativo     una entrada no puede dejar stock negativo
 
+Y ADEMAS, DESDE 0013
+--------------------
+
+  el signo del trigger               un AJUSTE suma, y una SALIDA resta
+  ck_compras_estado                  RECHAZADO existe; lo inventado no
+  ck_reconciliations_revision        una revision lleva autor y fecha
+
+Lo del signo tiene historia y conviene que quede escrita: el trigger hacia
+`IF tipo = 'ENTRADA' THEN suma ELSE resta`, o sea que trataba `AJUSTE` como resta
+mientras `stock_de` lo suma, y su `SUM` de filas previas ignoraba el signo de las
+SALIDAS. Era inerte porque la unica via que escribia en el kardex era
+`confirmar_compra`, y esa solo produce `ENTRADA`: el `ELSE` del trigger no se
+ejecutaba nunca y ningun test de ataque alcanzaba la rama.
+
+`POST /inventario/movimientos` es el camino que lo vuelve vivo, y estas
+comprobaciones son las que lo habrian atrapado. La mitad de Python de la misma
+regla esta en `TestElSignoDelKardex`; aca se comprueba que Postgres y Python
+cuenten lo mismo, que es lo que hace que un movimiento que la API acepta no lo
+rechace la base.
+
 Las constraints del modelo SI se prueban en los tests (SQLite las ejecuta). Los
 dos triggers no tienen equivalente, y `AGENTS.md` ya avisa de que un test verde
 sobre SQLite no dice nada de lo que SQLite ignora: las FKs, los `postgresql_where`
@@ -55,6 +75,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 RAIZ = Path(__file__).resolve().parent.parent
 MIGRACION = RAIZ / "db" / "migrations" / "0010_inventario.sql"
+# La migracion del signo del trigger. Se aplica SIEMPRE, no solo si falta la
+# tabla, porque su unico efecto es `CREATE OR REPLACE FUNCTION`: en una base que
+# ya tiene `movimientos_inventario` —que es el caso normal— la version vieja del
+# trigger es la que esta viva, y es la que tiene el bug de signo.
+#
+# Sin esto, el script pasaria sus comprobaciones de signo contra una base con el
+# trigger viejo y no se enteraria de nada.
+MIGRACION_SIGNO = RAIZ / "db" / "migrations" / "0013_compras_rechazables.sql"
 
 BASE_POR_DEFECTO = "postgresql+asyncpg://postgres:postgres@localhost:5434/expense_db"
 
@@ -79,16 +107,138 @@ def comprobacion(nombre: str, resultado: str | None) -> None:
         print(f"         {resultado}")
 
 
+def _sentencias(sql: str) -> list[str]:
+    """Parte un archivo .sql en sentencias ejecutables de una en una.
+
+    POR QUE NO `text(sql)` DE UNA VEZ
+    ----------------------------------
+
+    Porque asyncpg no acepta varias sentencias en una sentencia preparada:
+    `conn.execute(texto_con_varios_punto_y_coma)` falla con "cannot insert multiple
+    commands into a prepared statement". Se vio al intentar aplicar `0013` con el
+    metodo que ya usaba el archivo para `0010`.
+
+    Y el metodo de `0010` nunca se habia ejecutado en la practica: solo corria si
+    la tabla no existia, y en una base creada con `db/init.sql` —que es lo normal—
+    nunca hacia falta. O sea que el fallo no era nuevo: estaba ahi, en el camino
+    que nadie tomaba.
+
+    POR QUE NO SE PARTE CON `sql.split(";")`
+    -----------------------------------------
+
+    Porque el cuerpo de los triggers es plpgsql y tiene `;` dentro:
+
+        CREATE FUNCTION ... AS $$
+        BEGIN
+            IF NEW.tipo = 'SALIDA' THEN   <-- punto y coma dentro del bloque
+                actual := actual - NEW.cantidad;
+        END;
+        $$ LANGUAGE plpgsql;
+
+    Partir ahi produce fragmentos que no compilan. `_sentencias` lleva la cuenta de
+    los bloques `$$`, de las comillas simples y de los comentarios `--`, y solo
+    corta en el `;` que esta fuera de las tres.
+
+    Y los comentarios tambien importan por lo de las comillas: el SQL de estos
+    archivos cita codigo en prosa (`-- IF NEW.tipo = 'ENTRADA' THEN ...`), y un
+    apostrofo ahi abre una cadena que no se cierra nunca.
+    """
+    sentencias: list[str] = []
+    actual: list[str] = []
+    en_dinero = False       # dentro de un $$ ... $$
+    en_cadena = False       # dentro de '...'
+    en_comentario = False   # despues de --, hasta el fin de linea
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+
+        # Un comentario se salta entero. Sin esto, el apostrofo de una linea
+        # comentada abre una cadena que nunca se cierra y TODO lo que viene
+        # despues se pega a la misma sentencia.
+        #
+        # Y no es un detalle hipotetico: los comentarios de estas migraciones
+        # citan codigo SQL, y hay cuatro que lo hacen (`-- IF NEW.tipo =
+        # 'ENTRADA' THEN ...`). El primero abria la cadena y las cinco sentencias
+        # del archivo acababan en una sola.
+        #
+        # Solo fuera de `$$`: dentro del cuerpo de un trigger un `--` puede ser un
+        # operador de Postgres, y ahi el comentario no existe.
+        if en_comentario:
+            if ch == "\n":
+                en_comentario = False
+                actual.append(ch)
+            i += 1
+            continue
+
+        if not en_dinero and not en_cadena and sql.startswith("--", i):
+            en_comentario = True
+            i += 2
+            continue
+
+        # El bloque tiene que poder ABRIR y CERRAR, asi que la condicion NO lleva
+        # `not en_dinero`: con ese guardia el `$$` de apertura entraba y el de
+        # cierre no se veia, `en_dinero` se quedaba en True y todo lo que venía
+        # despues —las cinco sentencias del archivo— se ejecutaba como una sola.
+        if sql.startswith("$$", i):
+            en_dinero = not en_dinero
+            actual.append("$$")
+            i += 2
+            continue
+
+        if ch == "'" and not en_dinero:
+            # El '' de SQL es una comilla escapada, no el cierre de la cadena.
+            if en_cadena and sql.startswith("''", i):
+                actual.append("''")
+                i += 2
+                continue
+            en_cadena = not en_cadena
+
+        if ch == ";" and not en_dinero and not en_cadena:
+            trozo = "".join(actual).strip()
+            if trozo:
+                sentencias.append(trozo)
+            actual = []
+            i += 1
+            continue
+
+        actual.append(ch)
+        i += 1
+
+    resto = "".join(actual).strip()
+    if resto:
+        sentencias.append(resto)
+    return sentencias
+
+
+async def _ejecutar_sql(engine, sql: str) -> None:
+    """Ejecuta un .sql sentencia por sentencia."""
+    async with engine.begin() as conn:
+        for sentencia in _sentencias(sql):
+            await conn.execute(text(sentencia))
+
+
 async def _aplicar_migracion(engine) -> None:
-    """Aplica la migracion si falta algo. Idempotente."""
+    """Aplica lo que falte. Idempotente.
+
+    Son dos archivos y en orden, porque hacen cosas distintas:
+
+    - `0010` crea las tablas. Solo si no existen.
+    - `0013` reemplaza la funcion del trigger. SIEMPRE, incluso si las tablas ya
+      estan, porque su efecto es `CREATE OR REPLACE FUNCTION` y lo que se quiere es
+      corregir la version que hay puesta.
+
+    Aplicarlos al reves daria una base cuyo trigger es el de `0010` (el del bug)
+    con las columnas de `0013`, que es la combinacion que no existe en ningun sitio
+    y es la que hace que estas comprobaciones no signifiquen nada.
+    """
     async with engine.connect() as conn:
         ya_esta = await conn.scalar(
             text("SELECT to_regclass('public.movimientos_inventario') IS NOT NULL")
         )
-    if ya_esta:
-        return
-    async with engine.begin() as conn:
-        await conn.execute(text(MIGRACION.read_text(encoding="utf-8")))
+    if not ya_esta:
+        await _ejecutar_sql(engine, MIGRACION.read_text(encoding="utf-8"))
+
+    await _ejecutar_sql(engine, MIGRACION_SIGNO.read_text(encoding="utf-8"))
 
 
 async def _fixture(conn) -> dict[str, uuid.UUID]:
@@ -404,7 +554,257 @@ async def main() -> int:
         _entrada_valida,
     )
 
-    # --- 8. El mismo codigo SI puede existir en otra empresa --------------
+    # --- 8. El signo del trigger, y el del stock de la API -----------------
+    #
+    # ESTAS SON LAS COMPROBACIONES QUE HABRIAN ATRAPADO EL BUG
+    # ==========================================================
+    #
+    # El trigger hacia `IF NEW.tipo = 'ENTRADA' THEN suma ELSE resta`, o sea que
+    # trataba AJUSTE como resta mientras `stock_de` lo suma; y su `SUM` de filas
+    # previas ignoraba el signo, de modo que con ENTRADA 10 y SALIDA 4 decia 14 en
+    # vez de 6.
+    #
+    # Las dos cosas eran INERTES: la unica via que escribia en
+    # `movimientos_inventario` era `confirmar_compra`, y esa solo produce ENTRADA,
+    # con lo que el `ELSE` del trigger no se ejecutaba nunca y ningun test de
+    # ataque alcanzaba la rama. `POST /inventario/movimientos` es el camino que lo
+    # vuelve vivo.
+    #
+    # `_stock_de_sql` replica la cuenta de `inventario_service.stock_de` en SQL. No
+    # es una comprobacion de la API —eso es `TestElSignoDelKardex` en
+    # `tests/unit/test_inventario.py`—: es la de que Postgres y Python cuentan lo
+    # mismo, que es lo que hace que un movimiento que la API acepta no lo rechace
+    # la base.
+    #
+    # El `CASE WHEN tipo = 'SALIDA'` es la MISMA pregunta que
+    # `TipoMovimiento.suma_stock` en Python. Si uno cambia y el otro no, esto falla.
+
+    async def _stock_de_sql(conn, producto_id):
+        """La cuenta del stock, como la hace `stock_de`."""
+        return await conn.scalar(
+            text(
+                "SELECT COALESCE(SUM(CASE WHEN tipo = 'SALIDA' "
+                "THEN -cantidad ELSE cantidad END), 0) "
+                "FROM movimientos_inventario WHERE producto_id = :p"
+            ),
+            {"p": producto_id},
+        )
+
+    async def _un_ajuste_suma_no_resta(conn, ids):
+        """Un AJUSTE tiene que SUMAR en la base. Con `tipo='AJUSTE'`.
+
+        ESTA COMPROBACION USA `tipo='AJUSTE'`, NO `tipo='ENTRADA'` CON
+        `referencia_tipo='AJUSTE'`, Y HACE FALTA EXPLICAR POR QUE.
+        =====================================================================
+
+        `inventario_service.registrar_movimiento` nunca escribe `tipo='AJUSTE'`: lo
+        escribe como ENTRADA o SALIDA segun el signo, con `referencia_tipo='AJUSTE'`
+        para decir de donde viene. O sea que por la API esta fila no existe.
+
+        Pero la constraint `ck_movimientos_tipo` la permite, `stock_de` la cuenta
+        (`tipo != 'SALIDA'` suma) y un `psql` la puede escribir. El trigger tiene que
+        estar de acuerdo con `stock_de` para TODO valor que la base acepte, no solo
+        para los que la API produce: si no, hay una fila que la API lee como +5 y la
+        baseAccounta como -5.
+
+        Y la primera version de esta comprobacion usaba `ENTRADA` con
+        `referencia_tipo='AJUSTE'`, que con el trigger viejo pasaba. Es decir: la
+        comprobacion daba verde con el bug puesto. Se vio al revertir la migracion
+        a proposito para ver que el script lo detectaba, y no lo detecto. Por eso
+        aqui esta escrito.
+        """
+        await conn.execute(
+            text(
+                "INSERT INTO movimientos_inventario (company_id, producto_id, "
+                "tipo, cantidad, referencia_tipo, actor) VALUES "
+                "(:emp, :prod, 'AJUSTE', 5, 'AJUSTE', 'ana@empresa.mx')"
+            ),
+            {"emp": ids["empresa"], "prod": ids["producto"]},
+        )
+        total = await _stock_de_sql(conn, ids["producto"])
+        if Decimal(str(total)) != Decimal("5"):
+            return _motivo(
+                f"un AJUSTE de 5 dejo el stock en {total} y deberia estar en 5. "
+                "El trigger trata AJUSTE como resta y stock_de lo suma: la base y "
+                "la API estan contando la misma fila de dos maneras."
+            )
+        return None
+
+    await _cada_comprobacion(
+        engine, "un AJUSTE suma (el signo del trigger)",
+        _un_ajuste_suma_no_resta,
+        debe_pasar=True,
+    )
+
+    async def _el_signo_de_las_salidas_cuenta(conn, ids):
+        """El SUM del trigger tiene que aplicar el signo de las SALIDAS.
+
+        Con ENTRADA 10 y SALIDA 4 el stock es 6. El `SUM(cantidad)` a secas decia
+        14, y a partir de ahi toda comprobacion del trigger estaba corrida por 8.
+        Este caso es el que mas daño hace y el mas facil de no ver: no bloquea
+        donde deberia y no molesta donde no deberia molestar.
+        """
+        await conn.execute(
+            text(
+                "INSERT INTO movimientos_inventario (company_id, producto_id, "
+                "tipo, cantidad, referencia_tipo, actor) VALUES "
+                "(:emp, :prod, 'ENTRADA', 10, 'COMPRA', 'verify.py')"
+            ),
+            {"emp": ids["empresa"], "prod": ids["producto"]},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO movimientos_inventario (company_id, producto_id, "
+                "tipo, cantidad, referencia_tipo, actor) VALUES "
+                "(:emp, :prod, 'SALIDA', 4, 'VENTA', 'verify.py')"
+            ),
+            {"emp": ids["empresa"], "prod": ids["producto"]},
+        )
+        total = await _stock_de_sql(conn, ids["producto"])
+        if Decimal(str(total)) != Decimal("6"):
+            return _motivo(
+                f"ENTRADA 10 y SALIDA 4 dieron un stock de {total}, y deberia "
+                "ser 6. El SUM del trigger no esta aplicando el signo."
+            )
+        return None
+
+    await _cada_comprobacion(
+        engine, "el stock descuenta las SALIDAS (el signo del SUM)",
+        _el_signo_de_las_salidas_cuenta,
+        debe_pasar=True,
+    )
+
+    async def _una_salida_que_no_alcanza_sigue_bloqueada(conn, ids):
+        """Y la defensa que el bug Debilita: no dejar el stock en negativo.
+
+        Con ENTRADA 10 y SALIDA 4 quedan 6. Una SALIDA de 7 mas deja -1 y tiene que
+        estar bloqueada. Con el `SUM` sin signo, el trigger creia que habia 14 y
+        la dejaba pasar: la defensa contra stock negativo no defendia.
+        """
+        await conn.execute(
+            text(
+                "INSERT INTO movimientos_inventario (company_id, producto_id, "
+                "tipo, cantidad, referencia_tipo, actor) VALUES "
+                "(:emp, :prod, 'ENTRADA', 10, 'COMPRA', 'verify.py')"
+            ),
+            {"emp": ids["empresa"], "prod": ids["producto"]},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO movimientos_inventario (company_id, producto_id, "
+                "tipo, cantidad, referencia_tipo, actor) VALUES "
+                "(:emp, :prod, 'SALIDA', 4, 'VENTA', 'verify.py')"
+            ),
+            {"emp": ids["empresa"], "prod": ids["producto"]},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO movimientos_inventario (company_id, producto_id, "
+                "tipo, cantidad, referencia_tipo, actor) VALUES "
+                "(:emp, :prod, 'SALIDA', 7, 'VENTA', 'verify.py')"
+            ),
+            {"emp": ids["empresa"], "prod": ids["producto"]},
+        )
+        return _motivo(
+            "trg_movimientos_no_negativo NO bloqueo una SALIDA de 7 con stock de 6 "
+            "(ENTRADA 10, SALIDA 4). El stock quedaria en -1. Con el SUM sin signo "
+            "el trigger creia que habia 14 y la defensa no defendia."
+        )
+
+    await _cada_comprobacion(
+        engine, "la salida que no alcanza sigue bloqueada (tras salidas previas)",
+        _una_salida_que_no_alcanza_sigue_bloqueada,
+    )
+
+    # --- 9. RECHAZADO existe en la constraint ------------------------------
+    #
+    # No es una defensa contra un ataque sino una comprobacion de que la
+    # constraint que se aplica al arranque tiene el estado que el codigo usa. Si
+    # `ck_compras_estado` no incluyera RECHAZADO, `POST /inventario/compras/{id}/
+    # rechazar` devolveria 500 con un IntegrityError en produccion, y aqui no se
+    # veria: los tests arman el esquema desde los modelos, no desde este DDL.
+
+    async def _rechazado_se_puede_guardar(conn, ids):
+        await conn.execute(
+            text(
+                "UPDATE compras SET estado = 'RECHAZADO' WHERE id = :id"
+            ),
+            {"id": ids["compra"]},
+        )
+        estado = await conn.scalar(
+            text("SELECT estado FROM compras WHERE id = :id"), {"id": ids["compra"]}
+        )
+        if estado != "RECHAZADO":
+            return _motivo(f"el estado quedo en {estado} y deberia ser RECHAZADO")
+        return None
+
+    await _cada_comprobacion(
+        engine, "una compra se puede rechazar (ck_compras_estado)",
+        _rechazado_se_puede_guardar,
+        debe_pasar=True,
+    )
+
+    async def _un_estado_inventado_no_se_puede(conn, ids):
+        await conn.execute(
+            text("UPDATE compras SET estado = 'CUALQUIER_COSA' WHERE id = :id"),
+            {"id": ids["compra"]},
+        )
+        return _motivo(
+            "ck_compras_estado acepto un estado que no existe. Si acepta "
+            "cualquier cadena, un UPDATE basta para poner una compra en un estado "
+            "que ningun codigo sabe leer."
+        )
+
+    await _cada_comprobacion(
+        engine, "un estado de compra inventado no se puede guardar",
+        _un_estado_inventado_no_se_puede,
+    )
+
+    # --- 10. Una conciliacion revisada lleva autor y fecha -----------------
+
+    async def _revision_sin_autor_no_se_puede(conn, ids):
+        await conn.execute(
+            text(
+                "INSERT INTO reconciliations (id, ticket_id, bank_transaction_id, "
+                "match_status, revisado_at) VALUES "
+                "(:id, :tk, :bank, 'PERFECT', CURRENT_TIMESTAMP)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "tk": ids["ticket"],
+                "bank": None,
+            },
+        )
+        return _motivo(
+            "ck_reconciliations_revision NO bloqueo una revision con fecha y sin "
+            "autor. Una decision sin quien la tomo no se puede auditar, que es "
+            "justo lo que la columna existe para evitar."
+        )
+
+    await _cada_comprobacion(
+        engine, "una conciliacion revisada necesita autor y fecha",
+        _revision_sin_autor_no_se_puede,
+    )
+
+    async def _una_revision_completa_si_se_puede(conn, ids):
+        await conn.execute(
+            text(
+                "INSERT INTO reconciliations (id, ticket_id, bank_transaction_id, "
+                "match_status, revisado_por, revisado_at) VALUES "
+                "(:id, :tk, :bank, 'PERFECT', 'ana@empresa.mx', "
+                "CURRENT_TIMESTAMP)"
+            ),
+            {"id": uuid.uuid4(), "tk": ids["ticket"], "bank": None},
+        )
+        return None
+
+    await _cada_comprobacion(
+        engine, "una conciliacion revisada con autor y fecha si se guarda",
+        _una_revision_completa_si_se_puede,
+        debe_pasar=True,
+    )
+
+    # --- 11. El mismo codigo SI puede existir en otra empresa --------------
     async def _codigo_otra_empresa(conn, ids):
         await conn.execute(
             text(
@@ -446,7 +846,10 @@ async def main() -> int:
         return 1
 
     print(f"\n{_ok} defensas en pie.")
-    print("El kardex es append-only, la firma es obligatoria y el stock no baja de cero.")
+    print(
+        "El kardex es append-only, la firma es obligatoria, el stock no baja de "
+        "cero y Postgres cuenta el signo igual que la API."
+    )
     return 0
 
 

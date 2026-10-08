@@ -54,16 +54,25 @@
     "reportArgumentType": "none"
   },
 
-  // Lo que NO se silencia, a proposito, porque aqui si hay senal:
+  // Lo que NO se silencia, a proposito, porque aqui si hay senal. La evidencia
+  // de cada una esta medida con `pyright` (el motor que corre aqui):
   //
-  //   reportUndefinedVariable      -> NameErrors de verdad. Dio con
-  //     "select"/"and_" sin importar en app/modules/expenses/pipeline.py:224-225
-  //     y con SourceType.AUTO, que no existe en el enum.
-  //   reportAttributeAccessIssue   -> mismo caso: ahi aparece el SourceType.AUTO
-  //     de crud.py:136.
+  //   reportUndefinedVariable      -> NameErrors de verdad. Dio con el
+  //     `Name "importe" is not defined` de `parser_service.py`, y con
+  //     `ResultadoOCR` sin definir en este archivo.
+  //   reportAttributeAccessIssue   -> accesos que no existen. Dio con
+  //     `Cannot access attribute "rotate" for class "object"` en `ocr.py:421`
+  //     y con `ResumenArchivo has no attribute "resumen"` en `scan_service.py`.
   //   reportOptionalMemberAccess   -> desreferencia de None. Es la clase de bug
   //     que mas caro sale en produccion y mas cara es de reproducir.
   //   reportCallIssue / reportReturnType / reportOptionalCall
+  //
+  // OJO con `reportAttributeAccessIssue`: tambien reporta los ~100 avisos del
+  // artefacto `Column[X]` al ASIGNAR a un atributo de un modelo
+  // (`Cannot assign to attribute "status" for class "ScanFileModel"`). Son el
+  // mismo artefacto que tapa `reportArgumentType` y NO se silencian: mientras
+  // quepa uno de los dos, el panel se llena de ruido, y un panel lleno de ruido
+  // es un panel que nadie lee — que es como se apagan las reglas que si avisaban.
   //
   // Si el panel se vuelve a llenar, el sitio para relajar mas reglas es este
   // archivo, no el codigo.

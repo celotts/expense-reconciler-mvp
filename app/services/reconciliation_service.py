@@ -334,10 +334,14 @@ def _find_best_match(
     Devuelve None solo cuando ningun movimiento se acerca en monto. La
     discrepancia (movimiento en la fecha con otro monto) la busca otra
     funcion, porque es una respuesta distinta a "no hay nada".
+
+    El ganador se guarda en UNA variable y no en dos. Antes eran `elegido` y
+    `elegido_criterio`, que se escribian juntos pero en dos lineas: nada impedia
+    que uno quedara puesto y el otro no, y `BestMatch.criterio` es obligatorio.
+    Un solo `(clave, movimiento, criterio)` hace que esa combinacion sea
+    imposible de construir a medias, en vez de imposible de comprobar despues.
     """
-    mejor: tuple | None = None
-    elegido: BankTransactionModel | None = None
-    elegido_criterio: Criterio | None = None
+    mejor: tuple[tuple, BankTransactionModel, Criterio] | None = None
 
     for bank_tx in bank_transactions:
         amount_diff, date_diff = _diffs(ticket, bank_tx)
@@ -348,13 +352,13 @@ def _find_best_match(
         criterio = _criterio_de(ticket, bank_tx, amount_diff, date_diff)
         clave = criterio.clave()
 
-        if mejor is None or clave < mejor:
-            mejor = clave
-            elegido = bank_tx
-            elegido_criterio = criterio
+        if mejor is None or clave < mejor[0]:
+            mejor = (clave, bank_tx, criterio)
 
-    if elegido is None:
+    if mejor is None:
         return None
+
+    _, elegido, elegido_criterio = mejor
 
     amount_diff, date_diff = _diffs(ticket, elegido)
 

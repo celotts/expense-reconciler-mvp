@@ -16,10 +16,16 @@ from rapidfuzz import fuzz, process
 # coste se pagaba en cada arranque del contenedor.
 #
 # No es "limpiar imports": la razon es que `create_embedding()` no tiene un solo
-# caller y `vector_search.py` vive en `app/modules/expenses/`, que no esta
-# montado en `api_router`. Este archivo es la ruta de la IA que SI corre
-# (extraccion de comprobantes) y no deberia arrastrar las dependencias de una
-# busqueda vectorial que nadie ejecuta.
+# caller. El unico que habia, `vector_search.py`, vivia en `app/modules/expenses/`,
+# que se borro entero (ver `docs/known-issues.md` §3): era codigo muerto y roto,
+# con un `batch_upload` que aceptaba una carpeta del cliente. Este archivo es la
+# ruta de la IA que SI corre (extraccion de comprobantes) y no deberia arrastrar
+# las dependencias de una busqueda vectorial que nadie ejecuta.
+#
+# OJO: esto NO es una regla para el codigo que viene. Si un dia hay un caller
+# real de `create_embedding()`, los imports suben aqui con su medicion —3.83s y
+# 0.68s no son numeros inventados—, y la pregunta pasa a ser si ese caller
+# pertenece a la cadena de vivos o no.
 #
 # El typing del atributo queda como cadena para no necesitar el import:
 # `from __future__ import annotations` no ayuda en anotaciones de atributo
@@ -51,6 +57,7 @@ class AIClient:
     def __init__(self):
         self._openai_client: AsyncOpenAI | None = None
         self._azure_client: AsyncAzureOpenAI | None = None
+        self._ollama_client: httpx.AsyncClient | None = None
         self._local_embedding_model: "SentenceTransformer | None" = None
         self._provider = self._detect_provider()
 
@@ -100,7 +107,12 @@ class AIClient:
 
     @property
     def ollama_client(self) -> httpx.AsyncClient:
-        if not hasattr(self, '_ollama_client') or self._ollama_client is None:
+        # `is None` y no `hasattr`: el atributo se declara en `__init__` como los
+        # otros dos clientes. La version anterior lo creaba solo la primera vez
+        # que se pedia, con `hasattr`, y el type checker no podia deducir su tipo
+        # —no hay nada que ejecutar para comprobarlo y el aviso queda en un
+        # archivo donde nunca se va a ver.
+        if self._ollama_client is None:
             self._ollama_client = httpx.AsyncClient(
                 base_url=settings.OLLAMA_BASE_URL,
                 timeout=httpx.Timeout(settings.OLLAMA_TIMEOUT, connect=10.0)

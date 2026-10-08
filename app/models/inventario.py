@@ -196,8 +196,15 @@ class CompraModel(Base):
 
     __tablename__ = "compras"
     __table_args__ = (
+        # RECHAZADO es un estado y no un borrado. Con `compras.ticket_id` UNIQUE,
+        # borrar la compra libera el ticket y el proximo reescaneo la recrea
+        # desde `registrar_compra`: un bucle que no recuerda que alguien ya la
+        # habia mirado. Con el estado, el veredicto queda escrito y es idempotente.
+        #
+        # NO es `ExtractionStatus.RECHAZADO`: son dos maquinas distintas, y un
+        # ticket puede estar RECHAZADO con su compra EN_REVISION. Ver `EstadoCompra`.
         CheckConstraint(
-            "estado IN ('PROCESAR', 'EN_REVISION', 'PROCESADO')",
+            "estado IN ('PROCESAR', 'EN_REVISION', 'PROCESADO', 'RECHAZADO')",
             name="ck_compras_estado",
         ),
         # La regla que sostiene el diseno: PROCESADO exige firma y fecha, y

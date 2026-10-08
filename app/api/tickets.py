@@ -15,10 +15,16 @@ from app.core.archivo_real import resolver_tipo
 from app.core.subida import leer_ticket
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
-from app.core.enums import ExtractionStatus, SourceType, SpotCheckStatus
+from app.core.enums import ConfidenceSource, ExtractionStatus, SourceType, SpotCheckStatus
 from app.core.time import dias_desde, utcnow
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
+from app.schemas.lectura import (
+    DiagnosticoLecturaResponse,
+    LecturaCamposResponse,
+    PasoLecturaResponse,
+    VeredictoLecturaResponse,
+)
 from app.schemas.ticket import (
     ClasificarLoteRequest, ClasificarLoteResponse,
     DocumentoHistorialResponse,
@@ -32,6 +38,10 @@ from app.services.accuracy_service import (
     Veredicto,
 )
 from app.services.capture import ExtractionUnavailable, capture_ticket
+from app.services.lectura_diagnostico import (
+    ResultadoLectura,
+    diagnosticar_lectura,
+)
 from app.services.document_service import (
     documento_de_ticket, documentos_del_ticket, guardar_documento,
     reemplazar_documento,
@@ -84,6 +94,80 @@ async def _extract_from_upload(
         )
 
 
+def _a_diagnostico(resultado: ResultadoLectura) -> DiagnosticoLecturaResponse:
+    """El dataclass del servicio al schema de la API, en un solo lugar.
+
+    Vive aqui y no en el servicio porque el servicio no importa `schemas/`: la
+    separacion de capas que `scan_service` respeta tambien ("el resumen lo arma como
+    `dict` para no importar schemas; aqui es donde se valida").
+
+    La forma de la respuesta si es un `model_validate` por campo, porque los
+    dataclasses del servicio son planos y los schemas tienen sus defaults. Lo que no es
+    trivial son los `Decimal`: viajan como texto dentro de `_resumen` (el paso), y aqui
+    se pasan como `Decimal` de verdad al schema. Se declara `Decimal` y no `float` en
+    `LecturaCamposResponse`, y por el mismo motivo que en el resto del proyecto: un
+    `Decimal` a texto y de vuelta es exacto, mientras que un `float` de ida ya perdio
+    centavos. Un total que saliera como `4094.8` en vez de `4094.80` haria dudar de si
+    el sistema perdio un centimo o si es el JSON.
+    """
+    datos = None
+    if resultado.extraccion is not None:
+        e = resultado.extraccion
+        datos = LecturaCamposResponse(
+            proveedor=e.provider_name,
+            rfc=e.provider_tax_id,
+            total=e.total_amount,
+            subtotal=e.subtotal,
+            iva=e.tax_amount,
+            ieps=e.ieps_amount,
+            fecha=e.expense_date,
+            categoria=e.category,
+            confianza=e.confidence,
+            origen=e.confidence_source,
+            lineas=e.items,
+            muestra_texto=(e.raw_text or "")[:400],
+        )
+
+    veredicto = None
+    if resultado.veredicto_status is not None:
+        veredicto = VeredictoLecturaResponse(
+            status=resultado.veredicto_status,
+            confidence=resultado.veredicto_confidence or 0.0,
+            confidence_persisted=resultado.veredicto_confidence_persisted,
+            confidence_source=resultado.veredicto_confidence_source
+            or ConfidenceSource.LLM,
+            reasons=resultado.veredicto_reasons,
+            checks_pasados=resultado.checks_pasados,
+            checks_fallidos=resultado.checks_fallidos,
+        )
+
+    return DiagnosticoLecturaResponse(
+        formato_detectado=resultado.formato_detectado,
+        formato_declarado=resultado.formato_declarado,
+        formato_corregido=resultado.formato_corregido,
+        pasos=[
+            PasoLecturaResponse(
+                escalon=p.escalon,
+                motor=p.motor,
+                dio=p.dio,
+                aceptado=p.aceptado,
+                motivo=p.motivo,
+                costo=p.costo,
+            )
+            for p in resultado.pasos
+        ],
+        datos=datos,
+        veredicto=veredicto,
+        error=resultado.error,
+        ticket_id=resultado.ticket_id,
+        ticket_status_actual=resultado.ticket_status_actual,
+        ticket_source_actual=resultado.ticket_source_actual,
+        ticket_leido_en=resultado.ticket_leido_en,
+        coincide_con_guardado=resultado.coincide_con_guardado,
+        guardado=False,
+    )
+
+
 def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
     """Deduce el formato de los BYTES y descarta el que declaro el cliente.
 
@@ -121,7 +205,7 @@ async def create_ticket(
     if not company_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
 
     decision = gate_manual_ticket(
@@ -134,7 +218,7 @@ async def create_ticket(
     if not decision.validation.ok:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Datos invalidos: {decision.validation.as_text()}",
+            detail=f"Datos inválidos: {decision.validation.as_text()}",
         )
 
     ticket = TicketModel(
@@ -148,6 +232,68 @@ async def create_ticket(
     await db.commit()
     await db.refresh(ticket)
     return ticket
+
+
+@router.post(
+    "/extract-diagnostico",
+    response_model=DiagnosticoLecturaResponse,
+    tags=["Tickets"],
+    summary="Lee un comprobante y explica COMO se leyo. No guarda nada.",
+)
+async def extract_diagnostico(
+    file: UploadFile = File(...),
+    file_type: str = Form("pdf"),
+    db: AsyncSession = Depends(get_db),
+    ticket_id: UUID | None = Form(
+        None,
+        description=(
+            "Ticket ya guardado con el que contrastar. Responde 'esta bien leido y "
+            "el problema es otro': si releer daria el mismo estado, el problema no "
+            "es el lector."
+        ),
+    ),
+) -> DiagnosticoLecturaResponse:
+    """Que se leyo, por que se leyo asi, y que haria el gate. Sin escribir nada.
+
+    **Por que existe.** `POST /tickets/extract` devuelve el resultado, y con eso no se
+    puede depurar una lectura mala: si el comprobante cae a `REQUIERE_REVISION`, la
+    respuesta dice que no se pudo leer el proveedor, y no dice si fue que el OCR no
+    vio texto, que el parser no encontro el folio, o que el extractor de vision esta
+    apagado. Esas tres piden arreglos distintos y son indistinguibles desde la
+    respuesta. Un error que se queda en el log del servidor obliga a que alguien vaya a
+    buscarlo, y si nadie busca, el mismo comprobante falla igual mañana.
+
+    **No guarda nada.** Ni ticket, ni documento, ni compra, ni movimiento. Es el
+    mismo criterio que `simular` en `POST /scan`: con `archivar` activo por omision la
+    primera corrida deja la carpeta vacia, y conviene ver eso antes de que pase. Aqui
+    la razon es mas fuerte, porque **repetir el mismo archivo muchas veces no llenaria
+    la base de duplicados** — que es justo lo que pasa al probar con
+    `extract-and-create`.
+
+    Por eso no hay forma de guardar desde aqui: un endpoint que "a veces guarda" es un
+    endpoint del que nadie sabe que hace. Para guardar, `POST /tickets/extract-and-create`
+    o `POST /scan/files/{id}/reprocess`, que son explicitos.
+
+    **El `file_type` no decide nada.** El formato sale de los bytes, como en el resto de
+    la API (regla 3 de `AGENTS.md`), y si el cliente declaro otra cosa, el motivo sale
+    en `formato_corregido`. Un PDF subido como `image` entra por vision y sale con otra
+    confianza; sin ese campo el cliente se lleva un resultado distinto del que esperaba
+    sin enterarse.
+
+    **El veredicto es el del gate de verdad**, no una copia de sus reglas: se corre
+    `gate_ticket` con la lectura y se devuelve lo que habria pasado. Un diagnostico que
+    dijera "pasaria" con checks distintos a los del gate seria el fallo de "el sistema
+    afirma mas de lo que sostiene", en el sitio donde mas dano hace.
+    """
+    content = await leer_ticket(file, file.filename or "")
+    resultado = await diagnosticar_lectura(
+        db,
+        content,
+        declarado=file_type or None,
+        nombre=file.filename,
+        ticket_id=ticket_id,
+    )
+    return _a_diagnostico(resultado)
 
 
 @router.post("/extract", response_model=TicketExtractionResult)
@@ -164,11 +310,21 @@ async def extract_ticket(
     tipo_real = _tipo_real_del_archivo(content, file_type)
     try:
         return await _extract_from_upload(content, tipo_real)
-    except Exception as e:
+    except Exception:
+        # El detalle de la excepcion va al LOG, no a la pantalla. Antes el
+        # `detail` era f"Failed to extract ticket data: {e!s}": en ingles, y con
+        # el texto crudo de la excepcion dentro de la respuesta.
+        #
+        # Eso ultimo es lo que importa. Un `ConnectionError` de Ollama o una
+        # `KeyError` de un campo del modelo son internos: se leen bien en un
+        # log con traceback, y en la pantalla son ruido que ademas hace parecer
+        # que el fallo es del comprobante del usuario cuando no lo es. El log
+        # lleva el traceback entero, asi que la depuracion no pierde nada.
+        logger.exception("No se pudo extraer el ticket de %s", file.filename)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to extract ticket data: {e!s}",
-        )
+            detail="No se pudo leer el comprobante. Revisa que el archivo no este dañado.",
+        ) from None
 
 
 @router.post("/extract-and-create", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
@@ -191,7 +347,7 @@ async def extract_and_create_ticket(
     if not company_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
 
     content = await leer_ticket(file, file.filename or "")
@@ -199,12 +355,19 @@ async def extract_and_create_ticket(
     try:
         extracted = await _extract_from_upload(content, tipo_real)
     except HTTPException:
+        # Un `HTTPException` de `_extract_from_upload` ya es un mensaje pensado
+        # para el usuario (tipo de archivo no soportado, y asi). Se relanza tal
+        # cual y NO entra al `except Exception` de abajo, que es lo que
+        # mantienen estos dos bloques alineados.
         raise
-    except Exception as e:
+    except Exception:
+        # Ver el otro bloque: el traceback va al log y la pantalla recibe un
+        # mensaje que dice que hacer.
+        logger.exception("No se pudo extraer el ticket de %s", file.filename)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to extract ticket data: {e!s}",
-        )
+            detail="No se pudo leer el comprobante. Revisa que el archivo no este dañado.",
+        ) from None
 
     return await _persist_extracted(
         db, company_id, extracted, content,
@@ -445,7 +608,7 @@ async def review_ticket(
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe")
 
     # Correcciones aplicadas durante la revision.
     corrections = review_in.model_dump(
@@ -666,7 +829,7 @@ async def registrar_veredicto(
         select(TicketModel).where(TicketModel.id == ticket_id)
     )).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+        raise HTTPException(status_code=404, detail="El ticket no existe")
 
     if row.extraction_status != ExtractionStatus.AUTO_APROBADO.value:
         raise HTTPException(
@@ -940,7 +1103,7 @@ async def get_documento(
     )).scalar_one_or_none()
     if ticket is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
 
     documento = await documento_de_ticket(db, ticket_id)
@@ -1016,7 +1179,7 @@ async def listar_documentos(
     ).scalar_one_or_none()
     if existe is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
 
     documentos = await documentos_del_ticket(db, ticket_id)
@@ -1091,7 +1254,7 @@ async def put_documento(
     )).scalar_one_or_none()
     if ticket is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
 
     # El mismo lector con el mismo tope que la subida original. No se reusa la
@@ -1165,7 +1328,7 @@ async def get_ticket(
     if not ticket:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found"
+            detail="El ticket no existe"
         )
     return ticket
 
@@ -1182,7 +1345,7 @@ async def update_ticket(
     if not ticket:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found"
+            detail="El ticket no existe"
         )
 
     update_data = ticket_in.model_dump(exclude_unset=True)
@@ -1278,7 +1441,7 @@ async def delete_ticket(
     if not ticket:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found"
+            detail="El ticket no existe"
         )
     
     await db.delete(ticket)

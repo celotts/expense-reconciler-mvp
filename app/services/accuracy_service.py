@@ -29,10 +29,21 @@ from __future__ import annotations
 import math
 import zlib
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import SPOT_CHECK_RATE
+
+if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
+    # `compute_accuracy_report` importa el schema DENTRO de la funcion, y por un
+    # motivo concreto: `app.schemas.ticket` arrastra los modelos, y este modulo
+    # se usa desde el dashboard. En tiempo de ejecucion no hace falta nada (las
+    # anotaciones no se evaluan, hay `from __future__ import annotations`), pero
+    # sin este import el type checker marca F821 sobre un nombre que la funcion
+    # si usa: el error sale en la linea de la anotacion, a cuatrocientas lineas
+    # del import que la resuelve.
+    from app.schemas.ticket import ReporteExactitudResponse
 
 # Intervalo al 95%. Es el nivel con el que se toma la decision de "cumple" o
 # "no cumple", asi que va aqui y no como parametro por defecto disperso: si

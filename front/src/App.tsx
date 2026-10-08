@@ -146,8 +146,12 @@ function AppInner() {
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b">
             <h1 className="text-xl font-bold text-blue-600">Expense Reconciler</h1>
-            <button 
-              className="lg:hidden p-2 text-gray-500 hover:text-gray-700"
+            {/* `p-3` y no `p-2`: el icono de 24 con `p-2` da 40px de alto, y el
+                minimo tactil es 44. Es el unico control sin etiqueta de esta
+                pantalla, asi que ademas necesita el margen para no pegarse al
+                borde al alcanzarlo con el pulgar. */}
+            <button
+              className="lg:hidden p-3 -mr-2 text-gray-500 hover:text-gray-700"
               onClick={() => setSidebarOpen(false)}
             >
               <XIcon />
@@ -180,7 +184,7 @@ function AppInner() {
             </div>
             <button
               onClick={cerrarSesion}
-              className="w-full text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg py-1.5 transition-colors"
+              className="w-full text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg py-3 sm:py-1.5 transition-colors"
             >
               Salir
             </button>
@@ -196,7 +200,8 @@ function AppInner() {
         {/* Mobile header */}
         <header className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b shadow-sm">
           <div className="flex items-center justify-between p-4">
-            <button onClick={() => setSidebarOpen(true)} className="p-2 text-gray-500 hover:text-gray-700">
+            {/* `p-3` y no `p-2`: mismo 40px medido que el de cerrar. */}
+            <button onClick={() => setSidebarOpen(true)} className="p-3 -ml-2 text-gray-500 hover:text-gray-700">
               <MenuIcon />
             </button>
             <h1 className="text-lg font-semibold text-gray-900">Expense Reconciler</h1>

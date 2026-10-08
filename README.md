@@ -2,17 +2,84 @@
 
 ## Visión del Producto
 
-**Una alternativa simple, directa y de demanda real**
+**La evidencia de que el cierre mensual del cliente está bien.**
 
-En lugar de crear un sistema operativo corporativo o una gran plataforma de IA, pensemos en una herramienta utilitaria de nicho. Algo que las personas y los pequeños negocios ya pagan por resolver, pero que hoy funciona mal o es muy costoso.
+### Para quién: el contador, no el comercio
 
-Un ejemplo claro es un **Automatizador Local de Facturas y Control de Gastos para Pequeños Negocios y Freelancers**:
+Este proyecto cambió de comprador a propósito, y la razón está medida.
 
-**El problema real:** Cualquier persona que trabaje de forma independiente o tenga un pequeño comercio (como una taquería, una tienda local o un prestador de servicios) recibe decenas de comprobantes fiscales, tickets o PDFs por correo o WhatsApp. Ordenarlos, sumarlos y pasarlos a una hoja de cálculo o enviárselos al contador es un dolor de cabeza mensual.
+La versión anterior de este README vendía un **automatizador de facturas para pequeños comercios y freelancers**. Eso fue un error de segmentación, no de tecnología: el cliente objetivo del comercio pequeño documenta con **fotos de tickets arrugados**, y la exactitud medida del OCR sobre fotos es **33.3%** (`docs/known-issues.md` §21). Para una taquería, leer `31.50` donde el papel dice `51.50` no es imprecisión: es un número falso en su contabilidad.
 
-**Cómo funciona la solución:** Es una aplicación donde arrastras tus archivos (PDFs o fotos de tickets), y la herramienta de forma automática extrae los datos clave (fecha, monto, concepto), los organiza, los concilia contra movimientos bancarios y te genera un reporte limpio listo para impuestos o para tu contador. Todo corriendo de forma **privada y local** en tu computadora.
+El contador vive el problema al revés. Sus comprobantes llegan como **PDF de proveedor o CFDI**, que es donde el pipeline funciona, y su problema no es leer el papel — es **defender el resultado**.
 
-**Cómo se monetiza:** Licencia única de pago único o suscripción muy accesible (mensual/anual) dirigida a profesionales independientes o pequeños comercios que prefieren pagar una pequeña cantidad antes de pasar horas haciendo cuentas a mano.
+> Un contador nunca es cuestionado por no haber leído un comprobante. Es cuestionado porque un cliente le
+> preguntó *"¿cómo sabe usted que este gasto es real?"* y no tenía nada más que su palabra.
+
+**Ese es el problema que este producto resuelve.** El insumo ya lo produce cualquiera. Lo que falta
+es la evidencia.
+
+### Qué es el producto
+
+Una cadena de custodia para el cierre mensual, corriendo **privada y local**:
+
+```
+archivo → hash → lectura → confianza → muestra del 5% → veredicto firmado → informe
+```
+
+- Los comprobantes se leen y se concilian contra el extracto bancario.
+- Cada lectura automática entra a una **muestra determinista del 5%**, decidida por hash de contenido.
+- Quien revisa esa muestra **queda registrado** (`spot_checked_by` sale del token, nunca de un campo del cuerpo).
+- El documento original **no se altera nunca**: es append-only por trigger de Postgres. Subir una versión nueva no borra la anterior; exige actor y motivo.
+- El estado de conciliación es de tres valores y `DISCREPANCY` **no cuenta como conciliado**, a propósito.
+
+### Lo que este producto NO hace
+
+Es la parte del mensaje que más cuesta escribir y la que más lo distingue. Un competidor con una
+API de visión no puede replicarla sin reconstruirla, porque no es código: es postura.
+
+| El producto SÍ dice | El producto NO dice |
+|---|---|
+| "El 5% de las lecturas automáticas se verificó a mano" | "Leemos el 96% de los comprobantes" |
+| "El intervalo de esta vía es [0.74, 0.99]" | "La exactitud es 96%" |
+| "No hay evidencia suficiente para afirmarlo" | "La exactitud es 0%" |
+| "Estos N pendientes requieren tu criterio" | — |
+| "El tipo de cambio no está disponible" | "El tipo de cambio es 1.0000" |
+
+El veredicto se toma sobre el **intervalo de Wilson entero**, nunca sobre el punto medio, y el
+veredicto global es **el peor de los orígenes**, nunca el promedio. Los tres orígenes se reportan
+aunque estén vacíos, para que un vacío no se lea como un acierto.
+
+**Una foto de ticket no auto-aprueba jamás.** El OCR cambia cifras sin avisar —midido: `51.50`
+leído como `31.50` con 93 de confianza del motor— y la defensa vigente no es un filtro sobre la
+cifra: es que la cifra no se afirma. Entra a la cola y una persona la confirma contra el papel.
+
+### Lo que todavía no existe
+
+- **La Fase 3 (Despacho / Clientes / scoping por usuario)** sigue sin empezar, y
+  es a propósito: se espera a que un contador real diga que usaría esto.
+- **No hay multi-tenancy.** El modelo de uso es una máquina y un contador, por diseño
+  (`docs/contrato-producto.md` §12).
+- **El OCR no extrae líneas**, así que el inventario por foto no tiene entrada
+  (`docs/known-issues.md` §0.c). El PDF de proveedor sí.
+- **No hay empaquetado de escritorio.** Corre en Docker con un presupuesto de 7.7 GB.
+  Un contador no instala Docker, y es el bloqueo de adopción número uno — **no está
+  empezado**.
+
+### Cómo se monetiza — y por qué eso no está decidido
+
+**Esta es la parte menos certaine de todo el README, y es a propósito.**
+
+El modelo es **alto coste por cliente, pocos clientes, alto valor**: modelo dedicado en local,
+muestreo del 5%, firma humana. El SaaS de volumen obligaría a bajar el modelo y el muestreo, es
+decir, a destruir el producto (§12).
+
+**Lo que NO está validado es si el contador mexicano paga por esto.** Está escrito como riesgo
+número uno en `docs/contrato-producto.md` §14, y ningún código lo arregla.
+
+La hipótesis a probar: **licencia única + suscripción anual**, para contadores que llevan varios
+clientes. **Se valida enseñándole el informe a cinco contadores y preguntándoles si se lo
+entregarían a un cliente** — antes de construir la Fase 3, que es la más cara y la más fácil de
+posponer. Ninguna cantidad de trabajo sustituye esa respuesta.
 
 ---
 
@@ -328,13 +395,36 @@ GET /api/v1/reconciliations/export/generic?company_id=...&columns=Fecha,Proveedo
 | **Tickets** | `/api/v1/tickets` | CRUD + `/extract` + `/extract-and-create` + `/review-queue` + `/spot-check` + `/accuracy` |
 | **Bank Transactions** | `/api/v1/bank-transactions` | CRUD + `/import-csv` + `/import-csv-and-create` |
 | **Reconciliations** | `/api/v1/reconciliations` | `/run`, CRUD, `/export/*`, `/mappings` |
+| **Reports** | `/api/v1/reports` | `/cierre-mensual` (JSON) · `/cierre-mensual.pdf` |
 
-> **El informe de cierre mensual aún no existe** (es la Fase 1 de
-> `docs/contrato-producto.md` §4). Lo que sí está listo es el estado que lo hace
-> posible: `cierres_periodo` registra qué periodo se cerró, quién lo marcó
-> (`user_id` desde el token), qué había pendiente en ese momento y la huella del
-> informe que vio. Sin ese estado, un periodo con pendientes no se puede cerrar,
-> y eso no es un defecto: es la regla R3.
+### 6. Cerrar el mes y entregar el informe
+
+Este es el entregable. Es la Fase 1 de `docs/contrato-producto.md` §5, y el eslabón
+que cierra la cadena de custodia.
+
+```bash
+# El JSON es el preview: se revisa ANTES de firmar nada
+GET /api/v1/reports/cierre-mensual?company_id=...&periodo=2026-01
+
+# El PDF es lo que se lleva. El nombre sale con el RFC y el periodo.
+GET /api/v1/reports/cierre-mensual.pdf?company_id=...&periodo=2026-01
+```
+
+| Cómo se comporta | Por qué |
+|---|---|
+| El JSON y el PDF salen del **mismo objeto** | Si no, el contador ve dos números distintos en la misma pantalla |
+| El PDF es **byte-idéntico** para el mismo periodo y la misma base | Un documento cuyos bytes cambian no sirve como evidencia |
+| El firmante sale del **token**, nunca del body | Un informe firmado por quien no lo revisó es peor que ningún informe |
+| Sin evidencia de exactitud dice `SIN_EVIDENCIA` y avisa **en la primera página** | Un `0%` afirmaría que el sistema falló en todo el mes, que es otra cosa |
+| El periodo **no se declara cerrado** si hay tickets sin categoría, sin conciliar o con discrepancias | Es la regla R3 del contrato |
+| Si el periodo ya está cerrado y aparecen pendientes, dice `CERRADO_CON_PENDIENTES` | Alguien escribió en un periodo ya cerrado, y eso hay que verlo |
+
+> **Lo que el informe todavía NO hace:** cerrar el periodo. `cierres_periodo` registra
+> qué periodo se cerró, quién lo marcó (`user_id` desde el token), qué había
+> pendiente en ese momento y la huella del informe que vio — pero **el endpoint que
+> marca el cierre no existe**. El informe *dice* si el periodo puede cerrarse
+> (`puede_cerrarse`, `estado_periodo`); cerrarlo es una decisión y sigue siendo de
+> una persona. Es el paso siguiente de la Fase 4 del contrato.
 
 ---
 
@@ -403,7 +493,7 @@ El endpoint `GET /api/v1/dashboard` es la **vista de aterrizaje** del frontend. 
 ## Tests
 
 ```bash
-# Todos (738 tests - incluye seguridad + regresión)
+# Todos (1400 tests - incluye seguridad + regresión)
 python3 -m pytest tests/ -q
 
 # Unitarios
@@ -417,6 +507,9 @@ python3 -m pytest tests/unit/test_subida.py tests/unit/test_csv_security.py test
 
 # El comprobante original (guardar, servir, y el content-type del cliente)
 python3 -m pytest tests/integration/test_documentos.py tests/integration/test_documento_api.py -v
+
+# El informe de cierre (105 tests: los 10 criterios del contrato + las 7 reglas)
+python3 -m pytest tests/unit/test_reporte_cierre.py tests/integration/test_reporte_cierre.py -v
 ```
 
 ### Verificación por mutación (cada defensa tiene test que muere si se quita)
@@ -424,7 +517,13 @@ python3 -m pytest tests/integration/test_documentos.py tests/integration/test_do
 python3 scripts/verify_capture_mutations.py    # 26 mutaciones, la ruta de captura
 python3 scripts/verify_export_mutations.py    # inyección de fórmulas
 python3 scripts/verify_auth_mutations.py      # auth y forja de veredictos
+python3 scripts/verify_reporte_mutations.py   # 15 mutaciones, el informe de cierre
 ```
+
+> `test_reporte_cierre.py` existe **dos veces**, en `unit/` y en `integration/`: es lo
+> que fija `docs/contrato-producto.md` §5.3. Por eso `pytest.ini` lleva
+> `--import-mode=importlib`; con el modo de python por defecto los dos módulos
+> homónimos abortan el collection entero. No quites esa opción sin renombrar primero.
 
 ### Verificación contra Postgres real
 SQLite no es Postgres en tres cosas que importan: ignora las llaves foráneas

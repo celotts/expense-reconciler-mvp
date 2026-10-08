@@ -59,6 +59,21 @@ class ProductoResponse(ProductoCreate):
     created_at: datetime
 
 
+# El stock de un producto que no tiene movimientos.
+#
+# Existe como constante y no solo dentro de la clase porque hay DOS lugares que
+# necesitan el valor: la anotacion del campo y el `.get(..., <defecto>)` de
+# `app/api/inventario.py`, que lista los productos y rellena el stock que no
+# esta en el kardex. Con el default escrito dos veces, cambiar uno y no el otro
+# deja el listado mocking un valor que el schema no declara — y el type checker
+# lo detecta, porque `model_fields["stock"].default` esta tipado como el centinela
+# `PydanticUndefined | Any` y por eso `dict.get` no resuelve su overload.
+#
+# Es `Decimal` y no `int` por la misma razon que el campo: las cantidades son
+# fraccionables.
+STOCK_SIN_MOVIMIENTOS = Decimal("0")
+
+
 class ProductoConStock(ProductoResponse):
     """Un producto y cuanto hay de el.
 
@@ -67,7 +82,116 @@ class ProductoConStock(ProductoResponse):
     que no sabe si sube o baja.
     """
 
-    stock: Decimal = Decimal("0")
+    stock: Decimal = STOCK_SIN_MOVIMIENTOS
+
+
+class ProductoUpdate(BaseModel):
+    """Lo que se puede corregir de un producto. Todo opcional.
+
+    POR QUE `exclude_unset` Y NO `exclude_none`
+    ------------------------------------------
+
+    Por la diferencia entre "no lo mandaron" y "lo mandaron en null". Un
+    `model_dump()` sin `exclude_unset` trae las dos igual, asi que un
+    `PATCH {"precio_referencia": null}` y un `PATCH {}` se verian iguales en el
+    servicio — y el primero borraria un precio que el segundo no toca. Por eso el
+    router pasa `model_dump(exclude_unset=True)`: solo llegan las claves que
+   ombo en la peticion.
+
+    `verificado` a `false` esta permitido solo para productos de OCR, y la
+    constraint `ck_productos_verificado_ocr` lo prohibe para los demas. Aqui se
+    documenta en vez de silenciarse: el 422/409 lo dice el servicio, con el motivo.
+
+    `extra="forbid"` y no `ignore`: un cliente que manda `stock` —porque lo leyó
+    en la respuesta del listado— recibe un 422 con el nombre del campo en vez de
+    un 200 que finge haberlo guardado. `stock` es la suma del kardex y no se
+    escribe; aceptarlo en silencio seria prometer una escritura que no ocurre.
+
+    NO aparecen `company_id` ni `origen`, y no por descuido:
+
+    - `company_id` moveria el producto con su kardex y el stock pasaria a contarse
+      en la empresa nueva. No hay forma de hacerlo bien sin reescribir el
+      historial, y el kardex es append-only.
+    - `origen` declara si lo puso una persona o si salio de leer un papel. Si
+      fuera editable, un producto de OCR podria declararse MANUAL y salir de la
+    cola de revision sin que nadie lo mirara.
+
+    Que no haya `id` tampoco es casualidad: la PK la pone la base, no el cliente.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str | None = Field(default=None, min_length=1, max_length=200)
+    codigo: str | None = Field(default=None, max_length=64)
+    unidad_medida: str | None = Field(default=None, max_length=20)
+    precio_referencia: Decimal | None = Field(default=None, ge=0)
+    verificado: bool | None = None
+    # Dar de baja sin borrar: el kardex necesita el producto vivo. No hay DELETE.
+    activo: bool | None = None
+
+
+class MovimientoCreate(BaseModel):
+    """Una fila del kardex escrita a mano: una venta, o una correccion de conteo.
+
+    LOS TRES CAMPOS QUE DICEN QUE PASA, Y POR QUE NO SE ADIVINAN
+    ------------------------------------------------------------
+
+    `tipo` + `es_ajuste` + `cantidad` positiva. Los tres son necesarios porque el
+    signo del stock no cabe en un solo campo, y esta es la razon por la que
+    existen:
+
+      - `tipo` es el signo. `SALIDA` resta, `ENTRADA` suma. Lo dice
+        `TipoMovimiento.suma_stock`.
+      - `es_ajuste` es la procedencia. Sin el, una `ENTRADA` seria indistinguible de
+        una compra, y una compra es lo unico que puede sumar stock por la via de
+        `confirmar_compra`. Con el, la fila queda con `referencia_tipo='AJUSTE'` y
+        se puede leer despues como "esto lo escribio una persona, no una compra".
+      - `cantidad` es el numero. Positiva siempre: una cantidad negativa seria una
+        devolucion, que es una SALIDA con la cantidad positiva. La constraint
+        `ck_movimientos_cantidad_positiva` lo prohibe en la base igual.
+
+    LAS CUATRO COMBINACIONES QUE TIENEN SENTIDO
+
+        es_ajuste=false, tipo=SALIDA   -> una venta. Resta stock.
+        es_ajuste=false, tipo=ENTRADA  -> RECHAZADO con 409. Sumaria stock sin
+                                         compra y sin que nadie mirara el papel.
+        es_ajuste=true,  tipo=SALIDA   -> "conto de mas". Resta stock.
+        es_ajuste=true,  tipo=ENTRADA  -> "conto de menos". Suma stock.
+
+    La cuarta es la que hace necesario `es_ajuste`: una correccion que SUMA es
+    indistinguible de una compra si lo unico que se guarda es el tipo. Por eso el
+    servicio rechaza la `ENTRADA` sin `es_ajuste` y la acepta con el — la
+    distincion esta ahi, no en un nombre de enum nuevo.
+
+    `extra="forbid"` para lo mismo que en `ProductoUpdate`: un cliente que reenvia
+    el `actor` que vio en la respuesta recibe un 422 con el nombre del campo, en
+    vez de un 200 que finge haber guardado quien autorizo. El autor sale del token.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    producto_id: UUID
+    tipo: TipoMovimiento
+    cantidad: Decimal = Field(..., gt=0)
+    # True = correccion de conteo. Es lo que pone `referencia_tipo='AJUSTE'` y lo
+    # que permite una ENTRADA: sin el, la entrada seria una compra disfrazada.
+    es_ajuste: bool = False
+    # La venta viene de un comprobante de venta, si lo hay. NULL es lo normal.
+    referencia_id: UUID | None = None
+    descripcion_origen: str | None = Field(default=None, max_length=300)
+
+
+class RechazarCompraRequest(BaseModel):
+    """El cuerpo de rechazar. El motivo es opcional y va al log, no al estado.
+
+    Quien rechaza sale del token, nunca del body: un `rechazada_por` en la
+    peticion seria una puerta para descartar la compra de otra empresa. Ver
+    `ConfirmarCompraRequest`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    motivo: str | None = Field(default=None, max_length=500)
 
 
 class CompraItemResponse(BaseModel):

@@ -35,13 +35,20 @@ Lo que esta cascada no hace, a proposito:
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections.abc import Awaitable, Callable
-from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING, Protocol
 
 from app.core.config import settings
 from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
-from app.services.ocr import OCRNoDisponible
+
+# `ResultadoOCR` viene en el mismo import que `OCRNoDisponible` y no le cuesta
+# nada: el modulo ya se carga y es solo un dataclass (pytesseract se resuelve
+# dentro de `leer_imagen`). Por eso sus anotaciones pueden ir SIN comillas:
+# importar el modulo no ejecuta el OCR.
+from app.services.ocr import OCRNoDisponible, ResultadoOCR
 from app.services.parser_service import (
     TicketExtractionResult,
     _parse_receipt_text,
@@ -49,16 +56,48 @@ from app.services.parser_service import (
     render_pdf_pages,
 )
 
+if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
+    # `ai_extractor` arrastra `ai_client` al cargarse, y ese es el modulo que
+    # `capture` no quiere tocar al importarse. Por eso va aqui y no arriba, y por
+    # eso las anotaciones que lo nombran van entrecomilladas: sin este import el
+    # type checker marca F821 sobre un nombre que el archivo si usa.
+    from app.services.ai_extractor import ExtractedInvoice
+
 logger = logging.getLogger(__name__)
 
-ExtractFn = Callable[[bytes, str], Awaitable["ExtractedInvoice"]]
+
+class ExtractFn(Protocol):
+    """Como se le pide una lectura por imagen al extractor.
+
+    Es un `Protocol` y no `Callable[[bytes], Awaitable[...]]` porque
+    `AIExtractor.extract_from_image` es un metodo `async`: un `Callable` solo
+    puede describir funciones, y hace falta poder nombrar el tipo sin importar
+    `ai_extractor` —que arrastra `ai_client` al cargarse, y ese es el modulo
+    que `capture` no quiere tocar al importarse—.
+
+    Antes esta firma llevaba `mime_type: str = "image/png"`, porque el extractor
+    lo aceptaba. Ya no lo acepta: el parametro no se usaba en el cuerpo del
+    extractor y se borro (ver `AIExtractor.extract_from_image`). Sin ese
+    parametro muerto, un `Callable` de un argumento habria bastado — y el tipo de
+    la cascada ya no nombra un valor que el extractor ignoraba.
+
+    El `/` del parametro no es cosmetico: sin el, el protocolo prometeria que
+    se puede llamar `extract_from_image(content=...)`, y el extractor real se
+    llama `image_bytes`. `pyright` acepta las dos formas, `mypy` solo la que
+    coincide en el nombre — y el que no acepta reporta un error donde el otro
+    dice que esta bien, que es la peor forma de tener dos type checkers.
+    """
+
+    def __call__(self, content: bytes, /) -> Awaitable[ExtractedInvoice]: ...
+
+
 ExtractTextFn = Callable[[str], Awaitable["ExtractedInvoice"]]
 
 # El OCR es sincrono (Tesseract y EasyOCR no son awaitables) y devuelve su
 # propio tipo. Se tipa aparte de los otros dos extractores a proposito: es el
 # unico que no es `async`, y declararlo `async` obligaria a envolverlo en un
 # hilo sin ganar nada.
-OcrFn = Callable[[bytes], "ResultadoOCR"]
+OcrFn = Callable[[bytes], ResultadoOCR]
 
 
 class ExtractionUnavailable(RuntimeError):
@@ -79,6 +118,175 @@ class ExtractionUnavailable(RuntimeError):
 # la centinela, es no vacia) y la cola muestra "AI_DISABLED" como si fuera el
 # nombre de un comercio. Se normalizan en un solo punto: el mapeo.
 SENTINELS_SIN_PROVEEDOR = frozenset({"UNKNOWN", "ERROR_PARSING", "AI_DISABLED"})
+
+# Encabezados de un comprobante. Si el "proveedor" que salio de la lectura es
+# uno de estos, lo que se leyo fue la etiqueta de una casilla del papel.
+#
+# Medido en los 7 comprobantes reales, con `confidence_source=ocr`:
+#
+#   CANT. TOTAL              234.00   <- el encabezado del total, como proveedor
+#   Y ARTICULO TOT           117.00   <- "articulo" y "tot" (total truncado)
+#   PRUNE MIEN FIC 104 Py LEN As
+#
+# Los tresirements tienen un total *correcto* detras, que es lo que hace el
+# dano: el ticket pasa la aritmetica del gate con un proveedor que no existe, y
+# eso no se ve en ninguna revision porque el numero cuadra.
+#
+# La comparacion es por TOKEN EXACTO, no por subcadena, y por eso
+# "Ticketmaster" y "Total Fitness" no entran: "ticketmaster" no es "ticket".
+# Se acepta el falso positivo de "Total Fitness" a proposito: rechazar cuesta
+# una llamada a vision, y aceptar basura cuesta una mentira en la base.
+PALABRAS_DE_ENCABEZADO = frozenset({
+    "total", "totales", "subtotal", "base", "iva", "ieps", "isr",
+    "impuesto", "impuestos", "importe", "monto", "cantidad", "cant",
+    "articulo", "articulos", "descripcion", "producto", "productos",
+    "fecha", "hora", "folio", "factura", "comprobante", "recibo",
+    "rfc", "curp", "cambio", "efectivo", "tarjeta", "debito", "credito",
+    "transferencia", "transferencia", "cuenta", "vendedor", "cajero",
+    "cajera", "ticket", "venta", "consumidor",
+})
+
+# Palabras que delatan una DIRECCION leida como si fuera el nombre del negocio.
+#
+# Medido: `gt Edson Nte hunera 1235` con total 51.50. El sistema guardo la
+# direccion del emisor como proveedor. `Nte` es "norte" abreviado, que es como
+# los comprobantes mexicanos escriben la calle.
+#
+# "norte" NO esta en la lista a proposito: "Comercial del Norte SA de CV" es un
+# nombre de empresa real, y abreviado a token no seria lo mismo que la palabra.
+PALABRAS_DE_DIRECCION = frozenset({
+    "calle", "avenida", "ave", "nte", "colonia", "cp",
+    "tel", "telefono", "direccion", "domicilio",
+})
+
+# Y LA LISTA DE ARRIBA ES CORTA A PROPOSITO
+# ----------------------------------------
+# Una primera version metia tambien `esquina`, `local`, `bodega`, `entre`, `col`
+# y `av`, y **`Taqueria La Esquina` —que es una empresa real de este repo—
+# salia marcada como basura**. "Esquina" y "Local" son palabras de un nombre de
+# comercio tan corrientes como de una direccion, asi que no distinguen nada.
+#
+# `Nte` si se queda: es la abreviatura de "norte" que escriben los comprobantes
+# en la linea del domicilio, y no aparece en nombres de empresa.
+#
+# Lo que no se puede es hacer una lista de palabras que ya no de contexto: el
+# nombre de un comercio se parece a una palabra de direccion porque las dos son
+# palabras. Lo que si distingue a la basura es la FORMA.
+
+# Articulos y preposiciones que ABIERTEN un nombre de empresa. `La Comer` y
+# `El Puerto` son comercios reales, asi que un arranque de dos letras no basta
+# para condemnar: hay que mirar que el token NO sea uno de estos.
+ARTICULOS = frozenset({"la", "el", "los", "las", "de", "del", "un", "una"})
+
+
+def _tokens_de(nombre: str) -> list[str]:
+    """El nombre del proveedor partido en palabras, sin acentos ni puntuacion.
+
+    Sin acentos porque el mismo rótulo sale como `ARTICULO` de un PDF y
+    `Artículo` de una foto, y son la misma casilla. Sin puntuacion porque
+    `CANT. TOTAL` y `CANT TOTAL` son el mismo encabezado.
+
+    Lo que sale de aca no se guarda: es solo el insumo del juicio de "¿esto es un
+    nombre o es basura?". El nombre que se persiste es el que dio la lectura,
+    sin tocar.
+    """
+    sin_acentos = "".join(
+        c for c in unicodedata.normalize("NFD", nombre.lower())
+        if unicodedata.category(c) != "Mn"
+    )
+    return [t for t in re.split(r"[^a-z0-9]+", sin_acentos) if t]
+
+
+def _nombre_parece_basura(nombre: str) -> bool:
+    """¿El "proveedor" de la lectura es ruido y no un comercio?
+
+    Existe por el motivo del benchmark de los 7 comprobantes reales: el criterio
+    de utilidad era "proveedor distinto de UNKNOWN y total mayor que cero", y eso
+    lo cumple `gt Edson Nte hunera 1235` con un total de 51.50. El ticket se
+    guardaba con una direccion como proveedor y con `confidence_source=ocr`, sin
+    que nadie escalara a vision, que era el unico escalon que podia leerlo bien.
+
+    **Rechaza de mas, no de menos.** Un falso positivo cuesta una llamada a
+    vision y un `_mejor_de` que se queda con la mejor de las dos. Un falso
+    negativo cuesta una fila en la base que afirma que el gasto fue en "CANT.
+    TOTAL", y eso no lo detecta nadie despues.
+
+    Contenido
+    ---------
+    1. Un centinela del modelo (`UNKNOWN`, `AI_DISABLED`...).
+    2. Una palabra de direccion inequivoca: `CALLE`, `NTE`, `DOMICILIO`.
+    3. Que TODAS las palabras con sustancia sean encabezados de casilla del
+       papel. `CANT. TOTAL` son dos y es basura; `Total Fitness` es una palabra
+       buena con un encabezado pegado, y es un gimnasio. El que decide es
+       "todas", no "alguna": `Ticketmaster` empieza con "ticket" y no es un
+       encabezado.
+
+    Forma
+    -----
+    4. Un numero suelto que no sea el arranque. `PRUNE MIEN FIC 104 Py LEN As`
+       tiene un `104` que no es parte de ningun nombre; `7 Eleven` abre con uno
+       y es una tienda de verdad.
+    5. Arrancar con un fragmento que no sea articulo. `A ~ NERCASTAR`,
+       `gt Edson Nte...`, `y UPO COMERCIAL DSW S.A.`: el OCR empezo a media
+       linea. `La Comer` si abre con articulo y se salva.
+    6. Una palabra de una sola letra en medio. `UN POLE Tag mA ee ki` trae una
+       `m` y una `a` sueltas. No se perdona por ser articulo: solo se perdonan
+       si ABREN el nombre, y aqui van en medio.
+    7. Que **todas** las palabras sean de tres letras o menos. `AAA AI` es ruido;
+       "La Esquina" tiene una palabra de siete y se salva. A proposito "todas" y
+       no "la mayoria": `OXXO SA DE CV` tiene tres de cuatro cortas y es valido.
+
+    Y un minimo de cuatro caracteres, porque por debajo no hay un comercio que
+    quepa.
+
+    LO QUE ESTA MEDIDO Y NO SE ATRAPA
+    ---------------------------------
+    `Pog ae — TAPA` se escapa: dos palabras cortas y una buena, sin ninguna
+    senal de las de arriba. Se acepta la laguna, porque las reglas que lo
+    cazarian empiezan a rechazar nombres reales, que es el peor de los dos
+    errores.
+    """
+    limpio = (nombre or "").strip()
+    if not limpio:
+        return True
+
+    if limpio.upper() in SENTINELS_SIN_PROVEEDOR:
+        return True
+
+    tokens = _tokens_de(limpio)
+    if not tokens:
+        return True
+
+    if sum(len(t) for t in tokens) < 4:
+        return True
+
+    if any(t in PALABRAS_DE_DIRECCION for t in tokens):
+        return True
+
+    # Un numero que no abre el nombre. "7 Eleven" abre con uno y es una tienda.
+    if any(t.isdigit() for t in tokens[1:]):
+        return True
+
+    # Un arranque de una o dos letras. El digito se perdona porque "7 Eleven",
+    # "24 Seven" y "3M" son nombres de verdad y abren con un numero.
+    if (
+        len(tokens[0]) <= 2
+        and tokens[0] not in ARTICULOS
+        and not tokens[0].isdigit()
+    ):
+        return True
+
+    if any(len(t) == 1 for t in tokens[1:]):
+        return True
+
+    if all(len(t) <= 3 for t in tokens):
+        return True
+
+    con_sustancia = [t for t in tokens if len(t) > 2 and t not in ARTICULOS]
+    if con_sustancia and all(t in PALABRAS_DE_ENCABEZADO for t in con_sustancia):
+        return True
+
+    return False
 
 # Fallos que son del sistema y no del documento. La diferencia importa porque
 # se reportan distinto: `AI_DISABLED` es una configuracion (el extractor esta
@@ -245,12 +453,33 @@ def confianza_por_campos_ocr(
     )
 
 
-def _confianza_de_evidence(source: ConfidenceSource) -> float:
+class TablaDeConfianza(Protocol):
+    """Una de las dos tablas de confianza de arriba, con la misma firma.
+
+    Es un `Protocol` y no `Callable[[bool, bool, bool], float]` por una razon
+    concreta: quien la llama nombra los tres argumentos (`tiene_rfc=`,
+    `tiene_subtotal=`, `tiene_fecha=`), y un `Callable` sin nombres no puede
+    prometerlos. Ademas fija que las dos tablas son intercambiables, que es
+    justo lo que `_tabla_de_confianza_para` decide.
+    """
+
+    def __call__(
+        self, tiene_rfc: bool, tiene_subtotal: bool, tiene_fecha: bool
+    ) -> float: ...
+
+
+def _tabla_de_confianza_para(source: ConfidenceSource) -> TablaDeConfianza:
     """Un quinto escalon para las tablas de confianza: de donde salio el texto.
 
     Va en un solo punto a proposito. Si cada llamador eligiera la tabla, un
     escalon nuevo podria marcar con la tabla de PDF lo que leyo de una foto, y
     el numero seria mas alto que el de un PDF con la misma evidencia.
+
+    OJO con lo que devuelve: **la tabla, no el numero**. El numero sale de
+    llamarla. La anotacion decia `-> float` y por eso el editor marcaba la
+    llamada siguiente como "float is not callable": el codigo nunca estuvo mal,
+    la declaracion si — y esa es la clase de defecto que no se ve en la suite
+    porque aqui no hay nada que ejecutar, solo que mentir.
     """
     return confianza_por_campos_ocr if source is ConfidenceSource.OCR else confianza_por_campos
 
@@ -280,14 +509,13 @@ def _rfc_en_forma(valor: str | None) -> str | None:
     return None
 
 
-def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
+def invoice_to_result(invoice: ExtractedInvoice) -> TicketExtractionResult:
     """Traduce lo que devuelve el modelo a lo que el gate entiende.
 
     Vive aqui y no en la API porque es parte de la ruta de captura: el worker
     de carga masiva tambien lo necesita, y si cada capa tuviera el suyo,
     acabarian normalizando los centinelas de forma distinta.
     """
-    from app.services.ai_extractor import ExtractedInvoice
 
     nombre = (invoice.provider_name or "").strip()
     if nombre in SENTINELS_SIN_PROVEEDOR or not nombre:
@@ -324,7 +552,7 @@ def invoice_to_result(invoice: "ExtractedInvoice") -> TicketExtractionResult:
     )
 
 
-def motivo_de_fallo_del_modelo(invoice: "ExtractedInvoice") -> str | None:
+def motivo_de_fallo_del_modelo(invoice: ExtractedInvoice) -> str | None:
     """Razon en español de un fallo del modelo, o None si no hay fallo.
 
     Se separa de la normalizacion de centinelas a proposito. "El proveedor no
@@ -366,10 +594,29 @@ def _es_extraccion_util(resultado: TicketExtractionResult) -> bool:
     se gasta, las reglas pueden acertar el encabezado sin que haya nada que leer
     linea por linea, y ahi exigir items seria pedirle al modelo un gasto de
     nuevo sin motivo.
+
+    Y UN PROVEEDOR QUE ES BASURA NO ES UN PROVEEDOR
+    ===============================================
+
+    La tercera condicion es la que faltaba, y aparecio midiendo los 7
+    comprobantes reales. Con las dos primeras, `gt Edson Nte hunera 1235` con
+    total 51.50 contaba como lectura util: el nombre no era `UNKNOWN` y el total
+    era positivo. La cascada lo devolvia sin consultar a vision, se guardaba con
+    una direccion como proveedor y con `read_by=ocr`.
+
+    Los 7 salieron con `confidence_source=ocr`. Ninguno llego al modelo de vision,
+    que estaba cargado y sin usar, porque para el sistema un numero plausible era
+    suficiente.
+
+    Con `_nombre_parece_basura`, esa lectura ya no es util y cae al escalon
+    siguiente, que es el unico que puede mirar el papel en vez de adivinar sobre
+    los errores de Tesseract.
     """
-    if resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0:
-        return False
-    return True
+    return not (
+        resultado.provider_name == UNKNOWN_PROVIDER
+        or resultado.total_amount <= 0
+        or _nombre_parece_basura(resultado.provider_name)
+    )
 
 
 def _exige_items(resultado: TicketExtractionResult) -> bool:
@@ -423,6 +670,16 @@ def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
         1 if resultado.total_amount > 0 else 0,
         tiene_lineas,
         1 if resultado.provider_name != UNKNOWN_PROVIDER else 0,
+        # Un proveedor que no es basura vale MAS que uno que solo "no es
+        # UNKNOWN". Sin esta cuarta posicion, dos lecturas con el mismo total se
+        # desempatan por las lineas y el RFC, y el nombre se decide al azar:
+        # `gt Edson Nte hunera 1235` ganaba el empate contra `CREMERIA` si las
+        # dos traian lineas.
+        #
+        # Va DESPUES del total a proposito. Un total bueno con un nombre
+        # inutil sigue siendo mejor que un total cero con un nombre perfecto,
+        # porque el total es el numero que se concilia contra el banco.
+        0 if _nombre_parece_basura(resultado.provider_name) else 1,
         1 if resultado.provider_tax_id else 0,
         1 if resultado.subtotal is not None else 0,
     )
@@ -439,7 +696,7 @@ def _marcar_por_reglas(
     que importa: no es la certeza del modelo, es el conteo de evidencia.
     """
     resultado.confidence_source = source
-    resultado.confidence = _confianza_de_evidence(source)(
+    resultado.confidence = _tabla_de_confianza_para(source)(
         tiene_rfc=bool(resultado.provider_tax_id),
         tiene_subtotal=resultado.subtotal is not None,
         tiene_fecha=resultado.expense_date is not None,
@@ -498,7 +755,7 @@ def _mejor_de(
 # ---------------------------------------------------------------------------
 
 
-def _ocr_por_defecto(datos: bytes) -> "ResultadoOCR":
+def _ocr_por_defecto(datos: bytes) -> ResultadoOCR:
     """El OCR real. Se resuelve aqui y no al importar, por dos razones.
 
     Una: `app.services.ocr` no importa pytesseract ni EasyOCR al cargarse, pero
@@ -737,7 +994,7 @@ async def _vision_pdf(
     errores_de_pagina: list[str] = []
     for indice, pagina in enumerate(paginas):
         try:
-            invoice = await extract_from_image(pagina, mime_type="image/jpeg")
+            invoice = await extract_from_image(pagina)
         except Exception as exc:
             # El motivo se acumula ademas de registrarse en el log. La cola
             # tiene que poder decir por que no se pudo leer, no solo "no se

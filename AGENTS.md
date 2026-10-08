@@ -24,7 +24,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 
 | Capa | Ubicación |
 |---|---|
-| API | `app/api/` — 9 routers bajo `/api/v1` |
+| API | `app/api/` — 10 routers bajo `/api/v1` |
 | Captura | `app/services/capture.py` → cascada de 5 escalones |
 | OCR local | `app/services/ocr.py` → Tesseract, lazy |
 | Escáner | `app/services/scan_service.py` → recorre `TICKETS_INPUT_DIR` |
@@ -34,11 +34,12 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Auth | `app/core/security.py` (scrypt N=2\*\*17 + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
+| Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **1141** — 864 unit + escáner, 277 integration, 1 skip |
+| Tests | **1400** — 1014 unit + escáner, 386 integration, 2 skip |
 
 ### Rutas que existen
-`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario`
+`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports`
 Sin auth: solo `GET /health` y `POST /api/v1/auth/login`.
 
 ### Dos máquinas de estado — no las confundas
@@ -75,10 +76,70 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 1141
+python3 -m pytest tests/ -q           # 1400
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 ```
+
+> **`--import-mode=importlib` en `pytest.ini`, y por qué está.** Hay dos archivos
+> llamados `test_reporte_cierre.py`, uno en `unit/` y otro en `integration/`: los
+> dos nombres los fija `docs/contrato-producto.md` §5.3, así que no se pueden
+> renombrar. Con el modo `prepend` de python dos módulos con el mismo nombre base
+> colisionan y pytest aborta el collection entero. La alternativa clásica
+> (`__init__.py` en cada carpeta) cambiaría el layout de todo el árbol de tests por
+> un problema de un solo par de archivos.
+
+### El informe de cierre mensual — el documento que faltaba
+`app/services/reporte_cierre.py` + `app/api/reports.py` (`/api/v1/reports`).
+**Es la Fase 1 del contrato** y es el eslabón que cierra la cadena de custodia
+(«hoy existe entera salvo el último eslabón: el papel»).
+
+**Un objeto, dos salidas.** `construir_reporte()` devuelve un
+`ReporteCierreMensual`; el JSON y el PDF salen de ÉL. Si el PDF calculara su
+propia exactitud, un día diría 94% y el tablero 92%, y el contador vería dos
+números en la misma pantalla. En el PDF **no se recalcula nada**.
+
+**El informe NO tiene `emitido_en`.** Tiene `fecha_referencia`, derivado del
+periodo. Es lo que hace posible **R4** (mismo periodo + misma base → PDF
+byte-idéntico): `fpdf2` sella `datetime.now()` en cada archivo, y sin
+`set_creation_date` dos descargas del mismo mes difieren SIEMPRE. Un documento
+cuyos bytes cambian no sirve como evidencia de nada.
+
+**`puede_cerrarse` es un `@computed_field`, no un campo.** Se deriva de
+`pendientes.hay_pendientes` porque era un campo aparte y se desincronizaba: el PDF
+imprimía literalmente `El periodo NO se puede declarar cerrado: None.` Esa fila es
+un dato inventado en un documento firmado. Un campo derivado no puede mentir
+sobre sus propias entradas.
+
+**El cuarto estado del periodo: `CERRADO_CON_PENDIENTES`.** `cerrado` (el hecho,
+de `cierres_periodo`) y `puede_cerrarse` (lo que R3 permite afirmar hoy) pueden
+discrepar: alguien cerró enero y después se metió un ticket de enero. Con tres
+estados eso se reportaba como `NO_CIERRA`, que es **falso** —enero sí está
+cerrado en el registro— y tapaba el hallazgo más útil del informe.
+
+**`DISCREPANCY` y el ticket nunca conciliado bloquean el cierre.** Un gasto del
+mes sin fila en `reconciliations` está *sin conciliar* aunque tenga categoría: si
+nadie lo cruzó contra el banco no se sabe que el dinero salió.
+
+**El «sin categoría» del informe cuenta SÓLO el periodo**, y es lo contrario de
+`analitica.pendientes_de_clasificar`, que cuenta todo el histórico porque su
+pregunta es «cuánto trabajo tengo pendiente». Aquí la pregunta es «puedo declarar
+cerrado ESTE mes»: si no, ningún periodo cerraría nunca. Los pendientes de enero
+salen en el informe de enero.
+
+**Un comparativo contra un mes en curso NO es concluyente, y lo dice.** Con el
+corte al mismo día (`contrato-producto.md` §5.1) comparar 6 días contra 31
+produce una caída que no existe. `ComparativoMes.conclusivo=False` + `nota` en la
+primera página.
+
+**Las fuentes core de PDF son latin-1.** `fpdf2` con Helvetica — sin fuente
+Unicode embebida, para que R4 no dependa de la versión del `.ttf` que haya en
+cada máquina. El precio es `_latin1()`: una razón social con un guion largo tumba
+la generación con `FPDFUnicodeEncodingException`. Un `?` es preferible a un 500.
+
+**Y `pdf.output()` devuelve `bytearray` en fpdf2 2.8**, no `bytes`:
+`bytes(pdf.output())` o starlette revienta al codificar, en una ruta cuyo JSON sí
+funciona.
 
 ### Verificación por mutación — correr tras tocar defensa
 Cada defensa de seguridad tiene un test que **muere si quitas la defensa**. Si tocas una,
@@ -92,14 +153,18 @@ python3 scripts/verify_auth_mutations.py            # 42 mutaciones: auth y cost
 python3 scripts/verify_documentos_mutations.py      # 11 mutaciones: el papel no se altera
 python3 scripts/verify_reconciliation_mutations.py  # 18 mutaciones
 python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
+python3 scripts/verify_reporte_mutations.py          # 17 mutaciones: informe de cierre + DDL
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
-python3 scripts/verify_postgres_inventario.py       # 10 defensas: kardex, firma, índices
+python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
+#   Las 3 del signo se pueden romper a proposito: revirtiendo `IF NEW.tipo = 'SALIDA'`
+#   a `IF NEW.tipo = 'ENTRADA'` en `db/migrations/0013_compras_rechazables.sql`, el
+#   script tiene que salir con 1. Se comprobó. Ver `docs/known-issues.md` §26.
 ```
 
 ### Inventario: la compra que suma stock exige una persona
 Cuatro tablas nuevas (`0010`): `productos`, `compras`, `compra_items`, `movimientos_inventario`.
 
-**Los tres estados son `EstadoCompra`, NO `ExtractionStatus`.** Son dos máquinas distintas:
+**Los cuatro estados son `EstadoCompra`, NO `ExtractionStatus`.** Son dos máquinas distintas:
 `ExtractionStatus` responde *"cómo se leyó el papel"*; `EstadoCompra` responde *"el inventario ya
 contó esto"*. Un ticket puede estar `AUTO_APROBADO` y su compra en `EN_REVISION`, porque que la
 lectura del encabezado sea buena no dice nada de las líneas. **El gate nunca midió la confianza
@@ -107,7 +172,26 @@ de una línea** — `confianza_por_campos` solo mira los campos del encabezado.
 
 ```
 PROCESAR  → EN_REVISION  → PROCESADO   ← solo este suma stock
+                 ↓
+            RECHAZADO  ← "esto no es una compra", y se puede deshacer
 ```
+
+### La compra se puede rechazar, y `PROCESADO` no se puede deshacer
+Cuatro reglas con test que muere si las quitas:
+
+1. **`RECHAZADO` es un estado, no un borrado.** `compras.ticket_id` es UNIQUE: borrar
+   deja el ticket libre y el próximo reescaneo vuelve a crear la compra desde
+   `registrar_compra`. El rechazo se deshacía solo cada vez que se tocaba el comprobante.
+2. **`confirmar_compra` respeta RECHAZADO.** Escribir el estado no basta: lo que lo hace
+   una decisión es que la única operación que mueve stock lo mire. Sin ese `if`, el
+   rechazo se deshacía llamando a `confirmar`.
+3. **Una compra PROCESADA no se rechaza ni se reabre.** Ya sumó stock y el kardex es
+   append-only por trigger: `UPDATE` nunca, `DELETE` nunca. El 409 dice que la vía es el
+   `AJUSTE`, porque sin ese camino en el mensaje quien lo lea busca una pantalla que no
+   existe.
+4. **`rechazar` es idempotente.** Dos veces no es error: es la misma operación, y un
+   cliente que reintenta tras un timeout debe poder hacerlo sin recibir un 409 que no
+   sabe leer.
 
 **Por qué el movimiento es humano, y no prudencia genérica.** Todo esto está medido:
 - El OCR sobre fotos reales da **33.3%** de exactitud (`AGENTS.md`; los cuatro caminos para
@@ -134,6 +218,63 @@ Cuatro reglas con test que muere si la quitas:
 
 **El stock NO es una columna.** Es `SUM(movimientos_inventario)`; `stock_de()` lo calcula. Una
 columna `stock` es una copia, y una copia se desincroniza siempre sin que nadie lo note.
+
+### El signo del kardex es una sola pregunta, y el SQL tiene que decir lo mismo
+`TipoMovimiento.suma_stock` es la fuente de verdad: **`SALIDA` resta, todo lo demás suma.**
+`stock_de()` la consulta y el trigger de Postgres la replica en SQL con
+`CASE WHEN tipo = 'SALIDA' THEN -cantidad ELSE cantidad END`.
+
+Antes **no coincidían**, y era el defecto más caro que quedaba en pie:
+- el trigger hacía `IF tipo = 'ENTRADA' THEN suma ELSE resta`, o sea que **`AJUSTE` restaba**
+  mientras `stock_de()` lo sumaba;
+- y su `SUM` de filas previas ignoraba el signo, así que con `ENTRADA 10` y `SALIDA 4`
+  creía que había 14 en vez de 6.
+
+**Consecuencia medida:** con 6 de stock, una `SALIDA` de 7 (que deja **-1**) pasaba el
+trigger. La defensa contra el stock negativo **no defendía**. Era inerte porque la única
+vía que escribía en el kardex era `confirmar_compra`, y esa solo produce `ENTRADA`: el
+`ELSE` del trigger no se ejecutaba nunca. `POST /inventario/movimientos` es el camino que
+lo volvió vivo. Arreglado en `0013`.
+
+**`AJUSTE` no tiene signo, y no se le da.** "Se contó de más" y "se contó de menos" son el
+mismo `AJUSTE` para quien lee y signos opuestos para el stock, y `cantidad` es positiva por
+`ck_movimientos_cantidad_positiva`. Por eso un ajuste se escribe **como `ENTRADA` o `SALIDA`
+con `referencia_tipo='AJUSTE'`**, y el enum conserva `AJUSTE` solo como nombre de
+`referencia_tipo`: de dónde viene la fila y qué le hace al stock son dos preguntas
+distintas.
+
+### `ENTRADA` sin compra se rechaza con 409, no con 422
+`registrar_movimiento` no acepta una `ENTRADA` cuya `referencia_tipo` no sea `'AJUSTE'`.
+Si existiera un camino que suma stock sin compra, sin línea y sin que nadie mirara el
+papel, **`compras.ticket_id` UNIQUE dejaría de ser la garantía de que el inventario solo
+refleja compras de verdad.** Con `es_ajuste=true` sí se acepta, y es lo que hace posible
+una corrección que *suma*.
+
+El stock insuficiente se comprueba **en Python, no solo en el trigger**, porque los tests
+corren sobre SQLite y SQLite no tiene triggers: si la comprobación viviera solo en la
+base, la suite pasaría y el fallo aparecería en producción como un `IntegrityError` sin
+traducir. El 409 lleva los dos números —"hay 6 y pediste restar 10"— porque sin ellos no
+se puede decidir si la cantidad estaba mal o el stock.
+
+### `productos` se corrige, se da de baja, y **no se borra**
+`PATCH /inventario/productos/{id}` es lo que hace falta para que la cola
+(`?solo_sin_verificar=true`) se pueda **vaciar**: verificar, renombrar, precio, dar de baja.
+
+Con test que muere si se quita:
+- **Renombrar recalcula `nombre_normalizado`** por el `@validates` del modelo. Sin eso,
+  limpiar la cola fusiona dos filas hoy y el siguiente reescaneo crea un tercero.
+- **No hay `DELETE`.** `movimientos_inventario.producto_id` tiene `ON DELETE CASCADE`:
+  borrar el producto borra su historial y `stock_de` deja de poder responder por él. Se
+  da de baja con `activo=false`.
+- **`company_id` y `origen` no son editables.** Mover un producto de empresa sacaría su
+  kardex con él (el stock se contaría en las dos); y declarar `origen=MANUAL` sacaría un
+  producto de OCR de la cola sin que nadie lo mirara.
+- **`verificado=true` en un OCR sin código se rechaza.** Un código de barras es una
+  identidad; una descripción leída es una opinión. Con código sí se puede.
+
+`ProductoUpdate` usa `exclude_unset` en el router, no `exclude_none`: la diferencia entre
+"no lo mandaron" y "lo mandaron en `null`". Con `exclude_none`, un `PATCH {"nombre": "x"}`
+borraría el precio y el 200 llegaría igual.
 
 **Las líneas sin producto NO crean un producto automáticamente.** Con OCR al 33%, un catálogo
 armado solo se llena de variantes (`Reginen de` / `Regin de`) que el sistema contaría como tres
@@ -363,8 +504,22 @@ sin leerse bien. Con OCR al 33.3% ese número es alto y es **visible**, que es l
 una decisión y un silencio.
 
 **Usa `simular: true` antes de la primera corrida real.** La primera deja la carpeta de entrada
-vacía, y conviene ver eso antes de que ocurra. No crea ni mueve nada; devuelve la ruta de destino
-de cada archivo y si su lectura quedó pendiente.
+vacía, y conviene ver eso antes de que ocurra. Devuelve la ruta de destino de cada archivo y si su
+lectura quedó pendiente.
+
+**`simular` NO es un borrador en seco, y el repo lo decía mal hasta que un test lo medió.** Este
+documento decía "no crea ni mueve nada". La mitad de "no crea" era **falsa**: `simular` apaga el
+**archivado del disco**, pero el ticket **se escribe igual**. No hay debate posible sobre cuál de
+los dos es el código: la función que borra se llama con `simular` (`_borrar_o_archivar`,
+`scan_service.py:1654`), y la que persiste el ticket no lo consulta en ninguna parte.
+
+**La consecuencia es práctica y es la que importa:** hacer una corrida de prueba con `simular`
+**deja los tickets en la base**, mezclados con los de verdad, y se reconcilian por igual. Para ver
+qué hay en la carpeta sin dejar rastro hay que apuntar a una **empresa de prueba**, o borrar
+después. Un campo que se llama "simular" y que sí escribe no es una trampa de la documentación:
+es el nombre, y por eso `test_simular_no_es_lo_que_dice_la_documentacion` fija el comportamiento
+real. Si algún día se decide que `simular` no escriba nada, ese test es el que tiene que cambiar
+con la decisión — no al revés.
 
 **`TICKETS_SCAN_OUTPUT_DIR` vacía significa "hermano de la carpeta de entrada"**, no una ruta fija.
 Es lo que hace que la omisión funcione fuera de Docker: una ruta de contenedor (`/tickets_scan`)
@@ -382,7 +537,7 @@ atribuido a otra empresa **no se mueve**.
 **de la API viva**. No lo edites a mano: se pierde en la siguiente regeneración.
 
 ```bash
-make insomnia         # regenerar (52 peticiones, 9 carpetas)
+make insomnia         # regenerar (74 peticiones, 10 carpetas)
 make insomnia-check   # sale 1 si está desfasado — para cuando añades una ruta
 ```
 
@@ -391,12 +546,22 @@ las 52 que expone hoy, y —esto es lo que la hacía inútil— **sin un solo he
 Como `api_router.py` pone el token obligatorio a nivel de router, 51 de 52 rutas respondían 401.
 Un archivo que no sabe que hay rutas nuevas no avisa; por eso es generado.
 
-Dos cosas que el generador respeta y que no hay que romper al tocarlo:
-- **`password` sale vacía.** El archivo está versionado con remoto en GitHub; una contraseña
-  escrita ahí queda publicada. Mismo criterio que `.env` (regla de *Reglas que no se rompen*).
+Cuatro cosas que el generador respeta y que no hay que romper al tocarlo:
+- **`password` y `contrasena_actual` salen vacías.** El archivo está versionado con remoto en
+  GitHub; una contraseña escrita ahí queda publicada. Mismo criterio que `.env` (regla de
+  *Reglas que no se rompen*), extendido al cliente de API.
 - **`base_url` ya trae `/api/v1` y las rutas del spec también.** Sumar las dos da
   `/api/v1/api/v1/...`, que es un 404 limpio, no un error de sintaxis. Es la misma trampa que
   documenta `api_router.py` vista desde el cliente, y salió al verificar, no al leer.
+- **`RUTAS_CON_CONTRASENA` es `(método, ruta)`, no solo la ruta.** `GET /usuarios/{id}` va con
+  `UsuarioActual` a propósito —ver una cuenta no compromete a nadie— y ponerle la cabecera
+  sería aplicar la regla de más, que es como una defensa se vuelve decorativa. La lista está
+  escrita a mano porque el header es un parámetro de **dependencia**, y FastAPI no lo declara
+  en la operación: aparece en la cadena de dependencias, que el spec no expone. **Consecuencia
+  concreta: anadir una ruta ahí es manual, y si se olvida, la petición sale sin la cabecera.**
+- **`usuario_id` no es la cuenta propia.** La última cuenta activa no se puede dar de baja
+  (409), así que probar `PATCH /usuarios/{id}` sobre la única cuenta real no probaría nada.
+  Hay que crear una cuenta de prueba y pegar su id.
 
 ### Medir la exactitud de las fotos
 El muestreo del 5% entra **solo** sobre tickets `AUTO_APROBADO`, y un ticket de OCR nunca
@@ -448,6 +613,19 @@ Dos detalles que no son detalles:
 SQLite no es Postgres: ignora FKs por omisión, acepta `BYTEA` de 12 MB sin quejarse,
 e ignora los índices `postgresql_where`. Un test verde sobre SQLite no dice nada de esas tres cosas.
 
+**Y tampoco de los TRIGGERS.** SQLite no tiene triggers de `BEFORE INSERT` con lógica de
+negocio, así que `trg_movimientos_no_negativo` —la defensa que impide que el inventario
+quede en negativo— es invisible para la suite. Por eso `verify_postgres_inventario.py`
+existe, y por eso la comprobación de stock insuficiente está **también** en Python
+(`registrar_movimiento`): no como reemplazo del trigger, sino para que el 409 diga
+"hay 6 y pediste restar 10" en vez de dejar que reviente el `INSERT`.
+
+**El otro modo de fallo es al revés: una defensa presente y no probada.** El trigger de
+stock negativo *funcionaba* y aun así no defendía, porque contaba `AJUSTE` como resta y su
+`SUM` ignoraba el signo. Nadie lo notaba porque la única vía que escribía en el kardex era
+`confirmar_compra`, y esa produce `ENTRADA` solamente: el `ELSE` del trigger no se
+ejecutaba nunca. Documentado en `docs/known-issues.md` §26, con la medición.
+
 ```bash
 python3 scripts/verify_postgres_capture.py
 python3 scripts/verify_postgres_documentos.py
@@ -455,7 +633,19 @@ python3 scripts/verify_postgres_auth.py
 python3 scripts/verify_postgres_gate.py
 python3 scripts/verify_postgres_reconciliation.py
 python3 scripts/verify_postgres_spot_check.py
+python3 scripts/verify_postgres_inventario.py
 ```
+
+Desde dentro del contenedor, que es donde está la red de Postgres:
+
+```bash
+docker compose exec expense-api python scripts/verify_postgres_inventario.py \
+  --base-url "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres-reconciler:5432/expense_db"
+```
+
+El puerto `5432`, no `5434`: el `5434` es el mapeo al **host**, y desde el contenedor
+Postgres se llama por su nombre de servicio. Por eso el script no trae la URL buena por
+omisión y el mensaje de error lo dice.
 
 ---
 
@@ -580,6 +770,42 @@ costumbre — el porqué está en el comentario junto al código.
     defiende contra los años mal leídos — eso es `date_in_future` del gate —; defiende
     contra que la fecha del documento sea la de otra cosa.
 
+20. **El signo del kardex es `SALIDA` resta y nada más.**
+    `TipoMovimiento.suma_stock` es la única fuente de verdad; `stock_de()` la consulta y el
+    trigger de Postgres la replica en SQL. Antes **no coincidían** —el trigger restaba
+    `AJUSTE` y su `SUM` ignoraba el signo— y la consecuencia medida era que una `SALIDA`
+    que dejaba el stock en **-1 pasaba el trigger**. Era inerte porque solo
+    `confirmar_compra` escribía en el kardex, y esa produce `ENTRADA` solamente.
+    Ver *El signo del kardex* arriba y `verify_postgres_inventario.py`.
+
+21. **Una `ENTRADA` del kardex solo viene de `confirmar_compra`, o de un `AJUSTE`.**
+    `registrar_movimiento` rechaza con 409 cualquier otra. Sin ese `if` existiría una vía
+    que suma stock sin compra, sin línea y sin que nadie mirara el papel, y
+    `compras.ticket_id` UNIQUE dejaría de garantizar que el inventario solo refleja
+    compras de verdad.
+
+22. **Un `PATCH` usa `exclude_unset`, nunca `exclude_none`.**
+    Es la diferencia entre "no lo mandaron" y "lo mandaron en `null`". Con `exclude_none`,
+    un `PATCH {"nombre": "x"}` sobre un producto **borraría su precio** y el 200
+    llegaría igual: la respuesta dice que se guardó y el dato desapareció. En
+    `ProductoUpdate`, `UsuarioUpdate`, `AccountingMappingUpdate`.
+
+23. **Quien firma sale del token, nunca del cuerpo.**
+    `confirmada_por`, `producto_asignado_por`, `revisado_por`, `actor` y `cerrado_por`
+    salen de `UsuarioActual`. Aceptarlos en el body sería
+    una puerta para firmar la entrada al inventario, la conciliación o el cierre de
+    **otra** empresa — y `AGENTS.md` ya advierte que no hay multi-tenancy. Los schemas de
+    escritura usan `extra="forbid"` para que un cliente que reenvíe la fila entera reciba
+    un 422 con el nombre del campo en vez de un 200 que finge haberlo guardado.
+
+24. **Dar de baja ≠ borrar, en `productos` y en `users`.**
+    En los dos, el `DELETE` borraría evidencia: `productos` porque
+    `movimientos_inventario.producto_id` tiene `ON DELETE CASCADE` (se lleva el historial
+    y `stock_de` deja de poder responder por él), `users` porque `is_active` es lo que
+    `get_current_user` comprueba **en cada petición** y una baja tiene que surtir efecto
+    inmediato sin borrar la fila. La firma (`confirmada_por`, `revisado_por`,
+    `cerrado_por`) es texto y no FK por lo mismo: tiene que sobrevivir a la baja.
+
 ---
 
 ## Trampas verificadas
@@ -640,11 +866,15 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   strings se rompe por cosas que no son corrección (`"4094.80"` contra `"4094.8"`, una fecha
   con otro formato, un RFC con espacios).
 
-- **`app/modules/expenses/` es código muerto y además roto.** Su router no está en
-  `api_router.py`; `crud.py:136` referencia `SourceType.AUTO`, que no existe en el enum;
-  `pipeline.py:224-229` usa `select`/`and_` sin importar. No lo montes sin arreglarlo primero:
-  su `batch_upload` acepta un `folder_path` del cliente y hace `Path().glob()` — lectura
-  arbitraria de directorios del servidor.
+- **`app/modules/expenses/` se borró.** Era código muerto **y** roto: su router no estaba en
+  `api_router.py`, `crud.py:136` referenciaba `SourceType.AUTO` (que no existe en el enum) y
+  `pipeline.py` usaba `select`/`and_` sin importar. Encima su `batch_upload` aceptaba un
+  `folder_path` del cliente y hacía `Path().glob()` — lectura arbitraria de directorios.
+  No lo resucites: la lectura por PDF con OCR y visión ya la hace `capture.capture_ticket`,
+  que es la ruta montada y la que tiene las mutaciones que dies si algo se quita.
+  La lección está en `docs/known-issues.md` §3: **un módulo muerto no se arregla, se borra o
+  se declara muerto.** Arreglado, parece montable, y montarlo abre la puerta que por eso
+  estaba muerto.
 
 - **`analitica.py` y `hallazgos.py` son servicios, no routers.** No aparecer en
   `api_router.py` es lo correcto: se invocan desde `app/api/dashboard.py:52` y
@@ -655,7 +885,35 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 
 - **No hay multi-tenancy.** `get_current_user` no recibe `company_id` ni hay scoping por empresa:
   cualquier usuario autenticado lee y escribe empresas ajenas pasando un `company_id` arbitrario.
-  Es correcto para "una máquina, un contador" y **no** lo es para multiusuario.
+  Es correcto para "una máquina, un contador" y **no** lo es para multiusuario. Por eso
+  cada servicio que toca datos de empresa compara el `company_id` **dentro del servicio**
+  (`asignar_producto`, `registrar_movimiento`, y el `PATCH` de producto): es la última
+  línea antes de que un dato de una acabe en el kardex de otra.
+
+- **`/usuarios` es el primer router que compromete a OTRO usuario, y no hay roles.**
+  `PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` existían solo como script de
+  CLI hasta ahora. Sin `is_admin` ni scoping, **cualquier cuenta autenticada puede dar de
+  baja a cualquier otra** — disponibilidad, no confidencialidad. Lo que sí acota el daño:
+  exigen `X-Contrasena-Actual` (`deps.get_current_user_verificado`), y la última cuenta
+  activa no se puede dar de baja (409). Lo que **no** se hizo, y sigue abierto: decidir
+  *quién puede tocar a quién*. Eso necesita columnas de rol, y una comprobación de rol
+  sin el modelo sería fingir que hay control de acceso donde solo hay autenticación.
+  Ver `docs/known-issues.md` §28.
+
+- **Cambiar la contraseña pide DOS contraseñas, y son distintas.** El header
+  `X-Contrasena-Actual` es la de *quien llama* (prueba que no hay un token robado); el
+  `contrasena_actual` del cuerpo es la de *la cuenta que se cambia* (prueba que sabes la
+  de esa cuenta). Con una sola, un atacante con un token robado rotaría la clave de
+  cualquiera y el dueño ya no podría recuperarla. Y cambiar la contraseña **no invalida los
+  tokens**: no hay `jti` ni lista de revocación, así que un token emitido antes sigue
+  vivo 8 horas (`SECRET_KEY`, regla 16).
+
+- **`get_current_user_verificado` se declara con `Depends(get_current_user)`, no llamando
+  a `_usuario_del_token`.** Los overrides de dependencia reemplazan por *dependencia*, no
+  por nombre de función: si se llamara al helper directo, `tests/conftest.py` no podría
+  alcanzar estos endpoints sin un token real, y serían los únicos no probables de todo el
+  repo. Con `Depends`, el override llega y la comprobación de la contraseña sigue siendo
+  real — el test puede decir "el token vale" sin decir "la contraseña vale".
 
 - **`REVIEW_CONFIDENCE = 0.60` es decorativo.** Las dos ramas producen `REQUIERE_REVISION`;
   solo cambia la etiqueta en `reasons`.
@@ -679,9 +937,27 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 - **El fallo al guardar el documento no tumba la captura.** `guardar_documento` usa un
   SAVEPOINT y devuelve `False`. El ticket sobrevive sin su comprobante.
 
-- **`db/init.sql` y los modelos divergen en un punto.** `bank_transactions.company_id` es
-  nullable en `init.sql:126` y `NOT NULL` en `models/bank_transaction.py:24`. Los tests corren
-  contra SQLite construyendo desde los modelos, así que no lo detectan.
+- **`db/init.sql` y los modelos divergen, y el test verde no lo ve.** La suite
+  construye el esquema **desde los modelos** (`conftest.py`), nunca desde
+  `init.sql` — que solo corre una vez, con el volumen vacío. Los dos archivos
+  pueden estar "bien" por separado.
+
+  **Encontrado y cerrado:** `tickets.ieps_amount`, `compra_items.iva_linea` y
+  `compra_items.ieps_linea` (de la migración `0012`) faltaban en `init.sql`, y
+  `ticket_persistence.py:114` escribe `ieps_amount` en cada INSERT: base nueva →
+  `column does not exist` → 500 por comprobante, ticket perdido.
+  **Ya no puede volver en silencio:** `tests/unit/test_init_sql_espeja_los_modelos.py`.
+
+  > Si añades una columna: **la migración Y el `init.sql`, o nada.** Y si
+  > escribes un test que la verifique, verifica la **declaración** (`ADD COLUMN` o
+  > la columna dentro de un `CREATE TABLE`), no el nombre. Los tres intentos
+  > anteriores fallaron por esto y están escritos en el propio archivo.
+
+- **Siguen abiertas dos divergencias del mismo tipo**: `bank_transactions.company_id`
+  es nullable en `init.sql:126` y `NOT NULL` en `models/bank_transaction.py:24`;
+  y el índice de `users.email` es funcional (`lower(email)`) en el DDL y de
+  columna cruda en el modelo. La del email **es correcta**: el funcional es el que
+  vale, porque el login normaliza a minúsculas antes de buscar.
 
 - **Hay dos `.env` y sólo uno se versiona.** `.env.example` es la plantilla (versionada);
   `.env` lleva `POSTGRES_PASSWORD` **y toda la configuración** de la app; `.env.local` lleva la

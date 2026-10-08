@@ -224,7 +224,12 @@ class TestLoQueNoExiste:
     ):
         r = await async_client.get(f"/api/v1/tickets/{uuid4()}/documento")
         assert r.status_code == 404
-        assert "Ticket not found" in r.json()["detail"]
+        # El mensaje va en espanol y con tilde porque es lo unico que ve el
+        # usuario de un 404. Antes afirmaba "Ticket not found", en ingles, y
+        # ademas el MISMO 404 de ticket salia como "Ticket no encontrado" en
+        # otros tres endpoints: el texto dependia de que ruta se llamara. Ver
+        # `docs/known-issues.md` §29.
+        assert r.json()["detail"] == "El ticket no existe"
 
     @pytest.mark.asyncio
     async def test_un_ticket_sin_documento_lo_dice_con_un_motivo(

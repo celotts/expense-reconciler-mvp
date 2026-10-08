@@ -93,8 +93,14 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "un documento ilegible se pierde en vez de ir a la cola",
         "app/services/capture.py",
-        "    if resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0:\n        return False\n    return True",
-        "    if resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0:\n        return False\n    return resultado.total_amount > 1000000",
+        # OJO: esta mutacion apuntaba a la forma antigua de `_exige_items`
+        # (`if ...: return False` / `return True`), que Ruff pidio reducir a un
+        # solo `return not (...)`. Al no encontrar el patron, el script la
+        # reportaba como SOBREVIVIDA —que es mentira: no se probo nada—. El
+        # `??` que ahora imprime distingue las dos cosas. Si se vuelve a cambiar
+        # esta linea, esta mutacion hay que reapuntarla.
+        "    return not (\n        resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0\n    )",
+        "    return not (\n        resultado.provider_name == UNKNOWN_PROVIDER and resultado.total_amount <= 0\n    )",
         [
             "tests/unit/test_capture.py::TestPdfConTexto",
             "tests/unit/test_capture.py::TestTiposDeArchivo",
@@ -169,11 +175,11 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "se reintroduce la ruta de PDF en la capa de IA",
         "app/services/ai_extractor.py",
-        '    async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:',
+        '    async def extract_from_image(self, image_bytes: bytes) -> ExtractedInvoice:',
         "    async def extract_from_pdf(self, pdf_bytes: bytes) -> ExtractedInvoice:\n"
         '        return await self._extract_from_text("x", "pdf_text")\n\n'
         "    async def _pdf_to_images(self, pdf_bytes: bytes) -> list:\n        return []\n\n"
-        '    async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:',
+        '    async def extract_from_image(self, image_bytes: bytes) -> ExtractedInvoice:',
         ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
     ),
     (
@@ -280,6 +286,7 @@ def _correr(objetivos: list[str]) -> tuple[bool, str]:
 def main() -> int:
     print("Verificacion por mutacion de la ruta de captura\n")
     supervivientes: list[str] = []
+    obsoletas: list[str] = []
 
     base_ok, salida = _correr(["tests/"])
     if not base_ok:
@@ -298,9 +305,20 @@ def main() -> int:
 
             fuente = ruta.read_text(encoding="utf-8")
             if original not in fuente:
-                print(f"  ?? {nombre}: el patron original no aparece en {archivo}")
-                print(f"     (el codigo cambio; la mutacion esta obsoleta)")
-                supervivientes.append(nombre)
+                # Distinto de "sobrevivio". Una mutacion que no se puede aplicar
+                # NO PROBO NADA, y reportarla como sobreviviente mezcla dos
+                # cosas opuestas: una defensa que quitaste y nadie nota, y una
+                # defense que sigue ahi y que nadie volvio a comprobar. Lo
+                # segundo se ve como un fallo de los tests y el primero no, que
+                # es justo al reves de como hay que verlos.
+                #
+                # Es lo que AGENTS.md avisa para `verify_capture_mutations.py`:
+                # si mueves el codigo que este script muta, reapunta la
+                # mutacion. El aviso salia en un `??` que se leia como ruido.
+                print(f"  ??  {nombre}: NO PROBADA — el patron original no aparece")
+                print(f"      en {archivo}. El codigo cambio y la mutacion quedo obsoleta.")
+                print(f"      Reapuntala: una defensa sin verificar parece una defensa que funciona.")
+                obsoletas.append(nombre)
                 continue
 
             copia = Path(temporal) / ruta.name
@@ -320,10 +338,21 @@ def main() -> int:
                 print(f"  murio       {nombre}")
 
     print()
+    if obsoletas:
+        print(f"{len(obsoletas)} de {len(MUTACIONES)} mutaciones NO SE PROBARON (patron obsoleto):")
+        for nombre in obsoletas:
+            print(f"  - {nombre}")
+        print("  Reapuntalas antes de contar esto como verde.")
+        print()
+
     if supervivientes:
-        print(f"{len(supervivientes)} de {len(MUTACIONES)} mutaciones sobrevivieron:")
+        print(f"{len(supervivientes)} de {len(MUTACIONES)} mutaciones SOBREVIVIERON:")
         for nombre in supervivientes:
             print(f"  - {nombre}")
+        print("  Estas SI se aplicaron y ningun test las nota.")
+        return 1
+
+    if obsoletas:
         return 1
 
     print(f"Las {len(MUTACIONES)} mutaciones mueren. Los tests miran lo que dicen mirar.")

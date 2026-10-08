@@ -35,13 +35,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # El codigo ya resuelve solo el device: device="cuda" if torch.cuda.is_available() else "cpu"
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG TORCH_VERSION=2.9.1
-RUN pip install --no-cache-dir "torch==${TORCH_VERSION}" --index-url "${TORCH_INDEX_URL}" && \
+# `torchvision` va aqui y no en `requirements.txt`, por el mismo motivo que
+# torch: tiene que salir del indice CPU.
+#
+# `easyocr` depende de `torchvision`, y `torchvision` fija una version EXACTA de
+# torch. Si torchvision llegara por `requirements.txt`, pip lo resolveria desde
+# PyPI, cuya build de `torch` por omision trae CUDA — y como la version fijada no
+# coincidiria, pip reinstalaria torch. El resultado seria la imagen de 2 GB
+# convertida en ~4.5 GB de paquetes `nvidia-*` que en linux/arm64 no sirven para
+# nada, que es justo lo que la linea 33 dice evitar.
+#
+# La pareja se verifico en PyPI, no se adivino: `torchvision 0.24.1` declara
+# `torch==2.9.1`, que es exactamente el `TORCH_VERSION` de arriba. Si se cambia
+# uno hay que cambiar el otro, y el build falla en vez de dejar una imagen 2.5 GB
+# mas grande y lenta.
+ARG TORCHVISION_VERSION=0.24.1
+RUN pip install --no-cache-dir \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+        --index-url "${TORCH_INDEX_URL}" && \
     pip install --no-cache-dir --upgrade pip
 
-# Resto de dependencias. torch ya cumple "torch>=2.3.0" de requirements.txt,
-# asi que pip lo deja intacto y no vuelve a bajar la version con CUDA.
+# Resto de dependencias. torch y torchvision ya cumplen lo que piden, asi que
+# pip los deja intactos y no vuelve a bajar la version con CUDA.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# El build falla aqui si easyocr trajo una build de CUDA por la puerta de atras.
+# Es una comprobacion de una linea que convierte un error de 4.5 GB en un error
+# de build: el sintoma (una imagen que pesa el doble) aparece DESPUES, cuando ya
+# se pagaron la descarga y el tiempo.
+#
+# Lo que se comprueba es `torch.version.cuda is None`, NO el `+cpu` del
+# `__version__`. La primera version de esta linea buscaba `'+cpu'` en las dos
+# versiones y el build fallo con `AssertionError: 0.24.1`: `torchvision` no
+# lleva sufijo de build en el `__version__` aunque venga del indice CPU.
+#
+# `torch.version.cuda` si es la pregunta correcta: es `None` en la build CPU y
+# una cadena de tipo `'12.1'` en la de CUDA. Es la propiedad que decide si hay
+# paquetes nvidia-* detrás, no la-etiqueta.
+RUN python -c "import torch, torchvision; \
+    assert torch.version.cuda is None, f'torch trae build CUDA: {torch.__version__}'; \
+    print('torch', torch.__version__, '| torchvision', torchvision.__version__, '| sin CUDA: ok')"
 
 # Se comprueba aqui y no en el arranque de la app. Si el binario faltara, el
 # build falla en el CI, que es donde se puede actuar, y no a las 3 de la tarde

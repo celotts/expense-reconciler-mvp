@@ -4,30 +4,32 @@ AI Document Extraction Service - Extract structured data from invoices/receipts 
 import json
 import base64
 import io
+import logging
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import date
 
-from app.services.ai_client import ai_client, AIResponse
+from app.services.ai_client import AIProvider, ai_client, AIResponse
 from app.core.config import settings
 
 # HEIC/HEIF: el producto se define por "la foto del telefono" y un iPhone
 # produce HEIC, asi que sin esto el primer usuario no puede subir su
-# comprobante. `pillow-heif` trae la libreria nativa en su propia wheel (no
-# hace falta `apt-get`), y `register_heif_opener` engancha el decodificador de
-# PIL para que `Image.open` acepte el formato como si fuera cualquier otro.
+# comprobante.
 #
-# Es opcional a proposito: si la dependencia no esta, el import falla y se sigue
-# funcionando sin HEIC, que es como estaba antes. Un `try/except ImportError` de
-# mas de un segundo en el arranque de un modulo que no se usa en cada request.
-try:  # pragma: no cover - depende del entorno
-    import pillow_heif
-
-    pillow_heif.register_heif_opener()
-    _HEIC_DISPONIBLE = True
-except ImportError:  # pragma: no cover
-    _HEIC_DISPONIBLE = False
+# El registro del decodificador vive en `app/core/heif.py` y este modulo solo lo
+# consulta. Antes el `register_heif_opener()` estaba AQUI, y eso hacia que el
+# soporte de HEIC dependiera de que otro modulo se importara primero: quien
+# llegara al OCR sin pasar por `ai_extractor` —un script, un test, un refactor—
+# no podia abrir una foto de iPhone. Ver el porque en `app/core/heif.py`.
+#
+# `pillow-heif` trae la libreria nativa en su propia wheel (no hace falta
+# `apt-get`), y `register_heif_opener` engancha el decodificador de PIL para que
+# `Image.open` acepte el formato como si fuera cualquier otro.
+#
+# Es opcional a proposito: si la dependencia no esta, `DISPONIBLE` queda en
+# `False` y se sigue funcionando sin HEIC, que es como estaba antes.
+from app.core.heif import DISPONIBLE as _HEIC_DISPONIBLE
 
 
 def _a_jpeg(image_bytes: bytes) -> bytes | None:
@@ -40,6 +42,18 @@ def _a_jpeg(image_bytes: bytes) -> bytes | None:
     Devolver `None` en vez de un except silencioso es el punto de esta funcion.
     El llamador necesita distinguir "no pude abrirlo" de "no habia nada que
     abrir", y solo el segundo es una imagen valida de 0 bytes.
+
+    Y el motivo del fallo se registra, porque "no se pudo leer la imagen" y "esta
+    maquina no puede leer HEIC" piden acciones opuestas: la primera es un
+    archivo malo, la segunda es un `pip install`. Sin esto, el segundo caso se
+    reportaba como "muchas fotos fallan", que es como se escribe un sintoma en
+    vez de una causa.
+
+    `_HEIC_DISPONIBLE` es la unica razon por la que este modulo importa
+    `app.core.heif`: importarlo ES el registro del decodificador, porque
+    `register_heif_opener()` corre al importarse ese modulo. Sin esta linea,
+    HEIC deja de funcionar en silencio y nadie lo ve hasta que alguien sube una
+    foto de iPhone. Por eso no es un import que "no se usa": se consulta.
     """
     try:
         from PIL import Image as PILImage
@@ -49,11 +63,19 @@ def _a_jpeg(image_bytes: bytes) -> bytes | None:
         max_w = 1600
         if img.width > max_w:
             new_h = int(img.height * max_w / img.width)
-            img = img.resize((max_w, new_h), PILImage.LANCZOS)
+            img = img.resize((max_w, new_h), PILImage.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
-    except Exception:
+    except Exception as exc:
+        if not _HEIC_DISPONIBLE:
+            logger.warning(
+                "no se pudo decodificar la imagen y pillow-heif no esta "
+                "instalado; si es un HEIC de iPhone, ese es el motivo (%s)",
+                exc,
+            )
+        else:
+            logger.warning("no se pudo decodificar la imagen: %s", exc)
         return None
 
 
@@ -190,8 +212,18 @@ class AIExtractor:
     def __init__(self):
         self.enabled = settings.AI_ENABLED
         # Detect provider from ai_client
-        self._provider = getattr(ai_client, "_provider", "openai")
-        if hasattr(self._provider, "value"):
+        # `AIProvider` es un `str` Enum, asi que comparar contra "ollama"/"openai"
+        # funciona con las dos formas. La anotacion declara las DOS porque el
+        # `getattr` devuelve un `str` si el atributo no existe, y sin ella el
+        # `hasattr(...).value` de abajo parecia un error del type checker
+        # cuando es justamente la comprobacion que lo hace seguro.
+        self._provider: AIProvider | str = getattr(ai_client, "_provider", "openai")
+        # `isinstance` y no `hasattr(self._provider, "value")`: los dos dicen lo
+        # mismo en ejecucion, pero `hasattr` no le da al type checker la prueba
+        # de que `.value` existe —marca "Attribute value is unknown" sobre una
+        # linea que funciona—, y el `isinstance` ademas documenta que lo que se
+        # busca es "es un enum o es la cadena de texto".
+        if isinstance(self._provider, AIProvider):
             self._provider = self._provider.value
 
     @property
@@ -208,12 +240,21 @@ class AIExtractor:
             return settings.OLLAMA_VISION_MODEL
         return "gpt-4o"
 
-    async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:
+    async def extract_from_image(self, image_bytes: bytes) -> ExtractedInvoice:
         """Extract from image (photo of receipt/invoice)
 
-        El `mime_type` de entrada ya no decide nada: el formato sale de los
-        bytes, en `app/core/archivo_real.py`, y llega aqui ya normalizado. Este
-        metodo solo tiene que abrirlo, reescalar y convertir a JPEG.
+        Solo recibe los bytes, y a proposito. Antes llevaba un
+        `mime_type="image/png"` que no se usaba NADA en el cuerpo: el formato sale
+        de los bytes, en `app/core/archivo_real.py`, y llega aqui ya
+        normalizado. Este metodo solo tiene que abrirlo, reescalar y convertir
+        a JPEG.
+
+        quitarlo no fue cosmetico. Con el parametro ahi, la firma era
+        `extract_from_image(bytes, mime_type)`, y el tipo de la cascada no puede
+        expresar "el segundo es opcional" —`Callable` no lo tiene—: habia que
+        fingir que era obligatorio, o envolverlo en un `Protocol` entero para
+        volver a decir lo mismo. Un parametro muerto costs un `Protocol` de 20
+        lineas y una confusion que llega hasta el editor.
 
         Un archivo que no se puede decodificar NO se manda al modelo. Antes
         caia en un `except: pass` y los bytes crudos iban a `base64` declarados
@@ -352,18 +393,38 @@ class AIExtractor:
                     data[field] = _clean_null(data[field])
 
             # Convert Decimal fields (guard against malformed values)
-            def _to_decimal(v: Any) -> Decimal:
+            #
+            # `None` cuando el modelo trae algo que no es un numero, y **no**
+            # `Decimal("0")`. La diferencia es la misma que ya separa
+            # `ieps_amount` de un 0 (ver el campo de arriba): `0.00` es "el papel
+            # dice que esto vale cero" y `None` es "no lo lei o no lo lei bien".
+            # Rellenar con cero hace que una lectura imposible sea
+            # indistinguible de una lectura real de cero, que es exactamente el
+            # dato que el gate no puede verificar con nada.
+            #
+            # Lo que el gate vea despues lo decide `capture.invoice_to_result`,
+            # que traduce `None` a `Decimal("0.00")` **a proposito**: alli el cero
+            # es el centinela de "no se pudo leer", y `_puntaje_de_extraccion` y
+            # `_vale_la_pena` comparan contra el. Aqui, dentro del invoice, no:
+            # aqui el cero seria una afirmacion sobre el papel.
+            #
+            # El `except` es de las tres excepciones que de verdad puede lanzar
+            # `Decimal()` sobre texto. `Exception` entera tambien se tragaba un
+            # `RecursionError` y cualquier otra cosa, y hacia parecer que el
+            # fallback era una decision y no un accidente.
+            def _to_decimal(v: Any) -> Decimal | None:
                 try:
                     if v is None:
-                        return Decimal("0")
+                        return None
                     if isinstance(v, Decimal):
                         return v
                     if isinstance(v, float):
                         return Decimal(str(v))
                     s = str(v).replace(",", "").replace("$", "").strip()
                     return Decimal(s)
-                except Exception:
-                    return Decimal("0")
+                except (InvalidOperation, ValueError, TypeError):
+                    logger.warning("el modelo devolvio un %r donde iba un importe", v)
+                    return None
 
             for field in ["subtotal", "tax_amount", "total", "exchange_rate"]:
                 if field in data and data[field] is not None:
@@ -424,8 +485,9 @@ class AIExtractor:
             filtered = {k: v for k, v in data.items() if k in valid_fields}
             return ExtractedInvoice(**filtered)
 
-        except Exception as e:
-            # Fallback if parsing fails
+        except Exception:
+            # El motivo ya se registro en `_a_jpeg`, con el detalle de si falta
+            # el soporte de HEIC. Aqui solo se declara que la lectura fallo.
             return ExtractedInvoice(
                 provider_name="ERROR_PARSING",
                 provider_tax_id=None,
@@ -478,4 +540,6 @@ class AIExtractor:
 
 
 # Global instance
+logger = logging.getLogger(__name__)
+
 ai_extractor = AIExtractor()

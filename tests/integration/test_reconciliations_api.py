@@ -302,7 +302,9 @@ class TestReconciliationsAPI:
         )
         
         assert response.status_code == 409
-        assert "already reconciled" in response.json()["detail"]
+        # Ver `docs/known-issues.md` §29: estaba en ingles ("Bank transaction
+        # already reconciled") y ahora dice que paso y no solo que fallo.
+        assert response.json()["detail"] == "Este movimiento bancario ya está conciliado"
 
     @pytest.mark.asyncio
     async def test_delete_reconciliation_unreconciles_bank(self, async_client: AsyncClient, test_company):

@@ -94,6 +94,57 @@ export interface ScanItem {
   confianza: number | null;
   origen: string | null;
   detalle: string | null;
+
+  /** Que le paso AL ARCHIVO en disco, que es distinto de lo que le paso al ticket. */
+  /** `MOVIDO` = esta en otra carpeta. `RETIRADO` = salio de la entrada porque sus
+   *  bytes ya estaban guardados con el mismo sha256. `NADA` = sigue en la bandeja. */
+  retiro?: string;
+  /** El por que. Sin esto, un `RETIRADO` parece una perdida de datos. */
+  motivo_retiro?: string | null;
+  /** Los bytes estan en `ticket_documents` y el sha256 coincide.
+   *  `false` = se resolvio pero NO habia respaldo, y el archivo se quedo. */
+  respaldo_verificado?: boolean | null;
+  /** Donde se recupera el comprobante original. */
+  recuperable_desde?: string | null;
+}
+
+/** Un archivo que el escaner ya termino de leer, con lo que leyo de el. */
+export interface ScanProcesado {
+  relative_path: string;
+  ticket_id: string | null;
+  /** Texto y no numero: es un `Decimal` de la API, y un `number` de JS ya perdio
+   *  los centavos antes de llegar aqui. */
+  monto: string | null;
+  extraction_status: string | null;
+  motor: string | null;
+  accion: string | null;
+  /** Si el GATE se atrevio a afirmar el importe. NO es "el monto parece bien":
+   *  con OCR al 33% casi nunca se afirma nada, y esa diferencia hay que
+   *  ensenarla en la pantalla en vez de dejar que se suponga. */
+  confiable: boolean;
+  es_duplicado: boolean;
+}
+
+/** El estado de una corrida mientras corre, y despues de terminar. */
+export interface ScanCorrida {
+  id: string;
+  carpeta: string;
+  actor: string | null;
+  iniciada_at: string;
+  terminada_at: string | null;
+  terminada: boolean;
+  simulado: boolean;
+  archivos_vistos: number;
+  con_ticket: number;
+  con_error: number;
+  /** El archivo que se esta leyendo AHORA. */
+  actual: string | null;
+  /** Los ultimos archivos leidos, con su importe. Acotado en el servidor. */
+  procesados?: ScanProcesado[];
+  segundos: number;
+  /** El total. `null` mientras corre: un resumen a medias parece el de una
+   *  corrida corta. */
+  resumen?: Record<string, unknown> | null;
 }
 
 export interface ScanResultado {

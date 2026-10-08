@@ -129,7 +129,9 @@ que la gente usa.
 ### TAREA 3 — Solo si sobra tiempo: `VendorNormalizer`
 
 Está escrito en `app/services/ai_client.py:246-350` (~60 alias) y no se ejecuta: su único
-referente es `app/modules/expenses/services/pipeline.py`, que es código muerto.
+referente era `app/modules/expenses/services/pipeline.py`, que era código muerto y **ya no
+existe** — se borró entero (ver `docs/known-issues.md` §3). Así que hoy no tiene ni un
+referente, y el siguiente que lo lea no lo encontrará buscándolo en el código.
 
 **Conéctalo a la ruta viva** de creación de tickets, con test. Opcionalmente añade
 detección de duplicados por contenido para el caso "mismo comprobante, distinta resolución"

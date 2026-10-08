@@ -100,6 +100,18 @@ export interface Ticket {
   extraction_status: ExtractionStatus;
   source_type: SourceType | string | null;
   source_file: string | null;
+  /** SHA-256 de los bytes del comprobante, o null en captura manual.
+   *
+   *  Es lo que hace idempotente la carga (el mismo archivo dos veces devuelve el
+   *  mismo ticket) y lo que permite verificar que el documento guardado es
+   *  exactamente ese archivo.
+   *
+   *  La UI lo usa para una cosa concreta: explicar por que un archivo salio de
+   *  la carpeta de entrada. El escaner borra un comprobante solo cuando sus
+   *  bytes estan guardados con el mismo hash, y sin este campo el operador ve
+   *  "se borro" sin poder ver que no se perdio nada.
+   */
+  source_hash: string | null;
   /** Si el comprobante original quedo guardado, y donde ir a verlo.
    *
    *  Sin esto, la cola de revision y el muestreo dicen "contrasta contra el

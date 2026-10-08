@@ -156,8 +156,37 @@ CREATE TABLE IF NOT EXISTS reconciliations (
     ticket_id UUID REFERENCES tickets(id) ON DELETE SET NULL,
     bank_transaction_id UUID REFERENCES bank_transactions(id) ON DELETE SET NULL,
     match_status VARCHAR(50) NOT NULL,
-    matched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    matched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    -- Quien cambio el veredicto a mano, si alguien lo cambio.
+    --
+    -- `PATCH /reconciliations/{id}` deja que una persona corrija el `match_status`
+    -- que puso el motor. Sin estas dos columnas, un PERFECT que decidio el motor
+    -- y uno que aprobo una persona son la misma fila y no hay forma de saber
+    -- cual es cual — que es el salto que este repo no hace en ningun otro sitio.
+    -- Ver `confidence_source` y el precedente de `compras.confirmada_por`.
+    --
+    -- NULL = "el motor lo decidio y nadie lo ha tocado". No cadena vacia: `''`
+    -- seria "alguien lo toco y no lo dijo".
+    --
+    -- Texto y no FK: la decision tiene que sobrevivir a la baja de la cuenta.
+    revisado_por VARCHAR(255),
+    revisado_at TIMESTAMP WITH TIME ZONE,
+
+    -- Una revision sin fecha no se puede ordenar, y una fecha sin autor no dice
+    -- quien. Las dos van o ninguna.
+    CONSTRAINT ck_reconciliations_revision
+        CHECK (
+            (revisado_por IS NULL AND revisado_at IS NULL)
+            OR (revisado_por IS NOT NULL AND length(trim(revisado_por)) > 0
+                AND revisado_at IS NOT NULL)
+        )
 );
+
+-- "Que reviso una persona", que es la consulta de una auditoria de cierre.
+CREATE INDEX IF NOT EXISTS ix_reconciliations_revisadas
+    ON reconciliations (revisado_at DESC)
+    WHERE revisado_por IS NOT NULL;
 
 -- Tabla de Plantillas de Mapeo Contable
 CREATE TABLE IF NOT EXISTS accounting_mappings (
@@ -565,14 +594,26 @@ CREATE TABLE IF NOT EXISTS compras (
 
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    -- RECHAZADO es "esta compra no es una compra": un papel que se leyo mal y no
+    -- dice lo que decia, una nota sin detalle. Hace falta como estado y no como
+    -- borrado porque `compras.ticket_id` es UNIQUE: borrar la compra libera el
+    -- ticket y el proximo reescaneo la vuelve a crear desde `registrar_compra`,
+    -- en bucle y sin recordar que ya se habia mirado. Con el estado, el
+    -- veredicto queda escrito y `registrar_compra` lo devuelve tal cual.
+    --
+    -- NO es `ExtractionStatus.RECHAZADO`: son dos maquinas distintas. Un ticket
+    -- puede estar RECHAZADO y su compra EN_REVISION. Ver `EstadoCompra`.
     CONSTRAINT ck_compras_estado
-        CHECK (estado IN ('PROCESAR', 'EN_REVISION', 'PROCESADO')),
+        CHECK (estado IN ('PROCESAR', 'EN_REVISION', 'PROCESADO', 'RECHAZADO')),
 
     -- La regla que sostiene todo el diseno: PROCESADO exige firma y fecha, y
     -- cualquier otro estado no las tiene. Sin esto, el estado por si solo
     -- declara que el inventario se movio, y eso es exactamente lo que no se
     -- quiere: que se pueda marcar una compra como PROCESSED sin que nadie
     -- haya pasado.
+    --
+    -- RECHAZADO entra por la segunda rama sin tocar la constraint: sin
+    -- `confirmada_por` y sin `confirmada_at`. Rechazar no es confirmar al reves.
     CONSTRAINT ck_compras_confirmacion
         CHECK (
             (estado = 'PROCESADO'
@@ -779,14 +820,26 @@ CREATE OR REPLACE FUNCTION movimientos_no_dejar_negativo() RETURNS trigger AS $$
 DECLARE
     actual NUMERIC(14, 3);
 BEGIN
-    SELECT COALESCE(SUM(m.cantidad), 0) INTO actual
+    -- El signo va en el SUM. Antes era `SUM(cantidad)` a secas, que contaba una
+    -- SALIDA como si sumara: con ENTRADA 10 y SALIDA 4 decia 14 en vez de 6, y
+    -- de ahi en adelante cada comprobacion de este trigger estaba corrida por el
+    -- mismo error —incluida la que decide si el stock queda negativo.
+    SELECT COALESCE(
+        SUM(CASE WHEN m.tipo = 'SALIDA' THEN -m.cantidad ELSE m.cantidad END), 0
+    ) INTO actual
     FROM movimientos_inventario m
     WHERE m.producto_id = NEW.producto_id;
 
-    IF NEW.tipo = 'ENTRADA' THEN
-        actual := actual + NEW.cantidad;
-    ELSE
+    -- `SALIDA` y solo `SALIDA` resta. Antes era `IF tipo = 'ENTRADA' THEN suma
+    -- ELSE resta`, que hacia que AJUSTE restara mientras `stock_de()` lo suma.
+    -- Era inerte porque la unica via que escribia aqui era `confirmar_compra`, y
+    -- esa solo produce ENTRADA; `POST /inventario/movimientos` es el camino que
+    -- lo vuelve vivo. La pregunta es la misma que hace
+    -- `TipoMovimiento.suma_stock` en Python.
+    IF NEW.tipo = 'SALIDA' THEN
         actual := actual - NEW.cantidad;
+    ELSE
+        actual := actual + NEW.cantidad;
     END IF;
 
     IF actual < 0 THEN
@@ -883,3 +936,145 @@ UPDATE productos SET nombre_normalizado = lower(nombre) WHERE nombre_normalizado
 
 CREATE INDEX IF NOT EXISTS ix_productos_nombre_normalizado
     ON productos (company_id, nombre_normalizado);
+
+
+-- =====================================================================
+-- El impuesto es de la partida (0012)
+-- =====================================================================
+--
+-- Replicado de db/migrations/0012_el_impuesto_es_de_la_partida.sql, por la
+-- misma regla que las tablas de arriba: este archivo y esa migración tienen que
+-- decir lo mismo, o una base creada desde cero y una migrada se comportan
+-- distinto con el mismo código.
+--
+-- **FALTABAN LAS TRES. Medido, no supuesto.** Los modelos declaran
+-- `tickets.ieps_amount` (`app/models/ticket.py:136`) y `compra_items.iva_linea`
+-- / `.ieps_linea`, y las tres columnas no estaban en este archivo. Como
+-- `ticket_persistence.py:114` escribe `ieps_amount` en **cada** INSERT de
+-- ticket, una base creada desde cero (que es la unica forma de que corra este
+-- archivo) reventaba con:
+--
+--     ERROR: column "ieps_amount" of relation "tickets" does not exist
+--
+-- o sea un 500 por cada comprobante, y el ticket perdido. Y no lo cazaba
+-- ningun test: la suite construye el esquema desde los MODELOS (`conftest.py`),
+-- nunca desde este archivo, asi que el modelo y el DDL pueden divergir
+-- libremente y el test sigue en verde. Es el mismo modo de fallo que
+-- `docs/known-issues.md` §9, en tres columnas nuevas.
+--
+-- LA MEDIDA QUE MOTIVO LA MIGRACION, para que no se lea como un dato más:
+--
+--     Walmart, un solo ticket:
+--       SUBTOTAL        217.27
+--       IVA  16.0%        8.14
+--       IEPS  8.0%        8.59   <- no tenía dónde meterse
+--       TOTAL           234.00
+--
+--     217.27 + 8.14 = 225.41, y el total es 234.00: la diferencia SON los 8.59
+--     del IEPS. Con `MONEY_TOLERANCE` de un centimo, ese comprobante NUNCA podia
+--     pasar el check del gate, aunque los tres numeros se leyeran perfectos. Un
+--     gate que rechaza lecturas correctas hace que `subtotal_plus_tax_mismatch`
+--     deje de significar "leíste mal".
+--
+-- Y el problema de fondo es mas grande que el IEPS: **el impuesto depende de la
+-- PARTIDA, no del comprobante.** En ese mismo ticket:
+--
+--     BOLILLO     33.00  T   tasa 0
+--     ACTII ESQ   21.00  C   tasa 0
+--     ARTIELLIQ   35.00  A   tasa 16
+--     ZOTE BARRA  24.00  A   tasa 16
+--     PAKETAXO    30.00  C   tasa 0 + IEPS
+--
+-- Un solo comprobante con tres tratamientos fiscales. Por eso el impuesto se
+-- guarda **por linea**, que es donde vive la tasa, y el ticket lo deriva. Por
+-- eso `iva_linea`/`ieps_linea` son de `compra_items` y no del ticket.
+
+-- El IEPS del comprobante completo, cuando el papel lo imprime. Es la suma de
+-- las partidas, no una tasa: se guarda el importe, que es lo que el papel dice.
+--
+-- NULL y no 0.00 por la misma razon que `items`: NULL es "el comprobante no trae
+-- IEPS" y 0.00 seria "trae IEPS y es cero". Confundirlas hace que un ticket sin
+-- ese impuesto parezca un ticket que se leyo mal.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ieps_amount NUMERIC(12, 2);
+
+-- El impuesto POR LINEA. Es donde vive la tasa, y por eso va aqui y no solo en
+-- el ticket: un comprobante puede tener partidas a 0%, a 16% y con IEPS.
+--
+-- NULL = "esta linea no tiene impuesto separado" o "no se leyo", y no es lo
+-- mismo que 0.00. Con la columna en NULL el gate cae al total del comprobante,
+-- que es la unica forma de comprobar algo sin datos por linea.
+ALTER TABLE compra_items ADD COLUMN IF NOT EXISTS iva_linea NUMERIC(12, 2);
+ALTER TABLE compra_items ADD COLUMN IF NOT EXISTS ieps_linea NUMERIC(12, 2);
+
+-- El comentario en la base, porque el nombre de la columna no dice que el valor
+-- es un IMPORTE y no una tasa. `iva_linea = 8.14` no significa 8.14%: son 8.14
+-- pesos de IVA sobre esa linea. Es el mismo texto que la migracion.
+COMMENT ON COLUMN compra_items.iva_linea IS
+    'IVA de ESTA linea, en pesos. No es una tasa: 8.14 significa 8.14 pesos.';
+COMMENT ON COLUMN compra_items.ieps_linea IS
+    'IEPS de ESTA linea, en pesos. No es una tasa.';
+COMMENT ON COLUMN tickets.ieps_amount IS
+    'IEPS total del comprobante, en pesos. NULL cuando el papel no lo imprime.';
+
+-- La consulta que mas se va a hacer: "las partidas de una compra con su
+-- impuesto". Sin indice, cada confirmacion de compra recorre la tabla entera.
+CREATE INDEX IF NOT EXISTS ix_compra_items_impuestos
+    ON compra_items(compra_id)
+    WHERE ieps_linea IS NOT NULL OR iva_linea IS NOT NULL;
+
+
+-- =====================================================================
+-- El registro de que esta base ya esta al dia (0015)
+-- =====================================================================
+--
+-- **POR QUE ESTA TABLA EXISTE, Y POR QUE NO LA HABIA.**
+--
+-- Hasta ahora no habia forma de responder "¿esta base necesita migraciones?".
+-- Se podia mirar el esquema, y el esquema NO RESPONDE: `init.sql` trae las
+-- mismas 105 cosas que las 12 migraciones (verificado), asi que una base creada
+-- desde cero y una migrada se ven IDENTICAS. Se probo usar una tabla como
+-- discriminante —`cierres_periodo` es la 0007, si existe es vieja— y da la
+-- respuesta equivocada en las dos direcciones: una base recien creada tambien la
+-- tiene, porque `init.sql` la crea.
+--
+-- Es el problema clasico de un esquema sin version: **un esquema completo no
+-- dice de que parte del camino viene.** Por eso Alembic lleva una tabla de
+-- version y este proyecto, sin Alembic, necesita la misma cosa a mano.
+--
+-- QUE SE ESCRIBE AQUI
+-- -------------------
+-- El NOMBRE del archivo, no un numero. Un numero obliga a llevar la cuenta en
+-- la cabeza y a renumerar; el nombre es el que se corre, asi que un error de
+-- orden se ve en el nombre y no en un `0007` que alguien shifting.
+--
+-- `aplicada_at` es el momento real. Y es texto, no un id de usuario: el registro
+-- dice QUE se aplico, no QUIEN lo autorizo — la migracion es DDL y el DDL no
+-- tiene firma.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    nombre VARCHAR(255) PRIMARY KEY,
+    aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Una base creada desde `init.sql` esta AL DIA con las 12 migraciones, porque
+-- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 12
+-- archivos sobre una base que ya tiene todo: `IF NOT EXISTS` los haria
+-- idempotentes, pero el operador veria "aplicando 0002..." y pensaria que su
+-- base estaba vieja. El registro tiene que decir la verdad, y la verdad es que
+-- esa base no necesita nada.
+--
+-- `INSERT ... ON CONFLICT DO NOTHING` porque el `init.sql` se puede volver a
+-- correr sin reventar, y estas filas ya pueden estar.
+INSERT INTO schema_migrations (nombre) VALUES
+    ('0002_confidence_gate.sql'),
+    ('0003_spot_check.sql'),
+    ('0004_auth.sql'),
+    ('0005_source_hash_por_empresa.sql'),
+    ('0006_ticket_documents.sql'),
+    ('0007_cierre_periodo.sql'),
+    ('0008_scan_ledger.sql'),
+    ('0009_documento_inmutable.sql'),
+    ('0010_inventario.sql'),
+    ('0011_productos_origen.sql'),
+    ('0012_el_impuesto_es_de_la_partida.sql'),
+    ('0013_compras_rechazables.sql')
+ON CONFLICT (nombre) DO NOTHING;

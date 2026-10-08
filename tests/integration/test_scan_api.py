@@ -15,8 +15,11 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from sqlalchemy import select, update
+
 from app.core.enums import ScanStatus
 from app.core.security import crear_token, hashear_contrasena
+from app.models.inventario import CompraItemModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
 from app.models.ticket import TicketModel
 from app.models.user import UserModel
@@ -489,6 +492,338 @@ class TestReproceso:
         )
 
         assert respuesta.status_code == 404
+
+
+class TestAutorizarLaCompraEnLaMismaCorrida:
+    """`POST /scan {"confirmar": true}`.
+
+    Es lo unico que este bloque agrega a lo que el escaneo ya hacia, y lo que
+    cambia es **quien decide** que una compra entra al inventario: no alguien
+    que miro el papel, sino quien llamo al escaneo. Todo lo demas —el camino,
+    el trigger, el bloqueo de lineas sin producto— es el mismo de
+    `POST /inventario/compras/{id}/confirmar`, y las pruebas de abajo lo
+    comprueban por el mismo lado que las de ahi.
+    """
+
+    @pytest.fixture
+    def con_lineas(self, monkeypatch):
+        """Que la cascada devuelva partidas, que es lo que habilita la compra.
+
+        Sin esto el caso es degenerado: `registrar_compra` devuelve `None` cuando
+        `items` es NULL (la ruta OCR no extrae detalle) y no hay compra que
+        autorizar. Se parchea `scan_service.capture_ticket` —el simbolo que el
+        modulo usa— y no `capture.capture_ticket`: al importar el nombre con
+        `from ... import`, el escaner tiene el suyo propio, y parchear el modulo
+        de origen no cambiaria nada aqui sin levantar un error de atributo que
+        aparece en el setup y no en la prueba.
+        """
+        from datetime import date
+        from decimal import Decimal
+
+        from app.services.parser_service import TicketExtractionResult
+        from app.services import scan_service as _scan
+
+        async def _con_lineas(_contenido, _formato, **_k):
+            return TicketExtractionResult(
+                provider_name="Mercado Local",
+                provider_tax_id="MEDL900101XXX",
+                total_amount=Decimal("229.68"),
+                subtotal=Decimal("198.00"),
+                tax_amount=Decimal("31.68"),
+                expense_date=date(2025, 3, 15),
+                raw_text="reloj",
+                confidence=0.95,
+                items=[
+                    {
+                        "description": "TORTA DE PASTOR",
+                        "quantity": "1",
+                        "unit_price": "85.00",
+                        "total": "85.00",
+                    },
+                    {
+                        "description": "REFRESCO COCA 600ML",
+                        "quantity": "2",
+                        "unit_price": "35.00",
+                        "total": "70.00",
+                    },
+                ],
+            )
+
+        monkeypatch.setattr(_scan, "capture_ticket", _con_lineas)
+        return monkeypatch
+
+    async def _escanear(self, async_client, token, test_company, **cuerpo):
+        respuesta = await async_client.post(
+            f"{P}/scan/",
+            json={"company_id": str(test_company.id), **cuerpo},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert respuesta.status_code == 200, respuesta.text
+        return respuesta.json()
+
+    async def test_por_omision_no_autoriza_nada(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """El default en `false` es la defensa, no una precaucion.
+
+        Todo el proyecto esta ordenado alrededor de que el stock lo mueve alguien
+        que miro el papel, y el motivo esta medido: el OCR sobre fotos reales da
+        33.3%, y una linea mal leida infla el stock para siempre. Si el default
+        fuera `true`, ese poder pasaria al que llama al escaneo —incluido un
+        script unattended— sin que nadie lo pidiera.
+        """
+        from app.models.inventario import CompraModel, MovimientoInventarioModel
+
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+
+        cuerpo = await self._escanear(async_client, token, test_company)
+
+        assert cuerpo["compras_confirmadas"] == 0
+        assert cuerpo["compras_no_confirmadas"] == []
+        compra = (
+            await db_session.execute(select(CompraModel))
+        ).scalar_one()
+        assert compra.estado == "EN_REVISION"
+        # Y lo que de verdad importa: el kardex sigue vacio.
+        assert (await db_session.execute(select(MovimientoInventarioModel))).scalars().all() == []
+
+    async def test_confirmar_empuja_las_lineas_al_kardex(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """Lo que se pide: digitalizar, guardar y sumar stock en un request.
+
+        El stock se lee como `SUM` del kardex, no como una columna, asi que la
+        prueba mira los movimientos: es la unica forma de comprobar que la compra
+        *entro* y no solo cambio de etiqueta.
+        """
+        from app.models.inventario import CompraModel, MovimientoInventarioModel
+        from app.models.inventario import ProductoModel
+
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+
+        cuerpo = await self._escanear(async_client, token, test_company, confirmar=True)
+
+        assert cuerpo["compras_confirmadas"] == 1
+        assert cuerpo["compras_no_confirmadas"] == []
+
+        compra = (await db_session.execute(select(CompraModel))).scalar_one()
+        assert compra.estado == "PROCESADO"
+        # `ck_compras_confirmacion` lo prohibe en la base: PROCESADO sin firma es
+        # un UPDATE que Postgres rechaza. Aqui se comprueba de que la firma es la
+        # del token, no un id de cualquiera.
+        assert compra.confirmada_por is not None
+
+        movimientos = (
+            await db_session.execute(select(MovimientoInventarioModel))
+        ).scalars().all()
+        assert len(movimientos) == 2
+        assert all(m.tipo == "ENTRADA" for m in movimientos)
+
+        productos = (await db_session.execute(select(ProductoModel))).scalars().all()
+        assert {p.nombre for p in productos} == {
+            "TORTA DE PASTOR",
+            "REFRESCO COCA 600ML",
+        }
+
+    async def test_una_compra_sin_lineas_no_se_autoriza_y_dice_por_que(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, pdf_de_prueba, con_token
+    ):
+        """Una foto que solo dio encabezado NO se autoriza, y el motivo lo dice.
+
+        Autorizarla pondria la compra en `PROCESADO` sin mover nada: el operador
+        veria "1 confirmada" y el stock seguiria igual. Un contador sin motivo es
+        peor que no confirmar, porque hace creer que la corrida sirvio.
+        """
+        from app.models.inventario import CompraModel
+
+        _escribir(carpeta, "ocho.pdf")  # `pdf_de_prueba` no trae partidas.
+        _, token = con_token
+
+        cuerpo = await self._escanear(async_client, token, test_company, confirmar=True)
+
+        assert cuerpo["compras_confirmadas"] == 0
+        # Aqui no hay compra: `registrar_compra` devuelve None con `items` NULL. Lo
+        # que tiene que quedar es que no se reporto un exito falso.
+        compras = (await db_session.execute(select(CompraModel))).scalars().all()
+        assert compras == []
+
+    async def test_una_compra_ya_procesada_no_se_vuelve_a_autorizar(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """Re-escanear un comprobante ya confirmado no duplica el stock.
+
+        El `SUM` del kardex no distingue "compro dos veces" de "compre dos veces":
+        las dos se ven igual en el dashboard. Y un archivo archivado sigue
+       _reportando `SIN_CAMBIOS`, asi que esto no es un caso teorico: es la
+        segunda corrida de cualquier carpeta ya digitalizada.
+        """
+        from app.models.inventario import CompraModel, MovimientoInventarioModel
+
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+
+        primero = await self._escanear(async_client, token, test_company, confirmar=True)
+        assert primero["compras_confirmadas"] == 1
+        despues = (await db_session.execute(select(MovimientoInventarioModel))).scalars().all()
+        assert len(despues) == 2
+
+        segundo = await self._escanear(async_client, token, test_company, confirmar=True)
+
+        assert segundo["compras_confirmadas"] == 0
+        compra = (await db_session.execute(select(CompraModel))).scalar_one()
+        assert compra.estado == "PROCESADO"
+        # El kardex intacto: la defensa es que no se escriba dos veces.
+        assert len(
+            (await db_session.execute(select(MovimientoInventarioModel))).scalars().all()
+        ) == 2
+
+    async def test_una_compra_rechazada_no_se_reabre_sola(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """`RECHAZADO` es la decision de OTRA persona y no la revierte un escaneo.
+
+        Si `confirmar: true` la reabriera, bastaria con que el mismo comprobante
+        volviera a la carpeta para deshacer un rechazo humano. El rechazo se
+        deshace con su propio endpoint, que es donde queda la decision.
+        """
+        from app.models.inventario import CompraModel, MovimientoInventarioModel
+
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+        await self._escanear(async_client, token, test_company)
+
+        compra = (await db_session.execute(select(CompraModel))).scalar_one()
+        compra.estado = "RECHAZADO"
+        await db_session.commit()
+
+        cuerpo = await self._escanear(async_client, token, test_company, confirmar=True, reprocesar=True)
+
+        assert cuerpo["compras_confirmadas"] == 0
+        assert any("rechaz" in x["motivo"] for x in cuerpo["compras_no_confirmadas"])
+        refreshed = (await db_session.execute(select(CompraModel))).scalar_one()
+        assert refreshed.estado == "RECHAZADO"
+        assert (
+            await db_session.execute(select(MovimientoInventarioModel))
+        ).scalars().all() == []
+
+    async def test_lineas_sin_producto_bloquean_la_autorizacion(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """El bloqueo de inventario sigue valiendo en este camino.
+
+        Es el mismo `confirmar_compra` de `POST /inventario/compras/{id}/confirmar`,
+        asi que el endpoint nuevo **no** puede saltar el bloqueo. Si lo saltara,
+        esas lineas no entrarian al inventario y el stock quedaria incompleto sin
+        que nada lo dijera.
+        """
+        from app.models.inventario import CompraModel, MovimientoInventarioModel
+        from app.models.inventario import ProductoModel
+        from app.services import inventario_service as inv
+
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+        await self._escanear(async_client, token, test_company)
+
+        # Se desenlaza un producto de una linea: la compra queda con una linea sin
+        # producto, que es exactamente lo que el bloqueo existe para frenar.
+        compra = (await db_session.execute(select(CompraModel))).scalar_one()
+        await db_session.refresh(compra)
+        await db_session.execute(
+            update(CompraItemModel)
+            .where(CompraItemModel.compra_id == compra.id)
+            .values(producto_id=None)
+        )
+        await db_session.commit()
+
+        cuerpo = await self._escanear(
+            async_client, token, test_company, confirmar=True, reprocesar=True
+        )
+
+        assert cuerpo["compras_confirmadas"] == 0
+        refreshed = (await db_session.execute(select(CompraModel))).scalar_one()
+        assert refreshed.estado == "EN_REVISION"
+        assert (
+            await db_session.execute(select(MovimientoInventarioModel))
+        ).scalars().all() == []
+        assert len((await db_session.execute(select(ProductoModel))).scalars().all()) == 2
+
+    async def test_simular_gana_sobre_confirmar_y_no_escribe_nada(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """`simular: true` + `confirmar: true` no autoriza, y lo dice.
+
+        Las dos banderas se contradicen en una cosa: una dice "que pasaria" y la
+        otra "haslo". Gana la que no escribe, y la peticion **no** se ignora en
+        silencio: si se ignorara, quien pidio confirmar leeria "0 confirmadas" y
+        no sabria si fue porque no habia nada o porque se le hizo caso a otra
+        bandera.
+
+        LO QUE `simular` PROTEGE Y LO QUE NO
+        ======================================
+
+        `simular` apaga el ARCHIVADO —no se borra ni se mueve el papel— y con
+        `confirmar` en `true` apaga tambien la autorizacion. No apaga la
+        escritura del ticket: la simulacion responde "que habria leido este
+        comprobante", y para contestar eso hay que leerlo y guardarlo. Por eso
+        esta prueba mira el kardex y las compras, y no la tabla de tickets.
+
+        Se documente como "no crea nada" seria una trampa doble: quien lo lea
+        haria una corrida de prueba pensando que no dejo rastro y encontraria
+        los tickets de la simulacion mezclados con los de verdad. Por eso la
+        asercion mira lo que `simular` **si** apaga.
+        """
+        from app.models.inventario import CompraModel, MovimientoInventarioModel
+
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+
+        cuerpo = await self._escanear(
+            async_client, token, test_company, confirmar=True, simular=True
+        )
+
+        assert cuerpo["simulado"] is True
+        assert cuerpo["compras_confirmadas"] == 0
+        assert len(cuerpo["compras_no_confirmadas"]) == 1
+        assert "simular" in cuerpo["compras_no_confirmadas"][0]["motivo"]
+        # Lo que `simular` apaga: el kardex vacio, la compra sin autorizar y el
+        # papel donde estaba. El archivo se queda en la carpeta de entrada, que
+        # es lo que hace `simular` util antes de la primera corrida real.
+        assert (
+            await db_session.execute(select(MovimientoInventarioModel))
+        ).scalars().all() == []
+        compra = (await db_session.execute(select(CompraModel))).scalar_one()
+        assert compra.estado == "EN_REVISION"
+        assert (carpeta / "ocho.pdf").exists()
+
+    async def test_simular_no_es_lo_que_dice_la_documentacion(
+        self, async_client, db_session, test_company, carpeta, sin_modelo, con_lineas, con_token
+    ):
+        """`simular` NO deja la base sin tocar, y el repo tiene que decirlo.
+
+        Nacio con la descripcion de "no crea nada" y hacia algo distinto: apaga
+        el archivado del disco, pero el ticket se guarda igual. La prueba que
+        descubre eso es esta —escribio una asercion que-era- undoubtedly correcta
+        sobre `tickets` y fallo— y mientras `simular` se documente como "no
+        crea nada", cualquiera que haga una corrida de prueba para ver que hay
+        en la carpeta se va a encontrar con tickets de mas en la base.
+
+        Aqui se fija el comportamiento REAL para que nadie lo lea como que es un
+        borrado en seco: si alguien decide que `simular` deberia de verdad no
+        escribir, este test es el que tiene que cambiar con el, no al reves.
+        """
+        _escribir(carpeta, "ocho.pdf")
+        _, token = con_token
+
+        await self._escanear(async_client, token, test_company, simular=True)
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1, (
+            "`simular` apaga el archivado, no la escritura del ticket: el "
+            "comprobante se lee y se guarda igual. Si de verdad no escribiera, "
+            "este test cambia con el—noto al reves."
+        )
 
 
 class TestEstadoDelOcr:

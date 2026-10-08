@@ -45,7 +45,7 @@ def _credenciales_malas() -> HTTPException:
     # Un solo mensaje para las tres causas. Ver la nota del modulo.
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Correo o contrasena incorrectos",
+        detail="Correo o contraseña incorrectos",
         headers={"WWW-Authenticate": "Bearer"},
     )
 

@@ -474,7 +474,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
             <select
               value={selectedCompany}
               onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Seleccionar empresa...</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
@@ -494,7 +494,10 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                 <button
                   key={o.k}
                   onClick={() => setFiltro(o.k)}
-                  className={`px-3 py-2 text-sm transition-colors ${
+                  // `py-3` en movil: medido 36px, luego 40 con `py-2.5`, y son tres botones de filtro
+                  // que se pulsan en serie — el patron de uso mas frecuente de
+                  // esta pantalla.
+                  className={`px-3 py-3 sm:py-2 text-sm transition-colors ${
                     i > 0 ? 'border-l border-gray-300' : ''
                   } ${
                     filtro === o.k
@@ -567,7 +570,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
             <select
               value={categoriaLote}
               onChange={e => setCategoriaLote(e.target.value)}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+              className="px-3 py-3 sm:py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
             >
               <option value="">Sin clasificar (quitar categoría)</option>
               {categorias.map(c => (

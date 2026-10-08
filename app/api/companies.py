@@ -23,7 +23,7 @@ async def create_company(
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Company with this tax_id already exists"
+            detail="Ya hay una empresa con ese RFC"
         )
     
     company = CompanyModel(**company_in.model_dump())
@@ -53,7 +53,7 @@ async def get_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     return company
 
@@ -70,7 +70,7 @@ async def update_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     update_data = company_in.model_dump(exclude_unset=True)
@@ -85,7 +85,7 @@ async def update_company(
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Company with this tax_id already exists"
+                detail="Ya hay una empresa con ese RFC"
             )
     
     for field, value in update_data.items():
@@ -107,7 +107,7 @@ async def delete_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     await db.delete(company)

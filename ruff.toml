@@ -1,0 +1,113 @@
+# Configuracion de Ruff.
+#
+# ## POR QUE ESTE ARCHIVO EXISTE
+#
+# Ruff no estaba configurado y su panel de diagnostico marcaba 85 `B008` en
+# `app/`, que son exactamente el patron que la documentacion de FastAPI
+# recomienda:
+#
+#     52  Depends(...)     en los parametros de los routers
+#     23  Query(...)
+#      6  File(...)
+#      3  Form(...)
+#
+# Ninguno es un defecto. `B008` ("Do not perform function call in argument
+# defaults") esta pensado para clases donde el default se EVALUA al importar el
+# modulo, que es un problema real en frameworks que construyen la ruta al
+# declararla. FastAPI es el caso contrario: el default se lee al ENTRAR la
+# peticion, y `Depends`/`Query` existen justamente para eso.
+#
+# Ruff lo sabe y por eso trae la excepcion. Lo que faltaba era activarla: sin
+# esto, B008 marca las 85 y quien las ve tiene que pasar una por una decidiendo
+# que son ruido, que es el estado en el que nadie las revisa — incluidas las que
+# si serian un bug.
+#
+# ## LO QUE ESTA EXENTO Y POR QUE
+#
+# `extend-immutable-calls` es la lista de llamadas que Ruff trata como constantes
+# inocuas. Solo van las cuatro de FastAPI, porque son las unicas que aparecen
+# como default en este repo. `File` y `Form` tambien: son parte del mismo patron
+# de subida de archivos y marcarlas dejaria el panel a medias, que es peor que
+# dejarlo coherente.
+#
+# ## LO QUE NO SE EXENTA
+#
+# Nada mas. En particular NO se silencia `B008` entero: una llamada en un
+# default que no sea de FastAPI sigue marcandose, y es el caso que la regla
+# existe para cazar.
+#
+# Y no se baja la regla en ningun sitio. Este archivo solo configura COMO se
+# reporta, no QUE se reporta.
+#
+# ## POR QUE `select` ESTA FIJADO, Y POR QUE ES `E4,E7,E9,F,B`
+#
+# Este archivo se escribio cuando Ruff usaba por defecto `E4,E7,E9,F`, asi que
+# no traia `select` y decia —en este mismo comentario— que lo unico que cambiaba
+# respecto de antes era la excepcion de FastAPI. **Medido con ruff 0.16.10, ese
+# default ya no es ese**: sin `select`, el conjunto por defecto trae ademas
+# `FURB, B, I, UP, DTZ, PLW, BLE, EXE, RUF, ISC, SIM, C4, RET, ASYNC, PLR`.
+#
+# ```
+# ruff check --isolated .   (sin NINGUN archivo de config)  -> 712 errores
+# ruff check .              (con este archivo)              -> 626 errores
+# ```
+#
+# O sea que 606 de los 626 no venian de una decision del repo: venian de que la
+# version instalada cambio su default por debajo. Un `select` sin fijar deja la
+# superficie de lint a merced de que version este instalada, y eso no lo decide
+# nadie aqui.
+#
+# `B` esta **a proposito**, y es lo que hace que la excepcion de
+# `extend-immutable-calls` signifique algo. Sin `B`, `B008` no se ejecuta nunca y
+# el "NO se silencia `B008` entero" de arriba seria falso: una llamada en un
+# default que no sea de FastAPI pasaria sin marcar, que es justo el caso que la
+# regla existe para cazar. Con `B` sigue catching.
+#
+# ## LO QUE ESTO PAGA
+#
+# Fijar `select` deja de reportar `FURB157` (179), `BLE001` (23), `I001` (64),
+# `DTZ011` (30) y demas. No es que se silencien: es que la regla ya no corre, y
+# por lo tanto tampoco puede cazar el bug real que hubiera de su familia. Si
+# alguna se quiere adoptar, es un commit propio, con la suite en verde, y
+# **`select` por familia**: `"BLE"`, no los 23 codigos sueltos. Un commit que
+# anade `"BLE001"` es un commit que se rompe en la siguiente actualizacion.
+#
+# Y sigue en pie el motivo original para no ampliar a ciegas: la primera version
+# de este archivo traia `select = ["E","F","B","UP","I","RUF"]` y en un solo
+# archivo aparecieron 11 avisos nuevos, de los cuales solo 2 eran de este
+# arreglo. Ampliar el conjunto genera cientos de avisos que nadie eligio y que hay
+# que revisar uno por uno, que es el estado en el que un linter deja de usarse.
+# Fijar `select` hace que esa decision sea explicita en vez de un efecto
+# secundario de la version instalada.
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B"]
+
+[lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Body",
+]
+
+[lint.per-file-ignores]
+# `FURB157` pide `Decimal(0)` donde el repo escribe `Decimal("0")`.
+#
+# Medido en `app/`: 37 ocurrencias con cadena contra 5 con numero. La cadena es
+# la convencion, y por dos motivos que no son esteticos:
+#
+#   1. `Decimal(0.1)` es un `TypeError` ("conversion from float to Decimal is not
+#      supported") mientras `Decimal("0.1")` funciona. Con la cadena, el mismo
+#      texto sirve para un literal entero y para uno con decimales; con el
+#      numero, el proximo `Decimal(0.1)` revienta en ejecucion.
+#   2. Un cero como `Decimal("0")` se lee como "cero decimal", que es lo que es
+#      un importe. `Decimal(0)` se lee como un entero que alguien eligio
+#      convertir.
+#
+# Ignorar la regla entera es la unica opcion: no tiene un caso "esto si es
+# verbose". Lo que si se puede hacer —escribir `Decimal(0.5)` por error— lo
+# caza el type checker, porque `float` ahi es incompatible.
+"app/schemas/*" = ["FURB157"]
+"app/api/*" = ["FURB157"]

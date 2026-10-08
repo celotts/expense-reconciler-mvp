@@ -1,9 +1,36 @@
 # Contrato del producto — Cierre mensual verificable
 
-> **Estado:** propuesto, pendiente de aprobación.
+> **Estado:** Fase 1 **ENTREGADA** (2026-10-06). Fases 2-4 pendientes.
 > **Alcance:** define qué se construye, qué se espera y qué se puede afirmar.
 > **Complementa** a `AGENTS.md` (contexto operativo) y `docs/known-issues.md` (defectos).
 > Este documento define **qué debe ser verdad al terminar**. Los otros dos definen **cómo se trabaja hoy**.
+
+### Fase 1: qué se entregó y qué se apartó
+
+Construido tal como está especificado abajo: `app/services/reporte_cierre.py`,
+`app/api/reports.py`, `app/schemas/reporte.py`. Los 10 criterios de §5.3 pasan
+(`tests/integration/test_reporte_cierre.py` y `tests/unit/test_reporte_cierre.py`),
+y las 7 reglas duras de §5.1 tienen su mutación verificada en
+`scripts/verify_reporte_mutations.py`.
+
+**Tres cosas se apartaron de la especificación, y por qué:**
+
+1. **El schema del informe no tiene `emitido_en`.** Tiene `fecha_referencia`,
+   derivado del periodo. Sin eso R4 es imposible: `fpdf2` sella `datetime.now()` en
+   cada archivo, y dos descargas del mismo periodo no pueden ser byte-idénticas si
+   llevan la hora a la que se pidieron. El nombre del campo lo dice, para que nadie
+   lo lea como "cuándo lo generó el sistema".
+2. **`puede_cerrarse` es un `@computed_field`, no un campo.** Se deriva de
+   `pendientes.hay_pendientes`. Como campo aparte se desincronizaba de sus propias
+   entradas, y el PDF llegó a imprimir `El periodo NO se puede declarar cerrado: None.`
+3. **Hay un cuarto estado de periodo que §5.1 no contemplaba:** `CERRADO_CON_PENDIENTES`.
+   `cerrado` (hecho, leído de `cierres_periodo`) y `puede_cerrarse` (lo que R3
+   permite afirmar hoy) pueden discrepar cuando alguien escribe en un periodo ya
+   cerrado. Reportarlo como `NO_CIERRA` habría sido falso y habría tapado el hallazgo.
+
+**Lo que sigue pendiente y NO es un olvido:** el endpoint que **marca** el cierre.
+El informe dice si el periodo puede cerrarse; cerrarlo es una decisión de una persona
+y sigue sin endpoint (Fase 4, criterio D1).
 
 ---
 
@@ -105,7 +132,7 @@ y no con una afirmación. Hoy existe entera salvo el último eslabón: **el pape
 | Fase | Entregable | Esfuerzo | Bloquea a |
 |---|---|---|---|
 | **0** | `AGENTS.md` y `docs/known-issues.md` al día (§14 marcado cerrado) | 30 min | Toda IA futura |
-| **1** | **Informe de cierre mensual exportable** (§5) | 3-5 días | El positioning entero |
+| **1** | **✅ Informe de cierre mensual exportable** (§5) | hecho | El positioning entero |
 | **2** | `VendorNormalizer` en la ruta viva + badge de confianza en la tabla | 1 día | Calidad del dashboard |
 | **3** | Despacho / Clientes / scoping por usuario (§7) | 2-3 sem | Retención |
 | **4** | Cierre fiscal como entidad + fin de los datos inventados en el export | 2 sem | Firmar el informe |
@@ -319,12 +346,12 @@ El informe es un documento que alguien firma. Eso obliga a:
 ### 9.4 Confiabilidad del sistema
 | Métrica | Hoy | Objetivo | Cómo se mide |
 |---|---|---|---|
-| Tests | 655 | ≥ 655, cero regresión | `pytest tests/ -q` |
-| Verificaciones por mutación | 5 áreas | 5 áreas, sin regresión | `scripts/verify_*_mutations.py` |
+| Tests | 1380 | ≥ 1380, cero regresión | `pytest tests/ -q` |
+| Verificaciones por mutación | 9 áreas | 9 áreas, sin regresión | `scripts/verify_*_mutations.py` |
 | Exactitud declarada | SLO 0.96, **medido** | Se reporta, no se promete | `GET /tickets/accuracy` |
-| Muestreo | 5% determinístico por hash (`enums.py:162`) | Igual | Contenido, no aleatorio |
-| Determinismo del informe | — | Byte-idéntico | Criterio A4 |
-| Cero datos inventados | 1 vecindario roto (`export_service.py:310`) | 0 | Criterio D3 |
+| Muestreo | 5% determinístico por hash (`enums.py:209`) | Igual | Contenido, no aleatorio |
+| Determinismo del informe | **byte-idéntico (R4, verificado)** | Igual | `TestA4Determinismo` |
+| Cero datos inventados | 0 vecindarios rotos | 0 | `TestElDocumentoNoSeInventaDatos`, criterio D3 |
 
 ### 9.5 Lo que el producto afirma, y lo que no
 
@@ -347,7 +374,7 @@ rellenarla, la respuesta es la regla 11.
 Ninguna fase se entrega sin esto:
 
 ```bash
-python3 -m pytest tests/ -q                       # 655+, cero rojos
+python3 -m pytest tests/ -q                       # 1380+, cero rojos
 python3 scripts/verify_capture_mutations.py       # si se tocó captura
 python3 scripts/verify_export_mutations.py        # si se tocó export/texto
 python3 scripts/verify_auth_mutations.py          # si se tocó auth o veredictos
@@ -433,8 +460,11 @@ Se aceptan **a conciencia**, con la consequence escrita:
 
 **¿La Fase 1 le resuelve un problema a alguien, o solo demuestra que se puede hacer?**
 
-No se responde leyendo el código. Se responde enseñándole el informe a cinco contadores y
-preguntándoles si se lo entregarían a un cliente. Esa conversación decide si existe la Fase 3.
-**Ninguna cantidad de trabajo en la Fase 3 sustituye esa respuesta, y empezar la Fase 3 sin
-ella es la forma más cara de no decidir.**
+**Esta es ahora la única decisión abierta, y ya no se responde leyendo el código.**
+El documento existe y cumple las reglas duras. Lo que sigue es enseñárselo a cinco
+contadores y preguntarles si se lo entregarían a un cliente.
+
+Esa conversación decide si existe la Fase 3. **Ninguna cantidad de trabajo en la
+Fase 3 sustituye esa respuesta, y empezar la Fase 3 sin ella es la forma más cara de
+no decidir.**
 

@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { companiesApi, ticketsApi, type Company, type Ticket } from '../services/api';
 import type {
-  ScanConfig, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
+  ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
   ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
 import { Button, Card, Badge, Loading, EmptyState, Select, Modal } from '../components/ui';
 import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO } from '../utils/scan';
 import { VerDocumento } from '../components/TicketDocumento';
+import { PanelProgreso } from '../components/ScanProgreso';
 
 /**
  * Escaner de carpeta: leer comprobantes de un directorio sin subir uno por uno.
@@ -42,6 +43,17 @@ export function Scan() {
   const [escaneando, setEscaneando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ultimo, setUltimo] = useState<ScanResultado | null>(null);
+  /** El progreso en vivo de la corrida que esta corriendo. */
+  const [corrida, setCorrida] = useState<ScanCorrida | null>(null);
+  /** El id de esa corrida, para poder seguirla por su propio endpoint. */
+  const [corridaId, setCorridaId] = useState<string | null>(null);
+  /** El intervalo de sondeo, en un `useRef` y no en un estado.
+   *
+   *  En un estado provocaria un re-render en cada tick, y el `useEffect` de
+   *  limpieza lo volvería a crear —el intervalo se recrea cada 2s y el
+   *  watcher nunca llega a disparar limpio. Un `useRef` no re-renderiza y
+   *  `clearInterval` lo alcanza siempre. */
+  const watcherRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [detalle, setDetalle] = useState<ScanFileDetail | null>(null);
   const [ticketDelDetalle, setTicketDelDetalle] = useState<Ticket | null>(null);
 
@@ -83,16 +95,62 @@ export function Scan() {
   useEffect(() => { cargar(); }, [cargar]);
   useEffect(() => { companiesApi.list().then(setCompanies).catch(() => setCompanies([])); }, []);
 
+  /** Corta el sondeo. Lo usan el `finally` del escaneo y el cleanup del unmount. */
+  const clearIntervalActivo = useCallback(() => {
+    if (watcherRef.current) {
+      clearInterval(watcherRef.current);
+      watcherRef.current = null;
+    }
+  }, []);
+  const setIntervalActivo = useCallback((h: ReturnType<typeof setInterval>) => {
+    watcherRef.current = h;
+  }, []);
+
+  // Un `setInterval` que sobrevive a la navegacion sigue consultando la API
+  // desde una pantalla que ya no existe. Se corta al salir.
+  useEffect(() => clearIntervalActivo, [clearIntervalActivo]);
+
   const escanear = async (conEmpresa: boolean) => {
     setEscaneando(true);
     setError(null);
+    setCorrida(null);
     try {
+      // `POST /scan` tarda minutos con fotos, asi que no se espera a que
+      // responda para empezar a mostrar progreso: se arranca a consultar el
+      // canal mientras el POST sigue abierto. `GET /scan/runs` es lo que dice
+      // que hay una corrida en marcha, y a partir de ahi se sigue por su id.
+      const watching = setInterval(() => {
+        ticketsApi
+          .scanRuns(5)
+          .then((r) => {
+            const viva = r.corridas.find((c) => !c.terminada);
+            if (viva) {
+              setCorrida(viva);
+              setCorridaId(viva.id);
+            }
+          })
+          .catch(() => {
+            /* si el canal falla, el POST sigue: no se interrumpe nada */
+          });
+      }, 2000);
+      setIntervalActivo(watching);
+
       const r = await ticketsApi.escanear(conEmpresa && companyId ? { company_id: companyId } : {});
       setUltimo(r);
+      // Un ultimo Hald del canal para recoger el resumen final, que en el
+      // POST puede venir con `terminada: false` si se respondio justo al cerrar.
+      try {
+        const { corridas } = await ticketsApi.scanRuns(5);
+        const mia = corridas.find((c) => c.id === corridaId) ?? corridas[0];
+        if (mia) setCorrida(mia);
+      } catch {
+        /* sinUltimo no es un error: ya vino el resultado del POST */
+      }
       await cargar();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo escanear');
     } finally {
+      clearIntervalActivo();
       setEscaneando(false);
     }
   };
@@ -173,6 +231,8 @@ export function Scan() {
           Escanear y crear tickets
         </Button>
       </div>
+
+      {corrida && <PanelProgreso corrida={corrida} />}
 
       {ultimo && <PanelResultado resultado={ultimo} />}
 

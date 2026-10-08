@@ -281,6 +281,19 @@ class TicketResponse(BaseModel):
     extraction_status: str
     source_type: str | None = None
     source_file: str | None = None
+    # El SHA-256 de los bytes del comprobante, y por que va en la respuesta.
+    #
+    # `source_hash` es lo que hace idempotente la carga: el mismo archivo subido
+    # dos veces devuelve el mismo ticket en vez de duplicar el gasto. Y es lo que
+    # permite VERIFICAR que el comprobante guardado en `ticket_documents` es
+    # exactamente el mismo archivo y no una version distinta.
+    #
+    # Eso ultimo es lo que usa `_retirar_si_esta_respaldo` para decidir si puede
+    # borrar un archivo de la carpeta de entrada: si el sha256 del documento
+    # guardado no coincide, NO borra. Y si ese numero no se puede ver desde la
+    # API, la razon por la que un archivo se borro —"tiene la misma copia
+    # verificada"— es invisible para quien consulta.
+    source_hash: str | None = None
     # Si el comprobante original esta guardado, y cuanto pesa.
     #
     # Sin esto, la UI no puede distinguir tres cosas que se ven igual en una

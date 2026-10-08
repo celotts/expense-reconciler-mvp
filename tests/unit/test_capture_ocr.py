@@ -56,7 +56,7 @@ class OcrFalso:
         return ResultadoOCR(texto=self.texto or "", motor="falso")
 
 
-def _vision_que_falla(datos: bytes, mime_type: str = "image/png"):
+def _vision_que_falla(datos: bytes):
     """Un extractor de vision que se niega, para comprobar que NO se llamo."""
     raise AssertionError("no se deberia llamar a vision en este caso")
 
@@ -64,7 +64,7 @@ def _vision_que_falla(datos: bytes, mime_type: str = "image/png"):
 _llamadas_a_vision: list[bytes] = []
 
 
-async def _vision_que_si_lee(datos: bytes, mime_type: str = "image/png"):
+async def _vision_que_si_lee(datos: bytes):
     """Vision que responde CON lineas de producto, que es lo que se busca."""
     _llamadas_a_vision.append(datos)
     from app.services.ai_extractor import ExtractedInvoice
@@ -146,7 +146,7 @@ class TestElOrdenDeLaEscalada:
         ocr = OcrFalso("basura sin labels\n" * 50)
         llamadas_a_vision: list[bytes] = []
 
-        async def vision(datos: bytes, mime_type: str = "image/png"):
+        async def vision(datos: bytes):
             from app.services.ai_extractor import ExtractedInvoice
 
             llamadas_a_vision.append(datos)
@@ -174,7 +174,7 @@ class TestElOrdenDeLaEscalada:
         ocr = OcrFalso(error=OCRNoDisponible("tesseract no esta instalado"))
         llamadas: list[bytes] = []
 
-        async def vision(datos: bytes, mime_type: str = "image/png"):
+        async def vision(datos: bytes):
             from app.services.ai_extractor import ExtractedInvoice
 
             llamadas.append(datos)
@@ -198,7 +198,7 @@ class TestElOrdenDeLaEscalada:
         """
         ocr = OcrFalso(error=RuntimeError("el motor se cayo"))
 
-        async def vision(datos: bytes, mime_type: str = "image/png"):
+        async def vision(datos: bytes):
             from app.services.ai_extractor import ExtractedInvoice
 
             return ExtractedInvoice(
