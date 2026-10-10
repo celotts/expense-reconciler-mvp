@@ -48,6 +48,37 @@ from typing import TYPE_CHECKING
 
 from app.core.config import settings
 
+# Importar `app.core.heif` ES registrar el decodificador de HEIC: el
+# `register_heif_opener()` corre al importarse ese modulo, no al llamarse.
+#
+# POR QUE ESTA LINEA ESTA AQUI Y NO SOLO EN `ai_extractor`
+# =======================================================
+#
+# El docstring de `app/core/heif.py` ya describe el problema, y el diagnostico
+# sigue siendo exacto: antes, el registro vivia en `ai_extractor`, y la app
+# funcionaba porque `scan_service`, `capture` y `api/tickets` importaban ese
+# modulo ANTES de que corriera el OCR. Es decir: por el **orden de los imports**,
+# que no es una garantia.
+#
+# COMPROBADO con el archivo real (`CremeriaHermanosCoronel.heic`), cargando este
+# modulo por ruta sin que nadie haya importado `ai_extractor` antes:
+#
+#     app.core.heif cargado?  False
+#     PIL abre la HEIC?      NO -> UnidentifiedImageError
+#
+# Y lo que viene despues es el fallo mas caro del proyecto, porque no parece de
+# HEIC: `_preparar` devuelve los bytes crudos, `pytesseract` recibe algo que no
+# es imagen y lanza `TypeError: Unsupported image object`. El operador ve un
+# error de OCR y busca en el OCR.
+#
+# El doble riesgo: una foto de iPhone es media propuesta de valor del producto
+# (`archivo_real.py` reconoce HEIC por la firma `ftyp` justamente para eso), y
+# el unico path que las lee es este.
+#
+# Es una linea y no una dependencia dura: `heif.py` degrada a `DISPONIBLE=False`
+# si falta `pillow-heif`, y aqui no se consulta — solo se importa.
+from app.core import heif as _heif  # noqa: F401
+
 if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
     # Pillow se importa DENTRO de `_preparar`, y por una razon que no es de
     # estilo: si el paquete falta, el OCR sigue funcionando con los bytes
@@ -382,6 +413,191 @@ def _preparar(datos: bytes) -> "Image.Image | bytes":
 # asi que 0 va primero y sale barato; las demas se prueban solo si esa no sirvio.
 ROTACIONES = (0, 90, 180, 270)
 
+
+# ---------------------------------------------------------------------------
+# Binarizacion adaptativa con OpenCV (OPCIONAL)
+# ---------------------------------------------------------------------------
+#
+# ESTA SECCION ES NUEVA Y NO ESTA MEDIDA TODAVIA
+# ==============================================
+#
+# `docs/known-issues.md` §21 descarta el preprocesado con datos, y hay que decir
+# con precision que descarta y que no, porque son cosas distintas:
+#
+#   - lo que se midio: unsharp, SHARPEN, mediana y UMBRALES GLOBALES (110, 165).
+#     Resultado: no arreglan, DESPLAZAN. `51.50` se lee bien en 4 de 4 lecturas
+#     sin tratar, y con unsharp r2 baja a 2 de 4, y con umbral 110 a 0 de 4
+#     leyendo `51.80`. "Cualquier ajuste que arregle esta foto rompe otra."
+#   - lo que NO se midio: el umbral ADAPTATIVO con ventana gaussiana. No es un
+#     umbral global con otro numero, es otra pregunta: en vez de "este pixel es
+#     mas claro que 165", pregunta "este pixel es mas claro que la MEDIA DE SU
+#     VENTANA". Esa es la pregunta correcta para una foto con una sombra de la
+#     mano cruzando el papel, y un umbral global no la puede responder.
+#
+# Por eso entra como VARIANTE PUNTUADA y no como reemplazo, y esa es la decision
+# de diseño de todo este bloque:
+#
+#   `_leer_tesseract` YA puntua cada lectura con evidencia del comprobante
+#   (`_puntuar`: total + RFC + aritmetica) y se queda con la mejor. La
+#   binarizacion entra como una lectura MAS de esa misma competencia. Gana
+#   unicamente si el documento sale mejor leido, y si no gana, no cambia nada.
+#
+# Esto NO es "a ver si mejora" a ciegas: es dejar que la medicion que ya existe
+# en el codigo decida, sobre el ticket real, en cada foto.
+#
+# LO QUE ESTA PROHIBIDO HACER AQUI, y por que
+# ============================================
+#
+# 1. **No reemplazar `_preparar`.** El recorte de papel, el exif_transpose y el
+#    autocontraste estan puestos y `test_recorte_del_papel.py` los protege. Si
+#    la binarizacion fuera el camino unico, un archivo que OpenCV degrade
+#    entra peor que hoy, sin red.
+# 2. **No quitar la guarda de arriba.** La etapa solo corre si la lectura normal
+#    NO fue `_es_buena`. El caso comun —una foto bien tomada— sigue costando una
+#    sola lectura de Tesseract.
+# 3. **No dejar cv2 en el import de arriba.** `import cv2` en el nivel del
+#    modulo hace que la app NO LEVANTE en una maquina sin OpenCV, y la regla de
+#    este repo es que tiene que levantar para poder DECIR "no tienes OpenCV".
+
+# Multiplicador del reescalado. Es 2 porque es lo que se pidio y porque es lo
+# que la practica marca para OCR: Tesseract rinde bien con una altura de letra
+# de unos 30 px, y un ticket de papel termico en letra de 8 sale por debajo.
+ZOOM_SIN_PIXELES = 2
+
+# Por ENCIMA de este ancho no se reescala nunca, y por DEBAJO tampoco. Ver
+# `_binarizar`: el reescalado solo aporta pixeles si la imagen original era
+# PEQUENA. Este es el techo del zoom, para no darle a Tesseract una imagen de
+# 4000 px de ancho cuando `_preparar` acaba de bajar a 2000 a proposito.
+ANCHO_MAXIMO_PREPARADO = 2000
+ANCHO_MINIMO_PARA_ZOOM = 1200
+
+# Ventana del umbral adaptativo. Impar y mayor que 1 porque `adaptiveThreshold`
+# lo exige, y del orden de la media anchura de un caracter a esta escala: con
+# una ventana mas pequena que el trazo, la "media local" es la propia tinta y el
+# umbral no distingue nada.
+ADAPTIVE_BLOCK_SIZE = 31
+# Cuanto se le resta a la media de la ventana. Positivo porque el fondo del papel
+# tiene grano: con `C=0` el ruido de una foto de papel termico se convierte en
+# puntos negros y Tesseract los lee como caracteres.
+ADAPTIVE_C = 10
+
+
+def _cv2():
+    """`cv2` si esta instalado, o `None`. NUNCA lanza.
+
+    Es la diferencia entre "no se pudo binarizar" y "el OCR no funciona". La
+    ausencia de OpenCV degrada una etapa opcional; si esta funcion levantara, se
+    llevaria por delante la lectura entera, que es la que si funciona hoy.
+
+    `opencv-python-headless` y no `opencv-python`: el primero no necesita `libGL`,
+    y el `Dockerfile` documenta que en `python:3.11-slim` `libgl1` NO esta
+    instalado a proposito. Si alguien agrega el paquete con flavor, `import cv2`
+    revienta con `libGL.so.1: cannot open shared object file` y parece un bug de
+    OpenCV cuando es un paquete equivocado.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        logger.debug("OpenCV no esta instalado (%s); se lee sin binarizar", exc)
+        return None
+    except Exception as exc:  # pragma: no cover - solo wheel roto o libGL ausente
+        logger.warning("OpenCV esta instalado pero no se puede usar (%s)", exc)
+        return None
+    return cv2
+
+
+def _binarizar(imagen):
+    """Gris -> zoom cubic -> umbral adaptativo gaussiano. O `None`.
+
+    `None` significa "esta foto se lee sin binarizar", y es una respuesta
+    valida en cuatro casos: no hay cv2, no hay numpy, la imagen no se abrio
+    (`_preparar` devuelve los bytes crudos cuando no hay Pillow), o el
+    `adaptiveThreshold` fallo. En ninguno de los cuatro hay un error que
+    propagar: la lectura normal ya esta hecha y es la que manda.
+
+    ## POR QUE EL ZOOM SOLO SE APLICA A LO PEQUENO
+
+    El pedido era "zoom x2 con INTER_CUBIC". Aplicado tal cual, aqui, no hace
+    nada: `_preparar` acaba de BAJAR la imagen a 2000 px de ancho, y una
+    interpolacion no recupera los pixeles que el reescalado a la baja destruyo.
+    `docs/known-issues.md` §21 punto 1 ya lo midio: la foto original es de 3840
+    px y a resolucion NATIVA el total se sigue leyendo `31.50` con confianza 93.
+    Regresar esos pixeles inventados no seria "mejorar la definicion", seria
+    fabricar una imagen que no existe.
+
+    Lo que si aporta pixeles de verdad es el caso inverso: una foto QUE YA VINO
+    pequena —un WhatsApp reenviado, un escaner de 600 px de ancho— donde la
+    altura de letra esta por debajo de lo que Tesseract puede usar. Ahi el x2 con
+    INTER_CUBIC si aporta. Por eso el zoom es condicional, y por eso el ancho
+    resultante se limita a `ANCHO_MAXIMO_PREPARADO`: dar a Tesseract 4000 px
+    cuando el proposito de bajar a 2000 era no gastar segundos por foto seria
+    deshacer el trabajo de `_preparar`.
+
+    ## POR QUE `THRESH_BINARY` Y NO `THRESH_BINARY_INV`
+
+    Tesseract espera tinta oscura sobre papel claro. `THRESH_BINARY_INV` entrega
+    la imagen invertida —tinta blanca sobre fondo negro— y Tesseract lee mucho
+    peor sin decir por que: no es un error, es texto peor. `THRESH_BINARY` deja
+    la tinta en 0 y el papel en 255, que es lo que el motor espera.
+
+    ## POR QUE GAUSSIANA Y NO MEDIA
+
+    La ventana gaussiana pondera el centro y decae hacia los bordes; la ventana
+    de media es plana. En un papel termico con una arruga o con la curva de la
+    foto, la version plana mete el valor de la sombra dentro de la media local y
+    la binarizacion se invierte justo en la zona que queria arreglar.
+    """
+    # `_preparar` devuelve los BYTES originales si Pillow no esta o si la imagen
+    # no se abrio. Sin `.convert` no hay nada que binarizar, y `bytes` no tiene
+    # ni `.size` ni `.width`.
+    if not hasattr(imagen, "convert"):
+        return None
+
+    cv2 = _cv2()
+    if cv2 is None:
+        return None
+
+    try:
+        import numpy as np
+    except ImportError:
+        logger.debug("numpy no esta instalado; se lee sin binarizar")
+        return None
+
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - sin Pillow ya se salio arriba
+        return None
+
+    try:
+        gris = np.array(imagen.convert("L"))
+
+        ancho, alto = gris.shape[1], gris.shape[0]
+        if ancho < ANCHO_MINIMO_PARA_ZOOM:
+            destino = min(ancho * ZOOM_SIN_PIXELES, ANCHO_MAXIMO_PREPARADO)
+            if destino > ancho:
+                gris = cv2.resize(
+                    gris,
+                    (destino, max(1, round(alto * destino / ancho))),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+
+        binaria = cv2.adaptiveThreshold(
+            gris,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            ADAPTIVE_BLOCK_SIZE,
+            ADAPTIVE_C,
+        )
+        return Image.fromarray(binaria)
+    except Exception as exc:
+        # Un `cv2.error` aqui es mas probable una imagen degenerada que un bug.
+        # Se registra y se sigue con la lectura normal, que ya esta hecha.
+        logger.warning(
+            "no se pudo binarizar la imagen (%s); se lee sin binarizar", exc
+        )
+        return None
+
 # Modos de segmentacion alternativos, para la segunda vuelta.
 #
 # 12 = "buscar texto disperso, sin asumir el orden de lectura", que es lo que
@@ -394,6 +610,11 @@ ROTACIONES = (0, 90, 180, 270)
 # carpeta grande eso son minutos, y solo se llega aqui cuando la primera vuelta
 # no produjo NINGUN comprobante, que es el caso raro.
 _PSM_ALTERNATIVOS = (12, 11)
+
+# El motor de Tesseract. 3 = LSTM (red neuronal), que es el unico que sirve para
+# un ticket: los motores 0 y 1 son losometries de la epoca previa y leen peor en
+# letra pequena. Ver `_config_de_tesseract` para por que se escribe a mano.
+OEM_TESSERACT = 3
 
 
 def _variantes(imagen: "object") -> list[tuple[int, "object"]]:
@@ -596,6 +817,44 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
             )
             break
 
+    # Tercera etapa: la MISMA lectura, pero sobre la BINARIZACION ADAPTATIVA.
+    #
+    # Entra en la competencia con `_puntuar`, no aparte. Si el papel sale mejor
+    # leido aqui, esta lectura gana y se devuelve; si no, `mejor` sigue siendo la
+    # de la imagen normal y el resultado es byte a byte el de antes del cambio.
+    # Esa es la garantia que hace que esto se pueda meter sin medir antes: no
+    # puede empeorar, solo puede empatar.
+    #
+    # SOLO si la lectura normal no fue buena. Un `continue` implicito por el
+    # `_es_buena` del bucle de arriba: el caso comun —una foto bien tomada— ya
+    # corto en la primera rotacion y nunca llega aqui, asi que el costo de la
+    # etapa es cero para el ticket que hoy funciona.
+    #
+    # Y antes que la segunda vuelta de PSM, a proposito. El PSM cambia COMO se
+    # segmenta una imagen; la binarizacion cambia QUE IMAGEN es. Si la imagen es
+    # mala por la sombra que cruza el papel, ningun PSM la arregla, y al reves:
+    # una imagen bien binarizada se segmenta bien con el PSM que ya se usa.
+    if mejor is not None and not _es_buena(mejor):
+        binarizada = _binarizar(base)
+        if binarizada is not None:
+            for rotacion, imagen in _variantes(binarizada):
+                lectura = _una_lectura(pytesseract, imagen, rotacion, psm_por_usar)
+                if mejor is None or lectura.puntos > mejor.puntos:
+                    # El puntaje del ganador anterior se toma ANTES de sustituirlo.
+                    # Con el `logger` despues del `mejor = lectura` los dos
+                    # numeros del mensaje eran el mismo, y el log de la unica
+                    # evidencia que hay de que la etapa sirve decia "40 contra 40"
+                    # cuando acababa de ganar por 12.
+                    puntos_previos = mejor.puntos if mejor is not None else 0
+                    mejor = lectura
+                    logger.info(
+                        "OCR: la binarizacion adaptativa gana en la rotacion %d "
+                        "(%d puntos contra %d)",
+                        rotacion, lectura.puntos, puntos_previos,
+                    )
+                if _es_buena(lectura):
+                    break
+
     # Segunda vuelta con otros modos de segmentacion, SOLO si ninguna rotacion
     # produjo un comprobante.
     #
@@ -646,6 +905,27 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
     )
 
 
+def _config_de_tesseract(psm: int | None) -> str:
+    """La cadena de `--oem`/`--psm` que se le pasa a Tesseract.
+
+    `--oem 3` es el motor **LSTM**, y se escribe a mano aunque sea el valor por
+    omision de Tesseract 4 y 5. La razon es que el valor por omision **cambio una
+    vez**: Tesseract 3 usaba el motor heredado (`--oem 0`) y el 4 paso a LSTM. Un
+    numero de foto leido depende de cual de los dos corra, y un dia que se actualice
+    la imagen de Docker las fotos cambian de accuracy sin que nadie haya tocado
+    este repo. Fijarlo hace que el motor sea una decision del codigo y no del
+    paquete instalado.
+
+    `--psm 6` ("un bloque uniforme") es el default de `settings.OCR_PSM` y es lo
+    correcto para el cuerpo de un ticket. Los modos alternativos 12 y 11 siguen
+    existiendo para la segunda vuelta de `_leer_tesseract`, y por el motivo que
+    esta ahi puesto: `PSM 6` saca palabras sueltas de un comprobante con membrete
+    y dos columnas, mientras `PSM 12` si lee el nombre del emisor completo.
+    """
+    modo = psm if psm is not None else settings.OCR_PSM
+    return f"--oem {OEM_TESSERACT} --psm {modo}"
+
+
 def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> Lectura:
     """Una pasada de OCR sobre una imagen, ya en una orientacion.
 
@@ -659,7 +939,7 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
     datos_ocr = pytesseract.image_to_data(
         imagen,
         lang=settings.OCR_IDIOMA or IDIOMA_POR_DEFECTO,
-        config=f"--psm {psm if psm is not None else settings.OCR_PSM}",
+        config=_config_de_tesseract(psm),
         output_type=pytesseract.Output.DICT,
     )
 
@@ -962,8 +1242,38 @@ def disponibilidad() -> dict[str, object]:
         else:
             motores[nombre] = {"disponible": True, "motivo": None}
 
+    # OpenCV NO va en `motores` porque no es un motor de lectura: no produce
+    # texto, es un preprocesado que hace MAS legible lo que el motor lee. Meterlo
+    # en la misma lista diria "easyocr no esta instalado" al lado de "opencv no
+    # esta instalado", que son dos cosas de distinta gravedad —la primera es no
+    # poder leer, la segunda es leer igual que antes—. Va aparte por eso.
+    #
+    # Y va en la respuesta aunque no este instalado, que es justo el punto: el
+    # operador tiene que poder PREGUNTAR por que su foto se lee igual que hace
+    # seis meses, en vez de deducirlo de un numero de exactitud que no se movio.
+    _cv2_modulo = _cv2()
+    if _cv2_modulo is None:
+        opencv = {
+            "disponible": False,
+            "motivo": (
+                "opencv no esta instalado. Agrega 'opencv-python-headless' a "
+                "requirements.txt. Es OPCIONAL: sin el, el OCR lee igual que "
+                "antes, pero sin la binarizacion adaptativa que quita sombras."
+            ),
+            "version": None,
+        }
+    else:
+        opencv = {
+            "disponible": True,
+            "motivo": None,
+            "version": getattr(_cv2_modulo, "__version__", None),
+        }
+
     return {
         "ocr_habilitado": settings.OCR_ENABLED,
         "idioma": settings.OCR_IDIOMA,
+        "psm": settings.OCR_PSM,
+        "oem": OEM_TESSERACT,
         "motores": motores,
+        "opencv": opencv,
     }

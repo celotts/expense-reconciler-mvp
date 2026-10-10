@@ -1186,7 +1186,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s1. Configuracion del escaner",
-      "description": "La configuracion efectiva del escaneo.\n\nSe expone porque el valor por defecto de la carpeta es una ruta de una\nmaquina concreta (`/Users/carloslott/...`). En cualquier otra maquina, en\nun contenedor o en la de otra persona, hay que cambiar la variable, y sin\neste endpoint la unica forma de saber si el cambio tomo efecto es correr un\nescaneo y mirar la ruta que salio en el resumen.",
+      "description": "La configuracion efectiva del escaneo.\n\nSe expone porque el valor por defecto de la carpeta es una ruta de una\nmaquina concreta (`/Users/carloslott/...`). En cualquier otra maquina, en\nun contenedor o en la de otra persona, hay que cambiar la variable, y sin\neste endpoint la unica forma de saber si el cambio tomo efecto es correr un\nescaneo y mirar la ruta que salio en el resumen.\n\n`archivar_por_defecto` ESTA, y no es un dato de mas. Es lo que permite que la\ncasilla de la pantalla muestre el valor **real** en vez de suponerlo: sin este\ncampo, el front tendria que hardcodear `true` —porque asi viene por omision en\n`Settings`— y mentiria en cuanto alguien apagara `TICKETS_SCAN_ARCHIVAR` en el\n`.env`, que es justo lo que hace falta para probar el escaneo varias veces.\n\nUna casilla de archivado que arranca marcada cuando el archivado esta apagado es\nuna forma de mover comprobantes de carpeta sin querer, y el operador no tendria\nforma de saber por que desaparecieron de la bandeja.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1363,6 +1363,34 @@
       "_type": "request"
     },
     {
+      "_id": "req_38",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s8. DEJAR LA BASE LIMPIA (destructivo, 4 cerrojos)",
+      "description": "Deja la base limpia para volver a probar el escaneo.\n\nCUATRO CERRADJOS, Y EN QUE ORDEN SE EJECUTAN\n=============================================\n\n1. **El flag** (`_reset_habilitado`, dependencia). Apagado -> **404**, y sin\n   llegar a mirar el token. Ver el docstring de esa funcion: es el primero que\n   corre, y por eso es una dependencia y no un `if`.\n2. **La contrasena del que llama** (`UsuarioVerificado`): token **y**\n   `X-Contrasena-Actual`. Es el mismo cerrojo de `usuarios.py`, y por el mismo\n   motivo —un token robado no debe alcanzar para borrar el historico\n   contable—.\n3. **La frase.** `confirmar` tiene que decir `BORRAR_YA` exacta. No un\n   booleano: un `true` se manda con un clic de mas y no distingue \"me\n   confirme a mi mismo\" de \"el sistema me lo pregunto\".\n4. **No hay trabajo humano.** Si hay un ticket con `reviewed_at` o una compra\n   `PROCESADO`, responde **409** y no borra nada. Es el unico cerrojo que\n   protege lo irrepetible: una correccion contra el papel, o una compra que\n   alguien autorizo para que el stock empezara a contar.\n\nY ADEMAS, el modo por omision (`ejecutar=false`) solo cuenta. Un endpoint\ndestructivo cuyo modo por omision es el destructivo es del que hay que\nacordarse de no usar.\n\nLO QUE NO SE BORRA\n------------------\nNi las cuentas, ni las empresas, ni el catalogo de productos. Las empresas\nporque el escaneo necesita una para atribuir (sin ella `POST /scan` solo\ninventaria); las cuentas porque borrarlas deja el sistema sin puerta de\nentrada; el catalogo porque son horas de dar de alta y no tiene que ver con\nprobar el escaneo. La respuesta los lista en `lo_que_no_se_borra`.\n\nEl detalle de por que el borrado vive en `services/scan_reset.py` y no aqui:\nel orden de los `DELETE` no es estilo, porque `ticket_documents` es append-only\ny **solo** se puede borrar cuando su ticket ya no existe.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"confirmar\": \"texto\",\n  \"ejecutar\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/reset",
+      "metaSortKey": 38,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
       "_id": "fld_07",
       "parentId": "col_api",
       "modified": 1759353600000,
@@ -1378,7 +1406,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_38",
+      "_id": "req_39",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1416,12 +1444,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios",
-      "metaSortKey": 38,
+      "metaSortKey": 39,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_39",
+      "_id": "req_40",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1440,12 +1468,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 39,
+      "metaSortKey": 40,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_40",
+      "_id": "req_41",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1472,12 +1500,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 40,
+      "metaSortKey": 41,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_41",
+      "_id": "req_42",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1504,7 +1532,7 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena",
-      "metaSortKey": 41,
+      "metaSortKey": 42,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1524,7 +1552,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_42",
+      "_id": "req_43",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1550,12 +1578,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/cola",
-      "metaSortKey": 42,
+      "metaSortKey": 43,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_43",
+      "_id": "req_44",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1599,12 +1627,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras",
-      "metaSortKey": 43,
+      "metaSortKey": 44,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_44",
+      "_id": "req_45",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1623,12 +1651,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
-      "metaSortKey": 44,
+      "metaSortKey": 45,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_45",
+      "_id": "req_46",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1651,12 +1679,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
-      "metaSortKey": 45,
+      "metaSortKey": 46,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_46",
+      "_id": "req_47",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1679,12 +1707,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
-      "metaSortKey": 46,
+      "metaSortKey": 47,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_47",
+      "_id": "req_48",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1707,12 +1735,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/rechazar",
-      "metaSortKey": 47,
+      "metaSortKey": 48,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_48",
+      "_id": "req_49",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1731,12 +1759,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/reabrir",
-      "metaSortKey": 48,
+      "metaSortKey": 49,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_49",
+      "_id": "req_50",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1774,12 +1802,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 49,
+      "metaSortKey": 50,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_50",
+      "_id": "req_51",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1809,12 +1837,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 50,
+      "metaSortKey": 51,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_51",
+      "_id": "req_52",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1852,12 +1880,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 51,
+      "metaSortKey": 52,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_52",
+      "_id": "req_53",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1887,12 +1915,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 52,
+      "metaSortKey": 53,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_53",
+      "_id": "req_54",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1918,12 +1946,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 53,
+      "metaSortKey": 54,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_54",
+      "_id": "req_55",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1953,7 +1981,7 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 54,
+      "metaSortKey": 55,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1973,7 +2001,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_55",
+      "_id": "req_56",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2011,7 +2039,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 55,
+      "metaSortKey": 56,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2023,7 +2051,7 @@
       ]
     },
     {
-      "_id": "req_56",
+      "_id": "req_57",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2046,12 +2074,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 56,
+      "metaSortKey": 57,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_57",
+      "_id": "req_58",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2125,12 +2153,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv",
-      "metaSortKey": 57,
+      "metaSortKey": 58,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_58",
+      "_id": "req_59",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2210,12 +2238,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
-      "metaSortKey": 58,
+      "metaSortKey": 59,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_59",
+      "_id": "req_60",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2234,12 +2262,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 59,
+      "metaSortKey": 60,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_60",
+      "_id": "req_61",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2262,12 +2290,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 60,
+      "metaSortKey": 61,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_61",
+      "_id": "req_62",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2286,7 +2314,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 61,
+      "metaSortKey": 62,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2306,7 +2334,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_62",
+      "_id": "req_63",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2350,7 +2378,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 62,
+      "metaSortKey": 63,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2362,7 +2390,7 @@
       ]
     },
     {
-      "_id": "req_63",
+      "_id": "req_64",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2385,12 +2413,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 63,
+      "metaSortKey": 64,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_64",
+      "_id": "req_65",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2413,12 +2441,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/run",
-      "metaSortKey": 64,
+      "metaSortKey": 65,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_65",
+      "_id": "req_66",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2437,12 +2465,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 65,
+      "metaSortKey": 66,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_66",
+      "_id": "req_67",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2465,12 +2493,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 66,
+      "metaSortKey": 67,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_67",
+      "_id": "req_68",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2489,12 +2517,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 67,
+      "metaSortKey": 68,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_68",
+      "_id": "req_69",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2538,12 +2566,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/excel",
-      "metaSortKey": 68,
+      "metaSortKey": 69,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_69",
+      "_id": "req_70",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2593,12 +2621,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/contpaqi",
-      "metaSortKey": 69,
+      "metaSortKey": 70,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_70",
+      "_id": "req_71",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2648,12 +2676,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/generic",
-      "metaSortKey": 70,
+      "metaSortKey": 71,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_71",
+      "_id": "req_72",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2679,12 +2707,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 71,
+      "metaSortKey": 72,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_72",
+      "_id": "req_73",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2707,12 +2735,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 72,
+      "metaSortKey": 73,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_73",
+      "_id": "req_74",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2731,12 +2759,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 73,
+      "metaSortKey": 74,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_74",
+      "_id": "req_75",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2759,12 +2787,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 74,
+      "metaSortKey": 75,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_75",
+      "_id": "req_76",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2783,7 +2811,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 75,
+      "metaSortKey": 76,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2803,7 +2831,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_76",
+      "_id": "req_77",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2835,12 +2863,12 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual",
-      "metaSortKey": 76,
+      "metaSortKey": 77,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_77",
+      "_id": "req_78",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2872,7 +2900,7 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual.pdf",
-      "metaSortKey": 77,
+      "metaSortKey": 78,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2892,7 +2920,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_78",
+      "_id": "req_79",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2906,7 +2934,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 78,
+      "metaSortKey": 79,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {

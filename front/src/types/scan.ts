@@ -123,6 +123,38 @@ export interface ScanProcesado {
    *  ensenarla en la pantalla en vez de dejar que se suponga. */
   confiable: boolean;
   es_duplicado: boolean;
+
+  // --- El encabezado del ticket ------------------------------------------
+  //
+  // Antes esto no existia y el panel decia "$0.00 — pendiente", que no dice nada
+  // util: no distingue "el sistema no supo leer el papel" de "el gate lo paro
+  // porque la aritmetica no cuadraba", y son dos trabajos distintos para quien
+  // esta mirando la pantalla. Con el encabezado, el operador ve QUE se leyo
+  // ademas de CUANTO, y puede empezar a corregir mientras el escaneo sigue.
+  //
+  // Vienen de la FILA de `tickets`, no de la lectura cruda, y por eso viajan con
+  // `extraction_status` al lado: si el gate mando esto a revision, estos numeros
+  // son los que produjo la lectura Y la razon por la que no se afirman. Verlos
+  // sueltos invitaba a tratarlos como buenos.
+
+  /** Lo que el sistema afirmo que es el comercio. Sin RFC ni etiqueta esto sale
+   *  con frecuencia como ruido del OCR ("Pog ae — TAPA"). Se muestra tal cual y
+   *  no normalizado: un nombre inventado es peor que uno feo. */
+  proveedor: string | null;
+  /** El RFC del EMISOR. `null` en la mayoria de las fotos: el OCR pierde las
+   *  tres letras y sin ellas no hay RFC que registrar. */
+  rfc: string | null;
+  /** ISO (`2026-10-01`). */
+  fecha: string | null;
+  subtotal: string | null;
+  iva: string | null;
+  ieps: string | null;
+  /** El CONTEO de lineas, no las lineas. `null` cuando el papel no trae detalle
+   *  de partidas —la ruta OCR nunca lo trae— y eso NO es lo mismo que `0`. */
+  lineas: number | null;
+  /** Por que el gate no lo aprueba. `;` separa varios. Es lo que convierte
+   *  "pendiente" en algo accionable. */
+  validation_errors: string | null;
 }
 
 /** El estado de una corrida mientras corre, y despues de terminar. */
@@ -168,6 +200,16 @@ export interface ScanRequest {
   company_id?: string | null;
   reprocesar?: boolean;
   solo_pendientes?: boolean;
+  /** Mover los comprobantes a la carpeta de escaneados al digitalizarlos.
+   *
+   *  `null` o ausente = usa `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR` del servidor, y
+   *  por eso la casilla se siembra con `config.archivar_por_defecto` en vez de
+   *  con un `true` de aqui.
+   *
+   *  Mover NO es borrar: los bytes no cambian, el comprobante sigue existiendo en
+   *  la carpeta de escaneados. Lo que cambia es que sale de la bandeja de
+   *  entrada, que es la que significa "lo que falta digitalizar". */
+  archivar?: boolean | null;
 }
 
 export interface ScanStats {
@@ -190,6 +232,22 @@ export interface ScanConfig {
   recursivo: boolean;
   max_por_corrida: number;
   max_bytes_por_archivo: number;
+
+  /** El valor REAL del archivado, tal como quedo configurado.
+   *
+   *  Esta en la respuesta de la API y no se supone en el cliente a proposito: si
+   *  el front lo hardcodeara a `true` (que es el default de `Settings`), la casilla
+   *  arrancaria marcada aunque alguien hubiera apagado `TICKETS_SCAN_ARCHIVAR` en
+   *  el `.env` — que es lo que hay que hacer para probar el escaneo varias veces
+   *  sin que las fotos salgan de la carpeta.
+   *
+   *  Con `false`, marcar la casilla es una decision consciente. */
+  archivar_por_defecto: boolean;
+  /** Los dos interruptores por separado, porque son decisiones distintas.
+   *  Con los dos en `true`, el segundo casi nunca dispara: el archivo ya se movio
+   *  al escanear. */
+  archivar_al_escanear: boolean;
+  archivar_al_confirmar: boolean;
 }
 
 /** Como esta el OCR en ESTA maquina.

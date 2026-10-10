@@ -8,6 +8,7 @@ import { Button, Card, Badge, Loading, EmptyState, Select, Modal } from '../comp
 import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO } from '../utils/scan';
 import { VerDocumento } from '../components/TicketDocumento';
 import { PanelProgreso } from '../components/ScanProgreso';
+import { CasillaArchivar } from '../components/CasillaArchivar';
 
 /**
  * Escaner de carpeta: leer comprobantes de un directorio sin subir uno por uno.
@@ -78,6 +79,13 @@ export function Scan() {
         }),
       ]);
       setConfig(c.status === 'fulfilled' ? c.value : null);
+      // La casilla se siembra con el valor REAL del servidor. Solo la primera
+      // vez que llega la config: si se re-sembrara en cada recarga, alguien que
+      // desmarcara para una corrida volveria a encontrarla marcada al cambiar de
+      // empresa o de pagina, y creeria que el servidor lo decidio.
+      if (c.status === 'fulfilled') {
+        setArchivar(actual => (actual === null ? c.value.archivar_por_defecto : actual));
+      }
       setOcr(o.status === 'fulfilled' ? o.value : null);
       setStats(s.status === 'fulfilled' ? s.value : null);
       if (f.status === 'fulfilled') {
@@ -110,6 +118,14 @@ export function Scan() {
   // desde una pantalla que ya no existe. Se corta al salir.
   useEffect(() => clearIntervalActivo, [clearIntervalActivo]);
 
+  /** Si los comprobantes se mueven a la carpeta de escaneados al digitalizarlos.
+   *
+   *  `null` hasta que llega `GET /scan/config`: antes de eso no se sabe cual es el
+   *  valor real del servidor, y sembrar la casilla con un `true` de aqui seria
+   *  mentir en cuanto alguien apague `TICKETS_SCAN_ARCHIVAR` en el `.env`.
+   */
+  const [archivar, setArchivar] = useState<boolean | null>(null);
+
   const escanear = async (conEmpresa: boolean) => {
     setEscaneando(true);
     setError(null);
@@ -135,7 +151,18 @@ export function Scan() {
       }, 2000);
       setIntervalActivo(watching);
 
-      const r = await ticketsApi.escanear(conEmpresa && companyId ? { company_id: companyId } : {});
+      // `archivar` viaja explicito y no omitido. Si se omitiera, el servidor usaria
+      // el `.env`, que es global: no habria forma de cambiarlo para UNA corrida
+      // desde la pantalla, que es justo lo que hace falta al probar.
+      //
+      // Y si `archivar` es `null` todavia (la config no ha llegado), se manda
+      // `null`, no `false`: `null` le dice al servidor "usa tu default", y `false`
+      // le diria "no muevas nada", que es una decision que el operador todavia no
+      // ha tomado.
+      const r = await ticketsApi.escanear({
+        ...(conEmpresa && companyId ? { company_id: companyId } : {}),
+        archivar,
+      });
       setUltimo(r);
       // Un ultimo Hald del canal para recoger el resumen final, que en el
       // POST puede venir con `terminada: false` si se respondio justo al cerrar.
@@ -211,6 +238,19 @@ export function Scan() {
 
       {config && <PanelConfig config={config} />}
       {ocr && <PanelOcr ocr={ocr} />}
+
+      {/* La casilla va ANTES de los botones, y no junto a ellos.
+       *
+       *  Es una opcion del escaneo, no del boton: los dos botones la respetan, y
+       *  ponerla entre ellos haria que pareciera que solo aplica a uno. Ademas va
+       *  antes para que se lea antes de pulsar, que es cuando tiene efecto.
+       */}
+      <CasillaArchivar
+        valor={archivar}
+        onCambio={setArchivar}
+        ocupado={escaneando}
+        config={config}
+      />
 
       <div className="mt-6 flex flex-wrap gap-3">
         {/*
@@ -476,8 +516,42 @@ function TablaArchivos({ archivos, onAbrir }: {
               </td>
               <td className="px-4 py-2 text-gray-600">{motorLabel(f.read_by)}</td>
               <td className="px-4 py-2 text-gray-600">{f.attempts}</td>
+              {/* La columna del TICKET.
+               *
+               *  ESTO ERA TEXTO MUERTO. Decia `{f.ticket_id ? 'ver' : '-'}`: un
+               *  `<span>` con la palabra "ver", que no era un enlace ni un boton
+               *  y no hacia NADA al pulsarlo. Quien lo lea le hace click y no pasa.
+               *  Es la columna que mas invita a usarla —"ver el ticket" es justo
+               *  lo que uno quiere al escanear— y era la unica que no llevaba a
+               *  ninguna parte.
+               *
+               *  Ahora es un boton de verdad y lleva al mismo detalle que la
+               *  columna "Detalle": el modal ya pide el archivo, su historial y el
+               *  ticket con su comprobante pegado. Dos botones al mismo sitio
+               *  seria redundante; lo que cambia es que este deja de ser
+               *  decorativo.
+               *
+               *  Y el guion cuando no hay ticket se queda siendo guion, con el
+               *  motivo al lado cuando existe: los archivos leidos sin empresa son
+               *  `PROCESADO` y no tienen ticket, y esa fila no es un fallo del
+               *  escaner. */}
               <td className="px-4 py-2 text-gray-600">
-                {f.ticket_id ? 'ver' : <span className="text-gray-400">—</span>}
+                {f.ticket_id ? (
+                  <button
+                    onClick={() => onAbrir(f.id)}
+                    className="text-blue-600 hover:text-blue-800 hover:underline"
+                    title="Abrir el ticket y su comprobante original"
+                  >
+                    Ver ticket
+                  </button>
+                ) : (
+                  <span
+                    className="text-gray-400"
+                    title={f.last_error ?? 'Este archivo no tiene ticket'}
+                  >
+                    &mdash;
+                  </span>
+                )}
               </td>
               <td className="px-4 py-2 text-right">
                 <Button variant="ghost" size="sm" onClick={() => onAbrir(f.id)}>

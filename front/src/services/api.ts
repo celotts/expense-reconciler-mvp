@@ -306,7 +306,11 @@ export const ticketsApi = {
    *  Sin `company_id` el escaneo SOLO inventaria los archivos y no crea
    *  tickets, y por eso los tres campos son opcionales aqui y no requeridos:
    *  la pantalla tiene dos botones distintos para las dos intenciones, y el
-   *  body los distingue. */
+   *  body los distingue.
+   *
+   *  `archivar` viaja **explicito**, no omitido: sin el, el servidor usa el
+   *  `.env`, que es global y no cambia entre corridas. Mandarlo por request es lo
+   *  que permite a una casilla en la pantalla decidir corrida por corrida. */
   escanear: (data: ScanRequest = {}): Promise<ScanResultado> =>
     fetchApi<ScanResultado>('/scan/', {
       method: 'POST',

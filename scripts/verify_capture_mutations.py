@@ -142,13 +142,42 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         ["tests/unit/test_parser_service.py::TestProveedorEnMinusculasSostenidas"],
     ),
     (
+        # El texto viejo de esta mutacion era `r"(?:^|\s)sub..."`. Se cambio a
+        # `r"(?:^|[^\w])sub..."` porque el borde de la etiqueta tiene que aceptar
+        # la puntuacion que el OCR pone delante (`“SUBTOTAL 108.31`), y sin eso
+        # el script contaba la defensa como no verificada EN SILENCIO. Es el caso
+        # que `AGENTS.md` avisa: un patron obsoleto no falla, desaparece.
         "el subtotal vuelve a quedarse sin extraer",
         "app/services/parser_service.py",
-        "        subtotal_match = re.search(\n            r\"(?:^|\\s)sub[\\s-]?total[\\s:]*[$€]?\\s*([\\d.,]+)\",\n            line, re.IGNORECASE,\n        )\n        if subtotal_match:\n            try:\n                subtotal = parse_mexican_number(subtotal_match.group(1))\n            except (InvalidOperation, ValueError):\n                pass",
+        "        subtotal_match = re.search(\n            r\"(?:^|[^\\w])sub[\\s-]?total[\\s:]*[$€]?\\s*([\\d.,]+)\",\n            line, re.IGNORECASE,\n        )\n        if subtotal_match:\n            try:\n                subtotal = parse_mexican_number(subtotal_match.group(1))\n            except (InvalidOperation, ValueError):\n                pass",
         "        pass",
         [
             "tests/unit/test_parser_service.py::TestExtraccionDeSubtotal",
             "tests/integration/test_capture_pipeline.py::TestVerificacionAritmeticaEnLaRutaBarata",
+        ],
+    ),
+    (
+        # ESTA la metio el arreglo del borde, y es la quefalta: el script mutaba
+        # el `subtotal` pero no el `total`, que cambio en el mismo commit por el
+        # mismo motivo. Sin esta entrada, "el total vuelve a exigir solo
+        # whitespace" queda sin probar y parece estar cubierta.
+        "el total vuelve a exigir solo whitespace antes de la etiqueta",
+        "app/services/parser_service.py",
+        "        total_match = re.search(r\"(?:^|[^\\w])total[\\s:]*[$€]?\\s*([\\d.,]+)\", line, re.IGNORECASE)",
+        "        total_match = re.search(r\"(?:^|\\s)total[\\s:]*[$€]?\\s*([\\d.,]+)\", line, re.IGNORECASE)",
+        [
+            "tests/unit/test_parser_ahorro_y_bordes.py::TestElTotalTambienAceptaElBordeRelajado",
+        ],
+    ),
+    (
+        # Y la del filtro de ahorro. Sin esta, "una linea de ahorro vuelve a ser
+        # el total" no esta verificada por ningun script, solo por el test unit.
+        "una linea de ahorro vuelve a leerse como el total",
+        "app/services/parser_service.py",
+        "        if AHORRO_EN_LINEA_RE.search(line):\n            continue\n",
+        "        pass\n",
+        [
+            "tests/unit/test_parser_ahorro_y_bordes.py::TestUnaLineaDeAhorroNoEsElTotal",
         ],
     ),
     (

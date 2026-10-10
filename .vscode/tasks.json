@@ -1,42 +1,74 @@
 {
   "version": "2.0.0",
+  // El grupo "build" decide que aparece con Ctrl+Shift+B. Solo van ahi las
+  // tareas que reconstruyen y levantan; los comandos que borran datos se
+  // quedan FUERA, a proposito:
+  //
+  //   `make clean` es `docker compose down -v`, y el `-v` borra el volumen de
+  //   Postgres. Con tickets reales y compras confirmadas, eso es un borrado de
+  //   un clic, y estaba sentado en el mismo grupo que "levanta la app" con el
+  //   mismo icono. Salir del grupo no lo esconde — sigue apareciendo en
+  //   "Tasks: Run Task" — solo deja de ser un vecino de "make: up".
+  //
+  // `make up` es el objetivo por omision porque AGENTS.md lo manda: `up: build`
+  // significa que YA reconstruye las imagenes, asi que `docker compose up` a
+  // mano usaria imagenes viejas justo cuando cambia el codigo.
+  //
+  // `focus: true` en todo el grupo, y no por estetica: `make up` arranca con
+  // `docker compose build`, que puede estar varios minutos sin imprimir nada
+  // util (torch CPU pesa). Con `focus: false` el panel abria abajo, la vista se
+  // quedaba en el editor, y la tarea parecia "no hacer nada" cuando si estaba
+  // trabajando. Ver `test_la_terminal_se_abre_para_las_tareas_lentas`.
   "tasks": [
+    {
+      "label": "make: up",
+      "type": "shell",
+      "command": "make up",
+      "group": { "kind": "build", "isDefault": true },
+      "detail": "Reconstruye las imagenes y levanta los contenedores (incluye build). Tarda: la primera vez compila imagenes",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: up-force",
+      "type": "shell",
+      "command": "make up-force",
+      "group": "build",
+      "detail": "Reconstruye SIN cache de Docker y levanta. Muy lento: solo cuando make: up no basta",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
     {
       "label": "make: build",
       "type": "shell",
       "command": "make build",
       "group": "build",
-      "detail": "Construye imágenes Docker (api + front)",
+      "detail": "Solo construye las imagenes (api + front), sin levantar",
       "presentation": {
         "reveal": "always",
         "panel": "shared",
-        "focus": false
+        "focus": true
       },
       "problemMatcher": []
     },
     {
-      "label": "make: up",
+      "label": "make: restart",
       "type": "shell",
-      "command": "make up",
+      "command": "make down && make up",
       "group": "build",
-      "detail": "Levanta contenedores en background (-d)",
+      "detail": "Reinicia completo (down + up). Conserva los datos",
       "presentation": {
         "reveal": "always",
         "panel": "shared",
-        "focus": false
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "make: down",
-      "type": "shell",
-      "command": "make down",
-      "group": "build",
-      "detail": "Para y elimina contenedores",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "focus": false
+        "focus": true
       },
       "problemMatcher": []
     },
@@ -45,7 +77,93 @@
       "type": "shell",
       "command": "make logs",
       "group": "build",
-      "detail": "Sigue logs en tiempo real (-f)",
+      "detail": "Sigue los logs en vivo. Esta tarea NO termina sola: cierrala con Ctrl+C",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: ps",
+      "type": "shell",
+      "command": "make ps",
+      "detail": "Que contenedores estan arriba. El primero que se corre despues de make: up",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: stats",
+      "type": "shell",
+      "command": "make stats",
+      "detail": "RAM y CPU en vivo contra la cuota de cada contenedor",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: disk",
+      "type": "shell",
+      "command": "make disk",
+      "detail": "Cuanto espacio ocupa Docker en disco",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: insomnia",
+      "type": "shell",
+      "command": "make insomnia",
+      "detail": "Regenera expense-reconciler-insomnia.json desde el OpenAPI de la API viva",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: insomnia-check",
+      "type": "shell",
+      "command": "make insomnia-check",
+      "detail": "Falla si la coleccion esta desfasada. Necesita la API encendida",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "make: migrar-estado",
+      "type": "shell",
+      "command": "make migrar-estado",
+      "detail": "Que migraciones faltan. NO aplica nada. Solo para una base que YA EXISTE",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+
+    // --- BORRA DATOS. Sin grupo, a proposito. -----------------------------
+    {
+      "label": "make: down",
+      "type": "shell",
+      "command": "make down",
+      "detail": "PARA los contenedores y los elimina. CONSERVA los datos (no borra volumenes)",
       "presentation": {
         "reveal": "always",
         "panel": "shared",
@@ -57,8 +175,7 @@
       "label": "make: clean",
       "type": "shell",
       "command": "make clean",
-      "group": "build",
-      "detail": "Para todo y elimina volúmenes (borra BD)",
+      "detail": "!!! BORRA LA BASE DE DATOS !!! down -v elimina los volumenes: tickets, compras, inventario y el kardex NO se recuperan. Para una base nueva, usa make: up",
       "presentation": {
         "reveal": "always",
         "panel": "shared",
@@ -67,24 +184,10 @@
       "problemMatcher": []
     },
     {
-      "label": "make: restart",
+      "label": "make: prune",
       "type": "shell",
-      "command": "make down && make up",
-      "group": "build",
-      "detail": "Reinicia completo (down + up)",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "focus": false
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "make: build-up",
-      "type": "shell",
-      "command": "make build && make up",
-      "group": "build",
-      "detail": "Build + up en un comando",
+      "command": "make prune",
+      "detail": "Borra imagenes huerfanas y cache de build. CONSERTA los datos",
       "presentation": {
         "reveal": "always",
         "panel": "shared",

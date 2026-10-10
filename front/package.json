@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "verify": "esbuild scripts/verify_login.ts scripts/verify_motivos.ts --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.css=empty --define:import.meta='{\"env\":{\"VITE_API_URL\":\"http://localhost:8000/api/v1\"}}' && node /tmp/verify-front/verify_login.js && node /tmp/verify-front/verify_motivos.js"
+    "verify": "esbuild scripts/verify_login.ts scripts/verify_motivos.ts scripts/verificar_panel_progreso.tsx scripts/verificar_flujo_guiado.tsx --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty --define:import.meta='{\"env\":{\"VITE_API_URL\":\"http://localhost:8000/api/v1\"}}' && node /tmp/verify-front/verify_login.js && node /tmp/verify-front/verify_motivos.js && node /tmp/verify-front/verificar_panel_progreso.js && node /tmp/verify-front/verificar_flujo_guiado.js"
   },
   "dependencies": {
     "react": "^18.2.0",

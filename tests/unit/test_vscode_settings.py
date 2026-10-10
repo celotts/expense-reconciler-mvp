@@ -426,3 +426,72 @@ class TestTasksSoloEjecutanMake:
                 "Con `${input:...}` o `${env:...}` el comando cambia segun quien "
                 "lo pulse."
             )
+
+    def test_la_terminal_se_abre_para_las_tareas_lentas(self):
+        """Las tareas del grupo `build` tienen que poner la terminal al frente.
+
+        MEDIDO: con `focus: false`, `make up` abria el panel de terminal abajo y
+        la vista se quedaba en el editor. `make up` arranca con
+        `docker compose build`, que puede estar **varios minutos** sin imprimir
+        nada util, y durante ese tiempo la tarea parecia no hacer nada. Quien lo
+        reporta dice "Ctrl+Shift+B no hace nada" y la causa no es que la tarea
+        falle: es que su salida no se ve.
+
+        Con `reveal: always` + `focus: true` la terminal viene al frente y el
+        progreso se lee. Las tareas rapidas (`ps`, `stats`, `disk`) NO lo llevan,
+        porque robar el foco para un `docker compose ps` es una interrupcion sin
+        premio: eso es una distincion, no una excepcion.
+        """
+        if not TASKS.exists():
+            pytest.skip("tasks.json no esta en el repo")
+
+        for tarea in _leer_jsonc(TASKS).get("tasks", []):
+            presentacion = tarea.get("presentation", {})
+            if not tarea.get("group"):
+                continue
+            assert presentacion.get("reveal") == "always", (
+                f"La tarea '{tarea.get('label')}' no tiene reveal: always. "
+                "Sin eso la terminal no aparece y el trabajo ocurre a oscuras."
+            )
+            assert presentacion.get("focus") is True, (
+                f"La tarea '{tarea.get('label')}' tiene focus: false. "
+                "`make up` construye imagenes y puede tardar minutos sin "
+                "imprimir nada: si la terminal no viene al frente, parece que "
+                "la tarea no hace nada. Las tareas rapidas (`ps`, `stats`) no "
+                "llevan grupo y por eso no entran en esta regla."
+            )
+
+    def test_los_comandos_que_borran_no_estan_en_el_grupo_build(self):
+        """`make clean` borra el volumen de Postgres; no es un vecino de `make up`.
+
+        MEDIDO: `clean` estaba en el grupo `build`, con el mismo icono y a dos
+        clics de levantar la aplicacion. `clean` es `docker compose down -v`, y
+        el `-v` elimina la base: tickets, compras, inventario y el kardex no se
+        recuperan.
+
+        **Solo `clean`.** `down` es `docker compose down` sin el `-v` y CONSERVA
+        los volumenes, y `prune` solo toca imagenes y cache de build. La primera
+        version de este test prohibia los tres y fallaba contra
+        `make: restart` (`make down && make up`), que es una tarea util y
+        segura: agrupar "borra datos" con "conserva datos" porque las palabras
+        coinciden es el mismo error de agrupar "borra datos" con todo lo demas,
+        solo que mas sutil.
+
+        Estar fuera del grupo no es estar escondido —el objetivo sigue
+        apareciendo en "Tasks: Run Task"—; es que el menu de `Ctrl+Shift+B` no
+        ofrece borrar la base al lado de arrancar.
+        """
+        if not TASKS.exists():
+            pytest.skip("tasks.json no esta en el repo")
+
+        # El unico con `-v`. Verificado contra el Makefile, no de memoria.
+        BORRA_VOLUMENES = {"clean"}
+        for tarea in _leer_jsonc(TASKS).get("tasks", []):
+            objetivos = set(re.findall(r"make\s+([a-z-]+)", tarea.get("command", "")))
+            if objetivos & BORRA_VOLUMENES:
+                assert not tarea.get("group"), (
+                    f"La tarea '{tarea.get('label')}' ejecuta "
+                    f"{sorted(objetivos & BORRA_VOLUMENES)} y esta en un grupo "
+                    "con Ctrl+Shift+B. `clean` es `down -v` y borra la base de "
+                    "datos: tickets, compras, inventario y el kardex."
+                )

@@ -1841,10 +1841,32 @@ async def _registrar_en_el_feed(
         accion=detalle.accion,
         # Confiable es lo que decidio el GATE, no si el monto "parece bien": un
         # total de 0 no es confiable, y uno de 4,093.80 tampoco si nadie lo
-        # aprobo. Con OCR al 33% casi todo sale sin afirmar, y esa diferencia es
+        # aprobo. Con OCR al 60% casi todo sale sin afirmar, y esa diferencia es
         # la que el panel tiene que ensenar.
         confiable=ExtractionStatus(ticket.extraction_status) in SETTLED_STATUSES,
         es_duplicado=detalle.accion == "OMITIDO",
+        # El encabezado, de la MISMA fila que dio el monto. No de
+        # `detalle.datos`: ese se resuelve despues del bucle y aqui saldría en
+        # null, que es el problema que ya.trae este feed resuelto para el importe.
+        #
+        # Y van aqui, y no en un segundo lookup, porque leerlos de la fila que ya
+        # esta cargada es la unica forma de que no puedan desincronizarse del
+        # `monto` de arriba: son la misma lectura, del mismo objeto, en el mismo
+        # instante.
+        proveedor=ticket.provider_name,
+        rfc=ticket.provider_tax_id,
+        fecha=ticket.expense_date,
+        subtotal=ticket.subtotal,
+        iva=ticket.tax_amount,
+        ieps=ticket.ieps_amount,
+        # El CONTEO de lineas, no las lineas. Ver `registrar_procesado`: el feed
+        # guarda 60 archivos y un ticket de supermercado trae 28 partidas.
+        #
+        # `None` y no `0` cuando no hay lineas: `items` a NULL es la ruta OCR
+        # (`registrar_compra` devuelve None sin error, es el caso normal), y
+        # `0` afirmaria que el papel no trae partidas, que es otra afirmacion.
+        lineas=len(ticket.items) if isinstance(ticket.items, list) else None,
+        validation_errors=ticket.validation_errors,
     )
 
 

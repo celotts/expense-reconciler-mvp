@@ -493,7 +493,7 @@ El endpoint `GET /api/v1/dashboard` es la **vista de aterrizaje** del frontend. 
 ## Tests
 
 ```bash
-# Todos (1400 tests - incluye seguridad + regresión)
+# Todos (1507 tests - incluye seguridad + regresión)
 python3 -m pytest tests/ -q
 
 # Unitarios

@@ -15,11 +15,19 @@ WORKDIR /app
 # y los numeros se leen distinto, que en un comprobante es exactamente donde no
 # puede haber errores.
 #
-# `libgl1` y `libglib2.0-0` NO se instalan todavia: el preprocesado del OCR usa
-# solo Pillow. Si se agrega opencv-python mas adelante (el codigo lo soporta
-# pero no se declara, a proposito), estos dos son los que hacen que
-# `import cv2` no reviente en un slim. Anotado para que el proximo que lo
-# agregue no lo descubra en produccion.
+# `libgl1` y `libglib2.0-0` NO se instalan, y `opencv-python-headless` es la
+# razon de que siga siendo correcto: ese flavor no necesita `libGL`.
+#
+# OJO al flavor. Si alguien cambia `opencv-python-headless` por `opencv-python`
+# en requirements.txt, `import cv2` revienta aqui con
+# `libGL.so.1: cannot open shared object file` — un error que no dice nada de
+# OpenCV y parece un bug del paquete. Por eso la eleccion esta anotada en los dos
+# lados: en el `requirements.txt` y aqui.
+#
+# Y sigue siendo OPCIONAL: `ocr.py:_binarizar` devuelve `None` sin el paquete y
+# el OCR lee igual que antes. Esta capa no verifica OpenCV a proposito, porque
+# verificarlo volveria obligatoria una dependencia que el codigo no necesita para
+# funcionar. Lo que verifica es Tesseract, que sin el no lee de nada.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \

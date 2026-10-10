@@ -44,6 +44,7 @@ import type {
 } from '../types/dashboard';
 import { useNavegacion, type FiltroTickets, type Page } from '../contextos/Navegacion';
 import { Card, Loading, EmptyState, Badge, Select, Button } from '../components/ui';
+import { FlujoGuiado } from '../components/FlujoGuiado';
 import { dinero, monto, numero, variacion } from '../utils/format';
 
 // ---------------------------------------------------------------------------
@@ -915,6 +916,19 @@ export function Dashboard() {
           />
         </div>
       </div>
+
+      {/* El camino va PRIMERO, antes de la cifra del mes.
+       *
+       *  No es cuestion de jerarquia visual: la pregunta de quien abre la
+       *  aplicacion no es "cuanto gaste", es "que me falta por hacer". La cifra del
+       *  mes responde a la segunda; el camino responde a la primera, y sin el
+       *  orden de las tres pantallas el que vuelve de digitalizar 40 comprobantes
+       *  no tiene forma de saber que el siguiente paso es revisarlos.
+       *
+       *  Los numeros salen del mismo `datos` que el resto de la pantalla, no de una
+       *  llamada aparte: dos consultas que cuentan lo mismo son dos verdades, y
+       *  este proyecto no sostiene eso. */}
+      <FlujoGuiado dashboard={datos} irA={irA} companyId={empresa || null} />
 
       <CifraDelMes d={datos} irA={irA} />
 

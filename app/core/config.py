@@ -160,6 +160,29 @@ class Settings(BaseSettings):
     # segundo casi nunca dispara, porque el archivo ya se movio al escanear.
     TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR: bool = True
 
+    # Dejar la base limpia para volver a probar el escaneo. APAGADO POR OMISION.
+    #
+    # Este es el flag mas peligroso del proyecto y por eso nace apagado: con esto
+    # en `false`, `POST /api/v1/scan/reset` **no existe** (404), y en una
+    # instalacion con datos reales nadie lo puede activar por accidente. Nadie lo
+    # prende solo porque el endpoint este en el codigo.
+    #
+    # Lo que borra: SOLO lo digitalizado (tickets, papeles, compras, movimientos,
+    # conciliaciones y el registro del escaner). NO borra `users`, ni `companies`,
+    # ni `productos`. Ver `app/services/scan_reset.py` para el por que de cada
+    # uno.
+    #
+    # Encenderlo es una decision consciente de quien administra la maquina, y es
+    # de las que se toman en la `.env`. En una herramienta que se despliega en
+    # el portatil de un contador, un endpoint que borra la base solo porque alguien
+    # lo dejo prendido es un accidente esperando una tarde tranquila.
+    #
+    # Cuando esta en `true`, el endpoint pide ADEMAS la contrasena del que llama
+    # y una frase literal (`BORRAR_YA`), y se niega a borrar si hay un ticket
+    # revisado por una persona o una compra `PROCESADO`. Son cuatro cerrojos y
+    # este es el primero.
+    TICKETS_SCAN_RESET_HABILITADO: bool = False
+
     # Tesseract necesita el binario del sistema, no solo el paquete de Python.
     # Si no esta, `OCR_ENABLED=true` no da error al arrancar: da error por cada
     # foto, y el operador ve "fallo de OCR" en lugar de "no instalaste

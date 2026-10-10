@@ -52,6 +52,25 @@ pytesseract>=0.3.10
 # encima de la version CPU. Ver el comentario del Dockerfile.
 easyocr>=1.7.2
 
+# OpenCV: el umbral ADAPTATIVO del OCR. Opcional y degradado.
+#
+# `opencv-python-headless` y NO `opencv-python`: el primero no necesita `libGL`,
+# y el `Dockerfile` documenta que en `python:3.11-slim` `libgl1` NO esta instalado
+# a proposito. Con el flavor con ventana, `import cv2` revienta con
+# `libGL.so.1: cannot open shared object file`, y parece un bug de OpenCV cuando
+# es un paquete equivocado.
+#
+# Que sea OPCIONAL no es una cortesia: `ocr.py:_binarizar` devuelve `None` sin
+# el, y la lectura sigue siendo la de siempre. La etapa compite con la lectura
+# normal en `_puntuar` y solo gana si el documento sale mejor leido, asi que no
+# puede empeorar lo que ya funciona. `GET /api/v1/scan/ocr` dice si esta.
+#
+# Lo que NO se ha medido: si la binarizacion sube la exactitud. `docs/known-issues.md`
+# §21 descarta el preprocesado con medicion, pero solo midio UMBRALES GLOBALES y
+# filtros de nitidez; el adaptativo es otra pregunta y no esta medida todavia.
+# Se mide con `scripts/medir_precision_ocr.py` cuando haya `verdad.json`.
+opencv-python-headless>=4.9.0
+
 # AI / ML dependencies
 openai>=1.30.0
 tiktoken>=0.7.0

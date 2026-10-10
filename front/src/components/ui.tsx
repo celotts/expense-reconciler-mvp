@@ -1,4 +1,12 @@
 // UI Components
+//
+// Los hooks viven aqui porque el `Input` los usa: el boton del ojo lleva estado
+// (`useState`) y se reinicia cuando el campo deja de ser de contrasena
+// (`useEffect`). Se importan del modulo y no con el prefijo `React.` porque el
+// resto del front importa de React de forma nominal, y dos estilos en el mismo
+// archivo es uno de mas.
+
+import { useEffect, useState } from 'react';
 
 // Button
 //
@@ -64,24 +72,101 @@ export function Input({
   ...props 
 }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string; error?: string }) {
   const inputId = id || label?.toLowerCase().replace(/\s+/g, '-');
+
+  // --- El botón del ojo, para los campos de contraseña -----------------------
+  //
+  // POR QUÉ EXISTE
+  //
+  // Ocultar la clave está bien por omisión —una clave escrita en la pantalla
+  // queda a la vista de quien esté detrás, y esto se usa en un despacho con
+  // gente alrededor—. Lo que NO está bien es que no haya forma de volver a
+  // verla.
+  //
+  // El caso concreto de este proyecto: `auth.login` tiene **rate limit**, así que
+  // un tecleo mal no es un problema de una vez. Con el campo en `password` y sin
+  // botón, quien escribe una mayúscula donde va minúscula no tiene forma de
+  // saberlo hasta que el servidor responde "correo o contraseña incorrectos" —
+  // y reintentar a ciegas es exactamente como se bloquea una cuenta.
+  //
+  // Está en el `Input` y no en `Login.tsx` a propósito: el próximo formulario
+  // que necesite una clave (cambiar contraseña, crear un usuario) lo hereda sin
+  // tener que acordarse de añadirlo, que es cuando se olvidaría.
+  const esPassword = props.type === 'password';
+  const [visible, setVisible] = useState(esPassword ? false : false);
+
+  // Cuando `type` cambia (un input que empieza normal y pasa a password), el
+  // estado se queda con el valor viejo y puede dejar la clave a la vista. Es un
+  // caso raro —el `type` de un input no suele cambiar— pero dejar una clave
+  // visible por un descuido de estado es la clase de fallo que no tiene
+  //ataliento, así que se cubre: al dejar de ser password, se oculta.
+  useEffect(() => {
+    if (!esPassword) setVisible(false);
+  }, [esPassword]);
+
   return (
     <div className="flex flex-col gap-1">
       {label && <label htmlFor={inputId} className="text-sm font-medium text-gray-700">{label}</label>}
-      <input
-        id={inputId}
-        // `py-3` en movil y `py-2` desde `sm`, por la misma razon y con la
-        // misma medicion que el `Button`. El numero salio de dos rondas: `py-2.5`
-        // daba 42px —dos por debajo del minimo— y `py-3` da 46. Se eligio 46 y no
-        // un `py-[11px]` de 44 exacto porque dos pixeles por debajo del minimo no
-        // se ven, pero un selector de 2px mas alto que sus vecinos en el mismo
-        // formulario, si.
-        className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
-          error ? 'border-red-500' : 'border-gray-300'
-        } ${className}`}
-        {...props}
-      />
+      <div className="relative">
+        <input
+          id={inputId}
+          // `pr-11` solo cuando hay botón: el input y el botón se solapan si el
+          // padding no deja sitio al icono, y el texto queda debajo del ojo en vez
+          // de al lado.
+          className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+            esPassword ? 'pr-11' : ''
+          } ${error ? 'border-red-500' : 'border-gray-300'} ${className}`}
+          {...(esPassword ? { type: visible ? 'text' : 'password' } : {})}
+          {...props}
+        />
+        {esPassword && (
+          <button
+            type="button"
+            onClick={() => setVisible(v => !v)}
+            // `aria-label` y no solo el icono: un SVG sin nombre no lo lee el
+            // lector de pantalla, y este botón es el único camino para leer la
+            // clave de alguien que no ve bien.
+            //
+            // `aria-pressed` dice si la clave está a la vista AHORA. Sin esto, un
+            // lector de pantalla anuncia "botón" y no dice si el campo cambió.
+            aria-label={visible ? 'Ocultar la contraseña' : 'Ver la contraseña'}
+            aria-pressed={visible}
+            title={visible ? 'Ocultar la contraseña' : 'Ver la contraseña'}
+            // `right-3` y `top-1/2 -translate-y-1/2` para centrarlo en el alto del
+            // input. El `p-3` da el área táctil de 44px que el resto de la
+            // aplicación respeta (ver `App.tsx` y `Button`): con `p-2` el icono de
+            // 24 queda en 40, dos por debajo del mínimo.
+            className="absolute right-0 top-1/2 -translate-y-1/2 p-3 text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            {visible ? <OjoOcultoIcon /> : <OjoIcon />}
+          </button>
+        )}
+      </div>
       {error && <p className="text-sm text-red-500">{error}</p>}
     </div>
+  );
+}
+
+/** El ojo abierto: la clave está visible y un clic la oculta. */
+function OjoIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  );
+}
+
+/** El ojo tachado: la clave está oculta y un clic la muestra.
+ *
+ *  El tachado es lo que distingue "clic para ver" de "clic para no ver". Con los
+ *  dos iconos idénticos, quien ya miró la clave no sabe si el siguiente clic la
+ *  va a mostrar o a esconder, y tiene que probarlo.
+ */
+function OjoOcultoIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
+    </svg>
   );
 }
 

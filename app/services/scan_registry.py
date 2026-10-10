@@ -49,6 +49,34 @@ comprobante**, y eso no es por privacy sino porque el resumen ya esta en
 `scan_files` y `tickets`; duplicarlo aqui seria una segunda verdad que se
 desincroniza.
 
+LO QUE SI SE GUARDA DEL TICKET, Y POR QUE NO ES ESA SEGUNDA VERDAD
+------------------------------------------------------------------
+
+`procesados[]` lleva el **encabezado** del ticket: proveedor, RFC, fecha,
+subtotal, IVA, IEPS, el conteo de lineas y los `validation_errors`. Antes solo
+llevaba el total y el estado, y eso hacia el panel casi inutil: con OCR al 60% de
+exactitud, ver "$0.00 — pendiente" no dice si fallo leer el papel o si el gate
+lo freno porque la aritmetica no cuadraba, que son dos trabajos distintos para
+quien esta mirando.
+
+La razon por que esto NO es una segunda verdad que se desincroniza: son los
+**mismos campos de la misma fila** que ya se leyeron para pintar `monto` y
+`extraction_status`. No hay una segunda lectura ni un segundo criterio; lo que
+cambio es que ahora se copian todos en vez de dos. Si el registro se desincroniza
+del ticket, se desincroniza en los campos que ya se desincronizaban.
+
+**Y va LEIDO de la fila, no del `TicketExtractionResult` del lector.** Es la misma
+distincion que ya separa `ScanItemResponse.datos` de la lectura cruda: si el gate
+mando la lectura a revision, aqui se ven los numeros PRODUCIDOS JUNTO al veredicto
+que los rechazo. Mandarlos sueltos dejaria al operador creyendo que lo que ve es
+lo que el sistema afirma.
+
+**Las lineas NO se copian, solo se cuentan.** `tickets.items` puede traer 28
+partidas de un ticket de supermercado, y el feed guarda 60 archivos: copiar el
+contenido completo son hasta 1 700 objetos en memoria para pintar un numero. El
+detalle de las lineas, si alguien lo quiere, esta en el ticket, que es donde esta
+la verdad y donde se corrige.
+
 CUANDO DESAPARECE UNA CORRIDA
 -----------------------------
 
@@ -67,7 +95,7 @@ from __future__ import annotations
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 # Cuanto se conserva el historial. Con una persona escaneando una vez al dia, dos
@@ -125,9 +153,15 @@ class Corrida:
     # no el historico — el historico esta en `/scan/files` y en `scan_files`.
     #
     # `monto_confiable` NO es lo que hay: es lo que el sistema se atreve a
-    # afirmar. Con OCR al 33% eso es `0.00` la mayoria de las veces, y esa
+    # afirmar. Con OCR al 60% eso es `0.00` la mayoria de las veces, y esa
     # diferencia —lo leido contra lo afirmado— es la que hay que ensenar en la
     # pantalla. Un operador que solo ve el total cree que leyeron bien.
+    #
+    # Cada entrada lleva ADEMAS el encabezado del ticket (proveedor, RFC, fecha,
+    # subtotal, IVA, IEPS, lineas y los `validation_errors`). Ver la nota "LO QUE
+    # SI SE GUARDA DEL TICKET" en el docstring del modulo: antes el panel decia
+    # "$0.00, pendiente" y no distinguia "no supe leer el papel" de "el gate lo
+    # paro porque la aritmetica no cuadraba", que son dos trabajos distintos.
     procesados: list[dict] = field(default_factory=list)
 
     # El total, que se rellena al cerrar. `None` mientras corre, y eso es
@@ -169,9 +203,22 @@ class Corrida:
 
 
 def _json_safe(valor):
-    """`Decimal` a texto en cualquier profundidad, para que `json.dumps` no falle."""
+    """`Decimal` y `date` a texto en cualquier profundidad, para que `json.dumps`
+    no falle.
+
+    La `date` va con los `Decimal` y por el mismo motivo: `datetime` ya lo
+   Was resolved earlier with `_isoformat()` explicito en `a_dict`, pero `fecha` del
+    ticket se copia a la lista sin pasar por ahi, y un `date` crudo revienta
+    `json.dumps` con un `TypeError` en el SERIALIZADO — que es donde no se ve que
+    el problema era el feed sino la respuesta entera.
+
+    La fecha sale como ISO (`2026-10-01`), que es lo que el front ya espera de
+    todos los demas `expense_date` de la API.
+    """
     if isinstance(valor, Decimal):
         return str(valor)
+    if isinstance(valor, (date, datetime)):
+        return valor.isoformat()
     if isinstance(valor, dict):
         return {k: _json_safe(v) for k, v in valor.items()}
     if isinstance(valor, list):
@@ -256,13 +303,37 @@ def registrar_procesado(
     accion: str | None = None,
     confiable: bool = False,
     es_duplicado: bool = False,
+    # --- El encabezado del ticket ---------------------------------------
+    #
+    # Todos opcionales y todos leidos de la FILA, no de la lectura cruda: si el
+    # gate mando el comprobante a revision, el operador tiene que ver aqui los
+    # numeros que produjo la lectura AL LADO del veredicto que los rechazo.
+    # Mandarlos por separado permitiria leerlos como si fueran lo que el sistema
+    # afirma, que es justo lo que el gate se niega a afirmar.
+    #
+    # El default `None` en todos es lo que hace que la firma siga siendo
+    # compatible con las llamadas que no los pasan: un `ACTUALIZADO` o un
+    # duplicado pueden no tener nada que decir del encabezado.
+    proveedor: str | None = None,
+    rfc: str | None = None,
+    fecha: date | None = None,
+    subtotal: Decimal | None = None,
+    iva: Decimal | None = None,
+    ieps: Decimal | None = None,
+    lineas: int | None = None,
+    validation_errors: str | None = None,
 ) -> None:
     """Un archivo terminado de leerse, con lo que el sistema leyo de el.
 
     `confiable` es lo que separa "el sistema leyo 97.56" de "el sistema se
-    atreve a afirmar 97.56", y son dos afirmaciones distintas con OCR al 33%.
+    atreve a afirmar 97.56", y son dos afirmaciones distintas con OCR al 60%.
     El front las pinta de otra forma por eso, y por eso viajan separadas en vez
     de calcular el front si el monto "parece bien".
+
+    `lineas` es un CONTEO y no la lista. Con 60 archivos en el feed y un ticket de
+    supermercado de 28 partidas, copiar `items` entero son 1 700 objetos en
+    memoria para pintar un numero. Quien quiera las lineas las pide en el ticket,
+    que es donde estan y donde se pueden corregir.
 
     Se llama con el `Decimal` crudo y la conversion a texto pasa por
     `_json_safe`, como todos los importes de este modulo. Un `float` en un
@@ -280,6 +351,14 @@ def registrar_procesado(
             "accion": accion,
             "confiable": bool(confiable),
             "es_duplicado": bool(es_duplicado),
+            "proveedor": proveedor,
+            "rfc": rfc,
+            "fecha": fecha,
+            "subtotal": subtotal,
+            "iva": iva,
+            "ieps": ieps,
+            "lineas": lineas,
+            "validation_errors": validation_errors,
         })
         if len(corrida.procesados) > MAX_PROCESADOS:
             del corrida.procesados[:-MAX_PROCESADOS]

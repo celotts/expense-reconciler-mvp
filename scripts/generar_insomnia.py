@@ -265,6 +265,11 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("GET", "/scan/runs/{corrida_id}"): "s5. Detalle de una corrida",
     ("POST", "/scan/files/{file_id}/reprocess"): "s6. Releer UN archivo (SI sobrescribe)",
     ("GET", "/scan/files/{file_id}"): "s7. Detalle de un archivo",
+    # El reset NO es un endpoint de uso normal: da 404 salvo que
+    # `TICKETS_SCAN_RESET_HABILITADO=true`, pide contrasena y la frase `BORRAR_YA`,
+    # y se niega a borrar si hay un ticket revisado o una compra autorizada. El
+    # nombre lo dice para que nadie lo ejecute por curiosidad desde la coleccion.
+    ("POST", "/scan/reset"): "s8. DEJAR LA BASE LIMPIA (destructivo, 4 cerrojos)",
     ("GET", "/tickets/spot-check"): "9. Muestreo del 5% (cuenta la exactitud)",
     ("PATCH", "/tickets/{ticket_id}/spot-check"): "9b. Registrar veredicto del muestreo",
     ("GET", "/tickets/accuracy"): "9c. Exactitud por origen (medida, no prometida)",

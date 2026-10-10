@@ -17,6 +17,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Las tablas que `POST /scan/reset` NO toca. Se devuelven en la respuesta para
+# que quien va a borrar lo lea ahi y no en la documentacion.
+# Importa por el NOMBRE de la tabla, no por el modelo: la respuesta habla de
+# tablas y asi lo que lee el cliente coincide con lo que dice `psql`.
+NO_SE_BORRA = [
+    "users",
+    "companies",
+    "productos",
+    "schema_migrations",
+]
+
 
 class DatosTicketResponse(BaseModel):
     """Lo que el sistema afirmo que dice el papel, y con que respaldo.
@@ -188,6 +199,86 @@ class ScanRequest(BaseModel):
             "reportan en `compras_no_confirmadas` con el motivo. Es el mismo "
             "bloqueo de `POST /inventario/compras/{id}/confirmar`: autorizar "
             "lineas sin producto deja el stock incompleto sin rastro."
+        ),
+    )
+
+
+class ScanResetRequest(BaseModel):
+    """Que se borre, y con que confirmacion.
+
+    LO QUE NO ESTA EN ESTE SCHEMA Y POR QUE
+    ---------------------------------------
+
+    **No hay un `empresa_id` ni un `scope`.** El endpoint borra lo digitalizado
+    entero y no admite un subconjunto. Un "borra esto" con filtros es un endpoint
+    donde un parametro mal puesto borra mas de lo que se queria, que es
+    exactamente la clase de error que no se quiere en algo destructivo. Si hace
+    falta una limpieza parcial, se hace con el endpoint que corresponda a esa
+    tabla —los productos, por ejemplo, tienen el suyo—.
+
+    **No hay un `force` ni un `si_esta_seguro`.** El que se pone a escribir
+    `{"si_esta_seguro": true}` ya decidio; que lo escriba dos veces no lo hace mas
+    seguro. El unico campo que decide es `confirmar`, y tiene que decir la frase.
+
+    `extra="forbid"` por lo mismo que en el resto del proyecto: un cliente que
+    mande la fila entera recibe un 422 con el nombre del campo en vez de un 200
+    que finge haberlo guardado.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirmar: str = Field(
+        ...,
+        max_length=64,
+        description=(
+            "La frase `BORRAR_YA`, exacta. Sin ella el endpoint responde lo que "
+            "va a borrar y no borra nada: el modo por omision es el que no "
+            "toca la base, porque un endpoint destructivo cuyo modo por omision "
+            "es el destructivo es del que hay que acordarse de no usar."
+        ),
+    )
+
+    ejecutar: bool = Field(
+        False,
+        description=(
+            "Pasar de decir a hacer. Con `false` devuelve el conteo y no escribe "
+            "una fila. Es el unico booleano del cuerpo y es deliberado: separa "
+            "el preview del acto, para que el preview no dependa de acertar la "
+            "frase."
+        ),
+    )
+
+
+class ScanResetResponse(BaseModel):
+    """Lo que se borro, o lo que se iba a borrar."""
+
+    simulado: bool = Field(
+        ...,
+        description=(
+            "`true` = solo se conto. `false` = se borro de verdad. El nombre es "
+            "el del verbo en el otro idioma a proposito: en la respuesta de un "
+            "POST, un `simulado: false` es lo unico que distingue una limpieza "
+            "de una preview."
+        ),
+    )
+    conteo: dict = Field(..., description="Filas por tabla, contadas ANTES de borrar.")
+    borrado: dict = Field(
+        default_factory=dict,
+        description="Filas realmente borradas por tabla. Vacio en el preview.",
+    )
+    empresas_conservadas: int = Field(
+        ..., description="Empresas que NO se tocan. El escaneo necesita al menos una."
+    )
+    usuarios_conservados: int = Field(
+        ..., description="Cuentas que NO se tocan. Borrarlas deja sin puerta de entrada."
+    )
+    lo_que_no_se_borra: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Las tablas que este endpoint no toca, por nombre. Se devuelve "
+            "siempre, y tambien en el preview: que el que va a borrar sepa que "
+            "NO se lleva las cuentas ni las empresas es parte de la respuesta, "
+            "no un detalle de la documentacion."
         ),
     )
 

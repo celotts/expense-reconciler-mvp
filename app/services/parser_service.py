@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import BaseModel, field_validator
 
 from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
+from app.services.parser_lineas import VerificacionDeItems, verificar_items
 
 # Mexican RFC: 3-4 letters (persona fisica/moral), 6 digits (YYMMDD), 3 alnum
 # (homoclave). The letter group is LAZY so a 3-letter RFC like WAL910101XXX
@@ -107,6 +108,53 @@ VENCIMIENTO_RE = re.compile(
 )
 
 FECHA_SIN_ETIQUETA_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)")
+
+
+# Una linea que habla de un AHORRO o un DESCUENTO no es el total, aunque traiga
+# la palabra "total".
+#
+# POR QUE, CON EL PAPEL REAL
+#
+# El ticket de DSW (`IMG_4253 2.HEIC`) imprime, textual:
+#
+#     Usted ahorra $119.97 de $399.90
+#     SUBTOTAL 279.33
+#     Usted ahorra en Total: $119.97
+#
+# El total real es **279.93**. El sistema leia **119.97**, que es el precio ya
+# descontado, y de ahi venia el `subtotal_plus_tax_mismatch` que mandaba el ticket
+# a revision. Medido: `FRENTE-Y-DIGITALIZACION.md` y `known-issues.md` §21.
+#
+# O sea que la linea de ahorro no solo daba un numero equivocado: ademas
+# provocaba un check FALSO, y el gate —que hizo bien en parar— se estaba parando
+# por una razon que no era la real. Un gate que se para por cualquier cosa es un
+# gate que nadie revisa cuando se para por la buena.
+#
+# POR QUE NO ES "SI CONTIENE AHORRO, SE IGNORA LA LINEA"
+#
+# Porque en la misma foto el papel imprime `AHORRASTE $8.00` en una linea que si
+# importa... no. Aqui esta el matiz: la lista filtra la linea COMPLETA, y eso es lo
+# correcto para estos casos, porque un numero de ahorro nunca es un importe que el
+# sistema pueda afirmar. Lo que NO se hace es descartar la linea para el PROVEEDOR
+# ni para la FECHA: el filtro es del bucle de importes, no delparser entero.
+#
+# Y el mismo filtro ya existe, con otro nombre, en `parser_lineas.ROTULOS_FINALES`,
+# que incluye `ahorro` y `descuento` para el mismo motivo: que un numero de
+# descuento no es un producto. Aqui se repite la idea porque son dos rutas
+# distintas con dos listas propias, y una lista compartida entre las dos seria un
+# acoplamiento entre el encabezado y las lineas que no existe para nada mas.
+#
+# "AHORRO" CON "TOTAL" Y AL REVÉS
+# ------------------------------
+#
+# El patron busca la palabra en cualquier parte de la linea, no al principio: el
+# caso medido es `Usted ahorra en Total: $119.97`, donde "ahorra" va PRIMERO y
+# "Total" en medio. Un `^\s*ahorro` no lo habria cazado.
+AHORRO_EN_LINEA_RE = re.compile(
+    r"\b(ahorr[oa]s?te|ahorro|ahorra|ahorc?en|descuento|rebaja|"
+    r"precio\s+final|ya\s+descontado|con\s+descuento)\b",
+    re.IGNORECASE,
+)
 
 
 def _importe_tras_la_etiqueta(linea: str, a_decimal) -> Decimal | None:
@@ -465,6 +513,18 @@ class TicketExtractionResult(BaseModel):
     # esa logica en el parser daria dos respuestas distintas a "de que forma
     # vienen las lineas". Ver db/migrations/0010_inventario.sql.
     items: list[dict] | None = None
+    # Si las lineas suman lo que el ticket DECLARA. `None` cuando no hay con que
+    # comprobarlo, y `None` es un valor de primera clase aqui: no es lo mismo
+    # "no se pudo comprobar" que "se comprobo y no cuadra".
+    #
+    # Es un campo mas y no un `@computed_field` porque aqui NO se puede derivar
+    # solo: hace falta `subtotal` y `total`, que se rellenan mas abajo en este
+    # mismo parseo. El modelo `VerificacionDeItems` de `parser_lineas` es el que
+    # deriva sus cuatro campos internos; este solo lo transporta.
+    #
+    # Lo llena `_parse_receipt_text` DESPUES de tener subtotal y total, que es
+    # el orden unico en que se puede. Ver `parser_lineas.verificar_items`.
+    verificacion_items: VerificacionDeItems | None = None
     # De donde salio lo que hay en estos campos. Sin esto, todo se guardaba
     # como `llm`, incluso un parseo de regex, y la columna miente sobre de
     # donde salio el dato. Sin esa verdad no se puede medir la exactitud de la
@@ -844,10 +904,30 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # verificacion, y por eso sus tickets no tenian como se comprobar que
         # estaban bien.
         #
-        # El patron exige whitespace o inicio de linea antes de "subtotal", asi
-        # que "SUBTOTAL" no se confunde con el "TOTAL" de la linea siguiente.
+        # EL BORDE ES CUALQUIER COSA QUE NO SEA UNA LETRA, y no solo whitespace.
+        # Antes exigia `(?:^|\s)`, y con el texto real del OCR eso falla en las
+        # fotos de autocomercio, que empiezan la linea con un caracter de ruido
+        # de la caja de la maquina. Medido sobre los 7 tickets reales:
+        #
+        #     “SUBTOTAL 108.31        <- Bodega Aurrera, comilla tipografica
+        #     «SUBTOTAL 217.27        <- angle bracket
+        #     ; SUBTOTAL 964.00       <- este si entraba
+        #
+        # En los dos primeros el importe ESTABA a la vista y no se leia, y el
+        # ticket iba a la cola con `subtotal` en `None`: la exactitud medida del
+        # subtotal era **20%** (1 de 5). Con el borde relajado sube a **40%**
+        # (2 de 5), y el que se recupera es el de Aurrera: `None` -> `108.31`.
+        #
+        # POR QUE NO SE RELAJA A CUALQUIER CARACTER
+        #
+        # Porque `(?:^|[^\w])` dejaria entrar "xSUBTOTAL", y el requisito original
+        # —que "SUBTOTAL" no se confunda con el "TOTAL" de la linea siguiente— sigue
+        # valiendo. Lo que cambia es que el caracter anterior puede ser punctuation
+        # (`"`, `“`, `«`, `;`, `|`, `=`) y no solo un espacio. `\w` es lo que
+        # excluye una letra o un digito pegados, que es el caso que hay que seguir
+        # rechazando.
         subtotal_match = re.search(
-            r"(?:^|\s)sub[\s-]?total[\s:]*[$€]?\s*([\d.,]+)",
+            r"(?:^|[^\w])sub[\s-]?total[\s:]*[$€]?\s*([\d.,]+)",
             line, re.IGNORECASE,
         )
         if subtotal_match:
@@ -856,8 +936,29 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             except (InvalidOperation, ValueError):
                 pass
 
+        # Una linea de AHORRO no aporta el total, aunque traiga la palabra.
+        # Ver `AHORRO_EN_LINEA_RE`: el caso medido es `Usted ahorra en Total:
+        # $119.97`, que hacia que DSW leyera el precio ya descontado como si fuera
+        # lo que se pagó.
+        #
+        # Se salta la linea COMPLETA (subtotal, total y el fallback de la linea
+        # siguiente) y no solo el `total_match`. Un `continue` en vez de un `if`
+        # anidado, porque el filtro es del renglon entero: una linea que es un
+        # ahorro no tiene ni total ni subtotal, y preguntarle por los dos
+        # separadamente es dejar que el mismo numero entre por la otra puerta.
+        #
+        # Y el filtro va DESPUES de `siguiente_no_vacia` porque ese valor no
+        # depende de la linea: se calcula antes y lo consume el bloque del total.
+        #
+        # El que NO se filtra por esto es el proveedor: la primera pasada del
+        # parser (arriba) corre sobre `lines` enteras y este filtro es de aqui
+        # para abajo. Un comercio puede llamarse "AHORRO EXPRESS" y perder su
+        # nombre por un filtro pensado para los importes.
+        if AHORRO_EN_LINEA_RE.search(line):
+            continue
+
         # Total - look for "TOTAL:" specifically (not SUBTOTAL)
-        total_match = re.search(r"(?:^|\s)total[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
+        total_match = re.search(r"(?:^|[^\w])total[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
         if total_match and "subtotal" not in line.lower():
             try:
                 total_amount = parse_mexican_number(total_match.group(1))
@@ -985,8 +1086,22 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         expense_date = _fecha_del_comprobante(lines)
 
     # Fallback: if no total found, try generic total match
+    #
+    # EL FILTRO DE AHORRO TAMBIEN AQUI, y es la mitad del arreglo. El `continue`
+    # de arriba saca la linea de ahorro del bucle principal, pero este fallback
+    # reescanea `lines` COMPLETAS desde el final, y si no vuelve a filtrar entra
+    # por esta puerta: con el filtro solo en el bucle, DSW seguia leyendo 119.97
+    # y el arreglo no hacia nada. Medido.
+    #
+    # Se repite el `search` en vez de calcular la lista una vez porque son dos
+    # bucles en lugares distintos del codigo y unirlos "por limpieza" seria tocar
+    # el bucle principal para arreglar el fallback. Si el filtro cambia, hay que
+    # cambiarlo en los dos: por eso el nombre del patron y el motivo estan ahi
+    # arriba y no repartidos en las dos llamadas.
     if total_amount == Decimal("0.00"):
         for line in reversed(lines):
+            if AHORRO_EN_LINEA_RE.search(line):
+                continue
             total_match = re.search(r"(?:^|\s)(?:total|importe)[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
             if total_match:
                 try:
@@ -995,6 +1110,19 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
                 except (InvalidOperation, ValueError):
                     pass
     
+    # Las lineas de este parseo. `None` y no `[]`, y NO por pereza: esta funcion
+    # recibe TEXTO PLANO, y `parser_lineas.leer_lineas` necesita GEOMETRIA —las
+    # cajas `x0`/`x1` de `image_to_data`— para saber que el ultimo numero de
+    # una linea es su importe. Sin coordenada no hay forma de distinguir
+    # `COCA COLA 1.5L 35.00` de `COCA COLA 1.5L`, y adivinarlo seria inventar el
+    # detalle de partidas de un ticket que no lo tiene.
+    #
+    # El `None` dice exactamente eso: "este lector no produce lineas". Quien las
+    # tiene es el LLM (`ai_extractor.ExtractedInvoice.items`) y el OCR con
+    # geometria (`capture.py` -> `leer_lineas`). Por eso `verificacion_items` sale
+    # con `veredicto=NADA` en esta ruta, y eso es correcto, no una falta.
+    items = None
+
     return TicketExtractionResult(
         provider_name=provider_name,
         provider_tax_id=provider_tax_id,
@@ -1006,4 +1134,18 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # Sin esto, el gate nunca recibe el subtotal de la ruta de reglas y el
         # check `subtotal_plus_tax_mismatch` no puede activarse nunca.
         subtotal=subtotal,
+        # El check de que las LINEAS suman lo que declara el encabezado.
+        #
+        # Va aqui y no dentro del gate porque necesita `subtotal` y `total`, y
+        # los dos se resuelven a lo largo de este parseo: se calcula al final,
+        # con los numeros ya en la mano. Ponerlo antes daria `subtotal_declarado
+        # = None` siempre, y un `None` aqui significa "no se pudo comprobar", que
+        # es distinto de "comprobado y no cuadra" — y esa distincion es la que
+        # hace que la voz de la gente se apague ante los avisos.
+        #
+        # La ruta por reglas no extrae lineas, asi que hoy esto sale SIEMPRE con
+        # `items=[]` y `veredicto=NADA`. El campo se llena de verdad cuando el
+        # LLM trae el detalle de partidas o cuando el OCR aporta geometria
+        # (`parser_lineas.leer_lineas`).
+        verificacion_items=verificar_items(items, subtotal=subtotal, total=total_amount),
     )

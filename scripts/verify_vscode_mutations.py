@@ -224,6 +224,44 @@ MUTACIONES = [
         False,
     ),
     (
+        "`make clean` vuelve al grupo de build",
+        "borrar la base de datos a dos clics de levantar la app: "
+        "`clean` es `docker compose down -v` y el `-v` elimina el volumen "
+        "de Postgres",
+        lambda: TASKS.write_text(
+            TASKS.read_text(encoding="utf-8").replace(
+                '"label": "make: clean",\n      "type": "shell",',
+                '"label": "make: clean",\n      "type": "shell",\n      "group": "build",',
+                1,
+            ),
+            encoding="utf-8",
+        ),
+        False,
+    ),
+    (
+        "`make: up` deja de poner la terminal al frente",
+        "`make up` construye imagenes y puede tardar minutos sin imprimir "
+        "nada: con focus:false la salida se queda en un panel que nadie mira y "
+        "la tarea parece no hacer nada. MEDIDO: fue el reporte real",
+        lambda: TASKS.write_text(
+            TASKS.read_text(encoding="utf-8").replace(
+                '"command": "make up",\n      "group": { "kind": "build", "isDefault": true },\n'
+                '      "detail": "Reconstruye las imagenes y levanta los contenedores '
+                '(incluye build). Tarda: la primera vez compila imagenes",\n'
+                '      "presentation": {\n        "reveal": "always",\n'
+                '        "panel": "shared",\n        "focus": true',
+                '"command": "make up",\n      "group": { "kind": "build", "isDefault": true },\n'
+                '      "detail": "Reconstruye las imagenes y levanta los contenedores '
+                '(incluye build). Tarda: la primera vez compila imagenes",\n'
+                '      "presentation": {\n        "reveal": "always",\n'
+                '        "panel": "shared",\n        "focus": false',
+                1,
+            ),
+            encoding="utf-8",
+        ),
+        False,
+    ),
+    (
         "JSONC invalido",
         "un error de sintaxis hace que VS Code ignore el archivo entero, callado",
         lambda: VSC.write_text("{ esto no es json", encoding="utf-8"),

@@ -38,12 +38,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
 from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
+from app.models.user import UserModel
 from app.schemas.lectura import DiagnosticoLecturaResponse
 from app.schemas.scan import (
+    NO_SE_BORRA,
     ReprocessResponse,
     ScanEventResponse,
     ScanFileDetailResponse,
@@ -51,11 +53,14 @@ from app.schemas.scan import (
     ScanFileResponse,
     ScanItemResponse,
     ScanRequest,
+    ScanResetRequest,
+    ScanResetResponse,
     ScanResponse,
     ResumenScan,
     ScanStatsResponse,
 )
-from app.services import scan_registry, scan_service
+from app.services import scan_registry, scan_reset, scan_service
+from app.services.scan_reset import FRASE_CONFIRMACION
 from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ocr import disponibilidad as disponibilidad_ocr
 
@@ -184,6 +189,138 @@ async def ver_una_corrida(corrida_id: str, usuario: UsuarioActual) -> dict:
     return corrida.a_dict()
 
 
+def _reset_habilitado() -> None:
+    """El cerrojo 1: el flag decide si el endpoint EXISTE.
+
+    POR QUE ES UNA DEPENDENCIA Y NO UN `if` EN EL CUERPO
+    ====================================================
+
+    La primera version lo tenia como `if not settings...: raise 404` al principio
+    del handler, y el test lo cazó: con el flag apagado devolvia **401**, no 404.
+
+    La razon es el orden en que FastAPI resuelve las cosas. Las **dependencias se
+    evaluan antes** que el cuerpo del handler —por eso `UsuarioVerificado` ya habia
+    pedido el token y comprobado la contrasena cuando se llegaba al primer
+    `if`—. Es decir: el `if` del cuerpo es el **tercer** cerrojo en ejecutarse,
+    aunque en el codigo este el primero.
+
+   Eso no es cosmetico: un visitante sin token recibe 401, lo que **confirma que
+    la ruta existe**. Un 404 no lo hace. Y para un endpoint que borra la base,
+    confirmar que hay una puerta de borrado es parte del daño.
+
+    Y NO se resuelve "poniendo el parametro del flag primero", porque FastAPI no
+    garantiza el orden entre un `Annotated` y un `Depends` suelto. Lo que si
+    garantiza es el orden **dentro** de una misma dependencia, asi que
+    `_reset_permitido` encadena las dos en el orden correcto.
+    """
+    if not settings.TICKETS_SCAN_RESET_HABILITADO:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Este endpoint no existe en esta instalacion. Para activarlo hay "
+                "que poner TICKETS_SCAN_RESET_HABILITADO=true en el .env y "
+                "reiniciar el API. Es deliberado: un endpoint que borra la base "
+                "no debe estar disponible solo porque alguien lo dejo escrito."
+            ),
+        )
+
+
+def _reset_permitido(
+    _flag: None = Depends(_reset_habilitado),
+    usuario: UsuarioVerificado = None,  # type: ignore[assignment]
+):
+    """El flag y la contrasena, EN ESE ORDEN.
+
+    Encadenarlos aqui y no declararlos sueltos en el handler es lo unico que hace
+    el orden fiable: dentro de una dependencia, `Depends(_reset_habilitado)` se
+    resuelve antes que el `UsuarioVerificado` del segundo parametro. Puestos como
+    parametros sueltos del handler, el orden no esta garantizado, y el test lo
+    demostro devolviendo 401 con el flag apagado.
+
+    Lo devuelve el usuario para que el handler lo pueda auditar aunque hoy no lo
+    use: el `actor` de un borrado es el dato que uno querria tener dentro de seis
+    meses, y anadirlo despues al endpoint es cambiar un contrato.
+    """
+    return usuario
+
+
+@router.post("/reset")
+async def limpiar_base_de_datos(
+    cuerpo: ScanResetRequest,
+    db: Sesion,
+    usuario: UserModel = Depends(_reset_permitido),
+) -> ScanResetResponse:
+    """Deja la base limpia para volver a probar el escaneo.
+
+    CUATRO CERRADJOS, Y EN QUE ORDEN SE EJECUTAN
+    =============================================
+
+    1. **El flag** (`_reset_habilitado`, dependencia). Apagado -> **404**, y sin
+       llegar a mirar el token. Ver el docstring de esa funcion: es el primero que
+       corre, y por eso es una dependencia y no un `if`.
+    2. **La contrasena del que llama** (`UsuarioVerificado`): token **y**
+       `X-Contrasena-Actual`. Es el mismo cerrojo de `usuarios.py`, y por el mismo
+       motivo —un token robado no debe alcanzar para borrar el historico
+       contable—.
+    3. **La frase.** `confirmar` tiene que decir `BORRAR_YA` exacta. No un
+       booleano: un `true` se manda con un clic de mas y no distingue "me
+       confirme a mi mismo" de "el sistema me lo pregunto".
+    4. **No hay trabajo humano.** Si hay un ticket con `reviewed_at` o una compra
+       `PROCESADO`, responde **409** y no borra nada. Es el unico cerrojo que
+       protege lo irrepetible: una correccion contra el papel, o una compra que
+       alguien autorizo para que el stock empezara a contar.
+
+    Y ADEMAS, el modo por omision (`ejecutar=false`) solo cuenta. Un endpoint
+    destructivo cuyo modo por omision es el destructivo es del que hay que
+    acordarse de no usar.
+
+    LO QUE NO SE BORRA
+    ------------------
+    Ni las cuentas, ni las empresas, ni el catalogo de productos. Las empresas
+    porque el escaneo necesita una para atribuir (sin ella `POST /scan` solo
+    inventaria); las cuentas porque borrarlas deja el sistema sin puerta de
+    entrada; el catalogo porque son horas de dar de alta y no tiene que ver con
+    probar el escaneo. La respuesta los lista en `lo_que_no_se_borra`.
+
+    El detalle de por que el borrado vive en `services/scan_reset.py` y no aqui:
+    el orden de los `DELETE` no es estilo, porque `ticket_documents` es append-only
+    y **solo** se puede borrar cuando su ticket ya no existe.
+    """
+    # --- Cerrojo 3: la frase ---
+    if cuerpo.confirmar != FRASE_CONFIRMACION:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"La confirmacion no es la correcta. Para borrar hay que escribir "
+                f"exactamente {FRASE_CONFIRMACION}. No se borro nada."
+            ),
+        )
+
+    try:
+        resultado = await scan_reset.limpiar(db, confirmar=cuerpo.ejecutar)
+    except scan_reset.HayTrabajoHumano as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "No se borro nada: hay trabajo de una persona en la base que no "
+                "se puede rehacer. "
+                f"{exc.conteo.tickets_revisados} ticket(s) revisados a mano y "
+                f"{exc.conteo.compras_procesadas} compra(s) autorizadas. "
+                "Revisalos y borralos uno por uno si de verdad quieres que "
+                "desaparezcan."
+            ),
+        ) from exc
+
+    return ScanResetResponse(
+        simulado=resultado.simulado,
+        conteo=resultado.conteo.a_dict(),
+        borrado=resultado.borrado,
+        empresas_conservadas=resultado.empresas_conservadas,
+        usuarios_conservados=resultado.usuarios_conservados,
+        lo_que_no_se_borra=list(NO_SE_BORRA),
+    )
+
+
 @router.get("/ocr")
 async def estado_del_ocr(usuario: UsuarioActual) -> dict:
     """Que motores de OCR se pueden usar ahora mismo.
@@ -206,6 +343,16 @@ async def configuracion_del_escaneo(usuario: UsuarioActual) -> dict:
     un contenedor o en la de otra persona, hay que cambiar la variable, y sin
     este endpoint la unica forma de saber si el cambio tomo efecto es correr un
     escaneo y mirar la ruta que salio en el resumen.
+
+    `archivar_por_defecto` ESTA, y no es un dato de mas. Es lo que permite que la
+    casilla de la pantalla muestre el valor **real** en vez de suponerlo: sin este
+    campo, el front tendria que hardcodear `true` —porque asi viene por omision en
+    `Settings`— y mentiria en cuanto alguien apagara `TICKETS_SCAN_ARCHIVAR` en el
+    `.env`, que es justo lo que hace falta para probar el escaneo varias veces.
+
+    Una casilla de archivado que arranca marcada cuando el archivado esta apagado es
+    una forma de mover comprobantes de carpeta sin querer, y el operador no tendria
+    forma de saber por que desaparecieron de la bandeja.
     """
     del usuario
     return {
@@ -214,6 +361,17 @@ async def configuracion_del_escaneo(usuario: UsuarioActual) -> dict:
         "recursivo": settings.TICKETS_SCAN_RECURSIVO,
         "max_por_corrida": settings.TICKETS_SCAN_MAX_ARCHIVOS,
         "max_bytes_por_archivo": settings.TICKETS_SCAN_MAX_BYTES,
+        # El valor EFECTIVO. `TICKETS_SCAN_ARCHIVAR` es el interruptor general y
+        # manda sobre el de escanear: apagar el general apaga los dos.
+        "archivar_por_defecto": bool(
+            settings.TICKETS_SCAN_ARCHIVAR and settings.TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR
+        ),
+        # Y los dos por separado, porque son decisiones distintas: una es "mover al
+        # digitalizar" y la otra "mover al confirmar la compra". Con las dos en
+        # `true` —el default— la segunda casi nunca dispara, porque el archivo ya
+        # se movio al escanear.
+        "archivar_al_escanear": settings.TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR,
+        "archivar_al_confirmar": settings.TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR,
     }
 
 
@@ -265,12 +423,32 @@ async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
     # ticket se leyo bien en su momento, pero el ticket ya no corresponde al
     # papel. Sin este conteo, ese archivo aparece como un PROCESADO mas, igual
     # que uno al dia, y el operador no tiene forma de saber que hay trabajo.
+    #
+    # LO QUE SE EXCLUYE, Y POR QUE: MEDIDO, NO SUPUESTO
+    # -------------------------------------------------
+    # La condicion original era solo `last_error IS NOT NULL`, y eso contaba como
+    # "desactualizado" un archivo al que solo le faltaba la **empresa** —el
+    # resultado de "Escanear (solo inventariar)"—, porque ese camino escribe
+    # `last_error = "leido correctamente pero sin empresa: no se creo ticket"`.
+    #
+    # Medido en esta maquina: 6 archivos, 0 tickets, y la pantalla de escaner
+    # decía "6 archivos cambiaron desde que se leyeron, pero su ticket ya fue
+    # corregido a mano y no se sobreescribio". **Es falso en las tres partes**: no
+    # cambiaron, no hay ticket, y nadie corrigio nada. El contador estaba
+    # confundiendo un mensaje informativo con un problema.
+    #
+    # El filtro correcto es el que ya usa `scan_service` para marcar un archivo
+    # como desactualizado de verdad: `OMITIDO` **con** ticket. Sin ticket no hay
+    # "correccion humana que no se sobreescribe"; hay una lectura que todavia no
+    # se ha atribuido, y esa es otra cosa —la cuenta el boton de crear tickets—.
     desactualizados = (
         await db.execute(
             select(func.count()).select_from(ScanFileModel)
             .where(
                 ScanFileModel.status == ScanStatus.PROCESADO.value,
                 ScanFileModel.last_error.is_not(None),
+                ScanFileModel.last_error.like("%sobreescribe%"),
+                ScanFileModel.ticket_id.is_not(None),
             )
         )
     ).scalar_one()

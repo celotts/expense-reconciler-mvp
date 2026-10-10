@@ -26,9 +26,34 @@
  * comprobante original mientras corre.** Seria lo ideal y no se puede: el
  * archivo se borra de la carpeta de entrada cuando ya esta respaldado, asi que
  * durante el escaneo esta disponible solo para los que ya se leyeron. Ver el
- * documento requires `GET /tickets/{id}/documento` por cada uno, y son peticiones
+ * documento requiere `GET /tickets/{id}/documento` por cada uno, y son peticiones
  * que compiten con el OCR por el ancho de banda. Se deja para la cola de
  * revision, donde el operador ya esta mirando una sola cosa.
+ *
+ * LO QUE SE ENSENA DE CADA TICKET, Y POR QUE NO BASTA EL IMPORTE
+ * --------------------------------------------------------------
+ *
+ * El feed **trae el encabezado completo del ticket** —proveedor, RFC, fecha,
+ * subtotal, IVA, IEPS, lineas y `validation_errors`— y no solo el total. La razon
+ * es que el total solo no distingue dos situaciones que piden acciones opuestas:
+ *
+ *   - `total 0.00` + `total_not_positive` → el sistema **no supo leer** el papel.
+ *     Corregir exige volver a la foto, no cambiar un numero.
+ *   - `total 119.97` + `subtotal_plus_tax_mismatch` → el sistema **si leyo** algo,
+ *     pero el gate vio que no cuadra. Ahi el trabajo es comparar dos numeros.
+ *
+ * Con solo el total, las dos se ven como "$X, pendiente" y el operador no sabe
+ * cual es. Con el encabezado, el `validation_errors` dice cual, y el proveedor y
+ * la fecha dicen si el papel es siquiera el que se cree.
+ *
+ * **Y los numeros van al lado del veredicto, nunca solos.** Es lo que evita el
+ * malentendido de que "se ve un importe" quiere decir "el importe es bueno". Un
+ * `279.33` junto a `subtotal_plus_tax_mismatch` es una lectura en disputa, y se
+ * muestra como tal.
+ *
+ * **El `validation_errors` va siempre visible cuando hay**, incluso con el
+ * panel plegado, porque es el unico texto que convierte una fila en una tarea. Y
+ * va en texto crudo y no como "3 errores": el operador tiene que saber *cual*.
  */
 
 import type { ScanCorrida, ScanProcesado } from '../types/scan';
@@ -49,6 +74,91 @@ function segundosLegibles(s: number): string {
   const m = Math.floor(s / 60);
   const resto = Math.round(s % 60);
   return resto ? `${m}m ${resto}s` : `${m}m`;
+}
+
+/** Divide `validation_errors` en la lista de motivos.
+ *
+ * El backend los une con `; ` (`confidence_gate` los separa asi), y llegan como
+ * un solo texto: `subtotal_plus_tax_mismatch(leido=234.00,esperado=217.27);
+ * date_missing`. Se parten para poder ponerlos en `<li>` en vez de en un parrafo
+ * largo que hay que leer entero para saber si hay uno o tres.
+ *
+ * Se separa por `;` y no por `,` a proposito: los motivos llevan comas DENTRO
+ * (`leido=234.00,esperado=217.27`), y partir por coma parte un motivo en dos que
+ * no significan nada por separado. */
+function motivos(validationErrors: string | null): string[] {
+  if (!validationErrors) return [];
+  return validationErrors
+    .split(';')
+    .map((m) => m.trim())
+    .filter(Boolean);
+}
+
+/** Un motivo del gate, traducido.
+ *
+ * Los codigos van en ingles porque son los que se ven en `validation_errors`, en
+ * los logs y en la base: traducirlos aqui los haria imposibles de buscar. Lo que
+ * se traduce es la EXPLICACION, que es lo que no se deduce del codigo.
+ *
+ * Un codigo sin entrada aqui se muestra tal cual, y es lo correcto: es mejor ver
+ * `algo_nuevo_del_gate` que no ver nada y creer que no hubo error. Un switch
+ * silencioso es un switch que miente cuando el backend crece. */
+const GLOSARIO: Record<string, string> = {
+  total_not_positive: 'no se leyó un total',
+  provider_missing: 'no se leyó el comercio',
+  date_missing: 'no se leyó la fecha',
+  subtotal_plus_tax_mismatch: 'subtotal + IVA no da el total',
+  rfc_missing: 'no se leyó el RFC',
+  rfc_invalid: 'el RFC no tiene forma válida',
+  date_in_future: 'la fecha está en el futuro',
+  date_too_old: 'la fecha es demasiado vieja',
+  total_mismatch: 'el total no coincide',
+  items_missing: 'el comprobante no trae líneas',
+  ieps_plus_tax_mismatch: 'subtotal + IVA + IEPS no da el total',
+};
+
+function explica(motivo: string): string | null {
+  // El motivo trae el detalle entre parentesis: `subtotal_plus_tax_mismatch
+  // (leido=234.00,esperado=217.27)`. El codigo va hasta el primer `(`.
+  const corte = motivo.indexOf('(');
+  if (corte === -1) return GLOSARIO[motivo] ?? null;
+  const codigo = motivo.slice(0, corte).trim();
+  return GLOSARIO[codigo] ?? null;
+}
+
+/** El codigo del motivo, sin su detalle.
+ *
+ * Va en `<code>` pequeno porque es el termino que se busca en la base y en los
+ * logs, y esconderlo detras de la traduccion hace imposible responder "por que
+ * salio `date_missing`". */
+function codigoDe(motivo: string): string {
+  const corte = motivo.indexOf('(');
+  return corte === -1 ? motivo : motivo.slice(0, corte).trim();
+}
+
+/** El detalle entre parentesis, o `null`. */
+function detalleDe(motivo: string): string | null {
+  const abre = motivo.indexOf('(');
+  if (abre === -1) return null;
+  const cierra = motivo.lastIndexOf(')');
+  if (cierra < abre) return null;
+  const dentro = motivo.slice(abre + 1, cierra).trim();
+  return dentro || null;
+}
+
+/** `2026-10-01` -> `01 oct 2026`.
+ *
+ * Se parte el texto en vez de pasar la cadena por `Date`: `new Date('2026-10-01')`
+ * lo interpreta en UTC y en una zona horaria detras de UTC se renderiza como el
+ * dia ANTERIOR. Un comprobante fechado el dia 1 aparece el dia 30 y el operador
+ * busca el papel en el mes equivocado. */
+function fechaLegible(iso: string | null): string | null {
+  if (!iso) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const mes = meses[Number(m[2]) - 1] ?? m[2];
+  return `${m[3]} ${mes} ${m[1]}`;
 }
 
 /**
@@ -150,40 +260,97 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
             return (
               <li
                 key={`${p.relative_path}-${i}`}
-                className="px-4 py-2.5 flex items-center gap-3 bg-white/70 hover:bg-white transition-colors"
+                className="px-4 py-3 bg-white/70 hover:bg-white transition-colors"
               >
-                <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded ${ev.tono}`}>
-                  {ev.etiqueta}
-                </span>
-
-                <span className="font-mono text-xs text-gray-700 truncate flex-1 min-w-0" title={p.relative_path}>
-                  {p.relative_path}
-                </span>
-
-                {p.motor && (
-                  <span className="hidden sm:inline text-[10px] text-gray-500 uppercase tracking-wide shrink-0">
-                    {p.motor}
+                {/* La primera linea: el estado, el archivo y el importe.
+                    Es el resumen de un vistazo, y lo que se lee de reojo. */}
+                <div className="flex items-center gap-3">
+                  <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded ${ev.tono}`}>
+                    {ev.etiqueta}
                   </span>
-                )}
 
-                {/* El importe, y la distincion que hay que ensenar: lo que se
-                    LEYO y lo que se AFIRMA. Cuando no coinciden, el monto va
-                    atenuado y con el aviso al lado, porque un $4,093.80 sin
-                    marca gray se lee como un dato bueno. */}
-                <span className="text-right shrink-0 tabular-nums">
-                  <span
-                    className={`text-sm font-semibold ${
-                      p.confiable ? 'text-gray-900' : 'text-gray-400'
-                    }`}
-                  >
-                    {dinero(p.monto)}
+                  <span className="font-mono text-xs text-gray-700 truncate flex-1 min-w-0" title={p.relative_path}>
+                    {p.relative_path}
                   </span>
-                  {!p.confiable && p.monto && (
-                    <span className="block text-[10px] text-amber-700 leading-tight">
-                      sin afirmar
+
+                  {p.motor && (
+                    <span className="hidden sm:inline text-[10px] text-gray-500 uppercase tracking-wide shrink-0">
+                      {p.motor}
                     </span>
                   )}
-                </span>
+
+                  {/* El importe, y la distincion que hay que ensenar: lo que se
+                      LEYO y lo que se AFIRMA. Cuando no coinciden, el monto va
+                      atenuado y con el aviso al lado, porque un $4,093.80 sin
+                      marca gray se lee como un dato bueno. */}
+                  <span className="text-right shrink-0 tabular-nums">
+                    <span
+                      className={`text-sm font-semibold ${
+                        p.confiable ? 'text-gray-900' : 'text-gray-400'
+                      }`}
+                    >
+                      {dinero(p.monto)}
+                    </span>
+                    {!p.confiable && p.monto && (
+                      <span className="block text-[10px] text-amber-700 leading-tight">
+                        sin afirmar
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                {/* La segunda linea: QUE se leyo del papel.
+                    Es lo que hace que la fila sea una tarea y no un contador. */}
+                {(p.proveedor || p.fecha || p.subtotal || p.iva) && (
+                  <div className="mt-1.5 pl-1 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-gray-600">
+                    {p.proveedor && (
+                      <span className="font-medium text-gray-800" title={p.proveedor}>
+                        {p.proveedor}
+                      </span>
+                    )}
+                    {p.rfc && (
+                      <span className="font-mono text-[11px] text-gray-500">{p.rfc}</span>
+                    )}
+                    {fechaLegible(p.fecha) && (
+                      <span title={p.fecha ?? undefined}>{fechaLegible(p.fecha)}</span>
+                    )}
+                    {p.subtotal && <span>subtotal {dinero(p.subtotal)}</span>}
+                    {p.iva && <span>IVA {dinero(p.iva)}</span>}
+                    {p.ieps && <span>IEPS {dinero(p.ieps)}</span>}
+                    {/* El conteo de lineas, y `null` NO es lo mismo que `0`: la
+                        ruta OCR no trae detalle de partidas, y no decir nada es
+                        mas honesto que decir "0 lineas". */}
+                    {p.lineas !== null && p.lineas !== undefined && (
+                      <span className="text-gray-500">
+                        {p.lineas === 1 ? '1 línea' : `${p.lineas} líneas`}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Los motivos del gate. SIEMPRE visibles, sin plegar.
+                    Es lo unico que convierte "pendiente" en algo accionable, y
+                    va en el codigo real para que se pueda buscar en la base. */}
+                {motivos(p.validation_errors).length > 0 && (
+                  <ul className="mt-1.5 pl-1 space-y-0.5">
+                    {motivos(p.validation_errors).map((m, j) => {
+                      const explicacion = explica(m);
+                      const detalle = detalleDe(m);
+                      return (
+                        <li
+                          key={`${m}-${j}`}
+                          className="text-[11px] text-amber-800 leading-snug"
+                        >
+                          <code className="font-mono">{codigoDe(m)}</code>
+                          {explicacion && <span> — {explicacion}</span>}
+                          {detalle && (
+                            <span className="text-amber-700"> ({detalle})</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </li>
             );
           })}

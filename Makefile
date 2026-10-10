@@ -1,4 +1,4 @@
-.PHONY: build up up-force down logs ps stats disk clean insomnia insomnia-check \
+.PHONY: build up up-force down logs ps stats disk clean prune insomnia insomnia-check \
         migrar migrar-list migrar-estado
 
 build:
