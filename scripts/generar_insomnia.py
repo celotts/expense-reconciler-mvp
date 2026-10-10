@@ -260,6 +260,10 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("DELETE", "/tickets/{ticket_id}"): "t8. Borrar un ticket",
     ("GET", "/scan/config"): "s1. Configuracion del escaner",
     ("GET", "/scan/ocr"): "s2. Estado del OCR (hay Tesseract?)",
+    # El nombre dice LAS DOS preguntas que contesta: configurado e instalado. Un
+    # "estado de la IA" no dira nada util, porque el caso que motivo el endpoint
+    # es justo uno donde la IA "esta bien" segun la config y no existe en disco.
+    ("GET", "/scan/ia"): "s2b. Que modelo esta configurado y si esta instalado",
     ("GET", "/scan/stats"): "s3. Resumen del escaneo",
     ("GET", "/scan/runs"): "s4. Corridas del escaner",
     ("GET", "/scan/runs/{corrida_id}"): "s5. Detalle de una corrida",

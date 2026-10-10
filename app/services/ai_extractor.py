@@ -113,6 +113,43 @@ class ExtractedInvoice:
     raw_text: str = ""
     confidence: float = 0.0
     extraction_method: str = "llm"
+    # QUE MODELO RESPONDIO. `AIResponse.model` lo traia desde antes y se
+    # descartaba aqui, que es la razon de que nadie pueda decir que modelo leyo
+    # un comprobante.
+    #
+    # No es decorativo por dos razones concretas, y las dos ya se perdieron una
+    # vez:
+    #
+    # 1. **Medicion.** `confidence_source` dice QUE clase de lector fue (`llm`,
+    #    `ocr`, `pdf_text`, `manual`), no cual. Dentro de `llm` conviven motores
+    #    con tasas de error distintas: cambiar `qwen2.5:3b` por `llama3.1:8b` no
+    #    mueve ese campo, asi que un A/B entre modelos es invisible en el
+    #    reporte de exactitud. Es el mismo argumento que hizo falta para
+    #    `ResultadoOCR.motor` en el OCR.
+    #
+    # 2. **Diagnostico.** Configurado y **disponible** son cosas distintas, y la
+    #    diferencia no se ve en ningun log. MEDIDO en esta maquina: la
+    #    configuracion dice `OLLAMA_MODEL=qwen2.5:3b` y en el contenedor solo
+    #    esta `moondream`. Ese modelo de texto nunca ha contestado una sola vez, y
+    #    sin este campo no hay forma de saberlo mirando una pantalla.
+    #
+    # `None` cuando no hubo IA: PDF con capa de texto, OCR que sirvio, o entrada
+    # manual. `None` es "no respondió un modelo", no "respondió vacío".
+    model_name: Optional[str] = None
+    # Y el PROVEEDOR (`ollama`, `openai`, `azure`, `local`). `qwen2.5:3b` en
+    # Ollama y `qwen2.5:3b` en OpenAI no son el mismo modelo corriendo en otro
+    # sitio: son dos motores distintos con distinto comportamiento y distinto
+    # costo.
+    #
+    # EL NOMBRE ES `model_provider` Y NO `provider_name`, Y NO ES COSMETICO:
+    # `provider_name` ya existe mas arriba y es el COMERCIO que emitio el
+    # comprobante. Con el mismo nombre, el segundo campo pisa al primero segun el
+    # orden de los argumentos y el ticket sale con `provider_name="ollama"`.
+    # No falla: es un `str` valido, y lo unico que se rompe es el nombre del
+    # emisor, que es justo lo que no se debe romper. Medido al escribir esto: el
+    # intento con `provider_name` dio `TypeError: got multiple values for keyword
+    # argument`, que al menos avisa — en un `**kwargs` se pierde en silencio.
+    model_provider: Optional[str] = None
 
 
 # System prompt for invoice extraction (text-based)
@@ -480,6 +517,16 @@ class AIExtractor:
                 data["confidence"] = 0.0
 
             data["extraction_method"] = method if data else f"{method}_error"
+            # Quien contesto. Se agrega aqui y no antes porque la respuesta del
+            # modelo se puede parsear aunque venga vacia, y en ese caso el modelo
+            # **si** contesto —contesto que no sabe— y esa respuesta tambien
+            # tiene que poder atribuirse a un motor concreto.
+            #
+            # En el camino de excepcion de abajo NO se pone, y es lo correcto: si
+            # la lectura fallo antes de llegar al parseo, no hay respuesta que
+            # atribuir, y `None` significa eso y no "un modelo sin nombre".
+            data["model_name"] = response.model
+            data["model_provider"] = response.provider.value
             # Keep only fields understood by the dataclass (model may add extras)
             valid_fields = ExtractedInvoice.__dataclass_fields__.keys()
             filtered = {k: v for k, v in data.items() if k in valid_fields}

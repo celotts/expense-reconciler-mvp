@@ -525,6 +525,16 @@ class TicketExtractionResult(BaseModel):
     # Lo llena `_parse_receipt_text` DESPUES de tener subtotal y total, que es
     # el orden unico en que se puede. Ver `parser_lineas.verificar_items`.
     verificacion_items: VerificacionDeItems | None = None
+    # QUE MODELO RESPONDIO, y de que proveedor. `None` en la ruta de reglas, que
+    # no usa ningun modelo.
+    #
+    # `confidence_source` dice QUE CLASE de lector fue (`llm`, `ocr`, `pdf_text`,
+    # `manual`); esto dice CUAL. La distincion no es academica: dentro de `llm`
+    # conviven motores con tasas de error distintas, asi que sin el nombre no se
+    # puede medir si cambiar de modelo sirvio de algo. Es el mismo argumento que
+    # hizo falta para `ResultadoOCR.motor`.
+    model_name: str | None = None
+    model_provider: str | None = None
     # De donde salio lo que hay en estos campos. Sin esto, todo se guardaba
     # como `llm`, incluso un parseo de regex, y la columna miente sobre de
     # donde salio el dato. Sin esa verdad no se puede medir la exactitud de la

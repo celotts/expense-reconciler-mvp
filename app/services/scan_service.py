@@ -314,6 +314,21 @@ class ResumenArchivo:
     confianza: float | None = None
     origen: ConfidenceSource | None = None
     detalle: str | None = None
+    # QUE MODELO RESPONDIO, si hubo alguno.
+    #
+    # `origen` dice QUE CLASE de lector fue —`llm`, `ocr`, `pdf_text`, `manual`—
+    # y esto dice CUAL, que es la pregunta que un contador hace mirando una
+    # pantalla: "esto lo leyo una maquina o una persona, y si fue una maquina,
+    # cual".
+    #
+    # `None` cuando no hubo IA: PDF con capa de texto, OCR que sirvio, o lectura
+    # manual. Y `None` NO es "no se sabe": es "no hubo modelo que responder".
+    #
+    # Sin este campo, cambiar `qwen2.5:3b` por `llama3.1:8b` no deja ni una
+    # huella: `confidence_source` dice `llm` para los dos y el reporte de
+    # exactitud no puede distinguir el A/B.
+    modelo_ia: str | None = None
+    proveedor_ia: str | None = None
 
     # --- El archivado ---------------------------------------------------
     #
@@ -826,6 +841,14 @@ async def procesar_archivo(
 
     resumen.confianza = extracted.confidence
     resumen.origen = extracted.confidence_source
+    # Quien contesto. Se copia aqui, junto al `origen`, porque los dos van juntos:
+    # `llm` sin nombre no dice nada accionable, y el nombre sin `llm` tampoco.
+    #
+    # Sale de `TicketExtractionResult.model_name`, que a su vez viene de
+    # `AIResponse.model`. En la ruta de reglas y en la de OCR queda `None`, y eso
+    # es lo correcto: no hubo modelo.
+    resumen.modelo_ia = extracted.model_name
+    resumen.proveedor_ia = extracted.model_provider
 
     # Sin empresa no hay donde dejar el ticket. Se registra como leido para que
     # el operador vea que el archivo SI se entendio, y no como error: el
@@ -1838,6 +1861,8 @@ async def _registrar_en_el_feed(
         monto=ticket.total_amount if ticket.total_amount is not None else None,
         extraction_status=ticket.extraction_status,
         motor=detalle.origen.value if detalle.origen is not None else None,
+        modelo=detalle.modelo_ia,
+        proveedor_ia=detalle.proveedor_ia,
         accion=detalle.accion,
         # Confiable es lo que decidio el GATE, no si el monto "parece bien": un
         # total de 0 no es confiable, y uno de 4,093.80 tampoco si nadie lo

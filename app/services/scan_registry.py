@@ -300,6 +300,10 @@ def registrar_procesado(
     monto: Decimal | None = None,
     extraction_status: str | None = None,
     motor: str | None = None,
+    # El NOMBRE del modelo, cuando `motor` es `llm`. `motor` dice la clase de
+    # lector y esto dice cual; sin los dos, cambiar de modelo no deja huella.
+    modelo: str | None = None,
+    proveedor_ia: str | None = None,
     accion: str | None = None,
     confiable: bool = False,
     es_duplicado: bool = False,
@@ -348,6 +352,8 @@ def registrar_procesado(
             "monto": monto,
             "extraction_status": extraction_status,
             "motor": motor,
+            "modelo": modelo,
+            "proveedor_ia": proveedor_ia,
             "accion": accion,
             "confiable": bool(confiable),
             "es_duplicado": bool(es_duplicado),

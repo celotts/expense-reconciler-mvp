@@ -279,6 +279,26 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
                     </span>
                   )}
 
+                  {/* El MODELO, cuando hubo uno. `motor` dice la clase de
+                      lector (`llm`, `ocr`, `pdf_text`) y esto dice cual leyo:
+                      sin los dos, `llm` no es accionable — no se puede buscar
+                      en el log ni comparar dos motores— y cambiar de modelo no
+                      deja ni una huella en el reporte de exactitud.
+
+                      `null` NO es "no se sabe": es "no hubo modelo que
+                      responder", que es el caso de un PDF con capa de texto o de
+                      un OCR que sirvio. Ahi no se pinta nada, y no es un fallo. */}
+                  {p.modelo && (
+                    <span
+                      className="hidden md:inline shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-mono"
+                      title={`Modelo: ${p.modelo}${
+                        p.proveedor_ia ? ` (vía ${p.proveedor_ia})` : ''
+                      }`}
+                    >
+                      {p.modelo}
+                    </span>
+                  )}
+
                   {/* El importe, y la distincion que hay que ensenar: lo que se
                       LEYO y lo que se AFIRMA. Cuando no coinciden, el monto va
                       atenuado y con el aviso al lado, porque un $4,093.80 sin

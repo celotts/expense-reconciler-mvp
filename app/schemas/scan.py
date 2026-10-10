@@ -295,6 +295,23 @@ class ScanItemResponse(BaseModel):
     origen: str | None = None
     detalle: str | None = None
 
+    # --- Que modelo leyo el comprobante -----------------------------------
+    #
+    # `origen` dice QUE CLASE de lector fue (`llm`, `ocr`, `pdf_text`, `manual`)
+    # y esto dice CUAL. Van juntos porque los dos solos no dicen nada: `llm` sin
+    # nombre no es accionable, y un nombre sin saber que fue una maquina tampoco.
+    #
+    # `None` cuando no hubo IA —PDF con capa de texto, OCR que sirvio, o lectura
+    # manual—. Y `None` **no** significa "no se sabe": significa "no hubo modelo
+    # que responder". La distincion importa porque la pantalla los muestra
+    # distinto: uno es "esto lo leyo una persona" y el otro es "esto se leyo
+    # sola".
+    #
+    # Sin este campo, cambiar de modelo no deja huella: `origen` dice `llm` para
+    # todos y un A/B entre dos motores es indistinguible en el reporte.
+    modelo_ia: str | None = None
+    proveedor_ia: str | None = None
+
     # --- El archivado ---------------------------------------------------
     #
     # Van por item y no solo como un contador porque "se movieron 6 archivos" no

@@ -9,6 +9,7 @@ import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO } from '../util
 import { VerDocumento } from '../components/TicketDocumento';
 import { PanelProgreso } from '../components/ScanProgreso';
 import { CasillaArchivar } from '../components/CasillaArchivar';
+import { EstadoDeIa } from '../components/EstadoDeIa';
 
 /**
  * Escaner de carpeta: leer comprobantes de un directorio sin subir uno por uno.
@@ -272,6 +273,11 @@ export function Scan() {
         </Button>
       </div>
 
+      {/* Antes del panel, no despues: si hay un modelo configurado que no esta
+          instalado, eso explica POR QUE los tickets de abajo salieron como
+          salieron, y verlo despues de leerlos es leerlo al reves. */}
+      <EstadoDeIa />
+
       {corrida && <PanelProgreso corrida={corrida} />}
 
       {ultimo && <PanelResultado resultado={ultimo} />}
@@ -421,6 +427,16 @@ function PanelResultado({ resultado }: { resultado: ScanResultado }) {
               <span className="text-xs pt-0.5">
                 {accionLabel(d.accion)}
                 {d.origen && ` · ${motorLabel(d.origen)}`}
+                {d.modelo_ia && (
+                  <span
+                    className="ml-1 px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-mono"
+                    title={`Modelo: ${d.modelo_ia}${
+                      d.proveedor_ia ? ` (${d.proveedor_ia})` : ""
+                    }`}
+                  >
+                    {d.modelo_ia}
+                  </span>
+                )}
                 {d.confianza !== null && ` · ${d.confianza.toFixed(2)}`}
               </span>
             </li>

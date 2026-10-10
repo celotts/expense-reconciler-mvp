@@ -95,6 +95,17 @@ export interface ScanItem {
   origen: string | null;
   detalle: string | null;
 
+  /** Que MODELO leyo el comprobante, si hubo alguno.
+   *
+   *  `origen` dice la clase de lector (`llm`, `ocr`, `pdf_text`, `manual`) y esto
+   *  dice cual. Van juntos porque los dos solos no dicen nada accionable.
+   *
+   *  `null` NO es "no se sabe": es "no hubo modelo que responder" — un PDF con
+   *  capa de texto, un OCR que sirvio, o una lectura manual. La pantalla lo
+   *  muestra distinto de "esto lo leyo una maquina". */
+  modelo_ia?: string | null;
+  proveedor_ia?: string | null;
+
   /** Que le paso AL ARCHIVO en disco, que es distinto de lo que le paso al ticket. */
   /** `MOVIDO` = esta en otra carpeta. `RETIRADO` = salio de la entrada porque sus
    *  bytes ya estaban guardados con el mismo sha256. `NADA` = sigue en la bandeja. */
@@ -117,6 +128,25 @@ export interface ScanProcesado {
   monto: string | null;
   extraction_status: string | null;
   motor: string | null;
+
+  /** Que MODELO leyo el comprobante, si hubo alguno.
+   *
+   *  `motor` dice la CLASE de lector —`llm`, `ocr`, `pdf_text`— y esto dice
+   *  CUAL. Sin los dos, `llm` no es accionable: no se puede buscar en el log ni
+   *  comparar dos motores, y cambiar de modelo no deja huella en el reporte de
+   *  exactitud.
+   *
+   *  MEDIDO: la `.env` decia `qwen2.5:3b` y en el contenedor solo estaba
+   *  `moondream`. Ese modelo de texto nunca habia contestado y no habia forma de
+   *  verlo: `motor` decia `llm` en todos los casos. Por eso el campo existe, y
+   *  por eso `GET /scan/ia` separa "configurado" de "instalado".
+   *
+   *  `null` NO es "no se sabe": es "no hubo modelo que responder". */
+  modelo?: string | null;
+  /** `ollama`, `openai`, `azure`, `local`. El mismo nombre de modelo en dos
+   *  proveedores son dos motores distintos. */
+  proveedor_ia?: string | null;
+
   accion: string | null;
   /** Si el GATE se atrevio a afirmar el importe. NO es "el monto parece bien":
    *  con OCR al 33% casi nunca se afirma nada, y esa diferencia hay que
@@ -259,4 +289,31 @@ export interface ScanOcrEstado {
   ocr_habilitado: boolean;
   idioma: string;
   motores: Record<string, { disponible: boolean; motivo: string | null }>;
+}
+
+/**
+ * El estado de la IA, y la razon de que tenga DOS mitades.
+ *
+ * Configurado y DISPONIBLE son preguntas distintas, y un solo booleano diria
+ * "la IA funciona" con la mitad de la verdad. MEDIDO en esta maquina: la `.env`
+ * declaraba `qwen2.5:3b` y en el contenedor solo estaba `moondream` — ese modelo
+ * de texto no habia contestado ni una vez y no habia forma de enterarse.
+ */
+export interface ScanIaEstado {
+  /** Lo que dice la `.env`, sin preguntar a nadie. */
+  configurado: {
+    proveedor: string;
+    ai_habilitado: boolean;
+    modelo_texto: string | null;
+    modelo_vision: string | null;
+  };
+  /** Lo que el proveedor DICE tener. `null` = "no se pudo preguntar", que no es
+   *  lo mismo que `[]` = "no tiene ninguno". */
+  modelos_instalados: string[] | null;
+  /** Configurados y ausentes. Vacio es lo normal. */
+  faltan: string[];
+  disponible: boolean;
+  error: string | null;
+  /** Los `ollama pull` listos para copiar, CON el nombre del modelo dentro. */
+  como_instalar: string[];
 }

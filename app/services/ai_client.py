@@ -387,3 +387,105 @@ class VendorNormalizer:
 # Global instances
 ai_client = AIClient()
 vendor_normalizer = VendorNormalizer()
+
+async def _modelos_del_proveedor(base_url: str) -> tuple[list[str] | None, str | None]:
+    """Los modelos que Ollama dice tener. `(lista, None)` o `(None, motivo)`.
+
+    No lanza: un proveedor caido es una respuesta, no un 500. Y por eso devuelve
+    `None` y no `[]` cuando no pudo preguntar — la diferencia entre "no hay
+    modelos" y "no se pudo saber" es la misma que hace falta en
+    `ocr.disponibilidad`, y confundirla hace que un Ollama apagado parezca un
+    contenedor sin modelos.
+    """
+    if not base_url:
+        return None, "OLLAMA_BASE_URL esta vacio"
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{base_url.rstrip('/')}/api/tags")
+            r.raise_for_status()
+            datos = r.json()
+        return [m.get("name", "") for m in datos.get("models", [])], None
+    except Exception as exc:
+        return None, f"no se pudo consultar {base_url}: {exc}"
+
+
+async def disponibilidad() -> dict[str, object]:
+    """Que modelo esta CONFIGURADO, y si de verdad esta DISPONIBLE ahora.
+
+    Son dos preguntas y por eso son dos campos. `configurado` sale de la `.env` sin
+    preguntar a nadie; `modelos_instalados` le pregunta al proveedor. Un booleano
+    diria "la IA funciona" con la mitad de la verdad.
+
+    ## POR QUE EXISTE, CON EL CASO QUE LO MOTIVO
+
+    MEDIDO en esta maquina: la `.env` declara `OLLAMA_MODEL=qwen2.5:3b` y
+    `OLLAMA_VISION_MODEL=moondream`. En el contenedor **solo esta `moondream`**:
+
+        NAME                ID              SIZE     MODIFIED
+        moondream:latest    55fc3abd3867    1.7 GB   2 days ago
+
+    Ese modelo de texto no habia contestado ni una vez, y no habia forma de
+    enterarse: el OCR de cada comprobante sale identico con los dos motores
+    instalados, y `confidence_source` dice `llm` para todos. Lo unico que cambia
+    es cuando la cascada cae al ultimo escalon, y ahi el sintoma es un
+    `ConnectionError` en un log que nadie abre.
+
+    ## POR QUE FALTA UN MODELO NO MARCA ERROR
+
+    Configurar `OLLAMA_MODEL=qwen2.5:3b` sin descargarlo es una situacion
+    valida —el modelo de vision puede servir y el de texto no hacer falta para lo
+    que se esta escaneando—. Marcarlo como falla apagaria el indicador de "la IA
+    funciona" por un motivo que no afecta al escaneo.
+
+    Lo que se expone es `faltan`: lo que se configuro y no esta. La accion la
+    decide quien lee, no esta funcion. Por eso `como_instalar` trae el nombre del
+    modelo dentro: un `ollama pull` sin argumentos es media hora de diagnostica.
+    """
+    from app.core.config import settings
+
+    proveedor = ai_client._detect_provider()
+
+    configurado: dict[str, object] = {
+        "proveedor": proveedor.value,
+        "ai_habilitado": settings.AI_ENABLED,
+        "modelo_texto": None,
+        "modelo_vision": None,
+    }
+    if proveedor is AIProvider.OLLAMA:
+        configurado["modelo_texto"] = settings.OLLAMA_MODEL
+        configurado["modelo_vision"] = settings.OLLAMA_VISION_MODEL
+    elif proveedor is AIProvider.AZURE:
+        configurado["modelo_texto"] = settings.AZURE_OPENAI_DEPLOYMENT
+    elif proveedor is AIProvider.OPENAI:
+        configurado["modelo_texto"] = settings.OPENAI_MODEL
+
+    instalados: list[str] | None = None
+    error: str | None = None
+    if not settings.AI_ENABLED:
+        error = "AI esta apagado (AI_ENABLED=false)"
+    elif proveedor is AIProvider.OLLAMA:
+        instalados, error = await _modelos_del_proveedor(settings.OLLAMA_BASE_URL)
+
+    faltan: list[str] = []
+    if instalados is not None:
+        base = {n.split(":")[0] for n in instalados}
+        for clave in ("modelo_texto", "modelo_vision"):
+            nombre = configurado.get(clave)
+            if nombre and str(nombre).split(":")[0] not in base:
+                faltan.append(str(nombre))
+
+    return {
+        "configurado": configurado,
+        "modelos_instalados": instalados,
+        "faltan": faltan,
+        # `None` en `error` con `modelos_instalados=None` es "el proveedor no
+        # respondio", que NO es lo mismo que "no hay modelos". Por eso el
+        # booleano se calcula con el `error` en vez de con la lista.
+        "disponible": bool(
+            settings.AI_ENABLED and (instalados is None or not error)
+        ),
+        "error": error,
+        "como_instalar": [f"ollama pull {m}" for m in faltan],
+    }

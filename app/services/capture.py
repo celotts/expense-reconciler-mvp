@@ -549,6 +549,15 @@ def invoice_to_result(invoice: ExtractedInvoice) -> TicketExtractionResult:
         # El modelo puede leer un PDF escaneado o una foto: en los dos casos
         # lo que hizo fue mirar. `llm` es la verdad en ambos.
         confidence_source=ConfidenceSource.LLM,
+        # Quien contesto. `AIResponse.model` lo traia desde antes y se perdia en
+        # este constructor, que es el mismo bug que las lineas y el IEPS: el dato
+        # existe aguas arriba y nadie lo copia.
+        #
+        # Sin esto, cambiar de modelo no deja rastro: `confidence_source` dice
+        # `llm` para los dos, y un A/B entre `qwen2.5:3b` y `llama3.1:8b` es
+        # indistinguible en el reporte de exactitud.
+        model_name=invoice.model_name,
+        model_provider=invoice.model_provider,
     )
 
 

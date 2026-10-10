@@ -266,7 +266,8 @@ class TestElEscanerLosPasa:
 
         return _Ticket()
 
-    def _correr(self, ticket, accion="CREADO", origen=None):
+    def _correr(self, ticket, accion="CREADO", origen=None,
+                 modelo_ia=None, proveedor_ia=None):
         """Ejecuta `_registrar_en_el_feed` con la sesion y el detalle falsos."""
         import uuid
         from types import SimpleNamespace
@@ -282,6 +283,11 @@ class TestElEscanerLosPasa:
             ticket_id=uuid.UUID(int=1),
             accion=accion,
             origen=origen,
+            # `modelo_ia` y `proveedor_ia` no son opcionales en `ResumenArchivo`,
+            # asi que el doble los trae. `None` es el caso real de una foto leida
+            # por OCR o por reglas: no hubo modelo que responder.
+            modelo_ia=modelo_ia,
+            proveedor_ia=proveedor_ia,
         )
 
         class _Sesion:

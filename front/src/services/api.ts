@@ -11,7 +11,7 @@ import type {
 } from '../types/api';
 import type { Categoria, DashboardResponse } from '../types/dashboard';
 import type {
-  ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanItem, ScanOcrEstado,
+  ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanIaEstado, ScanItem, ScanOcrEstado,
   ScanRequest, ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
 import { leerToken, notificarCaducidad, SesionVencida } from './sesion';
@@ -365,6 +365,11 @@ export const ticketsApi = {
   scanConfig: (): Promise<ScanConfig> => fetchApi<ScanConfig>('/scan/config'),
 
   scanOcr: (): Promise<ScanOcrEstado> => fetchApi<ScanOcrEstado>('/scan/ocr'),
+
+  /** Que modelo esta CONFIGURADO y si esta DISPONIBLE. Son dos preguntas y por eso
+   *  son dos mitades de la respuesta: un booleano diria "la IA funciona" con la
+   *  mitad de la verdad. Es el mismo motivo que `scanOcr`. */
+  scanIa: (): Promise<ScanIaEstado> => fetchApi<ScanIaEstado>('/scan/ia'),
 
   /** El comprobante original, como Blob.
    *

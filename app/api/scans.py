@@ -62,6 +62,7 @@ from app.schemas.scan import (
 from app.services import scan_registry, scan_reset, scan_service
 from app.services.scan_reset import FRASE_CONFIRMACION
 from app.services.lectura_diagnostico import diagnosticar_lectura
+from app.services.ai_client import disponibilidad as disponibilidad_ia
 from app.services.ocr import disponibilidad as disponibilidad_ocr
 
 router = APIRouter(tags=["Scan"])
@@ -332,6 +333,33 @@ async def estado_del_ocr(usuario: UsuarioActual) -> dict:
     """
     del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
     return disponibilidad_ocr()
+
+
+@router.get("/ia")
+async def estado_de_la_ia(usuario: UsuarioActual) -> dict:
+    """Que modelo de IA esta configurado, y si de verdad esta disponible.
+
+    Es el mismo motivo que `/ocr`: "el modelo no responde" y "el modelo esta mal
+    configurado" se ven igual desde afuera y piden acciones opuestas.
+
+    ## POR QUE RESPONDE LO CONFIGURADO Y LO INSTALADO POR SEPARADO
+
+    MEDIDO en esta maquina: la `.env` declara `OLLAMA_MODEL=qwen2.5:3b` y
+    `OLLAMA_VISION_MODEL=moondream`, pero en el contenedor **solo esta
+    `moondream`**. Ese modelo de texto no ha contestado ni una sola vez, y no hay
+    forma de saberlo mirando un log de lectura: `confidence_source` dice `llm`
+    para los dos motores y nadie puede distinguir "no leyo" de "no existe".
+
+    Por eso `configurado` y `disponible` son dos preguntas, y el endpoint contesta
+    las dos. Un booleano diria "la IA funciona" con la mitad de la verdad.
+
+    ## POR QUE DICE COMO ARREGLARLO
+
+    Un `ollama pull` equivocado en un ticket de incidencia cuesta media hora. El
+    nombre va en la respuesta, copiado y pegable.
+    """
+    del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
+    return disponibilidad_ia()
 
 
 @router.get("/config")

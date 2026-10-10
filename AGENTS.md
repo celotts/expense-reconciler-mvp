@@ -732,6 +732,68 @@ Lo que el modelo hace, y cada regla tiene su test:
 > rechazara, el filtro de signo —que sí corre— dejaría pasar el infinito al kardex.
 > `test_infinito_pasaria_el_signo` deja eso escrito con un número, no con un comentario.
 
+### Qué modelo leyó el comprobante, y por qué se ve en pantalla
+`AIResponse.model` existía desde el principio y **se descartaba** en
+`ai_extractor`. Ahora viaja entero:
+
+```
+AIResponse.model  →  ExtractedInvoice.model_name
+  → TicketExtractionResult.model_name  (capture.invoice_to_result)
+  → ResumenArchivo.modelo_ia           (scan_service)
+  → ScanItemResponse.modelo_ia         (la respuesta)
+  → el badge morado en el panel
+```
+
+**El campo del proveedor se llama `model_provider` y NO `provider_name`, y no es
+capricho:** `provider_name` ya existe y es el **comercio que emitió** el
+comprobante. Con el mismo nombre, el segundo campo pisa al primero según el orden
+de los argumentos y el ticket sale con `provider_name="ollama"`. No falla — es un
+`str` válido — y lo único que se rompe es el nombre del emisor. Lo detectó un
+`TypeError` al escribir los tests, que es la versión con suerte de este fallo; en un
+`**kwargs` se pierde en silencio.
+
+**Por qué no basta `confidence_source`.** Ese campo dice la **clase** de lector
+(`llm`, `ocr`, `pdf_text`, `manual`), no el motor. Dentro de `llm` conviven
+motores con tasas de error distintas, así que sin el nombre **un A/B entre modelos
+es invisible en el reporte de exactitud**. Es el mismo argumento que hizo falta
+para `ResultadoOCR.motor`.
+
+`null` **no** es "no se sabe": es "no hubo modelo que responder" — un PDF con capa de
+texto, un OCR que sirvió, o una lectura manual. El panel lo omite, y no es un fallo.
+
+### `GET /api/v1/scan/ia`: configurado ≠ instalado
+El mismo patrón que `/scan/ocr`, y por el mismo motivo: *"la IA no funciona"* y
+*"la IA está mal configurada"* se ven igual desde afuera y piden acciones
+opuestas. Por eso son **dos** preguntas y no un booleano.
+
+**MEDIDO el 2026-10-10 en esta máquina:**
+
+```
+.env:      OLLAMA_MODEL=qwen2.5:3b        OLLAMA_VISION_MODEL=moondream
+contenedor: moondream:latest             ← y solo este
+```
+
+`qwen2.5:3b` **nunca había contestado una sola vez**, y no había forma de saberlo:
+`confidence_source` dice `llm` para todos los motores, así que el único síntoma era
+un `ConnectionError` en un log que nadie abre.
+
+| | |
+|---|---|
+| `configurado` | lo que dice la `.env`, sin preguntar a nadie |
+| `modelos_instalados` | lo que el proveedor **dice tener**. `null` = "no se pudo preguntar", ≠ `[]` |
+| `faltan` | lo configurado y ausente. **No marca error**: configurar un modelo que no hace falta es legítimo |
+| `como_instalar` | el `ollama pull` **con el nombre dentro**. Un `pull` sin argumentos es media hora de diagnóstico |
+
+Del lado del front, `EstadoDeIa` **solo aparece si hay algo que arreglar**. Cuando
+todo está bien no dice nada, porque un cartel permanente que dice "todo bien" ocupa
+sitio y no enseña nada. Y si el endpoint falla, tampoco muestra nada: un estado que
+depende de un endpoint y a veces falla ensucia la pantalla con un error que no es
+del escaneo.
+
+Verificado con `front/scripts/verificar_modelo_en_pantalla.tsx` (8 comprobaciones,
+en `npm run verify`), que monta el componente con datos y mira **el texto que
+sale**, no que compile: `tsc` pasa con un `undefined` en pantalla.
+
 > **El proveedor sigue en 0% y no hay arreglo de parser para eso.** El nombre real
 > del emisor está al **final** del texto, junto al RFC, y el parser toma las
 > primeras 15 líneas — donde el OCR pone ruido de caja (`Pog ae — TAPA`,
