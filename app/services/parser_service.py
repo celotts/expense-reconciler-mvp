@@ -93,6 +93,14 @@ ISSUER_LABEL_RE = re.compile(
 # el punto tambien hace de separador de miles.
 MARCA_DEL_COMPROBANTE_RE = re.compile(
     r"(?:\b(?:folio|nota|ticket|comprobante|caja|operacion|transaccion|corte)\b"
+    # `fecha` NO esta aqui, y hay que decirlo porque parece que deberia.
+    #
+    # Se probo meterla (una linea que dice "Fecha:" ES la fecha, argumento
+    # bastante bueno) y resulto ser CODIGO MUERTO: `_fecha_del_comprobante` solo
+    # corre cuando el bucle principal no encontro ninguna, y una linea
+    # `Fecha: 08/10/2026` ya la agarra el patron etiquetado de mas arriba. Una
+    # defensa que nunca decide nada es decorativa: se lee como una garantia y no
+    # esta protegiendo nada. Lo que SI faltaba, y si es real, es la hora.
     r"|#\d"
     # "No" suelta matchearia media frase en espanol ("NO HAY CAMBIO"), asi que
     # exige el numero del comprobante detras: "No: 000000000000".
@@ -107,7 +115,35 @@ VENCIMIENTO_RE = re.compile(
     re.IGNORECASE,
 )
 
-FECHA_SIN_ETIQUETA_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)")
+# El ano son DOS o CUATRO digitos, nunca tres. Y el "nunca tres" no es teoria:
+#
+# MEDIDO, sobre una foto real (IMG_4398, linea 16):
+#
+#     o 02 Fecha: 08/10/202¢ iH tap i
+#
+# El OCR comio el "6" de "2026" y dejo "202" + un centavo. Con `\d{2,4}` el
+# ano leido era de TRES digitos, `_a_fecha` lo aceptaba y devolvia
+# `date(202, 10, 8)` — que se imprime `0202-10-08` y es una fecha CONCRETA y
+# FALSA. El gate la marca con `date_too_old`, pero eso es defenderse tarde: lo
+# que sale del parser hacia la cola es un ano que el papel nunca tuvo.
+#
+# Con `\d{2}(?:\d{2})?` el mismo texto NO matchea: "202¢" deja "20" pegado a un
+# "2", que el `(?!\d)` rechaza. Y no se pierde ninguna fecha real, porque un ano
+# de tres digitos no existe en ningun comprobante.
+FECHA_SIN_ETIQUETA_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2}(?:\d{2})?)(?!\d)")
+
+# Una hora pegada en la misma linea: `06/10/2026 11:30:21`.
+#
+# MEDIDO: en la foto de Soriana la fecha de la compra esta en la linea 2 y NO
+# tiene ninguna marca del comprobante al lado, asi que se descartaba. Con la hora
+# pegada no hay ambiguedad: un vencimiento de cupon se imprime como "VENCE EL
+# 31/10/2026", sin hora, porque es un plazo y no un momento. La hora es lo que
+# convierte "una fecha suelta" en "el momento de esta transaccion".
+#
+# Se exige `HH:MM` con dos digitos en la hora, porque sin los dos puntos un
+# "mes" de dos digitos pegado al ano (`10/2026 11:30`) se podria leer como
+# dia 10, mes 2026.
+HORA_EN_LA_LINEA_RE = re.compile(r"\b[0-2]\d:[0-5]\d(?::[0-5]\d)?\b")
 
 
 # Una linea que habla de un AHORRO o un DESCUENTO no es el total, aunque traiga
@@ -262,10 +298,41 @@ def _fecha_del_comprobante(lines: list[str]) -> date | None:
 
     Un anio de dos digitos sin marca ("28/09") NO se acepta nunca: a dos digitos
     "28/09" es un importe o un codigo tan facilmente como una fecha.
+
+    ## LA SEGUNDA MARCA: UNA HORA AL LADO (medido, y no es una conjetura)
+
+    MEDIDO, sobre una foto real (IMG_4397, linea 2):
+
+        06/10/2026 11:30:21 211.36 36 30 ás
+
+    Ahi la fecha NO tiene ninguna marca al lado —ni "folio", ni "No:"— y se
+    descartaba. Y sin embargo es la fecha de la compra, ahi misma, con la hora de
+    la caja pegada.
+
+    **Una fecha con hora pegada es una marca por si misma.** El veto que esta
+    regla evita es el vencimiento de un cupon o una garantia, y esos se imprimen
+    como "VENCE EL 31/10/2026": con la palabra, que `VENCIMIENTO_RE` ya filtra.
+    Un vencimiento no lleva hora de caja al lado, porque no es un momento, es un
+    plazo.
+
+    Asi que la hora no relaja la regla: la distingue de la unica cosa contra la
+    que existia, que es una fecha que NO es de este documento.
     """
     for linea in lines:
         if VENCIMIENTO_RE.search(linea):
             continue
+
+        # Rama nueva: fecha con hora en la misma linea, sin marca que hacer falta.
+        # Se prueba antes que la del identificador porque es mas estrecha y por
+        # tanto mas segura: si hay "No: 0001 06/10/2026 11:30", la rama de abajo
+        # tambien la aceptaria.
+        if HORA_EN_LA_LINEA_RE.search(linea):
+            encontrado = FECHA_SIN_ETIQUETA_RE.search(linea)
+            if encontrado is not None:
+                leida = _a_fecha(*encontrado.groups())
+                if leida is not None:
+                    return leida
+
         if not MARCA_DEL_COMPROBANTE_RE.search(linea):
             continue
 
@@ -1049,7 +1116,7 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # un comprobante que el gate no puede cerrar y una persona tiene que
         # teclear la fecha a mano.
         anio_primero = re.search(
-            r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{4}[/-]\d{1,2}[/-]\d{1,2})",
+            r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{4}[/-]\d{1,2}[/-]\d{1,2})(?!\d)",
             line,
             re.IGNORECASE,
         )
@@ -1060,12 +1127,36 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
                 pass
 
         if expense_date is None:
-            date_match = re.search(r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line, re.IGNORECASE)
+            date_match = re.search(
+                r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2}(?:\d{2})?)(?!\d)",
+                line,
+                re.IGNORECASE,
+            )
+            # `_a_fecha` y no `pd.to_datetime(..., dayfirst=True)`, y no por
+            # estetica: `dayfirst` resuelve la ambiguedad 03/04/2026 con una
+            # HEURISTICA de `dateutil` que ademas AVISA en vez de fallar. En un
+            # escaneo de 400 comprobantes eso son 400 avisos que nadie lee, y el
+            # dia que se apague el aviso la fecha cambia sola. Es el mismo motivo
+            # que el docstring de `_a_fecha`.
+            #
+            # Y el ano son DOS o CUATRO digitos, nunca tres. MEDIDO, sobre una
+            # foto real (IMG_4398):
+            #
+            #     o 02 Fecha: 08/10/202¢ iH tap i
+            #
+            # El OCR se comio el "6" de "2026". Con `\d{2,4}` el ano leido eran
+            # TRES digitos y el parser devolvia `date(202, 10, 8)`, que se
+            # imprime `0202-10-08`: una fecha CONCRETA y FALSA, con la forma de
+            # un dato leido. El gate la marca `date_too_old`, pero eso es
+            # defenderse tarde -- lo que sale hacia la cola es un ano que el
+            # papel nunca tuvo. Con `\d{2}(?:\d{2})?` el mismo texto no
+            # matchea, y no se pierde ninguna fecha real porque un ano de tres
+            # digitos no existe en ningun comprobante.
             if date_match:
-                try:
-                    expense_date = pd.to_datetime(date_match.group(1), dayfirst=True).date()
-                except (ValueError, TypeError):
-                    pass
+                partes = re.split(r"[/-]", date_match.group(1))
+                leida = _a_fecha(*partes)
+                if leida is not None:
+                    expense_date = leida
 
         if expense_date is None:
             # ISO format: alone, with a time component, or followed by anything.
@@ -1153,9 +1244,19 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # es distinto de "comprobado y no cuadra" — y esa distincion es la que
         # hace que la voz de la gente se apague ante los avisos.
         #
-        # La ruta por reglas no extrae lineas, asi que hoy esto sale SIEMPRE con
-        # `items=[]` y `veredicto=NADA`. El campo se llena de verdad cuando el
-        # LLM trae el detalle de partidas o cuando el OCR aporta geometria
-        # (`parser_lineas.leer_lineas`).
+        # La ruta por reglas no extrae lineas, asi que aqui esto sale SIEMPRE
+        # con `items=[]` y `veredicto=NADA`. Solo el LLM trae el detalle de
+        # partidas, y ahi `verificar_items` si hace su trabajo.
+        #
+        # OJO con lo que este comentario afirmaba antes del 2026-10-10: decia que
+        # el campo "se llena de verdad cuando... el OCR aporta geometria
+        # (`parser_lineas.leer_lineas`)". **Eso era falso**: `leer_lineas` no
+        # tenia un solo caller en `app/`, y sus tres unicas referencias aqui
+        # eran comentarios. El camino de geometria se borro junto con sus
+        # mutaciones, que protegian una rama que el producto no ejecutaba. Ver
+        # el docstring de `app/services/parser_lineas.py`.
+        #
+        # Si algun dia se quiere volver, el cable es
+        # `ocr.ResultadoOCR.cajas -> leer_lineas`, y hay que escribirlo.
         verificacion_items=verificar_items(items, subtotal=subtotal, total=total_amount),
     )

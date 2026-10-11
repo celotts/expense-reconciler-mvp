@@ -253,6 +253,12 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/tickets/"): "t1. Alta manual (sin archivo)",
     ("PATCH", "/tickets/{ticket_id}"): "t2. Corregir un ticket",
     ("GET", "/tickets/{ticket_id}/documento"): "t3. Ver el comprobante original",
+    # La vista previa y el original son DOS peticiones y no una con un parametro:
+    # el original es lo que hay en la base (byte a byte, evidencia) y la vista
+    # previa es un JPEG derivado que existe solo para que el navegador la pinte.
+    # El nombre lo dice porque quien prueba la coleccion tiene que saber cual de
+    # las dos esta mirando y cual se puede alterar.
+    ("GET", "/tickets/{ticket_id}/documento/vista-previa"): "t3b. Vista previa (convierte HEIC a JPEG; NO altera el original)",
     ("GET", "/tickets/{ticket_id}/documentos"): "t4. Historial de versiones del comprobante",
     ("PUT", "/tickets/{ticket_id}/documento"): "t5. Subir version nueva (NO borra la anterior)",
     ("POST", "/tickets/extract"): "t6. Leer SIN gate ni persistencia (solo el resultado)",

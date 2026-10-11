@@ -359,7 +359,22 @@ async def estado_de_la_ia(usuario: UsuarioActual) -> dict:
     nombre va en la respuesta, copiado y pegable.
     """
     del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
-    return disponibilidad_ia()
+    #
+    # EL `await` NO ES OPCIONAL, y este bug estuvo escondido mucho tiempo.
+    # `ai_client.disponibilidad` es `async` porque le pregunta a Ollama por HTTP.
+    # Sin `await`, esto devuelve el objeto coroutine y FastAPI falla al
+    # serializar: `ResponseValidationError: Input should be a valid dictionary,
+    # input: <coroutine object disponibilidad at 0x...>`.
+    #
+    # MEDIDO: `GET /api/v1/scan/ia` respondia **500**, y no se notaba porque el
+    # componente `EstadoDeIa` del front **se traga el error a proposito** —no
+    # ensucia la pantalla con el fallo de un endpoint opcional—. Es decir: la
+    # defensa del front tapo el bug del backend, que es justo lo contrario de lo
+    # que ese componente queria evitar.
+    #
+    # Y el endpoint existe para responder "la IA esta bien puesta?", o sea que
+    # un 500 aqui es peor que inútil: es el que diría qué modelo falta.
+    return await disponibilidad_ia()
 
 
 @router.get("/config")

@@ -263,11 +263,15 @@ class EstadoCompra(str, Enum):
     def mueve_stock(self) -> bool:
         """Si estar en este estado significa que el inventario ya sumo.
 
-        Es la pregunta que hace `confirmar_compra` y la que hace el archivado, y
-        se responde con una propiedad y no con `== PROCESADO` repetido en cinco
-        sitios: la dia que haya un cuarto estado que tambien mueva stock, o una
-        transicion nueva, las cinco comparaciones no se actualizan juntas y
-        queda una que miente.
+        MEDIDO el 2026-10-10: esta propiedad **no la usa nadie en `app/`**. Este
+        docstring afirmaba que la hacen `confirmar_compra` y el archivado, y que
+        evita "cinco comparaciones repetidas". Ninguna de las dos cosas es cierta:
+        ambas comparan `estado is PROCESADO` directamente. Vive con un solo test.
+
+        Se deja, y no por descuido: es la expresion del invariante ("solo
+        PROCESADO mueve stock") en un solo lugar, y duplicarla en el codigo que
+        hoy la compara a mano es peor que tener la propiedad sin usar. Si se
+        conecta de verdad, este comentario se borra en el mismo commit.
 
         `RECHAZADO` y `PROCESAR` no mueven. `RECHAZADO` es el estado nuevo de
         `POST /inventario/compras/{id}/rechazar`, y existe para que "esta compra
@@ -317,10 +321,16 @@ class TipoMovimiento(str, Enum):
     def suma_stock(self) -> bool:
         """Si este tipo mueve el stock hacia arriba.
 
-        La unica fuente de verdad sobre el signo. `stock_de()` la consulta y el
-        trigger de Postgres la replica en SQL, y las dos tienen que decir lo
-        mismo: si divergen, la base rechaza un movimiento que la API acepto (o al
-        reves) y el sintoma es un 409 sin explicacion.
+        MEDIDO el 2026-10-10, y corrige lo que este docstring afirmaba:
+        **`stock_de()` NO consulta esta propiedad.** Replica el filtro en SQL
+        (`tipo IN (...)`). La defensa viva del signo es el trigger de Postgres
+        y el `CASE WHEN tipo = 'SALIDA'`, y se verifican con
+        `scripts/verify_postgres_inventario.py`.
+
+        Esta propiedad queda como la lectura en Python de la misma regla, con un
+        solo test. Lo que NO se puede decir es que sea "la unica fuente de verdad":
+        hay dos, y estan en SQL. Si alguna vez divergen, el sintoma es un 409 sin
+        explicacion: la base rechaza un movimiento que la API acepto.
 
         Y antes de que existiera esta propiedad, NO coincidian. Medido sobre el
         DDL de `db/init.sql`: el trigger hacia `IF tipo = 'ENTRADA' THEN suma

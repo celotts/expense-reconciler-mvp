@@ -170,6 +170,50 @@ function fechaLegible(iso: string | null): string | null {
  * pendiente de hacer.
  */
 function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
+  // ## POR QUE `ACCION` SE MIRA ANTES QUE EL ESTADO DE EXTRACCION
+  //
+  // MEDIDO: escaneando sin empresa, el feed llegaba VACIO (el backend solo
+  // registraba archivos con ticket) y el panel decia "Ningun archivo se leyo en
+  // esta corrida" despues de tres minutos y medio de OCR. El contador de
+  // "leidos" contaba TICKETS, no lecturas, y el operador leia un cero.
+  //
+  // Ahora el backend mete en el feed todo archivo que paso por
+  // `procesar_archivo`, con o sin ticket. Para los que no lo tienen, el estado
+  // que hay que ENSENAR no es `extraction_status` —no existe— sino `accion`: por
+  // que no se creo nada. Sin eso, volveriamos a pintar "pendiente" en un
+  // archivo del que no se guardo fila, que es un estado que no se le aplico.
+  //
+  // Cada `accion` es una PREGUNTA distinta con una accion distinta, igual que los
+  // cuatro veredictos de exactitud: por eso salen con su propia etiqueta y no
+  // colapsados en un "sin ticket" que no dice cual de las cosas paso.
+  switch (p.accion) {
+    case 'ERROR':
+      return { tono: 'bg-red-100 text-red-800', etiqueta: 'error' };
+    case 'OMITIDO':
+      return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'omitido' };
+    case 'DUPLICADO':
+      return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'duplicado' };
+    case 'NO_SOPORTADO':
+      return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'no soportado' };
+    case 'CREADO':
+      // Con ticket: el veredicto del gate es lo que dice si el dato sirve.
+      break;
+    default:
+      // Una accion que el backend emite y esta version no traduce: se muestra
+      // cruda. Tapar un estado desconocido hace que nadie sepa que hay algo que
+      // no se esta explicando.
+      if (p.accion) {
+        return { tono: 'bg-yellow-100 text-yellow-800', etiqueta: p.accion };
+      }
+      break;
+  }
+
+  // Sin ticket no hay nada que afirmar: se dice, en vez de inventar un estado de
+  // lectura para un comprobante del que no se guardo fila.
+  if (!p.ticket_id) {
+    return { tono: 'bg-blue-100 text-blue-800', etiqueta: 'leido, sin ticket' };
+  }
+
   if (p.es_duplicado) return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'duplicado' };
   if (p.extraction_status === 'AUTO_APROBADO') return { tono: 'bg-green-100 text-green-800', etiqueta: 'auto-aprobado' };
   if (p.extraction_status === 'APROBADO') return { tono: 'bg-green-100 text-green-800', etiqueta: 'aprobado' };
@@ -185,6 +229,15 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
   // El total no se conoce hasta el final: el resumen se rellena al cerrar. Se
   // muestra el conteo real y NO un porcentaje inventado — con 200 archivos a
   // medio leer, un "45%" calculado sobre lo que ya se vio seria mentira.
+  //
+  // MEDIDO: `hechos` contaba el feed, y el feed solo traia archivos CON ticket.
+  // Asi que "0 leidos" era la cuenta de TICKETS y no la de lecturas, y salia en
+  // cero despues de tres minutos de OCR. Ahora el feed trae todo archivo
+  // procesado, con o sin ticket, asi que `hechos` es de verdad lo leido.
+  //
+  // Y `con ticket` es una PREGUNTA DISTINTA a proposito: puede ser 0 con 9
+  // leidos (escaneo sin empresa), y eso no es un fallo: es que se inventario sin
+  // crear gastos, que es exactamente lo que promete ese boton.
   const hechos = corrida.procesados?.length ?? 0;
   const leidos = corrida.con_ticket ?? 0;
 
@@ -377,8 +430,19 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
         </ul>
       ) : (
         <p className="px-4 py-6 text-center text-sm text-gray-500">
+          {/* MEDIDO: este texto decía "Ningún archivo se leyó en esta corrida"
+              después de 3m 6s de OCR real, porque el feed solo guardaba archivos
+              CON ticket y sin empresa no hay ninguno. Una frase que NIEGA el
+              trabajo que se hizo es peor que un contador en cero: el operador ve
+              "no ha pasado nada" y lanza otro escaneo sobre los mismos archivos.
+
+              Ahora la pregunta correcta es "¿vio archivos?", y la contesta
+              `archivos_vistos`, que el backend cuenta siempre. */}
           {corrida.terminada
-            ? 'Ningún archivo se leyó en esta corrida.'
+            ? corrida.archivos_vistos > 0
+              ? `Vio ${corrida.archivos_vistos} archivo(s), pero ninguno acabo en una fila para `
+                + 'mostrar. Suele pasar cuando se escanea sin elegir empresa.'
+              : 'No había archivos nuevos que leer en la carpeta.'
             : 'Todavía no se ha leído ningún archivo. Con fotos esto tarda unos segundos por comprobante.'}
         </p>
       )}

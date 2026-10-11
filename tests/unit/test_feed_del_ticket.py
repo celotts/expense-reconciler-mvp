@@ -331,14 +331,47 @@ class TestElEscanerLosPasa:
         Y no es un caso raro: de 8 comprobantes, los que no producen ticket son
         los duplicados y los ilegibles, y son justo los que el operador necesita
         ver rapido en la lista.
+
+        ## POR QUE ESTE TEST CAMBIO DE ASERCION, Y NO POR CAPRICHO
+
+        Antes afirmaba `corrida.procesados == []`, o sea: **un archivo sin ticket
+        no se escribe en el feed**. Y su propio docstring de arriba dice lo
+        contrario —que son "justo los que el operador necesita ver rapido"—, asi
+        que el test y su justificacion se contradician desde que se escribio.
+
+        MEDIDO el defecto en la pantalla: escaneando SIN empresa, el panel de
+        Escaner mostraba al terminar
+
+            Esaneo terminado / 9 archivos vistos en 3m 6s
+            **0 leidos   0 con ticket**
+            **Ningun archivo se leyo en esta corrida.**
+
+        Tres minutos y medio de OCR reportados como que no paso nada, y el
+        operador relance el escaneo sobre los mismos archivos. El contador de
+        "leidos" contaba TICKETS, no lecturas.
+
+        Ahora el feed registra **todo** archivo que paso por `procesar_archivo`,
+        con o sin ticket. Sin ticket los importes y el encabezado van en `None`
+        —que es la verdad— y el `accion` dice por que. El panel pinta "leido,
+        sin ticket" en vez de inventar un estado de lectura.
+
+        Lo que SIGUE valiendo, y por eso el test no se borro sino que se
+        corrigio: **sin ticket no se consulta la base**. La sesion de este test
+        revienta si alguien la toca, y con `ticket_id=None` no se toca: pedir el
+        encabezado de una fila que no existe seria una consulta por archivo para
+        devolver nada.
         """
-        import uuid
         from types import SimpleNamespace
 
         from app.services.scan_service import _registrar_en_el_feed
 
         detalle = SimpleNamespace(
-            relative_path="roto.pdf", ticket_id=None, accion="ERROR", origen=None
+            relative_path="roto.pdf",
+            ticket_id=None,
+            accion="ERROR",
+            origen=None,
+            modelo_ia=None,
+            proveedor_ia=None,
         )
 
         class _Sesion:
@@ -349,4 +382,19 @@ class TestElEscanerLosPasa:
         import asyncio
 
         asyncio.run(_registrar_en_el_feed(corrida, _Sesion(), detalle))
-        assert corrida.procesados == []
+
+        # SI se escribe: el operador tiene que ver el archivo roto.
+        assert len(corrida.procesados) == 1, (
+            "un archivo sin ticket NO debe desaparecer del feed: se leyo, y "
+            "medido en pantalla, omitirlo hacia que 3m36s de OCR se reportaran "
+            "como 'Ningun archivo se leyo'"
+        )
+        fila = corrida.procesados[0]
+        assert fila["relative_path"] == "roto.pdf"
+        assert fila["accion"] == "ERROR"
+        # Los importes en `None` y NO en cero: un 0.00 afirmaria que se leyo un
+        # total de cero, que es una afirmacion que el dato no sostiene.
+        assert fila["monto"] is None
+        assert fila["ticket_id"] is None
+        # La sesion `_Sesion` revienta si se toca, y no se toco: esa parte del
+        # test sigue probando lo que probaba.

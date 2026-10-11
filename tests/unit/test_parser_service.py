@@ -554,6 +554,131 @@ class TestLaFechaQueVaPegadaAlFolio:
         assert _parse_receipt_text(texto).expense_date == date(2026, 9, 28)
 
 
+class TestLasDosMarcasQueFaltabanEnLaCabecera:
+    """Dos formas de fecha que el papel SI imprime y la regla no aceptaba.
+
+    Los dos textos de abajo son OCR REAL, copiados de fotos que el usuario
+    fotografio. No son casos inventados para que la regla nueva parezca buena:
+    son las dos lineas que hacian que la fecha de la compra se perdiera con el
+    total bien leido al lado.
+
+    Y aqui va lo que hace este archivo incómodo: **las dos correcciones no
+    mueven la medicion.** En `scripts/medir_precision_ocr.py` sobre las 7 fotos
+    rotuladas dan EXACTAMENTE el mismo numero antes y despues (A/B con el mismo
+    texto OCR, porque el OCR no es determinista entre corridas y dos corridas
+    compararian dos motores y no dos parsers). No mueven porque en esas 7 fotos
+    la fecha sencillamente NO esta en el texto que devolvio el OCR, y ahi ningun
+    parser la puede recuperar.
+
+    Entonces por que estan: porque hay fotos donde la fecha SI esta y se
+    descartaba. En esas, la correccion es la diferencia entre fechar el gasto en
+    su mes y mandarlo a la cola con `date_missing`. Un parser que devuelve `None`
+    donde el papel si tiene la fecha no es "conservador": es una fecha perdida.
+    """
+
+    def test_una_linea_que_dice_Fecha_es_la_fecha_del_comprobante(self):
+        """MEDIDO, foto IMG_4398, linea 16 tal cual la devolvio el OCR:
+
+            o 02 Fecha: 08/10/202¢ iH tap i
+
+        La linea dice LITERALMENTE "Fecha:" y la fecha se descartaba, porque
+        "fecha" no estaba entre las palabras que hacen de una linea la del
+        comprobante. Una linea que dice "Fecha:" no necesita permiso de nadie.
+        """
+        texto = "TIENDA EJEMPLO\no 02 Fecha: 08/10/2026 iH tap i\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 10, 8)
+
+    def test_la_hora_al_lado_es_marca_suficiente(self):
+        """MEDIDO, foto IMG_4397, linea 2 tal cual:
+
+            06/10/2026 11:30:21 211.36 36 30 ás
+
+        Ni "folio" ni "No:" ni nada: solo la fecha y la hora de la caja pegada.
+        Una fecha con hora es un MOMENTO, y lo unico contra lo que existe esta
+        regla --el vencimiento de un cupon-- es un PLAZO, que se imprime sin
+        hora. La hora no relaja la regla: la separa de lo que la regla existe
+        para impedir.
+        """
+        texto = "EL SOL 76113\n06/10/2026 11:30:21 211.36 36 30\nTOTAL | 65.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 10, 6)
+
+    def test_un_vencimiento_no_gana_aunque_le_pongan_hora(self):
+        """La defensa que la hora NO puede tumbar.
+
+        Si alguien "relaja" la regla para que la fecha de la cabecera entre y
+        con ella se cuela un vencimiento, la compra de septiembre aparece
+        fechada el 31 de octubre y el cierre mensual la cuenta en otro mes: un
+        dato equivocado que pasa TODOS los checks. Este test es el que muere.
+        """
+        texto = (
+            "TIENDA EJEMPLO\n"
+            "TUS PUNTOS VENCEN: 31/10/2026 23:59\n"
+            "06/10/2026 11:30:21\n"
+            "TOTAL: $10.00\n"
+        )
+        assert _parse_receipt_text(texto).expense_date == date(2026, 10, 6)
+
+    def test_una_fecha_sin_marca_y_sin_hora_sigue_nada(self):
+        """La regla sigue siendo ESTRECHA. Este es el que frena el sobreuso.
+
+        Quitar `MARCA_DEL_COMPROBANTE_RE` y `HORA_EN_LA_LINEA_RE` para "leer mas
+        fechas" hace que esto devuelva una fecha, y con ella vuelve el defecto
+        documentado de la regla original: la fecha de cualquier linea se
+        convierte en la fecha del gasto.
+        """
+        texto = "TIENDA\nDescuento aplicado 15/10/2026\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_ano_de_tres_digitos_no_es_un_ano(self):
+        """MEDIDO, foto IMG_4398: el OCR comio el 6 y dejo `202¢`.
+
+        Con `\d{2,4}` el ano leido eran TRES digitos, `_a_fecha` lo aceptaba y
+        devolvia `date(202, 10, 8)` -- que se imprime `0202-10-08` y es una
+        fecha CONCRETA y FALSA. El gate la marca `date_too_old`, pero eso es
+        defenderse tarde: lo que sale hacia la cola es un ano que el papel
+        nunca tuvo. Aqui lo correcto es no leer nada.
+        """
+        texto = "TIENDA EJEMPLO\no 02 Fecha: 08/10/202¢ iH tap i\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_ano_de_tres_digitos_tampoco_pasa_por_la_ruta_sin_etiqueta(self):
+        """La MISMA regla en la otra ruta, y hace falta porque si no no se prueba.
+
+        `08/10/202¢` con `\d{2,4}` da tres digitos; pero con la correccion de la
+        ruta etiquetada, esa linea ya ni siquiera llega aqui. Si solo se midiera
+        el caso etiquetado, este `\d{2}` -> `\d{2,4}` de `FECHA_SIN_ETIQUETA_RE`
+        podria volver sin que ningun test se entere. Es la razon de que la regla
+        se escriba en los dos sitios y se mida en los dos.
+        """
+        texto = "TIENDA EJEMPLO\nFOLIO 5521 08/10/202¢\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_la_ruta_etiquetada_no_invierte_dia_y_mes(self):
+        """`Fecha: 01/13/2026` — MEDIDO: las dos rutas NO devuelven lo mismo.
+
+            entrada     _a_fecha      pd.to_datetime(dayfirst=True)
+            01/13/2026   None          2026-01-13     <-- dia y mes cambiados
+
+        `pd.to_datetime` ve que "13" no puede ser un mes, decide que la fecha
+        viene en formato americano y la da vuelta, sin avisar. Devuelve una
+        fecha con forma de dato leido y es un dia distinto del que pone el
+        papel.
+
+        Aqui se elige `None`, y el coste es real y hay que decirlo: un ticket que
+        de verdad imprima `01/13/2026` en formato MM/DD se va a la cola con
+        `date_missing` y una persona lo teclea. Es el mismo canje que ya hace la
+        ruta sin etiqueta, y es el que corresponde a este proyecto: entre
+        adivinar una fecha e ir a revision, se va a revision.
+
+        Lo que NO se acepta es la via silenciosa. Un intercambio de dia y mes sin
+        aviso pasa todos los checks del gate —una fecha creible no es una fecha
+        futura ni una vieja— y el error solo aparece al compararlo con el banco,
+        semanas despues.
+        """
+        texto = "TIENDA EJEMPLO\nFecha: 01/13/2026\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+
 class TestAmountExtraction:
     def test_subtotal_is_not_mistaken_for_total(self):
         text = "TIENDA\nSUBTOTAL: $215.40\nIVA (16%): $34.46\nTOTAL: $249.86\n"

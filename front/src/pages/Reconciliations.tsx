@@ -1,13 +1,45 @@
-import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate } from '../services/api';
+import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate, type Reconciliation } from '../services/api';
 import { companiesApi } from '../services/api';
 import { useState, useEffect } from 'react';
-import { 
-  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState 
+import {
+  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState
 } from '../components/ui';
 
+/**
+ * Un importe, o un guion si no hay dato.
+ *
+ * ESTE ES EL ARREGLO DE FONDO, mas que las columnas. Antes cada celda hacia
+ * `Number(x).toLocaleString()` sobre un campo que no existia, y `Number(undefined)`
+ * es `NaN`: por eso se veia `$NaN` en vez de "no hay dato". UnHelpers asi no
+ * puede decir "$NaN", porque el unico camino que produce un guion es `null`.
+ *
+ * La regla que sigue es la de R7 y la del informe de cierre: **un dato que no se
+ * conoce se dice con guion y jamas con cero**. `null` es "no disponible"; `$0.00`
+ * seria "se midio y dio cero", que es una afirmacion que nadie hizo.
+ */
+function dinero(valor: string | number | null | undefined): string {
+  if (valor === null || valor === undefined || valor === '') return '—';
+  const n = Number(valor);
+  return Number.isNaN(n) ? '—' : `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** Una fecha ISO, o guion. `new Date(undefined)` es `Invalid Date`, no `null`. */
+function fecha(valor: string | null | undefined): string {
+  if (!valor) return '—';
+  const d = new Date(valor);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-MX');
+}
+
 export function Reconciliations() {
-  const [reconciliations, setReconciliations] = useState<any[]>([]);
-  const [companies, setCompanies] = useState<any[]>([]);
+  // ## POR QUE ESTOS DOS ESTADOS YA NO SON `any[]`
+  //
+  // MEDIDO el 2026-10-10: eran `useState<any[]>`, y el `any` borro la
+  // comprobacion de tipos que habria detectado que las columnas leian campos
+  // que la API no manda. Resultado: `tsc` en verde y la pantalla llena de
+  // `$NaN`. Un `any` en un estado que viene de la red no es atajo, es borrar el
+  // unico sitio donde se podia ver el error antes de que llegara a un humano.
+  const [reconciliations, setReconciliations] = useState<Reconciliation[]>([]);
+  const [companies, setCompanies] = useState<{ id: string; name: string; tax_id: string }[]>([]);
   const [mappings, setMappings] = useState<AccountingMapping[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -207,17 +239,63 @@ export function Reconciliations() {
             ) : (
               <Table
                 columns={[
-                  { key: 'match_status', header: 'Estatus', render: (r: any) => (
+                  { key: 'match_status', header: 'Estatus', render: (r: Reconciliation) => (
                     <Badge variant={matchBadges[r.match_status] || 'default'}>{r.match_status}</Badge>
                   )},
-                  { key: 'ticket_provider', header: 'Proveedor (Ticket)', render: (r: any) => <span className="font-medium">{r.ticket_provider}</span> },
-                  { key: 'ticket_amount', header: 'Monto Ticket', render: (r: any) => <span className="font-medium">${Number(r.ticket_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-                  { key: 'ticket_date', header: 'Fecha Ticket', render: (r: any) => new Date(r.ticket_date).toLocaleDateString('es-MX') },
-                  { key: 'bank_description', header: 'Desc. Banco', render: (r: any) => <span className="max-w-xs truncate block">{r.bank_description}</span> },
-                  { key: 'bank_amount', header: 'Monto Banco', render: (r: any) => <span className={`font-medium ${Number(r.bank_amount) >= 0 ? 'text-green-700' : 'text-red-700'}`}>${Number(r.bank_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-                  { key: 'bank_date', header: 'Fecha Banco', render: (r: any) => new Date(r.bank_date).toLocaleDateString('es-MX') },
-                  { key: 'amount_diff', header: 'Diff Monto', render: (r: any) => <span className={Number(r.amount_diff) === 0 ? 'text-green-700' : 'text-red-700'}>${Number(r.amount_diff).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-                  { key: 'date_diff_days', header: 'Diff Días', render: (r: any) => <span>{r.date_diff_days}</span> },
+                  // ## POR QUE ESTAS COLUMNAS LEEN DE ABAJO Y NO DE ARRIBA
+                  //
+                  // MEDIDO el 2026-10-10: estas nueve columnas leian campos
+                  // PLANOS (`r.ticket_amount`, `r.bank_amount`, `r.date_diff_days`)
+                  // contra una respuesta que los trae ANIDADOS en `ticket` y
+                  // `bank_transaction`. Cinco celdas salian `$NaN` y
+                  // `Invalid Date` en pantalla.
+                  //
+                  // Y no lo cazaba `tsc` porque el estado era `useState<any[]>`:
+                  // el `any` borraba justamente la comprobacion que lo habria
+                  // detectado. Por eso el tipo es `Reconciliation` y no `any`, y
+                  // por eso un campo mal escrito ahora se ve al compilar.
+                  { key: 'ticket_provider', header: 'Proveedor (Ticket)', render: (r: Reconciliation) => (
+                    // `truncate` y no solo `max-w-xs`: con el OCR de una foto el
+                    // proveedor sale largo y Media texto lo partia en tres lineas,
+                    // lo que estiraba la fila y empujaba las dos ultimas columnas
+                    // fuera de la vista. Un nombre que no cabe entero se recorta
+                    // con puntos y el tooltip lo deja legible.
+                    <span className="block max-w-[12rem] truncate font-medium" title={r.ticket?.provider_name ?? ''}>
+                      {r.ticket?.provider_name ?? '—'}
+                    </span>
+                  )},
+                  { key: 'ticket_amount', header: 'Monto Ticket', render: (r: Reconciliation) => (
+                    <span className="font-medium">{dinero(r.ticket?.total_amount)}</span>
+                  )},
+                  { key: 'ticket_date', header: 'Fecha Ticket', render: (r: Reconciliation) => (
+                    <span>{fecha(r.ticket?.expense_date)}</span>
+                  )},
+                  { key: 'bank_description', header: 'Desc. Banco', render: (r: Reconciliation) => (
+                    <span className="block max-w-[14rem] truncate" title={r.bank_transaction?.description ?? ''}>
+                      {r.bank_transaction?.description ?? '—'}
+                    </span>
+                  )},
+                  { key: 'bank_amount', header: 'Monto Banco', render: (r: Reconciliation) => (
+                    <span className={Number(r.bank_transaction?.amount) >= 0 ? 'text-green-700' : 'text-red-700'}>
+                      {dinero(r.bank_transaction?.amount)}
+                    </span>
+                  )},
+                  { key: 'bank_date', header: 'Fecha Banco', render: (r: Reconciliation) => (
+                    <span>{fecha(r.bank_transaction?.transaction_date)}</span>
+                  )},
+                  // `null` aqui es "no se pudo comprobar", y se dice con guion:
+                  // un `$0.00` afirmaría que se midió y dio cero, que es lo que
+                  // R7 prohíbe. Mismo trato que `exactitud` en el informe de cierre.
+                  { key: 'amount_diff', header: 'Diff Monto', render: (r: Reconciliation) => (
+                    r.amount_diff == null
+                      ? <span className="text-gray-400">—</span>
+                      : <span className={Number(r.amount_diff) === 0 ? 'text-green-700' : 'text-red-700'}>{dinero(r.amount_diff)}</span>
+                  )},
+                  { key: 'date_diff_days', header: 'Diff Días', render: (r: Reconciliation) => (
+                    r.date_diff_days == null
+                      ? <span className="text-gray-400">—</span>
+                      : <span>{r.date_diff_days}</span>
+                  )},
                 ]}
                 data={reconciliations}
                 keyField="id"

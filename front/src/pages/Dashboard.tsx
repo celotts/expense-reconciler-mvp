@@ -745,6 +745,18 @@ function Pendientes({ d, irA }: { d: DashboardResponse; irA: (p: Page) => void }
           color={discrepancias === 0 ? VERDE : ROJO}
         />
       </div>
+
+      {/* El cierre mensual se abre desde aqui y no desde un menu aparte porque
+          es la pregunta que responde a las tres filas de arriba. Quien tiene
+          pendientes abiertos necesita saber si el mes puede cerrarse, y esa
+          respuesta sale justamente de las tres cosas que esta tarjeta ya
+          muestra: sin categoria, sin conciliar y con discrepancias. */}
+      <button
+        onClick={() => irA('cierre')}
+        className="mt-4 text-sm text-blue-600 hover:text-blue-700 py-3.5 -my-3.5"
+      >
+        Ver el cierre del mes →
+      </button>
     </Card>
   );
 }

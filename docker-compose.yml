@@ -23,11 +23,48 @@ services:
     volumes:
       - pgvector_expense_data:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
+    # ESTE healthcheck NO es "el puerto responde", y la diferencia son 20 segundos
+    # en los que la API cree que puede trabajar y no puede.
+    #
+    # `pg_isready` solo pregunta si el socket acepta conexiones, y durante el
+    # PRIMER arranque (volumen vacio) eso es verdad desde el segundo 1.3 mientras
+    # `init.sql` sigue corriendo: el entrypoint de Postgres levanta un servidor
+    # temporal, ejecuta los scripts de `docker-entrypoint-initdb.d`, y solo
+    # entonces para ese servidor y levanta el definitivo.
+    #
+    # MEDIDO en este repo, con un `sleep 20` inyectado en el init para hacerlo
+    # visible (la diferencia real sin el sleep es de milisegundos, porque
+    # `init.sql` es rapido; la ventana existe igual y es la que importa):
+    #
+    #   t=1.3s   pg_isready -> "accepting connections"   tabla `tickets`: NO existe
+    #   ...
+    #   t=21s    pg_isready -> "accepting connections"   tabla `tickets`: ya existe
+    #
+    # Con el healthcheck de solo `pg_isready`, `expense-api` levanta en t=1.3s y
+    # su primera consulta dice `relation "tickets" does not exist`: el contenedor
+    # esta "healthy" mientras la app no puede servir una sola ruta.
+    #
+    # Por eso la segunda mitad pregunta por el ESQUEMA y no por el puerto:
+    # `to_regclass` devuelve el OID si la tabla existe y NULL si no, y es la
+    # pregunta que la app se hace a si misma en cada consulta.
+    #
+    # `tickets` y no cualquier otra: es la primera tabla que crea `init.sql` y la
+    # que todos los endpoints tocan. Una base migrada a mano tambien la tiene.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d expense_db"]
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -q -U postgres -d expense_db &&
+          psql -U postgres -d expense_db -tAc
+          "select to_regclass('public.tickets') is not null" | grep -qx t
       interval: 5s
       timeout: 5s
       retries: 5
+      # Sin esto, los 5 reintentos de arriba se gastan en los primeros 25s, que
+      # es justo cuando `init.sql` esta corriendo: el contenedor pasaria a
+      # `unhealthy` y `depends_on: service_healthy` lo dejaria esperando para
+      # siempre. 60s cubre el init de una base nueva con margen.
+      start_period: 60s
     mem_limit: 768m
     mem_reservation: 128m
     cpus: 1.0
@@ -188,11 +225,23 @@ services:
         condition: service_healthy
       ollama:
         condition: service_started
+    # `curl /health` y no "el proceso existe": ver el comentario de POR QUE
+    # `/health` consulta la base en app/main.py. MEDIDO antes del cambio: con
+    # `expense_pgvector` parado, `/health` respondia 200 igual, y este contenedor
+    # se declaraba `healthy` sin poder responder una sola ruta.
+    #
+    # `--fail` hace que un 503 salga con codigo distinto de cero. Sin el, curl
+    # devuelve 0 igual porque el TCP funciono, y el healthcheck volveria a
+    # decir "healthy" — o sea, la defensa de arriba sin el codigo que la hace
+    # cumplir.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS --max-time 5 http://localhost:8000/health || exit 1"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
+      # 60s es lo que tarda uvicorn en importar torch + levantar. Durante el
+      # `start_period` los fallos NO cuentan como unhealthy, que es lo que
+      # permite que el primer healthcheck salga antes de que la app escuche.
       start_period: 60s
     # En reposo usa ~600MB; con el modelo de embeddings cargado ~1.4GB.
     mem_limit: 1750m
@@ -209,8 +258,33 @@ services:
     container_name: expense_front_service
     ports:
       - "127.0.0.1:3000:80"
+    # Sin esto, `docker compose up --wait` (y `make up`) no tienen nada que
+    # esperar en el front: lo daria por listo en cuanto el proceso existiera,
+    # que es lo mismo que el defecto que este bloque arregla un nivel mas abajo.
+    healthcheck:
+      # `wget` y no `curl`: ambos existen en `nginx:alpine` (verificado), y
+      # `wget -q -O /dev/null` es el que sale con codigo != 0 si nginx no
+      # responde. Se consulta `/` a proposito —la SPA— y no una ruta de API:
+      # la pregunta es "nginx esta sirviendo", y la de la API la contesta el
+      # healthcheck de `expense-api`.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - expense-api
+      # `service_healthy` y no la forma corta (que es `service_started`).
+      #
+      # MEDIDO: con la forma corta, nginx levanta en cuanto el contenedor de la
+      # API EXISTE, que es antes de que uvicorn escuche. El front responde 200
+      # en `/` y 502 en todo `/api/`, y el sintoma —"el front esta arriba pero
+      # ninguna ruta funciona"— no dice que el problema sea de orden.
+      #
+      # `service_healthy` espera a que el healthcheck de la API pase, y como ese
+      # healthcheck ahora consulta la base de verdad, esta linea significa
+      # "el front no aparece hasta que hay una app que puede responder".
+      expense-api:
+        condition: service_healthy
     mem_limit: 256m
     mem_reservation: 64m
     cpus: 0.5

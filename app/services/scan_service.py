@@ -1169,8 +1169,12 @@ async def escanear(
             # Con eso el feed tiene el importe desde el primer segundo, que es lo
             # que lo hace util: el operador ve $97.56 aparecer mientras el
             # escaner sigue con el archivo siguiente.
-            if detalle.ticket_id is not None:
-                await _registrar_en_el_feed(corrida, db, detalle)
+            # Entra TODO archivo que paso por `procesar_archivo`, tenga ticket o no. Ver el
+            # docstring de `_registrar_en_el_feed`: medido, filtrar por
+            # `ticket_id` hacia que un escaneo entero se reportara como
+            # "0 leidos / Ningun archivo se leyo en esta corrida" habiendo
+            # Dedicated tres minutos y medio a leerlos.
+            await _registrar_en_el_feed(corrida, db, detalle)
 
             # --- El archivado, DESPUES de registrar el resultado ----------
             #
@@ -1844,22 +1848,42 @@ async def _registrar_en_el_feed(
     from sqlalchemy import select as _select
 
     ticket_id = detalle.ticket_id
-    if ticket_id is None:
-        return
-    ticket = (
-        await db.execute(
-            _select(TicketModel).where(TicketModel.id == ticket_id)
-        )
-    ).scalar_one_or_none()
-    if ticket is None:
-        return
+
+    # ## POR QUE ENTRAN LOS ARCHIVOS QUE NO CREARON TICKET
+    #
+    # MEDIDO: escaneando sin `company_id`, el panel de la pantalla de Escáner
+    # mostraba, al terminar, "Escaneo terminado / 9 archivos vistos en 3m 6s /
+    # **0 leídos / 0 con ticket** / **Ningún archivo se leyó en esta corrida**".
+    #
+    # Los nueve archivos SI se leyeron: tres minutos y medio de OCR no son nada.
+    # Lo que paso es que este feed solo registraba archivos con ticket, asi que un
+    # escaneo entero —el de "solo inventariar", que es el que la pantalla ofrece
+    # justamente para eso— salia reportando que no habia pasado nada.
+    #
+    # Es el fallo de siempre: un contador que describe una cosa (cuantos
+    # TICKETS salieron) puesto donde el operador pregunta otra (cuanto se leyo).
+    # Y el sintomo es peor que un cero: "Ningun archivo se leyo" es una afirmacion
+    # falsehood sobre trabajo que si se hizo.
+    #
+    # Asi que entra TODO archivo que paso por `procesar_archivo`, con o sin
+    # ticket. Sin ticket, los importes y el encabezado van en `None`: es la
+    # verdad, no un cero inventado.
+    ticket = None
+    if ticket_id is not None:
+        ticket = (
+            await db.execute(
+                _select(TicketModel).where(TicketModel.id == ticket_id)
+            )
+        ).scalar_one_or_none()
 
     scan_registry.registrar_procesado(
         corrida,
         relative_path=detalle.relative_path,
-        ticket_id=str(ticket_id),
-        monto=ticket.total_amount if ticket.total_amount is not None else None,
-        extraction_status=ticket.extraction_status,
+        # `None` y no `str(None)` ni `""`: "no hay ticket" es la ausencia del
+        # dato, y una cadena vacia se lee como un id que no se guardo.
+        ticket_id=str(ticket_id) if ticket_id is not None else None,
+        monto=ticket.total_amount if ticket is not None else None,
+        extraction_status=ticket.extraction_status if ticket is not None else None,
         motor=detalle.origen.value if detalle.origen is not None else None,
         modelo=detalle.modelo_ia,
         proveedor_ia=detalle.proveedor_ia,
@@ -1868,7 +1892,11 @@ async def _registrar_en_el_feed(
         # total de 0 no es confiable, y uno de 4,093.80 tampoco si nadie lo
         # aprobo. Con OCR al 60% casi todo sale sin afirmar, y esa diferencia es
         # la que el panel tiene que ensenar.
-        confiable=ExtractionStatus(ticket.extraction_status) in SETTLED_STATUSES,
+        confiable=(
+            ExtractionStatus(ticket.extraction_status) in SETTLED_STATUSES
+            if ticket is not None
+            else False
+        ),
         es_duplicado=detalle.accion == "OMITIDO",
         # El encabezado, de la MISMA fila que dio el monto. No de
         # `detalle.datos`: ese se resuelve despues del bucle y aqui saldría en
@@ -1878,20 +1906,24 @@ async def _registrar_en_el_feed(
         # esta cargada es la unica forma de que no puedan desincronizarse del
         # `monto` de arriba: son la misma lectura, del mismo objeto, en el mismo
         # instante.
-        proveedor=ticket.provider_name,
-        rfc=ticket.provider_tax_id,
-        fecha=ticket.expense_date,
-        subtotal=ticket.subtotal,
-        iva=ticket.tax_amount,
-        ieps=ticket.ieps_amount,
+        proveedor=ticket.provider_name if ticket is not None else None,
+        rfc=ticket.provider_tax_id if ticket is not None else None,
+        fecha=ticket.expense_date if ticket is not None else None,
+        subtotal=ticket.subtotal if ticket is not None else None,
+        iva=ticket.tax_amount if ticket is not None else None,
+        ieps=ticket.ieps_amount if ticket is not None else None,
         # El CONTEO de lineas, no las lineas. Ver `registrar_procesado`: el feed
         # guarda 60 archivos y un ticket de supermercado trae 28 partidas.
         #
         # `None` y no `0` cuando no hay lineas: `items` a NULL es la ruta OCR
         # (`registrar_compra` devuelve None sin error, es el caso normal), y
         # `0` afirmaria que el papel no trae partidas, que es otra afirmacion.
-        lineas=len(ticket.items) if isinstance(ticket.items, list) else None,
-        validation_errors=ticket.validation_errors,
+        lineas=(
+            len(ticket.items)
+            if ticket is not None and isinstance(ticket.items, list)
+            else None
+        ),
+        validation_errors=ticket.validation_errors if ticket is not None else None,
     )
 
 

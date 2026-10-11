@@ -247,6 +247,156 @@ export interface ReporteExactitud {
   por_origen: ExactitudPorOrigen[];
 }
 
+// ---------------------------------------------------------------------------
+// Informe de cierre mensual — `GET /reports/cierre-mensual`
+// ---------------------------------------------------------------------------
+//
+// Estos tipos son COPIA de `app/schemas/reporte.py`, no una interpretacion. La
+// razon es que el preview y el PDF salen del MISMO objeto serializado
+// (contrato §5.2): si el front reescribiera los campos a su manera, el contador
+// veria dos numeros distintos en la misma pantalla.
+//
+// Cada importe es `string`, no `number`, y no es descuido: el backend los
+// serializa desde `Decimal` y un `number` en JavaScript no representa 234.00 de
+// forma exacta. `0.1 + 0.2 !== 0.3` en binario, y aqui la aritmetica decide si
+// un periodo cuadra. Para sumar se usa `parsearMonto`.
+
+/** El mes anterior, para comparar. */
+export interface ComparativoMes {
+  nombre_anterior: string;
+  monto_anterior: string;
+  tickets_anterior: number;
+  diferencia: string | null;
+  /** `number` y no `string` porque NO es un importe: es un porcentaje que el
+   *  backend ya calculo como float. Solo se muestra. */
+  diferencia_pct: number | null;
+  /** `false` cuando el mes anterior esta en curso: comparar 6 dias contra 31
+   *  produce una caida que no existe, y el backend lo dice con esto. */
+  conclusivo: boolean;
+  nota: string | null;
+}
+
+/** Una categoria del gasto.
+ *
+ *  Las claves son las que emite `analitica.por_categoria`: `clave`, `etiqueta`,
+ *  `monto`, `tickets`, `porcentaje`, `variable`, `sin_clasificar`.
+ *
+ *  ## AVISO QUE ESTA EN EL CODIGO Y NO EN ESTE ARCHIVO
+ *  El PDF lee `cat.get("categoria")` (reporte_cierre.py:720) y esta clave NO
+ *  existe: por eso el PDF imprime "sin clasificar" en todas las categorias.
+ *  Ver `docs/known-issues.md`. Aqui se lee `etiqueta`, que es la que si viene. */
+export interface CategoriaGastoInforme {
+  clave: string;
+  etiqueta: string;
+  monto: string;
+  tickets: number;
+  porcentaje: number;
+  variable: boolean;
+  sin_clasificar: boolean;
+}
+
+/** Un hallazgo del informe. `tono` es libre en el backend: `neutro` en el caso
+ *  real. Se pinta tal cual y sin inventar una paleta que el backend no emite. */
+export interface Hallazgo {
+  tipo: string;
+  titulo: string;
+  detalle: string;
+  tono: string;
+}
+
+export interface ResumenGasto {
+  total: string;
+  tickets: number;
+  por_categoria: CategoriaGastoInforme[];
+  comparativo: ComparativoMes | null;
+}
+
+export interface SeccionConciliacion {
+  por_estado: Record<string, number>;
+  conciliados: number;
+  sin_conciliar: number;
+  monto_discrepancias: string;
+}
+
+/** R5: los dos numeros van separados porque son afirmaciones de distinta fuerza.
+ *  `leido_por_el_sistema` y `verificado_por_una_persona` jamas se suman ni se
+ *  presentan como un solo "revisados". */
+export interface SeccionLectura {
+  leido_por_el_sistema: number;
+  verificado_por_una_persona: number;
+  pendiente_de_revision: number;
+}
+
+/** Conteos y NO porcentajes: un "% firmado" sin denominador es R1 incumplido. */
+export interface SeccionVerificacionHumana {
+  en_muestra: number;
+  revisadas: number;
+  firmadas: number;
+  pendientes_de_firmar: number;
+  revisores: string[];
+  ultima_verificacion: string | null;
+}
+
+export interface SeccionPendientes {
+  sin_categoria_tickets: number;
+  sin_categoria_monto: string;
+  sin_conciliar_tickets: number;
+  sin_conciliar_monto: string;
+  discrepancias_abiertas: number;
+  discrepancias_monto: string;
+  /** `@computed_field` en el backend: derivado de los tres de arriba. */
+  hay_pendientes: boolean;
+  /** Los motivos nombrados, no "hay pendientes". `null` cuando no hay ninguno. */
+  motivo: string | null;
+}
+
+/** Los cuatro estados del periodo.
+ *
+ *  `CIERRE_DISPONIBLE` y `CERRADO_CON_PENDIENTES` son los que hacen que
+ *  `cerrado` (el hecho) y `puebe_cerrarse` (lo que R3 permite afirmar) puedan
+ *  discrepar: alguien cerro enero y despues metio un ticket de enero. Con tres
+ *  estados eso se reportaba como "no cierra", que es falso —enero SI esta
+ *  cerrado en el registro— y tapaba el hallazgo mas util del informe. */
+export type EstadoPeriodo =
+  | 'CIERRE_DISPONIBLE'
+  | 'CERRADO'
+  | 'CERRADO_CON_PENDIENTES'
+  | 'NO_CIERRA';
+
+export interface ReporteCierreMensual {
+  empresa_id: string;
+  empresa_nombre: string;
+  empresa_tax_id: string;
+  periodo: string;
+  periodo_inicio: string;
+  periodo_fin: string;
+  /** No es `emitido_en`: es la fecha derivada del periodo. Un informe cuya fecha
+   *  fuera la hora de reloj no valdria como evidencia (R4). */
+  fecha_referencia: string;
+  firmado_por: string;
+
+  gasto: ResumenGasto;
+  hallazgos: Hallazgo[];
+  conciliacion: SeccionConciliacion;
+  /** `null` cuando no hay evidencia. NO es `0%`: R7 dice "no disponible", y un
+   *  cero se lee como "se midio y fallo". */
+  exactitud: ReporteExactitud | null;
+  exactitud_disponible: boolean;
+  /** R2: la advertencia va en la PRIMERA pagina, no como nota al pie. */
+  advertencia_principal: string | null;
+
+  lectura: SeccionLectura;
+  verificacion: SeccionVerificacionHumana;
+  pendientes: SeccionPendientes;
+
+  /** HECHOS de `cierres_periodo`. */
+  cerrado: boolean;
+  cerrado_por: string | null;
+  /** `@computed_field`: derivado de `pendientes.hay_pendientes`. */
+  puede_cerrarse: boolean;
+  estado_periodo: EstadoPeriodo;
+}
+
 export interface TicketCreate {
   company_id: string;
   provider_name: string;
@@ -335,14 +485,22 @@ export interface Reconciliation {
   bank_transaction_id: string | null;
   match_status: string;
   matched_at: string;
+  revisado_por?: string | null;
+  revisado_at?: string | null;
   ticket?: Ticket;
   bank_transaction?: BankTransaction;
-}
-
-export interface ReconciliationCreate {
-  ticket_id?: string;
-  bank_transaction_id?: string;
-  match_status: string;
+  /**
+   * `null` = no se pudo comprobar (falta un lado del cruce), NUNCA `0`.
+   * Es la misma distincion que usa el informe de cierre: `exactitud: null` es
+   * "no disponible", no "se midio y dio cero".
+   *
+   * Los calcula el BACKEND (`computed_field` en `ReconciliationResponse`).
+   * Antes no existian en esta respuesta y la tabla los pedia igual: salia
+   * `$NaN`. La pantalla no los calcula, porque es aritmetica de negocio y
+   * belongs a un solo lugar.
+   */
+  amount_diff?: string | null;
+  date_diff_days?: number | null;
 }
 
 export interface ReconciliationRunRequest {

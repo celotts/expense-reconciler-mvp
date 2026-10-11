@@ -318,9 +318,3 @@ def leer_token(token: str) -> dict[str, Any]:
         raise ErrorDeToken("el token no lleva sub")
 
     return cuerpo
-
-
-def segundos_vividos(token: str) -> int:
-    """Cuanto le queda al token. Para que el cliente avise antes de que caduque
-    en vez de descubrirlo en la siguiente peticion fallida."""
-    return int(leer_token(token)["exp"] - time.time())

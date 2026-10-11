@@ -6,8 +6,9 @@ import type {
   ReporteExactitud,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
-  Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse,
+  Reconciliation, ReconciliationRunRequest, ReconciliationRunResponse,
   AccountingMapping, AccountingMappingCreate,
+  ReporteCierreMensual,
 } from '../types/api';
 import type { Categoria, DashboardResponse } from '../types/dashboard';
 import type {
@@ -119,9 +120,56 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
  *  El backend decide el `Content-Type` que devuelve, y siempre es de una lista
  *  cerrada de tipos que el navegador no puede ejecutar. Por eso el Blob se puede
  *  mostrar sin miedo: lo que el backend decided servir no es codigo. Ver
- *  `app/models/ticket_document.py`. */
-export async function fetchDocumento(ticketId: string): Promise<Blob> {
+ *  `app/models/ticket_document.py`.
+ *
+ *  MEDIDO: hace falta tambien el `Content-Disposition`. El backend sirve un HEIC
+ *  como `application/octet-stream` —esta fuera de su lista cerrada de tipos
+ *  servibles, a proposito: ningun navegador lo pinta—, asi que para el front un
+ *  HEIC y un `.zip` llegan IGUALES y el `type` no los distingue. El nombre del
+ *  archivo es lo unico que dice cual es, y sin el quien revisa no puede leer
+ *  "esto es una foto de iPhone", que es justo lo que necesita para contrastar
+ *  contra el papel. */
+export type BlobDocumento = Blob & { disposition: string | null };
+
+export async function fetchDocumento(ticketId: string): Promise<BlobDocumento> {
   const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento`, {
+    headers: { ...cabeceraDeAutorizacion() },
+  });
+
+  if (response.status === 401) {
+    notificarCaducidad(false);
+    throw new SesionVencida(false);
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    const detalle = error && typeof error.detail === 'string' ? error.detail : null;
+    throw new Error(detalle || `Error ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  // El `Content-Disposition` se pega al `Blob` porque un `Blob` pelado no lo
+  // trae, y sin el no hay forma de distinguir un HEIC de cualquier otro octet
+  // (ver el docstring de `BlobDocumento`).
+  return Object.assign(blob, {
+    disposition: response.headers.get('content-disposition'),
+  });
+}
+
+/** La vista previa del comprobante: el mismo papel en un formato que el
+ *  navegador SI pinta.
+ *
+ *  MEDIDO: un HEIC de iPhone se sirve como `application/octet-stream` (esta fuera
+ *  de la lista cerrada de tipos servibles, a proposito), y el navegador no lo
+ *  pinta. El muestreo de exactitud consiste en contrastar la lectura contra el
+ *  papel, asi que un papel invisible se revisa a ciegas: justo lo contrario de lo
+ *  que el producto promete.
+ *
+ *  El backend convierte a JPEG SOLO para mostrar. El archivo guardado sigue
+ *  siendo el HEIC original, byte por byte, y la descarga lo sigue dando: por eso
+ *  son dos endpoints y no uno con un parametro. */
+export async function fetchVistaPrevia(ticketId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento/vista-previa`, {
     headers: { ...cabeceraDeAutorizacion() },
   });
 
@@ -169,7 +217,6 @@ async function fetchArchivo(endpoint: string, params: URLSearchParams): Promise<
 // Companies API
 export const companiesApi = {
   list: () => fetchApi<Company[]>('/companies/'),
-  get: (id: string) => fetchApi<Company>(`/companies/${id}`),
   create: (data: CompanyCreate) => fetchApi<Company>('/companies/', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -324,10 +371,6 @@ export const ticketsApi = {
   scanRuns: (limite = 10): Promise<{ corridas: ScanCorrida[]; en_curso: string[] }> =>
     fetchApi<{ corridas: ScanCorrida[]; en_curso: string[] }>(`/scan/runs?limite=${limite}`),
 
-  /** El progreso de UNA corrida. El mismo endpoint sirve para el progreso y
-   *  para el resultado: cuando `terminada` es true, `resumen` ya esta lleno. */
-  scanRun: (id: string): Promise<ScanCorrida> => fetchApi<ScanCorrida>(`/scan/runs/${id}`),
-
   /** El registro de archivos, con `limit` y `offset` explicitos.
    *
    *  El backend tiene un tope de 200 por pagina y `limit` por omision es 50.
@@ -376,7 +419,8 @@ export const ticketsApi = {
    *  Devuelve bytes y no una URL porque el endpoint pide token: un `<img src>`
    *  contra la URL del backend se veria vacio, sin error visible, y el revisor
    *  no distinguiria "el documento no esta" de "la peticion fallo". */
-  documento: (ticketId: string): Promise<Blob> => fetchDocumento(ticketId),
+  documento: (ticketId: string): Promise<BlobDocumento> => fetchDocumento(ticketId),
+  vistaPrevia: (ticketId: string): Promise<Blob> => fetchVistaPrevia(ticketId),
 
   /** Vuelve a subir el comprobante de un ticket que ya existe.
    *
@@ -413,7 +457,6 @@ export const bankTransactionsApi = {
     const params = companyId ? `?company_id=${companyId}` : '';
     return fetchApi<BankTransaction[]>(`/bank-transactions/${params}`);
   },
-  get: (id: string) => fetchApi<BankTransaction>(`/bank-transactions/${id}`),
   create: (data: BankTransactionCreate) => fetchApi<BankTransaction>('/bank-transactions/', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -480,12 +523,6 @@ export const reconciliationsApi = {
     if (matchStatus) params.append('match_status', matchStatus);
     return fetchApi<Reconciliation[]>(`/reconciliations/?${params.toString()}`);
   },
-  get: (id: string) => fetchApi<Reconciliation>(`/reconciliations/${id}`),
-  create: (data: ReconciliationCreate) => fetchApi<Reconciliation>('/reconciliations/', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
-  delete: (id: string) => fetchApi<void>(`/reconciliations/${id}`, { method: 'DELETE' }),
 
   // Run reconciliation engine
   run: (data: ReconciliationRunRequest): Promise<ReconciliationRunResponse> =>
@@ -543,7 +580,6 @@ export const reconciliationsApi = {
     const params = companyId ? `?company_id=${companyId}` : '';
     return fetchApi<AccountingMapping[]>(`/reconciliations/mappings${params}`);
   },
-  getMapping: (id: string) => fetchApi<AccountingMapping>(`/reconciliations/mappings/${id}`),
 };
 
 // Dashboard API
@@ -552,6 +588,54 @@ export const dashboardApi = {
     const params = new URLSearchParams({ meses: String(meses) });
     if (companyId) params.append('company_id', companyId);
     return fetchApi<DashboardResponse>(`/dashboard/?${params.toString()}`);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Informe de cierre mensual
+// ---------------------------------------------------------------------------
+
+export const reportsApi = {
+  /** El informe en JSON, que es el objeto del preview.
+   *
+   *  `periodo` va SIEMPRE explicito, tambien en el mes en curso. El backend lo
+   *  exige (`required: true`) y su regex es `^\d{4}-(0[1-9]|1[0-2])$`: un
+   *  `2026-13` o un `2026-1` son un 422, no un mesdefault. */
+  cierreMensual: (companyId: string, periodo: string) => {
+    const params = new URLSearchParams({ company_id: companyId, periodo });
+    return fetchApi<ReporteCierreMensual>(`/reports/cierre-mensual?${params.toString()}`);
+  },
+
+  /** El PDF, como Blob.
+   *
+   *  Va aparte de `fetchArchivo` por una razon concreta: ese helper manda
+   *  `Accept: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+   *  que es la cabecera de un XLSX. Mandarla pidiendo un PDF no lo rompe (el
+   *  backend no mira el `Accept`), pero es una peticion que se contradice a si
+   *  misma y que un dia cambiara de comportamiento sin que nadie lo note.
+   *
+   *  El PDF sale del MISMO objeto que este JSON (contrato §5.2): el backend no
+   *  recalcula nada al maquetar, y por eso dos descargas del mismo periodo dan
+   *  bytes identicos (R4). */
+  cierreMensualPdf: (companyId: string, periodo: string): Promise<Blob> => {
+    const params = new URLSearchParams({ company_id: companyId, periodo });
+    return fetch(`${API_BASE}/reports/cierre-mensual.pdf?${params.toString()}`, {
+      headers: {
+        Accept: 'application/pdf',
+        ...cabeceraDeAutorizacion(),
+      },
+    }).then(async (response) => {
+      if (response.status === 401) {
+        notificarCaducidad(true);
+        throw new SesionVencida(true);
+      }
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const detalle = error && typeof error.detail === 'string' ? error.detail : null;
+        throw new Error(detalle || `Error ${response.status}`);
+      }
+      return response.blob();
+    });
   },
 };
 
@@ -564,8 +648,10 @@ export type {
   TicketExtractionResult,
   SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,
   SpotCheckField, ExactitudPorOrigen, ReporteExactitud, Veredicto,
-  Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse, ReconciliationMatchDetail,
+  Reconciliation, ReconciliationRunRequest, ReconciliationRunResponse, ReconciliationMatchDetail,
   AccountingMapping, AccountingMappingCreate,
+  ReporteCierreMensual, EstadoPeriodo, ResumenGasto, ComparativoMes, Hallazgo,
+  SeccionConciliacion, SeccionLectura, SeccionVerificacionHumana, SeccionPendientes,
 } from '../types/api';
 
 // El dashboard tiene sus propias formas en `types/dashboard.ts` y se reexporta

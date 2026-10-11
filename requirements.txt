@@ -77,13 +77,27 @@ tiktoken>=0.7.0
 sentence-transformers>=3.0.0
 torch>=2.3.0
 scikit-learn>=1.4.0
-rapidfuzz>=3.8.0
+# `rapidfuzz` se borro el 2026-10-10 con `VendorNormalizer`, su unico consumidor:
+# la clase se instanciaba y nadie la llamaba. Ver `app/services/ai_client.py`.
+#
+# NO se borraron `torch` ni `sentence-transformers`, y esa es una decision
+# distinta: siguen siendo la unica razon de ser de `create_embedding`, que es
+# el B2 del contrato (docs/contrato-producto.md §6) y pide medir RAM con
+# `make stats` antes y despues. Ver `tests/unit/test_ai_client_imports.py`.
 
 # Test dependencies
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
 aiosqlite>=0.19.0
+# `tests/unit/test_arranque_por_healthcheck.py` parsea `docker-compose.yml` para
+# fijar la politica de arranque (los healthchecks y el orden de `depends_on`).
+#
+# PyYAML ya llegaba TRANSITIVA por `huggingface_hub`, `langchain` y `torch`, y
+# por eso el import funcionaba. Se declara igual: un test que depende de que otra
+# dependencia decida seguir instalando algo es un test que se rompe sin que nadie
+# haya tocado una linea de este repo.
+pyyaml>=6.0
 # Genera los PDF de muestra que usan los tests de captura (reglas vs modelo).
 # Vive aqui y no en un requirements de desarrollo porque el CI corre los tests
 # con esta misma lista: si se separa, el CI falla con ModuleNotFoundError.

@@ -68,7 +68,12 @@ OCR = RAIZ / "app" / "services" / "ocr.py"
 LINEAS = RAIZ / "app" / "services" / "parser_lineas.py"
 
 TESTS_OCR = ["tests/unit/test_binarizacion_ocr.py"]
-TESTS_LINEAS = ["tests/unit/test_linea_de_ticket.py", "tests/unit/test_parser_lineas.py"]
+# `test_parser_lineas.py` se borro el 2026-10-10 con el codigo que cubria. Y
+# `_correr` filtra los paths que no existen **en silencio**, asi que dejarlo aqui
+# habria hecho que estas mutaciones se midieran contra un archivo de menos sin que
+# nada lo dijera: exactamente el fallo que `verify_capture_mutations.py` ya sufrio
+# una vez. Ver `docs/known-issues.md` §35.
+TESTS_LINEAS = ["tests/unit/test_linea_de_ticket.py"]
 # Las confusiones de digito y la verificacion de la suma viven en su propio
 # archivo porque miden una sola idea: no se afirma un numero, se ofrece como
 # candidata y lo judge el comprobante.
@@ -158,34 +163,22 @@ MUTACIONES = [
     ),
 
     # --- El modelo de linea ----------------------------------------------
-    (
-        "`como_items` vuelve a `float`",
-        "1.15 viaja como 1.1499999999999999 y el error se suma linea por linea",
-        LINEAS,
-        'items.append(valida.model_dump(mode="json"))',
-        'items.append({"description": linea.descripcion, '
-        '"quantity": float(linea.cantidad), '
-        '"unit_price": float(linea.precio_unitario) if linea.precio_unitario is not None else None, '
-        '"total": float(linea.importe)})',
-        TESTS_LINEAS,
-    ),
+    #
+    # Tres de las que hubo aqui se quitaron el 2026-10-10: "`como_items` vuelve a
+    # `float`", "lo descartado no se dice" y "lo descartado no se cuenta". Las tres
+    # mutateaban codigo de `parser_lineas.py` que **ningun caller en `app/`**
+    # invocaba, asi que protectan una rama que el producto no ejecuta: el
+    # verificador reportaba defensa sobre una defensa que no corria. Se borro el
+    # codigo y con el las tres. Ver el docstring de `app/services/parser_lineas.py`.
     (
         "la puerta de validacion se quita",
         "una linea ilegible entra al inventario como si fuera una compra",
         LINEAS,
-        "            valida = LineaDeTicket(\n"
-        "                description=linea.descripcion,\n"
-        "                quantity=linea.cantidad,\n"
-        "                unit_price=linea.precio_unitario,\n"
-        "                total=linea.importe,\n"
-        "            )",
-        "            valida = LineaDeTicket.model_construct(\n"
-        "                description=linea.descripcion,\n"
-        "                quantity=linea.cantidad,\n"
-        "                unit_price=linea.precio_unitario,\n"
-        "                total=linea.importe,\n"
-        "            )",
-        TESTS_LINEAS,
+        "                LineaDeTicket(\n"
+        '                    description=str(cruda.get("description") or ""),\n',
+        "                LineaDeTicket.model_construct(\n"
+        '                    description=str(cruda.get("description") or ""),\n',
+        TESTS_LINEAS + TESTS_VERIF,
     ),
     (
         "el modelo acepta claves desconocidas",
@@ -241,42 +234,6 @@ MUTACIONES = [
         TESTS_OCR,
     ),
     (
-        "una linea sin numeros entra como producto",
-        "`GRACIAS POR SU COMPRA` llega a `leer_lineas` como linea de producto, y una "
-        "linea sin numeros no produce numeros que la aritmetica pueda rechazar",
-        LINEAS,
-        '        # Ni un solo numero. `re.search` y no `re.match` porque en un ticket el\n'
-        '        # numero va al FINAL de la linea (`COCA COLA 1.5L 35.00`) y el texto al\n'
-        '        # principio: anclar al principio habria descartado las lineas de producto.\n'
-        '        or not re.search(r"\\d", texto)\n',
-        "",
-        TESTS_LINEAS,
-    ),
-    (
-        "la correccion de O->0 se aplica a cualquier palabra",
-        "OXXO se convierte en 0XX0 y el nombre del comercio se pierde; "
-        "§21 ya midio que estos filtros empeoran: `551.50`, `01.50`",
-        LINEAS,
-        "        if any(ch.isdigit() for ch in tirada):\n",
-        "        if True:\n",
-        TESTS_VERIF,
-    ),
-    (
-        "la lectura corregida se ofrece ANTES que la literal",
-        "un numero que ya cuadra por la via literal se lee por la corregida, "
-        "y §21 lo llama 'desplazar el error'",
-        LINEAS,
-        "    corregido = _lectura_corregida(texto)\n"
-        "    if corregido is not None:\n"
-        "        _normalizar(re.sub(r\"[^\\d,.]\", \"\", corregido))\n",
-        "    corregido = _lectura_corregida(texto)\n"
-        "    if corregido is not None:\n"
-        "        _normalizar(limpio)\n"
-        "    if False:\n"
-        "        _normalizar(re.sub(r\"[^\\d,.]\", \"\", corregido))\n",
-        TESTS_VERIF,
-    ),
-    (
         "la verificacion no calcula la suma",
         "la suma de items sale siempre None y el check no comprueba nada",
         LINEAS,
@@ -292,29 +249,6 @@ MUTACIONES = [
         "        self._cuadra = None\n",
         "        self._cuadra = False\n",
         TESTS_VERIF,
-    ),
-    (
-        "lo descartado no se dice",
-        "«el ticket se leyo bien pero no entro nada» se confunde con «el ticket no tenia lineas»",
-        LINEAS,
-        '            logger.info(\n'
-        '                "linea de producto descartada por validacion: %s",\n'
-        '                exc.errors()[0].get("msg", "sin motivo"),\n'
-        "            )",
-        "            pass",
-        TESTS_LINEAS,
-    ),
-    (
-        "lo descartado no se cuenta",
-        "no se puede saber si falto una linea o faltaron doce",
-        LINEAS,
-        '    if descartadas_por_validacion:\n'
-        '        logger.info(\n'
-        '            "%d linea(s) cuadraron pero no pasaron el modelo; el resto se guarda",\n'
-        "            descartadas_por_validacion,\n"
-        "        )\n",
-        "",
-        TESTS_LINEAS,
     ),
 ]
 

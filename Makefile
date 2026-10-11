@@ -6,13 +6,33 @@ build:
 
 # up reconstruye las imagenes (usa cache de capas) antes de levantar,
 # para no usar imagenes vieja cuando cambia requirements.txt o el codigo del front.
+#
+# `--wait` Y POR QUE HACE FALTA
+# ------------------------------
+# Sin `--wait`, `docker compose up -d` devuelve el control en cuanto los
+# contenedores EXISTEN, que no es lo mismo que estén sirviendo. Quien lo corre
+# abre `localhost:3000` al segundo 2 y encuentra el front sin API detras.
+#
+# No es una carrera teorica: es lo que pasaba. `expense-api` espera a que
+# Postgres este healthy, y su healthcheck tiene que preguntar por el esquema
+# (no por el socket) porque durante el init la conexion responde antes de que
+# existan las tablas — MEDIDO: `pg_isready` decia "aceptando conexiones" a los
+# 1.3s y `tickets` existia a los 21s. Sin `--wait` no hay forma de saber si ya
+# se puede abrir el navegador.
+#
+# `--wait-timeout 120` y no el default: el arranque incluye `init.sql` en una
+# base nueva y la subida de uvicorn con torch. Si se pasa, `make up` sale con
+# codigo != 0 y dice CUAL contenedor no llego — que es la unica forma de que un
+# fallo de arranque sea visible en vez de silencioso.
 up: build
-	docker compose up -d --remove-orphans
+	docker compose up -d --remove-orphans --wait --wait-timeout 120
 
 # up-force ignora la cache de Docker y rehace todas las capas.
+# El `--wait` es el mismo y por el mismo motivo: `--no-cache` tarda mas, no
+# significa que la app quede mas lista.
 up-force:
 	docker compose build --no-cache
-	docker compose up -d --remove-orphans
+	docker compose up -d --remove-orphans --wait --wait-timeout 120
 
 down:
 	docker compose down

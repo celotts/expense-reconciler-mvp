@@ -1,5 +1,3 @@
-from fastapi import APIRouter
-
 from fastapi import APIRouter, Depends
 
 from app.api.auth import router as auth_router

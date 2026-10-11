@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from decimal import Decimal
 
-from app.core.archivo_real import resolver_tipo
+from app.core.archivo_real import media_type_real, resolver_tipo
 from app.core.subida import leer_ticket
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
@@ -50,6 +50,7 @@ from app.services.parser_service import TicketExtractionResult
 from app.services.ai_extractor import ai_extractor
 from app.services.inventario_service import registrar_compra
 from app.services.ticket_persistence import persistir_extraccion
+from app.services import vista_previa
 
 router = APIRouter(tags=["Tickets"])
 
@@ -1144,6 +1145,92 @@ async def get_documento(
             "Access-Control-Expose-Headers": "Content-Disposition",
             # Cache privado y en el navegador, nunca en un proxy compartido: el
             # documento es un comprobante fiscal de una empresa concreta.
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
+@router.get("/{ticket_id}/documento/vista-previa", response_class=Response)
+async def get_vista_previa(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """El comprobante en un formato que el navegador SI puede pintar.
+
+    ## POR QUE EXISTE, Y NO ES "OTRA FORMA DE SERVIR EL MISMO ARCHIVO"
+
+    MEDIDO: las fotos de iPhone son HEIC, y ni Chrome ni Firefox las pintan. El
+    backend las sirve como `application/octet-stream` —a proposito, `image/heic`
+    no esta en su lista cerrada de tipos servibles—, y en la pantalla de
+    revision el papel salia como "no se puede mostrar aqui".
+
+    Eso rompe el muestreo de exactitud de raiz: su trabajo es **contrastar la
+    lectura contra el papel**, y un papel que no se ve se revisa a ciegas.
+
+    Asi que aqui se sirve un **JPEG derivado** y el archivo guardado sigue siendo
+    el HEIC, byte por byte. La conversion es una representacion, no una
+    reescritura: `ticket_documents` es append-only y el comprobante es la
+    evidencia contra la que se contrasta cualquier lectura; cambiarlo al mirarlo
+    seria justo lo que esa regla existe para impedir.
+
+    Y por eso son dos endpoints y no uno con un parametro:
+    `/{id}/documento` da el ORIGINAL (para descargar) y este da la VISTA PREVIA.
+
+    ## LO QUE DEVUELVE CUANDO NO HAY NADA QUE CONVERTIR
+
+    Los bytes originales, con su tipo. Un JPEG, un PNG o un PDF no se tocan: ya
+    se ven, y convertirlos de mas seria gastar CPU y cambiar lo que el revisor
+    cree estar mirando.
+
+    Si la conversion falla, tambien: se sirve el original. Un fallo aqui es "no
+    hay vista previa", nunca "no hay comprobante"; esas dos cosas piden acciones
+    distintas y confundirlas hace que el revisor busque un archivo que si existe.
+    """
+    ticket = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    documento = await documento_de_ticket(db, ticket_id)
+    if documento is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Este ticket no tiene documento guardado.",
+        )
+
+    # `media_type_real` y no `documento.content_type`: el tipo que se decide por
+    # los BYTES, para que un `Content-Type` declarado no pueda falsear la
+    # pregunta de si esto es un HEIC.
+    tipo_real = media_type_real(documento.contenido)
+
+    if not vista_previa.es_convertible(tipo_real):
+        return Response(
+            content=documento.contenido,
+            media_type=documento.content_type_servible,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    jpeg = vista_previa.convertir_a_jpeg(documento.contenido)
+    if jpeg is None:
+        # Se sirve el original en vez de un 404: el comprobante EXISTE y hay que
+        # poder mirarlo, aunque sea descargando.
+        return Response(
+            content=documento.contenido,
+            media_type=documento.content_type_servible,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={
+            # El nombre del JPEG derivado dice que es una vista previa. Sin esto,
+            # quien lo descargue tiene un `documento.jpg` sin relacion apparent
+            # con el archivo que subio.
+            "Content-Disposition": 'inline; filename="vista_previa.jpg"',
             "Cache-Control": "private, max-age=300",
         },
     )

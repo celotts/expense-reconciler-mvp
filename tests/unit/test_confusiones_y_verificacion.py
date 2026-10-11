@@ -1,45 +1,21 @@
-"""Las confusiones de digito del OCR y la verificacion de la suma de items.
+"""La aritmetica como juez: `cantidad x precio == importe`, y la suma contra el subtotal.
 
-QUE PROTEGE ESTE ARCHIVO
-========================
+QUE SE BORRO DE AQUI, Y POR QUE
+==============================
 
-Dos defendedoras que comparten una sola idea: **no se afirma un numero, se
-ofrece como candidato y lo judge el comprobante**.
+El 2026-10-10 se borro de `parser_lineas.py` el camino de geometria del OCR, sin
+callers en `app/`. Aqui fueron sus 9 tests: `TestQueSeCorrigeYQueNo` (cubria
+`_lectura_corregida`), `TestElOrdenDeLasLecturas` (`_todos_los_valores`) y
+`TestLaAritmeticaSigueSiendoElJuez` (`leer_lineas`).
 
-1. `_lectura_corregida` / `_todos_los_valores`: el OCR pone letras donde va un
-   digito (`1,1OO.OO` por `1,100.00`). Antes, `_a_decimal` **borraba** la letra y
-   el token se perdia entero. Ahora la lectura corregida se ofrece como
-   CANDIDATA, la ultima de la lista, y `_elegir_por_aritmetica` se queda con la
-   que haga cuadrar `cantidad x precio == importe`.
+**Lo que se queda es lo que decide si una compra entra al inventario**, y es lo
+unico que corre: si los importes de linea suman el subtotal que declara el
+comprobante. Un caracter mal leido rompe la suma; una suma que cuadra al centavo
+sobre muchos renglones casi no puede ser casualidad.
 
-2. `VerificacionDeItems`: si las lineas de producto suman lo que el ticket
-   declara. Es el unico check que usa una fuente **independiente** del
-   encabezado, y por eso es el que encuentra el error coherente que la
-   aritmetica `subtotal + IVA + IEPS == total` no puede ver.
-
-LA MEDIDA QUE DICE QUE EL PUNTO 1 ESTA EN EL LADO CORRECTO
-==========================================================
-
-`docs/known-issues.md` §21 descarto los filtros de OCR con medicion, y uno de
-los resultados fue este:
-
-> Un filtro de whitelist de digitos empeora: `551.50`, `01.50`.
-
-Es decir: **arreglar el numero por la fuerza agita el error de sitio**. Un
-reemplazo global de `O` por `0` hace exactamente eso — y peor, convierte
-`OXXO` en `0XX0`, que es el nombre del comercio.
-
-Por eso la regla no es "toda letra es un digito" sino:
-
-    solo dentro de una tirada que YA tiene un digito real
-
-`1,1OO.OO` tiene `1` y `1`: sus `O` son digitos. `OXXO` no tiene ninguno: es una
-palabra. Esa es la linea entera, y el test que la fija se llama
-`test_una_palabra_no_se_toca_porque_no_tiene_digitos`.
-
-Y ni siquiera con eso se afirma: la lectura corregida es la **ultima** de la
-lista, asi que la literal gana cuando puede, y la corregida entra solo cuando
-ninguna cuadra. `test_la_literal_gana_cuando_ya_cuadra` lo comprueba.
+Y aqui va la consecuencia del corte, escrita para que no se lea como un bug:
+**en la ruta por reglas `verificacion_items` siempre sale `NADA`**, porque las
+reglas no producen lineas. Solo el LLM las trae. Eso no cambio con el borrado.
 """
 
 from __future__ import annotations
@@ -53,24 +29,8 @@ from pydantic import ValidationError
 from app.services.parser_lineas import (
     LineaDeTicket,
     VerificacionDeItems,
-    _lectura_corregida,
-    _todos_los_valores,
-    leer_lineas,
     verificar_items,
 )
-
-
-def _linea(descripcion="LLAVE", cantidad="2", precio="25.00", importe="50.00", **kw):
-    from app.services.parser_lineas import LineaProducto
-
-    return LineaProducto(
-        descripcion=descripcion,
-        cantidad=Decimal(cantidad),
-        precio_unitario=Decimal(precio),
-        importe=Decimal(importe),
-        orden=0,
-        **kw,
-    )
 
 
 def _item(descripcion="LLAVE", cantidad="2", precio="25.00", total="50.00"):
@@ -78,145 +38,6 @@ def _item(descripcion="LLAVE", cantidad="2", precio="25.00", total="50.00"):
         description=descripcion, quantity=cantidad, unit_price=precio, total=total
     )
 
-
-# --- La correccion: cuando y donde ---------------------------------------
-
-
-class TestQueSeCorrigeYQueNo:
-    @pytest.mark.parametrize(
-        "texto,esperado",
-        [
-            # El caso canonico de AGENTS.md: un total de 1,100.00 que el OCR
-            # entrega como 1,1OO.OO, "tan valido como el otro" para un regex.
-            ("1,1OO.OO", "1,100.00"),
-            ("5O.OO", "50.00"),
-            ("1OO", "100"),
-            ("lOO.5O", "100.50"),
-            ("S.9O", "5.90"),
-        ],
-    )
-    def test_corrige_la_letra_dentro_de_un_numero(self, texto, esperado):
-        assert _lectura_corregida(texto) == esperado
-
-    @pytest.mark.parametrize(
-        "texto",
-        ["OXXO", "TUS PUNTOS", "SUBTOTAL", "CAJA", "S/O", "LECHE"],
-    )
-    def test_una_palabra_no_se_toca_porque_no_tiene_digitos(self, texto):
-        """La linea que separa las dos palabras del punto 2.
-
-        Un reemplazo GLOBAL produciria `0XX0` de `OXXO`, que es el nombre del
-        comercio. La regla es al reves: solo se corrige dentro de una tirada que
-        ya tiene un digito real, y estas no tienen ninguno.
-        """
-        assert _lectura_corregida(texto) is None
-
-    def test_un_numero_ya_bueno_no_se_toca(self):
-        """Sin confusiones, la funcion no hace nada.
-
-        Y eso importa por una razon concreta: si devolviera el token tal cual,
-        `_todos_los_valores` agregaria la MISMA lectura dos veces y el catalogo
-        de candidatos se llenaria de ruido.
-        """
-        assert _lectura_corregida("97.56") is None
-        assert _lectura_corregida("1,250.50") is None
-
-    def test_una_letra_suelta_no_altera_el_numero_de_al_lado(self):
-        """`51.50OXXO` conserva el 51.50.
-
-        La `O` de `OXXO` viene pegada al numero. Corregir el bloque entero daria
-        `51.500000`, y ese es exactamente el modo de fallo de §21: un filtro que
-        "arregla" el numero lo desplaza.
-        """
-        assert _lectura_corregida("51.50OXXO") == "51.500XXO"
-
-
-# --- El orden de las lecturas: la literal gana -----------------------------
-
-
-class TestElOrdenDeLasLecturas:
-    def test_la_candidata_corregida_es_la_ultima(self):
-        """La literal primero, y la corregida al final.
-
-        `_elegir_por_aritmetica` se queda con la PRIMERA lectura que hace cuadrar.
-        Poner la corregida al principio seria un empeoramiento: `1OO` es
-        `100`, pero un `5O` legitimo que ademas cuadra por otra via debe ganar
-        con su lectura literal.
-        """
-        lecturas = [str(v) for v in _todos_los_valores("1,1OO.OO")]
-        assert lecturas[-1] == "1100.00"
-        assert "1100.00" in lecturas
-
-    def test_la_literal_gana_cuando_ya_cuadra(self):
-        """Un numero que ya es valido no produce una lectura corregida extra."""
-        assert [str(v) for v in _todos_los_valores("97.56")] == ["97.56"]
-        assert [str(v) for v in _todos_los_valores("51.50")] == ["51.50"]
-
-    def test_las_lecturas_literales_no_cambian(self):
-        """REGRESION contra el comportamiento anterior a este cambio.
-
-        La normalizacion se extrajo a una funcion para que la lectura corregida
-        pase por la MISMA, y esa extraccion es el riesgo: si toca la literal,
-        cambian las lecturas de todos los tickets. Estos valores son los de
-        antes del cambio, comprobados uno a uno.
-        """
-        assert [str(v) for v in _todos_los_valores("1.028")] == ["1.028", "1028"]
-        assert [str(v) for v in _todos_los_valores("1,250.50")] == ["1250.50"]
-        assert _todos_los_valores("OXXO") == []
-        assert _todos_los_valores("") == []
-
-
-# --- El juez sigue siendo la aritmetica -----------------------------------
-
-
-class TestLaAritmeticaSigueSiendoElJuez:
-    """La correccion NO afirma nada: propone, y el papel responde.
-
-    Si esto no se cumple, la funcion se convierte en la "afirmacion" que el
-    proyecto entero rechaza, con el agravante de que el numero ya parece
-    limpio.
-    """
-
-    def _linea_ocr(self, palabras):
-        return {"clave": [0, 0, 0], "y0": 0, "y1": 20,
-                "palabras": [{"x0": x, "x1": x + 40, "texto": t}
-                             for x, t in palabras]}
-
-    def test_una_linea_con_OO_que_asi_cuadra_se_acepta(self):
-        """`1.5OO` x `35.OO` == `52,5OO`: la lectura corregida la resuelve.
-
-        Las tres cifras tienen `O` donde deberia haber digito, y ninguna de las
-        lecturas literales cuadra. La aritmetica es la que dice que la
-        interpretacion correcta es `1.500 x 35.00 == 52,500`.
-        """
-        geometria = [
-            self._linea_ocr([(30, "BEBIDA"), (200, "1.5OO"), (300, "35.OO"), (400, "52,5OO")]),
-            self._linea_ocr([(30, "SUBTOTAL"), (400, "52.50")]),
-        ]
-        lectura = leer_lineas(geometria, subtotal_declarado=Decimal("52.50"))
-
-        assert lectura.veredicto == "CONCILIA", lectura.motivo
-        assert lectura.lineas[0].cantidad == Decimal("1.500")
-        assert lectura.lineas[0].importe == Decimal("52.50")
-
-    def test_una_linea_con_OO_que_no_cuadra_se_descarta(self):
-        """La correccion no salva una linea que no cuadra por otra razon.
-
-        Si `1.5OO` se leyera `1.500` pero el importe del papel fuera `99.99`,
-        ninguna combinacion cuadra y la linea se descarta. La correccion ofrece
-        mas lecturas, no mas compro misiones.
-        """
-        geometria = [
-            self._linea_ocr([(30, "BEBIDA"), (200, "1.5OO"), (300, "35.OO"), (400, "99.99")]),
-            self._linea_ocr([(30, "SUBTOTAL"), (400, "99.99")]),
-        ]
-        lectura = leer_lineas(geometria, subtotal_declarado=Decimal("99.99"))
-
-        assert lectura.veredicto in ("PARCIAL", "NADA")
-        assert not [l for l in lectura.lineas if l.aviso is None]
-
-
-# --- La verificacion de la suma -------------------------------------------
 
 
 class TestLaVerificacionDeLaSuma:
@@ -319,9 +140,6 @@ class TestLaVerificacionDeLaSuma:
         assert datos["veredicto"] == "CONCILIA"
 
 
-# --- El punto ciego que el check de items cierra --------------------------
-
-
 class TestElErrorCoherente:
     """El caso que la aritmetica del ENCABEZADO no puede ver.
 
@@ -378,9 +196,6 @@ class TestElErrorCoherente:
 
         assert v.cuadra is True
         assert v.veredicto == "CONCILIA"
-
-
-# --- La frontera: items crudos del lector ---------------------------------
 
 
 class TestVerificarItemsDesdeCrudos:

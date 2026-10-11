@@ -8,13 +8,21 @@ import { SpotCheck } from './pages/SpotCheck';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { Scan } from './pages/Scan';
-import { NavegacionProvider, useNavegacion } from './contextos/Navegacion';
+import { Cierre } from './pages/Cierre';
+import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
 import { SesionProvider, useSesion } from './contextos/Sesion';
 import { Loading } from './components/ui';
 import './App.css';
 
-type Page = 'dashboard' | 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations' | 'scan';
-
+// El tipo `Page` se importa del contexto y NO se redeclara aqui.
+//
+// Este archivo tenia su propia copia de la lista de pantallas, y ya habia
+// divergido: incluia `'scan'` en el tipo pero no en la lista del sidebar, y le
+// faltaban las que se anadieron despues. Con `as Page` en cada entrada, esa
+// divergencia no daba error de compilacion -- `as` es una asercion, no una
+// comprobacion -- y el sintoma era una pantalla que se podia abrir pero no
+// aparecian la barra lateral. Una lista de pantallas en dos sitios es una lista
+// que va a diferir otra vez.
 const navigation = [
   { key: 'dashboard' as Page, label: 'Inicio', icon: HomeIcon },
   { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon },
@@ -24,7 +32,16 @@ const navigation = [
   { key: 'spotcheck' as Page, label: 'Muestreo', icon: CheckBadgeIcon },
   { key: 'bank' as Page, label: 'Banco', icon: BankIcon },
   { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon },
+  { key: 'cierre' as Page, label: 'Cierre mensual', icon: ClipboardCheckIcon },
 ];
+
+function ClipboardCheckIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
 
 function BuildingIcon({ className = 'w-5 h-5' }: { className?: string }) {
   return (
@@ -124,6 +141,7 @@ function AppInner() {
       case 'spotcheck': return <SpotCheck />;
       case 'bank': return <BankTransactions />;
       case 'reconciliations': return <Reconciliations />;
+      case 'cierre': return <Cierre />;
       default: return <Dashboard />;
     }
   };

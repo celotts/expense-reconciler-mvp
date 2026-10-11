@@ -62,18 +62,93 @@ afirmaba sobre el estado y no sobre el **texto**, que es lo que el contador lee.
 > objetivos de un script de mutaciones es código que se queda viejo en silencio.**
 > Añadir un test no hace que el script lo sepa.
 
-### 0.f. El frente del informe no existe todavía: no hay página `Cierre.tsx` — 🟠 **ABIERTO, es lo siguiente**
+### 0.h. El PDF imprime «sin clasificar» en TODAS las categorías — 🔴 **ABIERTO**
 
-El backend de la Fase 1 está completo (`/api/v1/reports`, 105 tests, 15 mutaciones).
-Lo que falta es `front/src/pages/Cierre.tsx` con la ruta `/cierre`, el selector de
-periodo, el banner de estado y el botón de descarga (§5.2 del contrato).
+**MEDIDO al escribir `front/src/pages/Cierre.tsx`**, leyendo el JSON que devuelve la
+API viva y comparándolo con lo que el PDF dibuja.
 
-**El requisito que no es negociable** es este: **el preview y el PDF se pintan desde
-el mismo objeto serializado**, y se reutilizan `utils/veredicto.ts` y los componentes
-de `SpotCheck.tsx`. Si el front tiene su propia lógica de presentación de la
-exactitud, el contador ve dos números distintos en la misma pantalla y la promesa
-entera del producto se cae — que es exactamente el bug que R4 y el `@computed_field`
-de `puede_cerrarse` previenen en el backend, y que el front puede reintroducir solo.
+`reporte_cierre.py:720-721` pinta:
+
+```python
+nombre = cat.get("categoria") or "sin clasificar"
+```
+
+y `analitica.por_categoria` (`analitica.py:324-335`) devuelve estas claves:
+
+```python
+{"clave", "etiqueta", "monto", "tickets", "porcentaje", "variable", "sin_clasificar"}
+```
+
+**No hay clave `categoria`.** El `or "sin clasificar"` se come el `None` y el PDF sale
+con todas las categorías del periodo bajo un mismo rótulo, aunque `sin_clasificar`
+venga en `false` para cada una. La clave que sí lo distingue no se está usando.
+
+El arreglo es una línea —`cat.get("etiqueta") or "sin clasificar"`— y hay que añadirle
+el test que hoy no existe: un informe con dos categorías clasificadas tiene que salir
+con dos rótulos distintos.
+
+> **El front ya lee la clave correcta (`etiqueta`), así que hoy el preview y el PDF
+> discrepan**: el preview muestra «Alimentación» y el PDF «sin clasificar». Es
+> justamente el fallo que el objeto compartido y R4 existían para evitar, y aparece
+> por el lado del PDF, no del front.
+
+### 0.f. El frente del informe ya existe — ✅ CORREGIDO (y el verificador cazó tres tests que no cazaban)
+
+`front/src/pages/Cierre.tsx`, con la ruta en el sidebar, el enlace desde `Dashboard.tsx`,
+el selector de periodo y la descarga del PDF. **22 comprobaciones** en
+`front/scripts/verificar_cierre_en_pantalla.tsx`, con **6 mutaciones verificadas a mano**.
+
+#### EL PUNTO QUE NO ES NEGOCIABLE, Y CÓMO SE CUMPLE
+
+El preview y el PDF salen del **mismo objeto**: la pantalla no suma, no calcula
+porcentajes y no decide veredictos. Todo lo que se ve sale del JSON de
+`GET /reports/cierre-mensual`, formateado por `utils/format.ts`, y los colores del
+veredicto se reusan de `utils/spotcheck.ts` (`veredictoMeta`). La traducción vive
+en `utils/cierre.ts`, que **no calcula nada del informe**.
+
+Verificado mirando el PDF y el preview en el navegador: el mismo aviso, el mismo
+`$0.00`, la misma fecha de referencia, y **ninguno de los dos dice `0%`** donde el
+backend devolvió `null`.
+
+#### LO QUE ESTE TRABAJO ENCONTRÓ DE VERDAD
+
+**El PDF lee una clave que no existe.** `reporte_cierre.py:720` imprime
+`cat.get("categoria")`, pero `analitica.por_categoria` devuelve `clave`/`etiqueta`
+(`analitica.py:324-335`). Como `categoria` no está, el `or "sin clasificar"` deja
+**todas las categorías del PDF como "sin clasificar"**. 🟠 **ABIERTO, es lo siguiente**:
+el front lee `etiqueta`, que es la que sí viene.
+
+> No lo introdujo este trabajo, pero se hizo visible: el front se escribió contra el
+> JSON real de la API y no contra el código del PDF, y por eso se nota.
+
+#### LOS TRES TESTS QUE NO CAZABAN, Y POR QUÉ
+
+La primera versión del verificador comprobaba `lineaExactitud(r).titulo.includes('Exactitud')`:
+miraba **el objeto que devuelve la función**, no lo que se pinta. Con la defensa quitada
+daba **verde**. Tres de cuatro mutaciones pasaron sin que nadie las notara:
+
+| Mutación | Por qué pasaba |
+|---|---|
+| `Exactitud: 0.0%` cuando `exactitud === null` | el objeto seguía teniendo "Exactitud" en el título |
+| comparativo no concluyente pintado como concluyente | el test miraba el `tono` del objeto, no el texto |
+| `periodoActual()` con `toISOString()` | el defecto solo aparece cerca de medianoche; el test corría a otra hora |
+
+**Tres maneras de que un test de pantalla no sirva, y las tres corregidas aquí:**
+
+1. **Mirar el retorno en vez del HTML.** Se renderiza la página entera con
+   `renderToStaticMarkup` y se busca el texto. Por eso `Cierre` acepta
+   `informeInicial`: `renderToStaticMarkup` no corre `useEffect`, así que sin ese
+   parámetro la pantalla se queda en el spinner y no pinta ni una sección.
+2. **Un caso que no se ejecuta es un caso sin test.** `exactitud === null` (objeto
+   entero ausente) es distinto de `exactitud` presente con sus `exactitud` en `null`,
+   y solo el segundo estaba cubierto. La rama que R7 protege **no se ejecutaba nunca**.
+3. **Un defecto que depende de la hora no lo caza un test que compara "hoy" contra
+   "hoy".** `periodoActual(fecha?)` acepta la fecha por eso: el test pasa el día 1 a
+   las 20:30 hora local, que en UTC ya es el día 2. Falla siempre, no un día al mes.
+
+Es el mismo error que el de `test_up_usa_wait` (leía los comentarios del `Makefile` en
+vez de la receta): **un test que no ejecuta el código que protege pasa igual que uno
+que sí lo ejecuta**.
 
 ### 0.g. No hay forma de MARCAR un periodo como cerrado — 🟠 **ABIERTO, por diseño por ahora**
 
@@ -1641,6 +1716,86 @@ primera ronda y por qué:
 - El test de `source_type` comparaba dos POST del mismo archivo a la misma empresa, y la
   idempotencia por `(company_id, source_hash)` devolvía el mismo ticket. Comparaba dos
   veces lo mismo sin mirar nada.
+
+### 38. La fecha del comprobante se descartaba cuando sí estaba — ✅ CORREGIDO, y **sin ganancia medible**
+
+El **2026-10-10**, con las 7 fotos rotuladas de `verdad.json` (las 5 de antes más 2 que
+aparecieron en el respaldo):
+
+**1. `provider_name` está en 0%, pero 3 de 7 no son fallos.**
+
+| foto | verdad | lo que devolvió el parser |
+|---|---|---|
+| `1C2C52A2-….jpeg` | `CADENA COMERCIAL OXXO` | `Cadena Comercial) Uxxo,` |
+| `IMG_4222.jpeg` | `MERCASTAR` | `A ~ NERCASTAR \|` |
+| `IMG_4253 2.HEIC` | `GRUPO COMERCIAL DSW S.A. DE C.V.` | `GRUPO COMERCIAL DS!` |
+
+Son el mismo comercio con el OCR encima. **La comparación del script es de cadena exacta**, y
+una cadena exacta no sobrevive al ruido de un logo. Los otros 4 sí son fallos reales: 2 dan
+el nombre de la sucursal (`CMT QUERETARO REVOLUCION` en vez de `CARNE MART`, que no está en
+el texto) y 2 toman ruido de caja (`AAA AI`, `Pog ae — TAPA`, `Y ARTICULO TOT`).
+
+**El 0% es una cota pesimista, no el estado real.** No se cambió la yardstick: hacerlo
+justamente para que el número suba es la forma limpia de fabricar una expectativa falsa.
+Queda escrito para que nadie recomiende una heurística de proveedor "para subir el 0%", que
+es lo que pasa cuando se lee esta tabla sin el detalle.
+
+**2. `provider_tax_id` en 0% es un límite del motor, no del parser.** Los cinco RFC no están
+en el texto que devolvió el OCR. Ninguna regla los recupera.
+
+**3. `subtotal` en 43% se le pide a papeles que no lo traen.** El ticket de OXXO imprime
+`IVA INCLUIDO: $ 0.00`: el IVA va **dentro** del total. El propio archivo de verdad lo dice.
+Cuatro de los siete fallos de `subtotal` no son fallos del sistema.
+
+**4. Lo que sí se corrigió, y por qué no mueve la cifra.**
+
+Había dos rutas de fecha y las dos botaban fechas que el papel sí traía:
+
+| texto real del OCR | qué pasaba |
+|---|---|
+| `06/10/2026 11:30:21 211.36 36 30` | la fecha de la compra, sin ninguna marca al lado → `date_missing` |
+| `o 02 Fecha: 08/10/202¢ iH tap i` | el OCR comió el `6` de `2026` → `date(202,10,8)` → **`0202-10-08`**, una fecha concreta y falsa |
+
+Lo segundo era lo grave: no era un dato que faltaba, era **un año inventado con forma de
+leído**. Sale del parser hacia la cola de revisión y solo lo marca `date_too_old` después.
+
+Se corrigieron tres cosas: la **hora pegada** cuenta como marca (un vencimiento de cupón es
+un plazo y se imprime sin hora; una fecha con hora es un momento), el **año son 2 o 4
+dígitos nunca 3**, y la ruta etiquetada pasó de `pd.to_datetime(dayfirst=True)` a `_a_fecha`.
+
+**El A/B da CERO.** Sobre las 7 fotos, los seis campos dan **exactamente el mismo número**
+antes y después, con el **mismo texto OCR** en las dos columnas. La razón está escrita en
+el test que acompaña el arreglo: en esas 7 fotos la fecha no está en el texto que devolvió
+el OCR, y ahí ningún parser la recupera. El arreglo no se equivocó; no tenía dónde ganar.
+
+**Eso es lo que hace peligroso medir sin A/B.** El OCR **no es determinista entre corridas**
+(la foto de DSW dio `SUBTOTAL 279.33` en la corrida guardada y `279.93` en una nueva), así
+que dos corridas del script de medición comparan **dos motores y no dos parsers**. Con 7 fotos
+el ruido es del mismo orden que el efecto. Por eso existe `scripts/medir_precision_ocr_ab.py`:
+lee cada foto una vez, cachea el texto y deja evaluar N versiones del parser contra ese
+mismo texto.
+
+**Una defensa que se probó y se quitó por ser código muerto:** añadir `fecha` a
+`MARCA_DEL_COMPROBANTE_RE`. El argumento era bueno —una línea que dice `Fecha:` **es** la
+fecha— pero `_fecha_del_comprobante` solo corre cuando el bucle principal no encontró nada,
+y una línea `Fecha:` ya la agarra el patrón etiquetado de más arriba. Una defensa que nunca
+decide nada se lee como una garantía y no está protegiendo nada. Lo que sí faltaba, y sí
+es real, era la hora.
+
+**Verificado por mutación:** `scripts/verify_fecha_mutations.py`, 8 mutaciones, 8 mueren.
+Dos de ellas sobrevivieron a la primera ronda, y por qué:
+- La del año de 3 dígitos en `FECHA_SIN_ETIQUETA_RE` **no se aplicaba**: la mutación
+  buscaba un texto que ya no estaba en el archivo. Un verificador que no se aplica y sigue
+  contando es peor que uno que no existe, porque el conteo dice 8 y son 6.
+- La de `pd.to_datetime` **sobrevivió**, porque con la regla del año ya puesta el año de 3
+  dígitos nunca llegaba ahí. Buscando el caso donde de verdad difieren apareció el bueno:
+  `Fecha: 01/13/2026` da `2026-01-13` en `pd.to_datetime` — **día y mes cambiados, sin
+  avisar** — y `None` en `_a_fecha`. Se prefirió `None`: entre adivinar una fecha e ir a
+  revisión, se va a revisión. Y un intercambio silencioso pasa todos los checks del gate,
+  porque una fecha creible no es una fecha futura ni una vieja.
+
+**Con 7 fotos esto no es una medición, es una anécdota** — y el propio script lo dice. Para
+afirmar 98.5% hacen falta cientos.
 
 ---
 

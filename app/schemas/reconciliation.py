@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.core.enums import MatchStatus
 
@@ -71,6 +71,59 @@ class ReconciliationResponse(ReconciliationBase):
     revisado_at: Optional[datetime] = None
     ticket: Optional["TicketResponse"] = None
     bank_transaction: Optional["BankTransactionResponse"] = None
+
+    # ## POR QUE ESTOS DOS CAMPOS, Y POR QUE AQUI
+    #
+    # MEDIDO el 2026-10-10: la tabla de `front/src/pages/Reconciliations.tsx`
+    # pintaba `amount_diff` y `date_diff_days` contra ESTA respuesta, y salia
+    # `$NaN` en pantalla. No era un error de la tabla: **estos dos campos no
+    # existian en esta respuesta**. Solo vivian en `ReconciliationMatchDetail`,
+    # que es la de `POST /reconciliations/run`, o sea el resultado de una corrida
+    # puntual. La lista persistida no los traia.
+    #
+    # Habian dos caminos y aqui esta por que se eligió este:
+    #
+    #   (a) Que el front los calcule con los dos objetos anidados. Descartado:
+    #       es aritmetica de negocio en la capa de presentacion, que es
+    #       exactamente lo que `Cierre.tsx` tiene prohibido hacer con el informe
+    #       de cierre ("la pantalla no suma, no calcula"). Si el dia cambia la
+    #       tolerancia, el tablero y el export dirian cosas distintas.
+    #
+    #   (b) Que la respuesta se describa sola. Es lo que se hizo, y con la misma
+    #       logica del docstring de `ReporteCierreMensual`: lo que se afirma se
+    #       calcula en un solo lugar.
+    #
+    # Son `@computed_field` y no columnas por lo mismo que `puede_cerrarse` en el
+    # informe: son una lectura de lo que ya esta ahi, y una columna seria una
+    # copia que se desincroniza en silencio el dia que cambie una tolerancia.
+    @computed_field
+    @property
+    def amount_diff(self) -> Optional[Decimal]:
+        """Cuanto le falta para que el comprobante y el banco digan lo mismo.
+
+        `None` cuando falta un lado: no es "cero", es que no se puede comprobar.
+        La misma distincion que `verificacion_items` usa entre "no se pudo
+        comprobar" y "comprobado y no cuadra".
+        """
+        if self.ticket is None or self.bank_transaction is None:
+            return None
+        if self.ticket.total_amount is None or self.bank_transaction.amount is None:
+            return None
+        return abs(Decimal(self.ticket.total_amount) - abs(Decimal(self.bank_transaction.amount)))
+
+    @computed_field
+    @property
+    def date_diff_days(self) -> Optional[int]:
+        """Dias entre el comprobante y el movimiento del banco.
+
+        `None` si falta una de las dos fechas. Un match con la fecha lejos no
+        esta "medio bien": esta peor que uno sin cruce, y por eso se muestra.
+        """
+        if self.ticket is None or self.bank_transaction is None:
+            return None
+        if self.ticket.expense_date is None or self.bank_transaction.transaction_date is None:
+            return None
+        return abs((self.ticket.expense_date - self.bank_transaction.transaction_date).days)
 
     model_config = ConfigDict(from_attributes=True)
 

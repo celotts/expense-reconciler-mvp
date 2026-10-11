@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
-from rapidfuzz import fuzz, process
+
+# `rapidfuzz` se importaba arriba unicamente para `VendorNormalizer`, que se borro
+# el 2026-10-10: la clase se instanciaba y **nadie la llamaba**, asi que "Oxxo",
+# "OXXO" y "OXXO EXPRESS" quedaban como tres proveedores distintos en el tablero
+# (ver `docs/known-issues.md` §12). Con la clase fuera, la dependencia tambien.
 
 # `torch` y `sentence_transformers` se importan DENTRO de la propiedad que los
 # usa, no aqui arriba. Medido: `import sentence_transformers` cuesta 3.83s y
@@ -277,116 +281,8 @@ class AIClient:
         return embeddings.tolist()
 
 
-class VendorNormalizer:
-    """Normalize vendor names using fuzzy matching"""
-
-    def __init__(self):
-        self.known_vendors: dict[str, str] = {}  # normalized -> canonical
-        self._load_common_vendors()
-
-    def _load_common_vendors(self):
-        """Load known vendor mappings"""
-        self.known_vendors = {
-            # Supermarkets
-            "walmart": "WALMART",
-            "wal-mart": "WALMART",
-            "walmart supercenter": "WALMART",
-            "walmart express": "WALMART",
-            "soriana": "SORIANA",
-            "soriana hiper": "SORIANA",
-            "soriana express": "SORIANA",
-            "chedraui": "CHEDRAUI",
-            "chedraui select": "CHEDRAUI",
-            "costco": "COSTCO",
-            "costco wholesale": "COSTCO",
-            "sams club": "SAMS CLUB",
-            "sam's club": "SAMS CLUB",
-            "bodega aurrera": "BODEGA AURRERA",
-            "aurrera": "BODEGA AURRERA",
-
-            # Gas stations
-            "pemex": "PEMEX",
-            "shell": "SHELL",
-            "bp": "BP",
-            "g500": "G500",
-            "total": "TOTAL",
-            "mobil": "MOBIL",
-
-            # Pharmacy
-            "farmacias del ahorro": "FARMACIAS DEL AHORRO",
-            "farmacia del ahorro": "FARMACIAS DEL AHORRO",
-            "benavides": "BENAVIDES",
-            "farmacias benavides": "BENAVIDES",
-            "farmacias similares": "FARMACIAS SIMILARES",
-            "similares": "FARMACIAS SIMILARES",
-
-            # Restaurants / Food
-            "starbucks": "STARBUCKS",
-            "mcdonalds": "MCDONALDS",
-            "mcdonald's": "MCDONALDS",
-            "burger king": "BURGER KING",
-            "kfc": "KFC",
-            "subway": "SUBWAY",
-            "dominos": "DOMINOS",
-            "domino's": "DOMINOS",
-
-            # Retail / Online
-            "amazon": "AMAZON",
-            "amazon mx": "AMAZON",
-            "mercadolibre": "MERCADOLIBRE",
-            "mercado libre": "MERCADOLIBRE",
-            "liverpool": "LIVERPOOL",
-            "sears": "SEARS",
-            "palacio de hierro": "PALACIO DE HIERRO",
-
-            # Telecom / Utilities
-            "telcel": "TELCEL",
-            "movistar": "MOVISTAR",
-            "att": "AT&T",
-            "izzi": "IZZI",
-            "totalplay": "TOTALPLAY",
-            "cfe": "CFE",
-            "agua": "AGUA",
-
-            # Transport
-            "uber": "UBER",
-            "didi": "DIDI",
-            "cabify": "CABIFY",
-        }
-
-    def normalize(self, vendor_name: str, threshold: int = 85) -> str:
-        """Normalize vendor name to canonical form"""
-        if not vendor_name:
-            return "UNKNOWN"
-
-        clean = vendor_name.lower().strip()
-
-        # Direct match
-        if clean in self.known_vendors:
-            return self.known_vendors[clean]
-
-        # Fuzzy match
-        match = process.extractOne(
-            clean,
-            self.known_vendors.keys(),
-            scorer=fuzz.token_sort_ratio,
-            score_cutoff=threshold,
-        )
-
-        if match:
-            return self.known_vendors[match[0]]
-
-        # Return cleaned original (title case)
-        return vendor_name.strip().title()
-
-    def add_mapping(self, variant: str, canonical: str):
-        """Add new vendor mapping"""
-        self.known_vendors[variant.lower().strip()] = canonical.upper()
-
-
 # Global instances
 ai_client = AIClient()
-vendor_normalizer = VendorNormalizer()
 
 async def _modelos_del_proveedor(base_url: str) -> tuple[list[str] | None, str | None]:
     """Los modelos que Ollama dice tener. `(lista, None)` o `(None, motivo)`.

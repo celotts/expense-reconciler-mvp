@@ -100,6 +100,22 @@ export function BankTransactions() {
     }
   };
 
+  /**
+   * MEDIDO el 2026-10-10: el boton "Importar y Guardar" hacia
+   * `handleImportCsv(previewData[0] as any)`.
+   *
+   * `previewData[0]` es una fila YA parseada (`{transaction_date, amount, ...}`),
+   * y `handleImportCsv` espera un `File`. `FormData.append` con un objeto plano
+   * lo convierte en la cadena `"[object Object]"`, el backend recibe texto donde
+   * espera `UploadFile` y contesta 422. **El boton no podia funcionar nunca.**
+   *
+   * Y no era un `as any` de una linea: `handlePreviewCsv` recibia el `File`, lo
+   * usaba para el preview y lo dejaba ir. No habia nada que reenviar. Por eso
+   * aqui se retiene el archivo en el estado en vez de intentar adivinarlo desde
+   * la previsualizacion.
+   */
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+
   const handlePreviewCsv = async (file: File) => {
     try {
       setPreviewing(true);
@@ -113,6 +129,10 @@ export function BankTransactions() {
         thousands_separator: ',',
       });
       setPreviewData(data);
+      // El archivo se retiene para el paso de guardar. Sin esto, el unico
+      // "archivo" disponible es una fila de la previsualizacion, y eso no es
+      // un archivo.
+      setCsvFile(file);
       setShowPreviewModal(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al previsualizar CSV');
@@ -269,8 +289,11 @@ export function BankTransactions() {
               </div>
               {previewData.length > 20 && <p className="text-sm text-gray-500 text-center">Mostrando 20 de {previewData.length} transacciones</p>}
               <div className="flex justify-end gap-3 pt-4 border-t">
-                <Button variant="secondary" onClick={() => { setShowPreviewModal(false); setPreviewData([]); }}>Cancelar</Button>
-                <Button onClick={() => handleImportCsv(previewData[0] as any)} disabled={importing || !selectedCompany}>{importing ? 'Importando...' : 'Importar y Guardar'}</Button>
+                <Button variant="secondary" onClick={() => { setShowPreviewModal(false); setPreviewData([]); setCsvFile(null); }}>Cancelar</Button>
+                <Button
+                  onClick={() => csvFile && handleImportCsv(csvFile)}
+                  disabled={importing || !selectedCompany || !csvFile}
+                >{importing ? 'Importando...' : 'Importar y Guardar'}</Button>
               </div>
             </>
           ) : (

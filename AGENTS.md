@@ -35,12 +35,13 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
-| Front | `front/src/` — React 18 + Vite + TS + Tailwind, 8 páginas |
-| Tests | **1507** — 1119 unit + escáner, 388 integration, 2 skip |
+| Front | `front/src/` — React 18 + Vite + TS + Tailwind, 9 páginas |
+| Tests | **1639** — 1243 unit, 396 integration, 2 skip |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports`
-Sin auth: solo `GET /health` y `POST /api/v1/auth/login`.
+Sin auth: solo `GET /health` y `POST /api/v1/auth/login`. `/health` **consulta la base**
+(ver *La app no levanta antes de que sus dependencias estén arriba*).
 
 ### Dos máquinas de estado — no las confundas
 
@@ -156,6 +157,7 @@ python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
 python3 scripts/verify_reporte_mutations.py          # 17 mutaciones: informe de cierre + DDL
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
 python3 scripts/verify_ocr_mutations.py             # 16 mutaciones: binarización + modelo de línea
+python3 scripts/verify_fecha_mutations.py           # 8 mutaciones: las reglas de fecha del parser
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 #   Las 3 del signo se pueden romper a proposito: revirtiendo `IF NEW.tipo = 'SALIDA'`
 #   a `IF NEW.tipo = 'ENTRADA'` en `db/migrations/0013_compras_rechazables.sql`, el
@@ -635,6 +637,85 @@ docker compose exec expense-api python scripts/medir_precision_ocr.py \
 > el estado del parser con el de una lectura vieja, y salen cifras que no
 > reproducen. Es el mismo error que medir el parser contra su propia salida.
 
+### El estado medido de las fotos, y por qué el parser NO es el cuello de botella
+Medido el **2026-10-10** sobre las **7** fotos rotuladas (las 5 de antes más 2 del
+respaldo), con `scripts/medir_precision_ocr_ab.py`:
+
+| Campo | Exactitud |
+|---|---|
+| `total_amount` | **71.4%** (5 de 7) |
+| `tax_amount` | 71.4% |
+| `subtotal` | 42.9% |
+| `expense_date` | 33.3% |
+| `provider_name` | 0% |
+| `provider_tax_id` | 0% |
+
+**El `0%` del proveedor es una cota pesimista: 3 de 7 son el mismo comercio con el OCR
+encima** (`Cadena Comercial) Uxxo,` por `CADENA COMERCIAL OXXO`, `A ~ NERCASTAR |` por
+`MERCASTAR`, `GRUPO COMERCIAL DS!` por `GRUPO COMERCIAL DSW S.A. DE C.V.`). La comparación
+del script es de **cadena exacta**, y una cadena exacta no sobrevive al ruido de un logo.
+**No cambies la yardstick para subir ese número**: es la forma limpia de fabricar una
+expectativa falsa. Los otros 4 sí fallan — 2 dan el nombre de la sucursal
+(`CMT QUERETARO REVOLUCION` en vez de `CARNE MART`, que no está en el texto) y 2 toman
+ruido de caja (`AAA AI`, `Pog ae — TAPA`).
+
+**El `0%` del RFC sí es real y es un límite del motor**: los cinco RFC no están en el
+texto que devolvió el OCR. Ninguna regla los recupera.
+
+**El `subtotal` se le pide a papeles que no lo traen.** El ticket de OXXO imprime
+`IVA INCLUIDO: $ 0.00` — el IVA va **dentro** del total. 4 de 7 fallos no son fallos.
+
+### Un A/B sin OCR cacheado NO mide el parser, mide el ruido
+El OCR no es determinista entre corridas (§ arriba). Dos corridas del script de medición
+comparan **dos motores y no dos parsers**, y con 7 fotos el ruido es del mismo orden que
+el efecto. `scripts/medir_precision_ocr_ab.py` existe por eso: lee cada foto **una vez**,
+cachea el texto en `/tmp` del contenedor y deja evaluar N versiones del parser contra ese
+mismo texto.
+
+**Medido, y hay que saberlo antes de citar cualquier cambio de parser:** las correcciones
+de fecha de abajo dan **CERO** sobre esas 7 fotos. Los seis campos dan el mismo número
+antes y después. La razón está escrita en el test que las acompaña: en esas 7 la fecha
+**no está en el texto OCR**, y ahí ningún parser la recupera. El arreglo no se equivocó;
+no tenía dónde ganar. Ver `docs/known-issues.md` §38.
+
+### Tres reglas de fecha, y una defensa que se quitó por ser código muerto
+Había **dos** rutas de fecha y las dos botaban fechas que el papel sí traía.
+
+| texto real del OCR | qué pasaba |
+|---|---|
+| `06/10/2026 11:30:21 211.36 36 30` | la fecha de la compra, sin marca al lado → `date_missing` |
+| `o 02 Fecha: 08/10/202¢ iH tap i` | el OCR comió el `6` → `date(202,10,8)` → **`0202-10-08`** |
+
+Lo segundo era lo grave: no era un dato que faltaba, era **un año inventado con forma de
+leído**. Sale hacia la cola de revisión y solo lo marca `date_too_old` después.
+
+1. **La hora pegada cuenta como marca** (`HORA_EN_LA_LINEA_RE`). El veto de la regla 19
+   es contra el vencimiento de un cupón, y eso es un **plazo** que se imprime sin hora;
+   una fecha con hora de caja es un **momento**. La hora no relaja la regla: la separa de
+   lo único contra lo que existe.
+2. **El año son 2 o 4 dígitos, nunca 3.** `202¢` con `\d{2,4}` da tres dígitos y
+   `_a_fecha` devolvía `date(202,10,8)`. Y el `(?!\d)` de cola faltaba en la ruta
+   **etiquetada** — sin él se comía `08/10/20` del `202¢`. Sin ese guard, un año de dos
+   dígitos inventado es peor que ninguno: pasa todos los checks del gate, porque una
+   fecha creíble no es una fecha futura ni una vieja.
+3. **La ruta etiquetada usa `_a_fecha`, no `pd.to_datetime(dayfirst=True)`.** MEDIDO:
+   `Fecha: 01/13/2026` da `2026-01-13` en pandas — **día y mes cambiados, sin avisar** —
+   y `None` en `_a_fecha`. Se prefirió `None`: entre adivinar una fecha e ir a revisión,
+   se va a revisión. `dayfirst` además **avisa en vez de fallar**, y 400 avisos en un
+   escaneo son 400 avisos que nadie lee.
+
+> **`fecha` NO está en `MARCA_DEL_COMPROBANTE_RE`, y parece que debería.** Se probó
+> meterla y resultó **código muerto**: `_fecha_del_comprobante` solo corre cuando el
+> bucle principal no encontró nada, y una línea `Fecha:` ya la agarra el patrón
+> etiquetado. Una defensa que nunca decide nada se lee como una garantía y no está
+> protegiendo nada. Lo que faltaba de verdad era la hora.
+
+`scripts/verify_fecha_mutations.py`: **8 mutaciones, 8 mueren.** Dos sobrevivieron a la
+primera ronda — una **no se aplicaba** (buscaba texto que ya no estaba; un verificador que
+no se aplica y sigue contando es peor que uno que no existe, porque el conteo dice 8 y
+son 6), y la de `pd.to_datetime` **sobrevivió** hasta que se buscó el caso donde de
+verdad difieren.
+
 Los cuatro caminos que se probaron para subir el total (resolución, preprocesado,
 voto entre lecturas, re-OCR del recorte) están **descartados con medición** en
 `docs/known-issues.md` §21: no los vuelvas a intentar sin una razón nueva. Lo que
@@ -731,6 +812,45 @@ Lo que el modelo hace, y cada regla tiene su test:
 > en la biblioteca: `Decimal("Infinity") > 0` es `True`, así que si Pydantic no lo
 > rechazara, el filtro de signo —que sí corre— dejaría pasar el infinito al kardex.
 > `test_infinito_pasaria_el_signo` deja eso escrito con un número, no con un comentario.
+
+### La app no levanta antes de que sus dependencias estén arriba
+`make up` reconstruye las imágenes y levanta los contenedores. Lo que **NO** hacía antes: esperar a que estuvieran **sirviendo**. Tres healthchecks mentían, y los tres se midieron antes de arreglarlos.
+
+| Healthcheck | Antes | Ahora | Por qué importa |
+|---|---|---|---|
+| Postgres | `pg_isready` | + `to_regclass('public.tickets')` | durante el init la conexión responde **antes** de que existan las tablas |
+| API | `curl /health` | `curl -fsS --max-time 5 /health`, y `/health` consulta la base | `-f` sin él: curl sale 0 ante un 503 y el healthcheck acepta la caída |
+| Front | **no tenía** | `wget -q -O /dev/null /` | sin él `--wait` no tiene nada que esperar en el front |
+
+**Medido, con un `sleep 20` inyectado en el init** (`db/init.sql` va rápido, pero la ventana existe): `pg_isready` respondió *acepting connections* en **t=1.3 s** y la tabla `tickets` no existió hasta **t=21 s**. Con el healthcheck viejo, `expense-api` levantaba en t=1.3 y su primera consulta decía `relation "tickets" does not exist`.
+
+**`/health` devolvía 200 con la base parada.** MEDIDO: `docker stop expense_pgvector` y el endpoint siguió respondiendo `{"status":"healthy"}`. Eso no era cosmético: ese healthcheck es la condición de `depends_on: service_healthy` del front, así que la mentira **decía** cuándo podía levantarse el front. Ahora devuelve 503 con `Connection: close` (sin él, un proxy cachea el 503 y sigue reportando caído un servicio que volvió) y `Cache-Control: no-store`.
+
+**`/health` NO comprueba el esquema.** `SELECT 1` pregunta *hay conexión*, no *está la base completa*. Una base sin `tickets` lo pasa y falla en todos los endpoints: por eso hay **dos** healthchecks y cada uno contesta una pregunta. `por_categoria` en el PDF lee `categoria`, que no existe en el JSON → ver `known-issues.md` §0.h.
+
+**El orden completo es `front → api → postgres`, y `make up` usa `--wait --wait-timeout 120`.** Sin `--wait`, `docker compose up -d` devuelve en cuanto los contenedores **existen**, y quien lo corre abre `localhost:3000` al segundo 2.
+
+> **Un test que mira el archivo entero no prueba el comando.** La primera versión de `test_up_usa_wait` hacía `"--wait" in makefile` y daba **verde con el arreglo quitado**: la palabra estaba en los comentarios de arriba, que sobreviven a la mutación. El test lee ahora la **receta** (`_lineas_de_receta`). MEDIDO: quitando `--wait` de la línea de comando, muere.
+>
+> `test_arranque_por_healthcheck.py` parsea el YAML con `pyyaml` (declarado en `requirements.txt`, no dejado a la transitive de `huggingface_hub`).
+
+### El informe de cierre ya tiene pantalla: `front/src/pages/Cierre.tsx`
+`GET /reports/cierre-mensual` (JSON, el preview) y `.pdf` salen del **mismo objeto** — el backend no recalcula al maquetar (R4). **La restricción del front es que no Rompa eso: la pantalla no suma, no calcula porcentajes y no decide veredictos.** Todo sale del JSON, formateado por `utils/format.ts`; los colores del veredicto se reusan de `utils/spotcheck.ts` (`veredictoMeta`). Si el front tuviera su propia presentación de la exactitud, el contador vería **dos números distintos en la misma pantalla**.
+
+`utils/cierre.ts` traduce y formatea (`lineaEstado`, `lineaExactitud`, `lineaComparativo`, `lineaAdvertencia`) pero **no calcula nada del informe**. Los tres casos que no se pueden maquillar:
+
+- **`exactitud: null` es "no disponible", NUNCA `0%`** (R7). Un cero se lee como "se midió y falló", que el dato no sostiene.
+- **`CERRADO_CON_PENDIENTES` no se reporta como "no cierra"**: el periodo **sí** está cerrado en el registro. `cerrado` (hecho) y `puede_cerrarse` (lo que R3 permite afirmar hoy) son preguntas distintas, y por eso el backend devuelve las dos.
+- **`advertencia_principal` va arriba del todo** (R2) y **antes** del banner de estado: son dos preguntas —"¿la evidencia alcanza?" y "¿se puede cerrar?"— y un periodo puede cerrar sin evidencia de exactitud.
+
+**El verificador es `front/scripts/verificar_cierre_en_pantalla.tsx`** (`npm run verify:cierre`, 22 comprobaciones, 6 mutaciones verificadas). Monta la pantalla con el **JSON real** de la API y mira **el HTML**, no el retorno de las funciones:
+
+> **MEDIDO: la primera versión daba VERDE con tres defensas quitadas.** Comprobaba `lineaExactitud(r).titulo.includes('Exactitud')` — el objeto, no lo pintado. Tres fallos de clase distinta, los tres corregidos: (1) mirar el retorno en vez del HTML; (2) **un caso que no se ejecuta es un caso sin test** — la rama `exactitud === null` nunca se renderizaba porque solo se cubría `exactitud` presente con sus campos en `null`; (3) **un defecto que depende de la hora no lo caza un test que compara "hoy" contra "hoy"** — `toISOString()` solo falla cerca de medianoche, así que `periodoActual(fecha?)` acepta la fecha y el test pasa el día 1 a las 20:30.
+>
+> Por eso `Cierre` acepta `informeInicial`: `renderToStaticMarkup` **no corre `useEffect`**, y sin ese parámetro la pantalla se queda en el spinner. MEDIDO: 19 comprobaciones fallaban por eso.
+
+### El `Page` de `App.tsx` estaba duplicado, y ya había divergido
+`App.tsx` **redeclareba** `type Page` con su propia lista, que además **no coincidía** con la de `contextos/Navegacion.tsx`: la local incluía `'scan'` en el tipo pero no en el sidebar del `navigation`, y le faltaban las pantallas nuevas. Con `as Page` en cada entrada, eso **no da error de compilación** — `as` es una aserción, no una comprobación — y el síntoma era una pantalla que se podía abrir pero no aparecía en la barra lateral. **Se importa el tipo del contexto y se borró la copia.**
 
 ### Qué modelo leyó el comprobante, y por qué se ve en pantalla
 `AIResponse.model` existía desde el principio y **se descartaba** en
