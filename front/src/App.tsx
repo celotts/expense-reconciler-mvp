@@ -3,13 +3,17 @@ import { Companies } from './pages/Companies';
 import { Tickets } from './pages/Tickets';
 import { BankTransactions } from './pages/BankTransactions';
 import { Reconciliations } from './pages/Reconciliations';
+import { ReviewQueue } from './pages/ReviewQueue';
+import { SpotCheck } from './pages/SpotCheck';
 import './App.css';
 
-type Page = 'companies' | 'tickets' | 'bank' | 'reconciliations';
+type Page = 'companies' | 'tickets' | 'review' | 'spotcheck' | 'bank' | 'reconciliations';
 
 const navigation = [
   { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon },
   { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon },
+  { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon },
+  { key: 'spotcheck' as Page, label: 'Muestreo', icon: CheckBadgeIcon },
   { key: 'bank' as Page, label: 'Banco', icon: BankIcon },
   { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon },
 ];
@@ -46,8 +50,26 @@ function ArrowPathIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
-function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {
+function InboxIcon({ className = 'w-5 h-5' }: { className?: string }) {
   return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-4l-1 3h-6l-1-3H4" />
+    </svg>
+  );
+}
+
+/** Un sello con palomita: marcar veredicto. Distinto del sobre de la cola de
+ *  revision a proposito, porque las dos pantallas se parecen y hacen cosas
+ *  distintas: una arregla tickets, la otra produce evidencia. */
+function CheckBadgeIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" />
+    </svg>
+  );
+}
+
+function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {  return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
     </svg>
@@ -70,6 +92,8 @@ export default function App() {
     switch (currentPage) {
       case 'companies': return <Companies />;
       case 'tickets': return <Tickets />;
+      case 'review': return <ReviewQueue />;
+      case 'spotcheck': return <SpotCheck />;
       case 'bank': return <BankTransactions />;
       case 'reconciliations': return <Reconciliations />;
       default: return <Companies />;

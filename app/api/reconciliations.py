@@ -1,25 +1,32 @@
-from typing import List
-from uuid import UUID
 from datetime import date
-from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
 from app.core.database import get_db
+from app.models.accounting_mapping import AccountingMappingModel
+from app.models.bank_transaction import BankTransactionModel
 from app.models.reconciliation import ReconciliationModel
 from app.models.ticket import TicketModel
-from app.models.bank_transaction import BankTransactionModel
-from app.models.accounting_mapping import AccountingMappingModel
+from app.schemas.accounting_mapping import (
+    AccountingMappingCreate,
+    AccountingMappingResponse,
+)
 from app.schemas.reconciliation import (
     ReconciliationCreate,
     ReconciliationResponse,
     ReconciliationRunRequest,
-    ReconciliationRunResponse
+    ReconciliationRunResponse,
 )
-from app.schemas.accounting_mapping import AccountingMappingCreate, AccountingMappingResponse
+from app.services.export_service import (
+    export_generic,
+    export_to_contpaqi,
+    export_to_excel,
+)
 from app.services.reconciliation_service import run_reconciliation
-from app.services.export_service import export_to_excel, export_to_contpaqi, export_generic
 
 router = APIRouter(tags=["Reconciliations"])
 
@@ -33,14 +40,14 @@ async def run_reconciliation_engine(
     return await run_reconciliation(db, request)
 
 
-@router.get("/", response_model=List[ReconciliationResponse])
+@router.get("/", response_model=list[ReconciliationResponse])
 async def list_reconciliations(
     company_id: UUID | None = None,
     match_status: str | None = None,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-) -> List[ReconciliationModel]:
+    db: AsyncSession = Depends(get_db),
+) -> list[ReconciliationModel]:
     """List reconciliations with optional filters."""
     query = select(ReconciliationModel).options(
         selectinload(ReconciliationModel.ticket),
@@ -227,11 +234,10 @@ async def create_accounting_mapping(
     return mapping
 
 
-@router.get("/mappings", response_model=List[AccountingMappingResponse])
+@router.get("/mappings", response_model=list[AccountingMappingResponse])
 async def list_accounting_mappings(
-    company_id: UUID | None = None,
-    db: AsyncSession = Depends(get_db)
-) -> List[AccountingMappingModel]:
+    company_id: UUID | None = None, db: AsyncSession = Depends(get_db)
+) -> list[AccountingMappingModel]:
     """List accounting mappings."""
     query = select(AccountingMappingModel)
     if company_id:

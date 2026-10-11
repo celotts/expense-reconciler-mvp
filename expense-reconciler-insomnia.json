@@ -1,0 +1,294 @@
+
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2025-01-21T23:00:00.000Z",
+  "__export_version": "2025-01-21",
+  "resources": [
+    {
+      "_id": "wrk_expense_reconciler",
+      "parentId": null,
+      "modified": 1705872000000,
+      "created": 1705872000000,
+      "name": "Expense Reconciler MVP",
+      "description": "API para conciliación de gastos y exportación contable",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_base",
+      "parentId": "wrk_expense_reconciler",
+      "modified": 1705872000000,
+      "created": 1705872000000,
+      "name": "Base Environment",
+      "data": {
+        "base_url": "http://localhost:8000/api/v1",
+        "company_id": "",
+        "ticket_id": "",
+        "bank_tx_id": "",
+        "recon_id": ""
+      },
+      "scope": "environment",
+      "_type": "environment"
+    },
+    {
+      "_id": "req_health",
+      "parentId": "wrk_expense_reconciler",
+      "name": "Health Check",
+      "method": "GET",
+      "url": "{{ _.base_url }}/../health",
+      "parameters": [],
+      "headers": [],
+      "body": {},
+      "_type": "request"
+    },
+    {
+      "_id": "fld_companies",
+      "parentId": "wrk_expense_reconciler",
+      "name": "Companies",
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_create_company",
+      "parentId": "fld_companies",
+      "name": "Crear Empresa",
+      "method": "POST",
+      "url": "{{ _.base_url }}/companies/",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"name\": \"Mi Taquería\",\n  \"tax_id\": \"MTA123456789\"\n}"},
+      "_type": "request"
+    },
+    {
+      "_id": "req_list_companies",
+      "parentId": "fld_companies",
+      "name": "Listar Empresas",
+      "method": "GET",
+      "url": "{{ _.base_url }}/companies/",
+      "parameters": [{"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "_type": "request"
+    },
+    {
+      "_id": "req_get_company",
+      "parentId": "fld_companies",
+      "name": "Obtener Empresa",
+      "method": "GET",
+      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
+      "_type": "request"
+    },
+    {
+      "_id": "req_update_company",
+      "parentId": "fld_companies",
+      "name": "Actualizar Empresa",
+      "method": "PATCH",
+      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"name\": \"Mi Taquería SA de CV\"\n}"},
+      "_type": "request"
+    },
+    {
+      "_id": "req_delete_company",
+      "parentId": "fld_companies",
+      "name": "Eliminar Empresa",
+      "method": "DELETE",
+      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_tickets",
+      "parentId": "wrk_expense_reconciler",
+      "name": "Tickets",
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_create_ticket",
+      "parentId": "fld_tickets",
+      "name": "Crear Ticket Manual",
+      "method": "POST",
+      "url": "{{ _.base_url }}/tickets/",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"provider_name\": \"GAS PROVEEDOR SA\",\n  \"provider_tax_id\": \"GPS010101XXX\",\n  \"total_amount\": \"500.00\",\n  \"tax_amount\": \"80.00\",\n  \"expense_date\": \"2025-01-15\",\n  \"category\": \"SUMINISTROS\"\n}"},
+      "_type": "request"
+    },
+    {
+      "_id": "req_extract_ticket",
+      "parentId": "fld_tickets",
+      "name": "Extraer de PDF/Imagen (Preview)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/tickets/extract",
+      "body": {"mimeType": "multipart/form-data", "params": [
+        {"name": "file", "type": "file", "fileName": "factura.pdf"},
+        {"name": "file_type", "value": "pdf", "type": "text"}
+      ]},
+      "_type": "request"
+    },
+    {
+      "_id": "req_extract_and_create",
+      "parentId": "fld_tickets",
+      "name": "Extraer y Crear Ticket",
+      "method": "POST",
+      "url": "{{ _.base_url }}/tickets/extract-and-create",
+      "body": {"mimeType": "multipart/form-data", "params": [
+        {"name": "file", "type": "file", "fileName": "factura.pdf"},
+        {"name": "file_type", "value": "pdf", "type": "text"},
+        {"name": "company_id", "value": "{{ _.company_id }}", "type": "text"}
+      ]},
+      "_type": "request"
+    },
+    {
+      "_id": "req_list_tickets",
+      "parentId": "fld_tickets",
+      "name": "Listar Tickets",
+      "method": "GET",
+      "url": "{{ _.base_url }}/tickets/",
+      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "_type": "request"
+    },
+    {
+      "_id": "req_get_ticket",
+      "parentId": "fld_tickets",
+      "name": "Obtener Ticket",
+      "method": "GET",
+      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
+      "_type": "request"
+    },
+    {
+      "_id": "req_update_ticket",
+      "parentId": "fld_tickets",
+      "name": "Actualizar Ticket",
+      "method": "PATCH",
+      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"category\": \"COMBUSTIBLE\",\n  \"total_amount\": \"520.00\"\n}"},
+      "_type": "request"
+    },
+    {
+      "_id": "req_delete_ticket",
+      "parentId": "fld_tickets",
+      "name": "Eliminar Ticket",
+      "method": "DELETE",
+      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_bank",
+      "parentId": "wrk_expense_reconciler",
+      "name": "Bank Transactions",
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_create_bank_tx",
+      "parentId": "fld_bank",
+      "name": "Crear Movimiento Manual",
+      "method": "POST",
+      "url": "{{ _.base_url }}/bank-transactions/",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"transaction_date\": \"2025-01-15\",\n  \"amount\": \"-500.00\",\n  \"description\": \"PAGO GAS PROVEEDOR SA\",\n  \"reference\": \"REF001\"\n}"},
+      "_type": "request"
+    },
+    {
+      "_id": "req_import_csv_preview",
+      "parentId": "fld_bank",
+      "name": "Preview CSV Import",
+      "method": "POST",
+      "url": "{{ _.base_url }}/bank-transactions/import-csv",
+      "body": {"mimeType": "multipart/form-data", "params": [
+        {"name": "file", "type": "file", "fileName": "movimientos.csv"},
+        {"name": "date_column", "value": "fecha", "type": "text"},
+        {"name": "amount_column", "value": "importe", "type": "text"},
+        {"name": "description_column", "value": "concepto", "type": "text"},
+        {"name": "reference_column", "value": "referencia", "type": "text"},
+        {"name": "date_format", "value": "%d/%m/%Y", "type": "text"},
+        {"name": "decimal_separator", "value": ".", "type": "text"},
+        {"name": "thousands_separator", "value": ",", "type": "text"}
+      ]},
+      "_type": "request"
+    },
+    {
+      "_id": "req_import_csv_create",
+      "parentId": "fld_bank",
+      "name": "Importar CSV y Guardar",
+      "method": "POST",
+      "url": "{{ _.base_url }}/bank-transactions/import-csv-and-create",
+      "body": {"mimeType": "multipart/form-data", "params": [
+        {"name": "file", "type": "file", "fileName": "movimientos.csv"},
+        {"name": "company_id", "value": "{{ _.company_id }}", "type": "text"},
+        {"name": "date_column", "value": "fecha", "type": "text"},
+        {"name": "amount_column", "value": "importe", "type": "text"},
+        {"name": "description_column", "value": "concepto", "type": "text"},
+        {"name": "reference_column", "value": "referencia", "type": "text"},
+        {"name": "date_format", "value": "%d/%m/%Y", "type": "text"},
+        {"name": "decimal_separator", "value": ".", "type": "text"},
+        {"name": "thousands_separator", "value": ",", "type": "text"}
+      ]},
+      "_type": "request"
+    },
+    {
+      "_id": "req_list_bank_tx",
+      "parentId": "fld_bank",
+      "name": "Listar Movimientos",
+      "method": "GET",
+      "url": "{{ _.base_url }}/bank-transactions/",
+      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "_type": "request"
+    },
+    {
+      "_id": "fld_reconciliations",
+      "parentId": "wrk_expense_reconciler",
+      "name": "Reconciliations",
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_run_reconciliation",
+      "parentId": "fld_reconciliations",
+      "name": "Ejecutar Conciliación",
+      "method": "POST",
+      "url": "{{ _.base_url }}/reconciliations/run",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"amount_tolerance\": \"0.01\",\n  \"date_tolerance_days\": 3\n}"},
+      "_type": "request"
+    },
+    {
+      "_id": "req_list_reconciliations",
+      "parentId": "fld_reconciliations",
+      "name": "Listar Conciliaciones",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/",
+      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
+      "_type": "request"
+    },
+    {
+      "_id": "req_export_excel",
+      "parentId": "fld_reconciliations",
+      "name": "Exportar Excel Estándar",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/export/excel?company_id={{ _.company_id }}",
+      "_type": "request"
+    },
+    {
+      "_id": "req_export_contpaqi",
+      "parentId": "fld_reconciliations",
+      "name": "Exportar CONTPAQI",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/export/contpaqi?company_id={{ _.company_id }}",
+      "_type": "request"
+    },
+    {
+      "_id": "req_export_generic",
+      "parentId": "fld_reconciliations",
+      "name": "Exportar Genérico",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/export/generic?company_id={{ _.company_id }}&columns=Fecha,Proveedor,Total,Estatus%20Conciliacion",
+      "_type": "request"
+    },
+    {
+      "_id": "req_create_mapping",
+      "parentId": "fld_reconciliations",
+      "name": "Crear Plantilla CONTPAQI",
+      "method": "POST",
+      "url": "{{ _.base_url }}/reconciliations/mappings",
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"software_name\": \"CONTPAQI_CUSTOM\",\n  \"column_mappings\": {\n    \"Fecha\": \"Fecha\",\n    \"Concepto\": \"Concepto\",\n    \"RFC\": \"RFC\",\n    \"Nombre\": \"Proveedor\",\n    \"Importe\": \"Subtotal\",\n    \"IVA\": \"IVA\",\n    \"Total\": \"Total\",\n    \"Cuenta\": \"6000\",\n    \"Referencia\": \"Referencia Banco\",\n    \"TipoComprobante\": \"I\",\n    \"Serie\": \"A\",\n    \"Folio\": \"001\",\n    \"Moneda\": \"MXN\",\n    \"TipoCambio\": \"1.0000\",\n    \"MetodoPago\": \"PUE\",\n    \"UsoCFDI\": \"G03\"\n  }\n}"},
+      "_type": "request"
+    }
+  ]
+}

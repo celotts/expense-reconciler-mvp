@@ -150,12 +150,27 @@ class TestReconciliationsAPI:
         
         assert response.status_code == 200
         data = response.json()
-        # No debería hacer match porque diferencia > tolerancia
+        # No concilia porque la diferencia de monto se pasa de la tolerancia,
+        # pero el banco SI movio dinero ese dia. Eso es una discrepancia y se
+        # reporta.
+        #
+        # Antes este test afirmaba `discrepancies == 0` con este mismo caso:
+        # el nombre del test prometia la categoria y la asercion decia
+        # que la categoria no existe. Era la rama muerta de `_find_best_match`
+        # hecha test. Lo que faltaba era que se notara que el dinero salio por
+        # otra cantidad, que es justo lo que hay que ver al cerrar el mes.
         assert data["perfect_matches"] == 0
         assert data["manual_review"] == 0
-        assert data["discrepancies"] == 0
-        assert data["unmatched_tickets"] == 1
-        assert data["unmatched_bank_transactions"] == 1
+        assert data["discrepancies"] == 1
+        # Queda contabilizado, no perdido: no vuelve a "sin nada".
+        assert data["unmatched_tickets"] == 0
+        assert data["unmatched_bank_transactions"] == 0
+        assert data["matches"][0]["match_status"] == "DISCREPANCY"
+        assert data["matches"][0]["amount_diff"] == "50.00"
+        # Y dice POR QUE. Sin esto la fila dice que se reporto, pero no deja
+        # reconstruir la decision, y "lo decidio el motor" no es una razon que
+        # se pueda auditar en un cierre.
+        assert "50.00" in data["matches"][0]["criterio"]
 
     @pytest.mark.asyncio
     async def test_list_reconciliations(self, async_client: AsyncClient, test_company, setup_reconciliation_data):

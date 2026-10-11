@@ -1,5 +1,16 @@
 // API Service Layer
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+import type {
+  Company, CompanyCreate, CompanyUpdate,
+  Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
+  SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,
+  ReporteExactitud,
+  BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
+  TicketExtractionResult,
+  Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse,
+  AccountingMapping, AccountingMappingCreate
+} from '../types/api';
+
+const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
 async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -39,9 +50,13 @@ export const companiesApi = {
 
 // Tickets API
 export const ticketsApi = {
-  list: (companyId?: string) => {
-    const params = companyId ? `?company_id=${companyId}` : '';
-    return fetchApi<Ticket[]>(`/tickets/${params}`);
+  list: (companyId?: string, filters?: { onlyOpen?: boolean; extractionStatus?: string }) => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('company_id', companyId);
+    if (filters?.onlyOpen) params.append('only_open', 'true');
+    if (filters?.extractionStatus) params.append('extraction_status', filters.extractionStatus);
+    const qs = params.toString();
+    return fetchApi<Ticket[]>(`/tickets/${qs ? `?${qs}` : ''}`);
   },
   get: (id: string) => fetchApi<Ticket>(`/tickets/${id}`),
   create: (data: TicketCreate) => fetchApi<Ticket>('/tickets/', {
@@ -53,7 +68,60 @@ export const ticketsApi = {
     body: JSON.stringify(data),
   }),
   delete: (id: string) => fetchApi<void>(`/tickets/${id}`, { method: 'DELETE' }),
-  
+
+  // Cola de revision. Los conteos que devuelve son globales aunque se filtre,
+  // para que el encabezado no salte de 40 a 3 al cambiar el filtro.
+  reviewQueue: (companyId?: string, status?: string): Promise<TicketReviewQueue> => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('company_id', companyId);
+    if (status) params.append('status', status);
+    const qs = params.toString();
+    return fetchApi<TicketReviewQueue>(`/tickets/review-queue${qs ? `?${qs}` : ''}`);
+  },
+
+  // `approve` con datos que siguen rotos devuelve 422: la opinion de una
+  // persona no puede saltarse los checks. Hay que corregir y volver a intentar.
+  review: (id: string, data: TicketReviewRequest) => fetchApi<Ticket>(`/tickets/${id}/review`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  }),
+
+  // -------------------------------------------------------------------------
+  // Muestreo de exactitud
+  // -------------------------------------------------------------------------
+
+  // Sin `status` devuelve solo lo PENDIENTE, que es el trabajo. Los conteos
+  // son globales: no bajan al filtrar, para que el encabezado no salte de 200
+  // a 3 y deje de informar.
+  spotCheckQueue: (
+    companyId?: string,
+    status?: SpotCheckStatus,
+    limit?: number,
+  ): Promise<SpotCheckQueue> => {
+    const params = new URLSearchParams();
+    if (companyId) params.append('company_id', companyId);
+    if (status) params.append('status', status);
+    if (limit) params.append('limit', String(limit));
+    const qs = params.toString();
+    return fetchApi<SpotCheckQueue>(`/tickets/spot-check${qs ? `?${qs}` : ''}`);
+  },
+
+  // Registra el veredicto de la muestra. NO corrige el ticket: solo deja
+  // constancia de si la lectura coincidia con el papel.
+  registrarVeredicto: (id: string, data: SpotCheckRequest) =>
+    fetchApi<SpotCheckItem>(`/tickets/${id}/spot-check`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  // El reporte se pide aparte de la cola. No es un dato derivado que se pueda
+  // calcular en el navegador: el intervalo de confianza y el veredicto los
+  // decide el servidor, con la misma aritmetica que los tests.
+  reporteExactitud: (companyId?: string): Promise<ReporteExactitud> => {
+    const qs = companyId ? `?company_id=${companyId}` : '';
+    return fetchApi<ReporteExactitud>(`/tickets/accuracy${qs}`);
+  },
+
   // Extract data from file (preview)
   extract: (file: File, fileType: 'pdf' | 'image' | 'text' = 'pdf'): Promise<TicketExtractionResult> => {
     const formData = new FormData();
@@ -239,9 +307,13 @@ export const reconciliationsApi = {
 // Re-export types
 export type { 
   Company, CompanyCreate, CompanyUpdate,
-  Ticket, TicketCreate, TicketUpdate,
+  Ticket, TicketCreate, TicketUpdate, TicketReviewQueue, TicketReviewRequest,
   BankTransaction, BankTransactionCreate, BankTransactionUpdate, BankTransactionRow,
   TicketExtractionResult,
+  SpotCheckQueue, SpotCheckItem, SpotCheckRequest, SpotCheckStatus,
+  SpotCheckField, ExactitudPorOrigen, ReporteExactitud, Veredicto,
   Reconciliation, ReconciliationCreate, ReconciliationRunRequest, ReconciliationRunResponse, ReconciliationMatchDetail,
   AccountingMapping, AccountingMappingCreate
 } from '../types/api';
+
+export type { ExtractionStatus, ConfidenceSource, SourceType } from '../types/api';

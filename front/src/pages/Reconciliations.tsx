@@ -1,8 +1,8 @@
+import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate } from '../services/api';
+import { companiesApi } from '../services/api';
 import { useState, useEffect } from 'react';
-import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type ReconciliationMatchDetail, type AccountingMapping, type AccountingMappingCreate } from '../services/api';
-import { companiesApi, type Company } from '../services/api';
 import { 
-  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, Select 
+  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState 
 } from '../components/ui';
 
 export function Reconciliations() {

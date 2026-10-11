@@ -1,11 +1,12 @@
-from typing import List
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
 from app.models.company import CompanyModel
-from app.schemas.company import CompanyCreate, CompanyUpdate, CompanyResponse
+from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
 
 router = APIRouter(tags=["Companies"])
 
@@ -32,12 +33,10 @@ async def create_company(
     return company
 
 
-@router.get("/", response_model=List[CompanyResponse])
+@router.get("/", response_model=list[CompanyResponse])
 async def list_companies(
-    skip: int = 0,
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-) -> List[CompanyModel]:
+    skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)
+) -> list[CompanyModel]:
     """List all companies with pagination."""
     result = await db.execute(select(CompanyModel).offset(skip).limit(limit))
     return list(result.scalars().all())
