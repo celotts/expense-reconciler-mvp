@@ -90,11 +90,52 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0
-    # 4GB alcanzan para moondream (vision, ~2GB) y un modelo de texto <=4b.
-    # Si carga un 7b, sube esto a 5g y baja expense-api a 1.5g.
-    mem_limit: 4g
+    # MEDIDO el 2026-10-13 en esta maquina: 18 GB de RAM (`hw.memsize`).
+    #
+    # `mem_limit` es un MAXIMO, no una reserva: en reposo Ollama usa ~75 MiB y
+    # los cuatro servicios juntos ~1.3 GB. Solo sube cuando un modelo infiere.
+    #
+    # POR QUE SUBE de 4g a 8g: `ocr.py:290` tiene medido que `moondream` (1.7 GB)
+    # "degenera en repeticiones y no lee el comprobante, y un modelo que si lo
+    # lee necesita 8-11 GB de RAM". O sea: el escalon de vision de la cascada
+    # EXISTE y se consulta cuando el OCR no alcanza, pero el modelo que estaba
+    # configurado no podia hacer el trabajo dentro de 4g. Era una cascada con un
+    # ultimo escalon apuntando a una herramienta que no lee papel.
+    #
+    # OJO, Y ESTO ES LO IMPORTANTE: 18 GB con Docker, un VM de virtualizacion
+    # (1.4 GB) y el resto de apps deja poco margen. MEDIDO el mismo dia, con el
+    # modelo CARGADO: `PhysMem: 17G usados, 110M unused`, `compressor: 8825M` y
+    # el swap del sistema al 93% (7.6 de 8 GB). macOS estaba comprimiendo
+    # memoria de forma activa, o sea PRESION REAL, no teorica.
+    #
+    # Consecuencia honesta: `qwen2.5vl:3b` carga en 3.5 GB de los 8g que se le
+    # permiten, asi que el techo NO es lo que aprieta. Si al escanear el equipo
+    # se pone lento, la causa es esta maquina, no el limite. Lo que aligera de
+    # verdad es `OLLAMA_KEEP_ALIVE` (bajarlo a 5m devuelve la RAM al sistema
+    # tras cada tanda) o limitar la concurrencia del escaner.
+    #
+    # Y por que BAJA expense-api: el comentario de abajo ya lo pedia ("sube esto
+    # a 5g y baja expense-api a 1.5g"). Con un modelo de embeddings cargado la
+    # api va a ~1.4 GB, asi que 1750m sigue con margen.
+    mem_limit: 8g
     mem_reservation: 512m
-    cpus: 4.0
+
+    # MEDIDO el 2026-10-13: con `cpus: 4.0` una sola llamada de vision lleva el
+    # contenedor al 100% de CPU y el ventilador del Macbook a tope durante los
+    # ~250 s que tarda la inferencia. El usuario reporto que la maquina se
+    # calentaba, y este es el numero que lo explica: no es la RAM (que se
+    # controla con `mem_limit`), es que se le da CUATRO nucleos enteros a un
+    # proceso que no los necesita todos el tiempo.
+    #
+    # 2.0 baja el techo a la mitad. El costo medido es que la inferencia va mas
+    # lenta; el beneficio es que el resto de la maquina (el editor, el
+    # navegador, el escaneo del filesystem) conserva nucleos. Es el mismo
+    # intercambio que `nice`, pero con techo en vez de prioridad.
+    #
+    # Y NO es gratis subirlo de vuelta: si se sube, suben juntos el calor y el
+    # tiempo. Ver `OLLAMA_KEEP_ALIVE` en config.py para el otro lado de este
+    # mismo problema.
+    cpus: 2.0
     restart: unless-stopped
     networks:
       - expense_network

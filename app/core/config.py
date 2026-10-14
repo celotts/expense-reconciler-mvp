@@ -55,6 +55,48 @@ class Settings(BaseSettings):
     OLLAMA_VISION_MODEL: str = "moondream"  # Vision-capable model for image extraction (~1.8GB)
     OLLAMA_TIMEOUT: float = 600.0
 
+    # Cuanto tiempo Ollama mantiene el modelo cargado DESPUES de la ultima
+    # llamada, y por que no es "lo que uno quiera".
+    #
+    # MEDIDO el 2026-10-13 en una maquina de 18 GB: con "30m" (el valor que
+    # estaba hardcodeado en `ai_client.py:218`, sin ningun ajuste posible desde
+    # `.env`), el modelo seguia en RAM despues de un escaneo y el swap del
+    # sistema llegaba al 94% (11 de 12 GB). La maquina no vuelve a estar
+    # disponible para nada mas mientras tanto.
+    #
+    # El costo de esto NO es teorico: son 3.2 GB de RAM que quedan ocupados por
+    # el modelo mientras el usuario trabaja en otra cosa.
+    #
+    # 5m es el compromise: cubre una tanda de escaneo sin recargar entre
+    # archivos, y devuelve la RAM al sistema en cuanto la tanda termina. Si se
+    # pone a "0" o "-1" el modelo se descarga DESPUES de cada llamada y cada
+    # foto paga los ~15 s de `load`, que es exactamente lo que este proyecto
+    # no quiere: `capture.py` consulta al modelo una vez por foto.
+    OLLAMA_KEEP_ALIVE: str = "5m"
+
+    # Numero de peticiones que Ollama atiende A LA VEZ. En una maquina que ya
+    # esta Swappeando, esto es lo que decide si el escaneo se siente lento o
+    # dragged la laptop entera.
+    #
+    # MEDIDO: con vision, una sola llamada de `qwen2.5vl:3b` sobre una foto de
+    # ticket tarda ~250 s y lleva el proceso al 100% de CPU. Con dos a la vez se
+    # duplica la presion sin duplicar la mejora.
+    OLLAMA_NUM_PARALLEL: int = 1
+
+    # Lado largo maximo, en pixeles, de la imagen que se manda al modelo de
+    # vision.
+    #
+    # MEDIDO el 2026-10-13: `_a_jpeg` limitaba el ANCHO a 1600 px y nada mas, y
+    # una foto de comprobante es vertical. `IMG_4409.heic` salia en 1600x3422, que
+    # da ~4040 tokens de vision de los cuales el papel ocupa MENOS DEL 12%: el
+    # resto es fondo de mesa que el modelo lee igual de caro. Una llamada tardaba
+    # ~250 s.
+    #
+    # 2000 px de lado largo es el mismo numero que ya usa `vista_previa.py`
+    # (`_LADO_MAXIMO`), y por el mismo motivo: es donde un ticket de caja sigue
+    # leyendo su total y su RFC de sobra. Si se sube, el tiempo sube con el.
+    MAX_LADO_VISION: int = 2000
+
     # Local embedding fallback (sentence-transformers)
     LOCAL_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 

@@ -57,13 +57,37 @@ def _a_jpeg(image_bytes: bytes) -> bytes | None:
     """
     try:
         from PIL import Image as PILImage
+        from PIL import ImageOps
 
         img = PILImage.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img) or img
         img = img.convert("RGB")
-        max_w = 1600
-        if img.width > max_w:
-            new_h = int(img.height * max_w / img.width)
-            img = img.resize((max_w, new_h), PILImage.Resampling.LANCZOS)
+
+        # EL LADO LARGO, no el ancho.
+        #
+        # MEDIDO el 2026-10-13 sobre las fotos reales de esta maquina. Antes
+        # limitaba solo el ANCHO a 1600 px, y una foto de comprobante es
+        # vertical: `IMG_4409.heic` sale en **1600 x 3422**. El modelo de vision
+        # paga tokens por pixel, y esa imagen da ~4040 tokens de los cuales el
+        # papel ocupa MENOS DEL 12%: el resto es fondo de mesa, que se lee igual
+        # de caro.
+        #
+        # Y no es solo costo: una sola llamada tardaba ~250 s con `prompt_eval`
+        # de 249 s. Es la razon de que la laptop se calentara.
+        #
+        # Por que 2000 y no mas: una foto de ticket impresa tiene su total y su
+        # RFC legibles con sobra a 2000 px de lado largo, y `vista_previa.py`
+        # ya mide eso para el mismo proposito (`_LADO_MAXIMO = 2000`). Si se
+        # sube, el numero de tokens crece proporcionalmente y con el el tiempo.
+        #
+        # `thumbnail` y no `resize` porque NO agranda: una foto que ya viene
+        # pequena (un reenvio de WhatsApp) sale como vino, sin inventar pixeles
+        # que no existen.
+        img.thumbnail(
+            (settings.MAX_LADO_VISION, settings.MAX_LADO_VISION),
+            PILImage.Resampling.LANCZOS,
+        )
+
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
@@ -166,7 +190,7 @@ REGLAS CRÍTICAS:
 6. Si no encuentras un dato, usa null (no inventes)
 
 Devuelve EXACTAMENTE este formato JSON. Los campos van SIEMPRE en este orden:
-{"provider_name": "Nombre del emisor", "provider_tax_id": "RFC del emisor", "invoice_date": "YYYY-MM-DD", "currency": "MXN", "subtotal": 123.45, "tax_amount": 19.75, "total": 143.20, "payment_method": "EFECTIVO", "items": [{"description": "Producto", "quantity": 1, "unit_price": 123.45, "total": 123.45}], "raw_text": "Texto completo extraido", "confidence": 0.95}
+{"provider_name": "Nombre del emisor", "provider_tax_id": "RFC del emisor", "invoice_date": "YYYY-MM-DD", "currency": "MXN", "subtotal": 123.45, "tax_amount": 19.75, "total": 143.20, "payment_method": "EFECTIVO", "items": [{"description": "Producto", "quantity": 1, "unit_price": 123.45, "total": 123.45}], "raw_text": "3 lineas como maximo", "confidence": 0.95}
 
 Para CFDI agrega si están visibles: provider_address, receiver_name, receiver_tax_id, invoice_number, invoice_series, due_date, exchange_rate, tax_breakdown, payment_terms.
 Para TICKETS SIMPLES (no CFDI): omite campos CFDI y usa payment_method "EFECTIVO", "TARJETA" o "TRANSFERENCIA".
@@ -230,7 +254,25 @@ Y si el comprobante no trae IEPS, `ieps_amount` es `null`. No es `0`: `0` dice
 - payment_method: "EFECTIVO" | "TARJETA" | "TRANSFERENCIA" | null
 - payment_terms: condiciones de pago (string o null)
 - items: array de objetos con description, quantity, unit_price, total, tax_rate, tax_amount
-- raw_text: todo el texto visible en la imagen
+- raw_text: MAXIMO 3 lineas: el nombre del comercio y el total, como los imprime
+  el papel. NO vuelques el comprobante entero aqui.
+
+  MEDIDO el 2026-10-13 con `qwen2.5vl:3b` sobre las fotos reales: pedir "todo el
+  texto visible" hace que el modelo se ATRANGANTE escribiendo ese campo. En
+  `IMG_4409.heic` leyo bien `provider_name = "GRUPO COMERCIAL DSW S.A. DE C.V."`
+  —que es EXACTO— y se corto a mitad del JSON con `done_reason=length`,
+  `eval_count=714` de 1200. El JSON quedaba sin cerrar y el parser no podia
+  parsear NADA, o sea que un campo opcional tiraba los campos que si eran
+  correctos.
+
+  Y el modo de fallo peor: el volcado traia el folio `114348-202000-901102-6113534`,
+  que parece un total. El sistema guardaba un numero que no era el total del
+  comprobante, y sin marca de error: un folio filtrado a un campo de dinero es
+  exactamente el tipo de dato que el gate no puede cuestionar.
+
+  `raw_text` NO es un campo que el sistema necesite del modelo:
+  `_parse_from_response` ya lo rellena con "" si falta (`ai_extractor.py:538`).
+  Pedirlo aqui es pedir trabajo que se tira.
 - confidence: 0.0 a 1.0
 - extraction_method: "vision"
 

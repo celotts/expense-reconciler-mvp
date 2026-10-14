@@ -178,15 +178,61 @@ class TestNoSeMandaBasuraAlModelo:
         assert salida is not None
         assert salida[:2] == b"\xff\xd8", "No es un JPEG"
 
-    def test_reescala_a_1600(self):
+    def test_el_lado_largo_se_acota(self):
+        """Ninguna dimension de la imagen al modelo pasa de `MAX_LADO_VISION`.
+
+        MEDIDO el 2026-10-13 sobre las fotos reales de esta maquina: este test
+        fijaba `width == 1600`, y ese era el bug. `_a_jpeg` limitaba el ANCHO y
+        nada mas, asi que una foto de comprobante —que es vertical— salia en
+        1600x3422. El modelo de vision paga tokens por pixel, y ahi el papel
+        ocupaba menos del 12% del cuadro: el resto era fondo de mesa, pagado
+        igual. Una sola llamada tardaba ~250 s.
+
+        Ahora se acota el LADO LARGO, y lo que este test defendia de verdad es que
+        la imagen que llega al modelo sea acotada. Por eso mide LAS DOS
+        dimensiones y no una: un test que solo mirara el ancho volvería a
+        pasar con el bug puesto, porque el ancho sí bajaba.
+
+        Y el caso que lo prueba es el vertical, no uno cuadrado: una imagen
+        4000x3000 con el bug viejo salía en 1600x1200, que respeta el ancho y
+        por eso el test viejo daba verde mientras el problema existía.
+        """
+        from PIL import Image
+
+        from app.core.config import settings
+        from app.services.ai_extractor import _a_jpeg
+
+        # Vertical y grande: el caso real de una foto de ticket de telefono.
+        vertical = io.BytesIO()
+        Image.new("RGB", (3000, 6000), (1, 2, 3)).save(vertical, format="PNG")
+        salida = _a_jpeg(vertical.getvalue())
+        ancho, alto = Image.open(io.BytesIO(salida)).size
+        assert ancho <= settings.MAX_LADO_VISION, f"ancho {ancho} sin acotar"
+        assert alto <= settings.MAX_LADO_VISION, f"alto {alto} sin acotar: el ancho solo no acota un portrait"
+
+        # Y el horizontal grande, que es lo que el test viejo cubria.
+        grande = io.BytesIO()
+        Image.new("RGB", (4000, 3000), (1, 2, 3)).save(grande, format="PNG")
+        salida = _a_jpeg(grande.getvalue())
+        ancho, alto = Image.open(io.BytesIO(salida)).size
+        assert max(ancho, alto) == settings.MAX_LADO_VISION
+
+    def test_una_imagen_chica_no_se_agranda(self):
+        """Acotar es un techo, no un objetivo.
+
+        Una foto que ya viene pequena —un reenvio de WhatsApp— sale como vino.
+        `thumbnail` no agranda y un `resize` a 2000 px si: inventaria pixeles que
+        no existen, que es la razon por la que el limite se aplica con
+        `thumbnail` y no con `resize`.
+        """
         from PIL import Image
 
         from app.services.ai_extractor import _a_jpeg
 
-        grande = io.BytesIO()
-        Image.new("RGB", (4000, 3000), (1, 2, 3)).save(grande, format="PNG")
-        salida = _a_jpeg(grande.getvalue())
-        assert Image.open(io.BytesIO(salida)).width == 1600
+        chica = io.BytesIO()
+        Image.new("RGB", (800, 600), (1, 2, 3)).save(chica, format="PNG")
+        salida = _a_jpeg(chica.getvalue())
+        assert Image.open(io.BytesIO(salida)).size == (800, 600)
 
     def test_heic_se_abre_si_la_dependencia_esta(self):
         """Si `pillow-heif` esta, un HEIC real tiene que convertirse.

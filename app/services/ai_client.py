@@ -215,7 +215,16 @@ class AIClient:
             "model": model,
             "messages": ollama_messages,
             "stream": False,
-            "keep_alive": "30m",
+            # MEDIDO el 2026-10-13: esto estaba en "30m" fijo. Con un modelo de
+            # vision de 3.2 GB, eso dejaba el modelo cargado media hora DESPUES
+            # de la ultima foto, y en una maquina de 18 GB el swap llegaba al
+            # 94% (11 de 12 GB). El usuario decia que la laptop se calentaba,
+            # y la causa no era el modelo inferiendo: era el modelo OCUPADO
+            # cuando ya no hacia falta.
+            #
+            # Sale de `settings` y no de aqui para que se pueda bajar a "0" en
+            # una maquina chica sin editar codigo. Ver `OLLAMA_KEEP_ALIVE`.
+            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,

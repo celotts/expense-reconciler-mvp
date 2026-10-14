@@ -848,6 +848,90 @@ voto entre lecturas, re-OCR del recorte) están **descartados con medición** en
 queda es un segundo motor (EasyOCR, ya soportado en el código y no instalado) y
 muchas más fotos rotuladas.
 
+### La imagen que va al modelo: el LADO LARGO, no el ancho
+
+**MEDIDO el 2026-10-13.** `_a_jpeg` limitaba el **ancho** a 1600 px y nada más.
+Una foto de comprobante es **vertical**, así que la salida era `1600×3422`:
+el modelo de visión paga tokens por píxel y esa imagen daba **~7000 tokens de los
+cuales el papel ocupa menos del 12%**. El resto es fondo de mesa, que se lee
+igual de caro. Una llamada: **249 s de `prompt_eval`** — y el usuario reportó que
+la laptop se calentaba.
+
+Medido sobre los 7 HEIC reales de la máquina, acotando el lado largo a 2000 px:
+
+| archivo | antes | ahora | tokens | KB |
+|---|---|---|---|---|
+| `IMG_4407` | 1395×4032 | 692×2000 | 7056→**1704** | 811→**296** |
+| `IMG_4415` | 1567×3783 | 828×2000 | 7425→**2059** | 869→**347** |
+| `IMG_4409` | 1600×3422 | 935×2000 | 6954→**2343** | 726→**330** |
+
+Entre **65% y 75% menos tokens** en los tres peores, y menos de la mitad del peso.
+
+> **El test viejo daba verde con el bug puesto, y por qué importa.**
+> `test_reescala_a_1600` afirmaba `width == 1600` sobre una imagen **4000×3000**
+> — horizontal. Con el bug, esa imagen salía `1600×1200`: el ancho **sí** bajaba,
+> y el test pasaba sin ver el problema. Un caso horizontal no puede ver un bug
+> que es del vertical. Ahora el test usa **3000×6000** y afirma las **dos**
+> dimensiones. Verificado: revirtiendo el arreglo a "solo ancho", muere con
+> `alto 3200 sin acotar`.
+
+`thumbnail` y no `resize` porque **acotar es un techo, no un objetivo**: una foto
+que ya viene pequeña (un reenvío de WhatsApp) sale como vino. `resize` a 2000 sí
+la agranda e inventa píxeles que no existen.
+
+**Y `exif_transpose` antes de medir.** Una foto de iPhone con orientación EXIF
+guardada sale girada: el ancho y el alto que ve `thumbnail` no son los que ve
+nadie. Sin el transpose, la cota se aplica a la dimensión equivocada.
+
+### La presión de memoria era `keep_alive`, no el modelo
+
+`ai_client.py:218` tenía `"keep_alive": "30m"` **hardcodeado**, sin forma de
+cambiarlo desde `.env`. Con un modelo de 3.2 GB eso lo dejaba ocupando RAM
+**media hora después del último escaneo** — y en una máquina de **18 GB** con el
+swap al **94%** (11 de 12 GB), medido.
+
+Ahora sale de `settings.OLLAMA_KEEP_ALIVE` (default `5m`). No es que el modelo
+fuera el problema: es que seguía **cargado cuando ya no hacía falta**. `5m` cubre
+una tanda sin recargar entre fotos, y `"0"` descarga tras cada llamada — que
+cuesta los ~15 s de `load` en cada una.
+
+`docker-compose.yml` también baja `cpus` de Ollama de `4.0` a `2.0`: una sola
+inferencia llevaba el contenedor al **100% de CPU** con cuatro núcleos. Es el
+mismo intercambio que `nice`, pero con techo en vez de prioridad.
+
+### El JSON truncado se RESCATA, y el campo que lo rompe es `raw_text`
+
+**MEDIDO el 2026-10-13** con `qwen2.5vl:3b` sobre `IMG_4409.heic` (verdad: `279.93`).
+El modelo **lee bien**: `provider_name = "GRUPO COMERCIAL DSW S.A. DE C.V."` — exacto,
+incluido el RFC `GCD170101GS6` — y `"total": 279.93`, que es la verdad. Y sin embargo
+la extracción **fallaba**.
+
+La respuesta cruda, línea por línea:
+
+```
+ 23 |     "total": 279.93,          <- el dato que decide la conciliacion, CORRECTO
+ 26 |     "items": [ ...
+ 36 |   "raw_text": "GRUPO COMERCIAL DSW S.A. DE C.V. PADRE HIER PTE 167 MT
+     ^ se corta aqui, sin cerrar
+```
+
+`done_reason=length`, `eval_count=714` de 1200. **El corte cae en `raw_text`, el ÚLTIMO
+campo del JSON** — es decir, después de todos los que importan.
+
+> **Por qué esto ya no es un problema, y por qué vale la pena saberlo.**
+> `ai_extractor.py:430-456` tiene el rescate por regex: si `json.loads` falla, recupera
+> `provider_name`, `provider_tax_id`, `invoice_date`, `subtotal`, `tax_amount`, `ieps_amount`
+> y `total` de la respuesta truncada. Probado con la respuesta real: recupera los 6
+> campos y **`total = 279.93`**. La cascada funcionaba; yo medí mal al principio y
+> concluí que "el modelo no lee comprobantes".
+
+**El modo de fallo caro que sí existe** es otro, y no es que el campo falte: el volcado
+de `raw_text` traía el folio `114348-202000-901102-6113534`, que **parece un total**.
+Sin marca de error. Un folio filtrado a un campo de dinero es justo el tipo de dato que
+el gate no puede cuestionar. Por eso `raw_text` ahora se pide acotado ("máximo 3
+líneas"): no por precisión — el rescate ya la cubría — sino por **costo**
+(`eval_count` 714→**351**, la mitad) y por quitar esa vía de contaminación.
+
 ### La binarización adaptativa: es una VARIANTE, no un reemplazo
 `ocr.py:_binarizar` es un umbral adaptativo gaussiano de OpenCV (`ADAPTIVE_THRESH_GAUSSIAN_C`),
 y **no se midió nunca**. §21 descartó unsharp, mediana y **umbrales GLOBALES** (110, 165),
@@ -1494,7 +1578,11 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 
 - **Campos con coste silencioso.** `invoice.raw_text` se recorta a 20 000 chars (12 000 cabeza
   + 8 000 cola, con marca `[… N caracteres omitidos …]` para que el truncado sea buscable).
-  Al modelo se le mandan 8 000 chars. Imágenes se reescalan a 1600 px antes de visión.
+  Al modelo se le mandan 8 000 chars. Imágenes se acotan por **lado largo** a
+  `MAX_LADO_VISION` (2000 px) antes de visión — **no** por ancho, que era el bug
+  medido el 2026-10-13: una foto de comprobante es vertical y quedaba en
+  `1600×3422`, con el papel ocupando menos del 12% del cuadro y ~7000 tokens de
+  los que el modelo pagaba igual. Ver *La imagen que va al modelo*.
 
 - **El fallo al guardar el documento no tumba la captura.** `guardar_documento` usa un
   SAVEPOINT y devuelve `False`. El ticket sobrevive sin su comprobante.
