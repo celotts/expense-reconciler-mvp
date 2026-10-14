@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import (
-    TIMESTAMP, CheckConstraint, Column, Date, ForeignKey, Index, Numeric, String, Text, text,
+    TIMESTAMP, Boolean, CheckConstraint, Column, Date, ForeignKey, Index, Numeric, String, Text, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -168,6 +168,39 @@ class TicketModel(Base):
     # ticket se pierde como `accion=ERROR`. Ver `app/core/json_decimal.py`.
     items = Column(JSONConDecimal(none_as_null=True), nullable=True)
     expense_date = Column(Date, nullable=False)
+
+    # ## SI ESTA FECHA VIENE DEL PAPEL
+    #
+    # `expense_date` es NOT NULL y por eso un documento cuya fecha no se pudo leer
+    # se guardaba con `date.today()`. Eso convertia un "no se" en un "si, el dia de
+    # hoy", y como las doce consultas del informe de cierre filtran por
+    # `expense_date`, el gasto entraba al mes de la captura con toda la autoridad
+    # de un gasto real de ese mes.
+    #
+    # MEDIDO el 2026-10-12 sobre los 8 comprobantes de esta maquina: 5 de 8 tienen
+    # `expense_date = 2026-10-12` con `date_missing` al lado. No es un caso raro,
+    # es el MAS FRECUENTE, porque la exactitud del OCR en la fecha es de 33%.
+    #
+    # La columna NO guarda un valor: guarda la PROCEDENCIA de `expense_date`. Y por
+    # eso es un booleano y no una segunda fecha — es la misma pregunta que hace
+    # `confidence_source` pero sobre el dato y no sobre el lector.
+    #
+    #     Una fecha provisional NO DEFINE UN PERIODO.
+    #
+    # - `False`: la fecha se leyo del documento. Define el periodo.
+    # - `True`: la fecha es el dia de la captura. No define el periodo, y el
+    #   informe la reporta aparte en vez de sumarla a un mes que no le corresponde.
+    #
+    # Por que `False` y no `True` por omision: las filas existentes son en su
+    # mayoria fechas leidas, y marcarlas todas provisionales seria afirmar que el
+    # historico entero es ilegible. Ademas el `False` protege a la alta manual,
+    # que escribe una fecha que alguien leyo del papel.
+    #
+    # Quien la limpia: una persona. La automaticidad NUNCA la limpia, porque una
+    # relectura que no encuentra fecha no esta confirmando la anterior, esta
+    # escribiendo otra vez la del dia.
+    fecha_provisional = Column(Boolean, nullable=False, default=False)
+
     category = Column(String(100), nullable=True)
     raw_text = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)

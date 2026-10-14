@@ -4,6 +4,7 @@ import { companiesApi, type Company } from '../services/api';
 import { 
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload 
 } from '../components/ui';
+import { fecha } from '../utils/format';
 
 export function BankTransactions() {
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
@@ -116,18 +117,32 @@ export function BankTransactions() {
    */
   const [csvFile, setCsvFile] = useState<File | null>(null);
 
+  // ## POR QUE NO SE MANDAN NOMBRES DE COLUMNA NI FORMATO DE FECHA
+  //
+  // MEDIDO el 2026-10-12: este bloque mandaba `fecha`/`importe`/`concepto` y
+  // `%d/%m/%Y` FIJOS, y con eso tres de cuatro CSVs reales de banco mexicano
+  // daban 400. Un banco exporta `Fecha`, `Importe`, `Descripcion`; otro
+  // `05/10/2026`; otro `2026-10-05` con punto y coma. Los cuatro son el mismo
+  // archivo con distinta forma, y el unico que no podia leerlos era el que
+  // exigia una forma exacta.
+  //
+  // Ahora NO se mandan: el backend detecta el separador y el formato de la
+  // fecha sobre el contenido real, y dice cuales columnas encontró si falta
+  // alguna. Mandarlos desde aqui fijaba el problema en el cliente, que es donde
+  // no se puede ver el archivo.
+  //
+  // Los separadores de decimal y de miles SI se quedan, porque dependen de COMO
+  // esta escrito el numero en ese banco y no se deducen del encabezado:
+  //
+  //   1,234.56  -> decimal '.', miles ','   (estilo中美)
+  //   1.234,56  -> decimal ',', miles '.'   (estilo europeo)
+  //
+  // Mandar solo uno de los dos es peor que no mandar ninguno, porque convierte
+  // 1.234,56 en 1.234 — cien veces el importe real, sin error ni aviso.
   const handlePreviewCsv = async (file: File) => {
     try {
       setPreviewing(true);
-      const data = await bankTransactionsApi.importCsvPreview(file, {
-        date_column: 'fecha',
-        amount_column: 'importe',
-        description_column: 'concepto',
-        reference_column: 'referencia',
-        date_format: '%d/%m/%Y',
-        decimal_separator: '.',
-        thousands_separator: ',',
-      });
+      const data = await bankTransactionsApi.importCsvPreview(file, {});
       setPreviewData(data);
       // El archivo se retiene para el paso de guardar. Sin esto, el unico
       // "archivo" disponible es una fila de la previsualizacion, y eso no es
@@ -145,15 +160,9 @@ export function BankTransactions() {
     if (!selectedCompany) { setError('Selecciona una empresa primero'); return; }
     try {
       setImporting(true);
-      await bankTransactionsApi.importCsvAndCreate(file, selectedCompany, {
-        date_column: 'fecha',
-        amount_column: 'importe',
-        description_column: 'concepto',
-        reference_column: 'referencia',
-        date_format: '%d/%m/%Y',
-        decimal_separator: '.',
-        thousands_separator: ',',
-      });
+      // Sin columnas ni formato: los detecta el backend. Ver la razon en
+      // `handlePreviewCsv`, que es donde se explica por que NO se mandan.
+      await bankTransactionsApi.importCsvAndCreate(file, selectedCompany, {});
       setShowPreviewModal(false);
       loadData();
     } catch (e) {
@@ -218,7 +227,12 @@ export function BankTransactions() {
           ) : (
             <Table
               columns={[
-                { key: 'transaction_date', header: 'Fecha', render: (t: BankTransaction) => new Date(t.transaction_date).toLocaleDateString('es-MX') },
+                // `fecha()`, no `new Date(...)`. MEDIDO el 2026-10-12: un movimiento con
+                // `transaction_date = "2026-10-01"` se mostraba `30/9/2026`, porque
+                // `new Date('2026-10-01')` es medianoche UTC y Mexico es UTC-6.
+                // Y en una conciliación esa fecha es la que cruza el gasto con el
+                // banco. Ver `utils/format.ts`.
+                { key: 'transaction_date', header: 'Fecha', render: (t: BankTransaction) => fecha(t.transaction_date) },
                 { key: 'amount', header: 'Monto', render: (t: BankTransaction) => (
                   <span className={`font-medium ${Number(t.amount) >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                     ${Number(t.amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}

@@ -623,17 +623,88 @@ class TicketExtractionResult(BaseModel):
         return recortar_raw_text(v)
 
 
+def _detectar_separador(file_content: bytes) -> str | None:
+    """El separador real de las primeras filas, o `None` si no se puede saber.
+
+    Se lee una muestra en TEXTO y no con `pd.read_csv` porque el problema es
+    justo el del separador: leer con `,` un archivo de `;` devuelve una sola
+    columna, y de ahi no hay forma de distinguir "no hay separador" de "hay uno
+    que no es el que asumimos".
+
+    `csv.Sniffer` se le pasa sobre varias lineas porque con una sola se confunde:
+    un importe con coma decimal parece un CSV de dos columnas.
+    """
+    import csv
+
+    muestra = file_content[:4096]
+    try:
+        texto = muestra.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            texto = muestra.decode("latin-1")
+        except UnicodeDecodeError:
+            return None
+
+    if not texto.strip():
+        return None
+
+    try:
+        return csv.Sniffer().sniff(texto, delimiters=",;\t|").delimiter
+    except csv.Error:
+        # Sin `delimiters`, Sniffer acepta cualquier cosa y puede devolver un
+        # caracter que no separa columnas. Se reintenta acotando, y si tampoco,
+        # se devuelve `None` para que el llamador conserve la coma por omision.
+        try:
+            return csv.Sniffer().sniff(texto).delimiter
+        except csv.Error:
+            return None
+
+
+def _formato_de_que_funciona(
+    df: pd.DataFrame, columna: str, formatos: list[str]
+) -> str | None:
+    """El primer formato que convierte TODAS las filas, o `None`.
+
+    "Todas" es la condicion. Aceptar un formato que funciona en el 90% de las
+    filas deja un archivo a medias: unas filas con fecha y otras sin, y el error
+    sale despues como "fila invalida" sin decir que la fecha es el problema.
+
+    Se mira una muestra de las filas porque un extracto de banco puede tener
+    decenas de miles y aqui solo importa la forma, no el volumen.
+    """
+    if columna not in df.columns:
+        return None
+
+    valores = df[columna].dropna().astype(str).str.strip()
+    valores = valores[valores != ""].head(50)
+    if len(valores) == 0:
+        return None
+
+    for formato in formatos:
+        try:
+            convertidas = pd.to_datetime(valores, format=formato, errors="raise")
+            if convertidas.notna().all():
+                return formato
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 def parse_bank_csv(
     file_content: bytes,
-    date_column: str = "fecha",
-    amount_column: str = "importe",
-    description_column: str = "concepto",
-    reference_column: str = "referencia",
-    date_format: str = "%d/%m/%Y",
+    # Vacio = "detectalo en el archivo". Ver el comentario de los defaults vacios
+    # en `app/api/bank_transactions.py`. El default historico era un nombre fijo
+    # ("fecha"), y eso hacia imposible distinguir "el cliente lo pide" de "es el
+    # default", con lo que ninguna deteccion podia activarse.
+    date_column: str = "",
+    amount_column: str = "",
+    description_column: str = "",
+    reference_column: str = "",
+    date_format: str = "",
     decimal_separator: str = ",",
     thousands_separator: str = ".",
     encoding: str = "utf-8",
-    separator: str = ",",
+    separator: str = "",
 ) -> list[BankTransactionRow]:
     """
     Parse a CSV file containing bank transactions.
@@ -685,6 +756,20 @@ def parse_bank_csv(
     # "correcta" con todos los tickets en discrepancia y ningun indicio de por
     # que. Leer como texto y convertir aqui hace que el separador que pidio el
     # usuario sea el unico que cuenta, y que la aritmetica sea la de `Decimal`.
+    # --- 1. Separador, ANTES de leer ---
+    # Un `separator` vacio significa "el cliente no lo especifico, detectalo". Y
+    # tiene que ser ANTES de este `read_csv`: leer con `,` un archivo de `;`
+    # devuelve una sola columna, y de ahi no hay forma de distinguir "no hay
+    # separador" de "hay uno que no es el que asumimos". Sniffear el texto crudo
+    # es lo unico que funciona.
+    #
+    # MEDIDO el 2026-10-12: `Fecha;Descripcion;Importe` daba 400 "Missing required
+    # columns: {'importe','fecha','concepto'}" — las tres, cuando las tres
+    # estaban a la vista separadas por punto y coma. El mensaje era el de "faltan
+    # columnas" porque en verdad habia UNA columna de nombre gigantic.
+    if not separator and file_content:
+        separator = _detectar_separador(file_content) or ","
+
     df = pd.read_csv(
         io.BytesIO(file_content),
         encoding=encoding,
@@ -696,15 +781,149 @@ def parse_bank_csv(
 
     df.columns = df.columns.str.strip().str.lower()
 
+    # ## DETECTAR EL SEPARADOR Y EL FORMATO DE FECHA, EN VEZ DE EXIGIRLOS
+    #
+    # MEDIDO el 2026-10-12 con CSVs reales de banco mexicano:
+    #
+    #   fecha,importe,concepto / 2026-10-05,-250.00   -> 400 "fila invalida"
+    #   fecha,importe,concepto / 05/10/2026,-250.00    -> 200 OK
+    #   fecha;importe;concepto                          -> 400 "Missing required columns"
+    #   Fecha,Descripcion,Importe                      -> 400 "Missing required columns"
+    #
+    # Tres fallos distintos y la misma causa: se exigia un archivo EXACTO — coma,
+    # fecha dd/mm/aaaa, encabezados en ingles sin acentos, punto decimal— cuando
+    # un banco electronico en Mexico exporta cualquiera de las cuatro variantes y
+    # las cuatro son el mismo archivo. Lo que falla es la forma de la fila, no el
+    # contenido.
+    #
+    # Se resuelve en dos pasos y cada uno es independiente:
+    #
+    #   1. SEPARADOR: `csv.Sniffer` mira las primeras lineas reales. Antes se
+    #      asumia `,` fijo, y un archivo con `;` se leia como UNA sola columna:
+    #      por eso el error era "faltan columnas" y no "separador equivocado",
+    #      que es lo que de verdad habia pasado.
+    #
+    #   2. FECHA: se prueban los formatos en orden de especificidad y se usa el
+    #      primero que convierte TODAS las filas. Antes `date_format` era fijo
+    #      (`%d/%m/%Y`), y un ISO —que es lo que exporta cualquier sistema
+    #      moderno— se rechazaba.
+    #
+    # Lo que NO hace: adivinar una columna que no existe. Si el archivo no trae
+    # un importe reconocible, se sigue diciendo que falta. Detectar el separador
+    # y el formato de la fecha es leer el archivo; inventar de donde sale el
+    # dinero es no.
+
+    # ## SINONIMOS DE ENCABEZADO
+    #
+    # MEDIDO el 2026-10-12: con el mensaje mejorado ("Columnas encontradas:
+    # descripcion, fecha, importe") el error era CLARO pero el archivo seguia sin
+    # leerse, porque el llamador pedia `concepto` y el banco se la llamaba
+    # `descripcion`. Decir "faltan estas, estas hay" sin resolver el nombre es
+    # medio arreglo: el usuario ya sabe el problema pero no tiene forma de
+    # resolverlo desde la pantalla.
+    #
+    # Se resuelve solo cuando el sinonimo es UNIVOCO. Un archivo con `descripcion`
+    # Y `concepto` no se elige por el usuario: seria adivinar cual quiere decir,
+    # y adivinar cual de dos columnas es la correcta es justo la clase de error
+    # que este producto no se permite. En ese caso se sigue pidiendo el nombre
+    # exacto.
+    #
+    # Los nombres vienen en español e ingles porque un banco mexicano exporta en
+    # los dos: el mismo HSBC que pone `Fecha` pone `Descripcion`.
+    SINONIMOS: dict[str, tuple[str, ...]] = {
+        "fecha": ("fecha", "date", "fecha_operacion", "fecha_oper", "f_operation_date"),
+        "importe": ("importe", "amount", "monto", "importe_mxn", "deposito_retiro"),
+        "concepto": (
+            "concepto", "descripcion", "description", "detalle", "concepto_operacion",
+        ),
+        "referencia": ("referencia", "reference", "ref", "folio", "id"),
+    }
+
+    def _resolver(pedido: str, default: str) -> str:
+        """El nombre real de la columna, o el pedido si no se puede saber.
+
+        Un `pedido` VACIO significa "el cliente no especifico nada, busca tu". Es
+        distinto de un pedido con un nombre equivocado: en el primer caso se
+        recorre la lista de sinonimos, y en el segundo se respeta lo que dijo
+        quien lo mando, porque sabe de que columna habla.
+
+        Y si no se encuentra ningun sinonimo se devuelve `default` —"fecha",
+        "importe"— para que el mensaje de error siga nombrando la columna que se
+        buscaba. Devolver "" daria "faltan columnas: , ," que no le dice nada a
+        nadie.
+        """
+        if pedido:
+            # El cliente especifico algo: se usa tal cual, sin adivinar. Que
+            # exista o no en el archivo lo decide el chequeo de `missing` de mas
+            # abajo, que es donde ese error se reporta bien.
+            return pedido
+        for alias in SINONIMOS.get(default, ()):
+            if alias in df.columns:
+                return alias
+        return default
+
+    date_column = _resolver(date_column, "fecha")
+    amount_column = _resolver(amount_column, "importe")
+    description_column = _resolver(description_column, "concepto")
+    reference_column = _resolver(reference_column, "referencia")
+
     required_columns = {date_column, amount_column, description_column}
     missing = required_columns - set(df.columns)
     if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+        # Mensaje con lo que SI hay, no solo con lo que falta: un banco que
+        # exporta `Monto` en vez de `importe` no se arregla con un mensaje que
+        # no dice como se llama la columna. Y se listan las candidatas que se
+        # reconocieron, que es la accion concreta.
+        disponibles = ", ".join(sorted(df.columns))
+        raise ValueError(
+            f"Faltan columnas requeridas: {', '.join(sorted(missing))}. "
+            f"Columnas encontradas: {disponibles}. "
+            "Se puede indicar el nombre exacto con date_column, amount_column y "
+            "description_column."
+        )
+
+    # --- 2. Formato de fecha ---
+    # Se resuelve sobre el contenido REAL del archivo, no sobre una constante.
+    # Un archivo que trae `2026-10-05` y otro que trae `05/10/2026` son los
+    # mismos movimientos y no pueden usar el mismo formato fijo.
+    formatos_a_probar = (
+        # El cliente especifico un formato: se respeta, porque sabe del papel que
+        # esta hablando.
+        [date_format]
+        if date_format
+        # Si no especifico ninguno, se prueban en orden de especificidad. El
+        # orden NO es arbitrario: `%d/%m/%Y` va primero porque es como imprimen
+        # los extractos mexicanos, y va antes que `%m/%d/%Y` porque un banco de
+        # Mexico no usa el orden americano en un extracto que va a un contador en
+        # Mexico. Cuando dos formatos explican las mismas cifras —`01/02/2026` es
+        # ambiguo— gana el del pais.
+        else ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%d.%m.%Y"]
+    )
+    fecha_resuelta = _formato_de_que_funciona(df, date_column, formatos_a_probar)
 
     transactions = []
     for _, row in df.iterrows():
         try:
-            transaction_date = pd.to_datetime(row[date_column], format=date_format).date()
+            if fecha_resuelta is None and date_format:
+                # El cliente especifico un formato y no funciono con NINGUNA de
+                # las filas. Se respeta su formato y se falla.
+                #
+                # Y se falla, en vez de dejar que pandas infiera, porque el
+                # cliente que especifico el formato sabe del papel que esta
+                # hablando: si dice "%d/%m/%Y" y el archivo trae un ISO, o esta
+                # equivocado el formato o equivocado el archivo, y son dos
+                # problemas distintos. Adivinar uno produce una fecha creible
+                # en la columna equivocada, que es peor que no tener fecha.
+                raise ValueError(f"el formato {date_format!r} no corresponde a los datos")
+
+            if fecha_resuelta is None:
+                # Auto-detectado y ninguna de las muestrasSirvio. Se deja que
+                # pandas infiera: si tampoco puede, la excepcion sube al `except`
+                # de abajo y se reporta como fila invalida, que es lo que el
+                # cliente espera de un archivo ilegible.
+                transaction_date = pd.to_datetime(row[date_column]).date()
+            else:
+                transaction_date = pd.to_datetime(row[date_column], format=fecha_resuelta).date()
             amount = _a_decimal(row[amount_column], decimal_separator, thousands_separator)
             description = str(row[description_column]).strip()
             reference = str(row[reference_column]).strip() if reference_column in df.columns and pd.notna(row[reference_column]) else None

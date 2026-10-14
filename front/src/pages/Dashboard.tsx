@@ -129,19 +129,43 @@ function DatosDeApoyo({ d, irA }: { d: DashboardResponse; irA: (p: Page, f?: Fil
   const cola = Object.values(d.cola_revision).reduce((a, b) => a + b, 0);
   const sinClasificar = d.sin_clasificar;
 
+  // ## LAS TRES PRIMERAS AHORA SON BOTONES, Y ANTES NO LO ERAN
+  //
+  // MEDIDO el 2026-10-12: `Tickets`, `Por revisar` y `Banco conciliado`
+  // salian como `<button disabled>`. Tenian la misma forma que `Sin clasificar`,
+  // que SI es un boton, y a diferencia solo en que no tenian accion. El
+  // resultado en pantalla: tres cifras grises con apariencia de algo roto, al
+  // lado de una que si responde. Un boton deshabilitado es una promesa —"esto se
+  // puede hacer"—, y la pantalla la hacia sin poder cumplirla.
+  //
+  // Y las tres SI tienen destino, que es lo que hace obvia la ausencia:
+  //
+  //   Tickets          -> la lista, que es donde se ven
+  //   Por revisar      -> la cola, que es donde se trabaja
+  //   Banco conciliado -> la conciliacion, que es donde se cruza
   const datos = [
-    { etiqueta: 'Tickets', valor: numero(d.mes.tickets), nota: `en el mes` },
+    {
+      etiqueta: 'Tickets',
+      valor: numero(d.mes.tickets),
+      nota: `en el mes`,
+      accion: () => irA('tickets'),
+      ayuda: 'Ver los tickets del mes',
+    },
     {
       etiqueta: 'Por revisar',
       valor: numero(cola),
       nota: cola > 0 ? 'esperan' : 'nada',
       alerta: cola > 20,
+      accion: cola > 0 ? () => irA('review') : undefined,
+      ayuda: cola > 0 ? 'Abrir la cola de revision' : 'No hay nada esperando',
     },
     {
       etiqueta: 'Banco conciliado',
       valor: `${d.banco.porcentaje.toFixed(0)}%`,
       nota: `${numero(d.banco.sin_conciliar)} sin cuadrar`,
       alerta: d.banco.sin_conciliar > 0,
+      accion: () => irA('reconciliations'),
+      ayuda: 'Ver la conciliacion',
     },
     {
       // El total de TODO el historico, no el del mes. Y es un boton, porque es
@@ -153,9 +177,19 @@ function DatosDeApoyo({ d, irA }: { d: DashboardResponse; irA: (p: Page, f?: Fil
       nota: sinClasificar.tickets > 0 ? `${dinero(sinClasificar.monto, true)} pendientes` : 'todo clasificado',
       alerta: sinClasificar.tickets > 0,
       accion: sinClasificar.tickets > 0 ? () => irA('tickets', 'sinClasificar') : undefined,
+      ayuda: 'Ir a clasificarlos',
     },
   ];
 
+  // El `disabled` NO desaparece por completo, y esa es la decision. Una cifra sin
+// destino es un dato, no un boton roto: se ve mas apagada y con el cursor de
+// "aqui no se puede", que es exactamente lo que es. Lo que no puede volver a
+// pasar es que tres cifras PARECIERAN accionables y no lo fueran.
+//
+// El `title` de cada ficha dice adonde lleva, y no es cosmetico: sin el, un
+  // boton con la misma forma que sus vecinos y sin etiqueta de accion deja a
+  // quien lo ve sin forma de saber si responde. MEDIDO el 2026-10-12: las tres
+  // primeras salian deshabilitadas sin explicar nada.
   return (
     <Card className="lg:col-span-2">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-5 h-full content-center">
@@ -165,9 +199,11 @@ function DatosDeApoyo({ d, irA }: { d: DashboardResponse; irA: (p: Page, f?: Fil
             onClick={x.accion}
             disabled={!x.accion}
             className={`text-left lg:border-l lg:border-gray-100 lg:first:border-l-0 lg:pl-4 first:lg:pl-0 ${
-              x.accion ? 'cursor-pointer' : 'cursor-default'
+              x.accion
+                ? 'cursor-pointer hover:opacity-70 transition-opacity'
+                : 'cursor-default opacity-60'
             }`}
-            title={x.accion ? 'Ir a clasificarlos' : undefined}
+            title={x.ayuda}
           >
             <p className="text-xs text-gray-500">{x.etiqueta}</p>
             <p

@@ -66,6 +66,27 @@ class SeccionConciliacion(BaseModel):
     sin_conciliar: int = 0
     monto_discrepancias: Decimal = Decimal("0.00")
 
+    # Gastos de ESTE periodo cuyo pago cae en otro.
+    #
+    # Son las partidas conciliatorias, y el nombre no es tecnico: es lo que el
+    # contador pide al cierre cuando la contabilidad (devengo) y el banco (pago) no
+    # dicen lo mismo. Compra del 30 de septiembre, pago del 3 de octubre: el gasto
+    # es de septiembre en los libros y la salida es de octubre en el banco, y las
+    # dos cosas son ciertas.
+    #
+    # Por que vive AQUI y no en `SeccionPendientes`: no es trabajo pendiente de
+    # esta persona. Es un hecho ya ocurrido que hay que REPORTAR, y contarlo como
+    # pendiente diria "hay N cosas que arreglar" cuando la respuesta correcta es
+    # "esta es la diferencia entre las dos fechas, y es correcta".
+    #
+    # Sale de la conciliacion que ya existe: se une `tickets.expense_date` con
+    # `bank_transactions.transaction_date` y se comparan el MES de cada uno, no los
+    # dias. Comparar dias daria casi siempre cero, porque el matching ya exige que
+    # esten dentro de la tolerancia para ser PERFECT: lo que llega aqui es
+    # precisamente lo que se salio de esa ventana.
+    pagados_en_otro_periodo_tickets: int = 0
+    pagados_en_otro_periodo_monto: Decimal = Decimal("0.00")
+
 
 class SeccionLectura(BaseModel):
     """R5: 'leido por el sistema' y 'verificado por una persona', jamas igual.
@@ -108,6 +129,22 @@ class SeccionPendientes(BaseModel):
     discrepancias_abiertas: int = 0
     discrepancias_monto: Decimal = Decimal("0.00")
 
+    # Gastos del periodo cuya `expense_date` NO vino del papel.
+    #
+    # No es una quinta categoria de pendiente: es la unica que dice que el
+    # INFORME MISMO esta incompleto. Los otros tres pendientes son trabajo que
+    # alguien tiene que hacer —clasificar, conciliar— y el numero del periodo es
+    # real mientras tanto. Este es distinto: `expense_date` es el dia de la
+    # captura, no el de la compra, asi que hasta que alguien lo escriba mirando el
+    # papel NO SE SABE de que mes es este gasto. Contarlo aqui, y no como una nota,
+    # es lo que evita que un comprobante de marzo aparezca en el cierre de
+    # septiembre.
+    #
+    # MEDIDO el 2026-10-12: 5 de los 8 comprobantes de esta maquina estan en esta
+    # situacion, porque la exactitud del OCR en la fecha es de 33%.
+    sin_fecha_tickets: int = 0
+    sin_fecha_monto: Decimal = Decimal("0.00")
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def hay_pendientes(self) -> bool:
@@ -115,6 +152,7 @@ class SeccionPendientes(BaseModel):
             self.sin_categoria_tickets > 0
             or self.sin_conciliar_tickets > 0
             or self.discrepancias_abiertas > 0
+            or self.sin_fecha_tickets > 0
         )
 
     @computed_field  # type: ignore[prop-decorator]
@@ -122,11 +160,20 @@ class SeccionPendientes(BaseModel):
     def motivo(self) -> str | None:
         """Por que el periodo no se puede declarar cerrado (R3).
 
-        Los tres motivos se nombran en la frase y no se summarize en un "hay
-        pendientes": quien lee tiene que saber cual de los tres tiene que atacar
-        primero, y el orden cambia el trabajo de la tarde.
+        Los motivos se nombran en la frase y no se resumen en un "hay
+        pendientes": quien lee tiene que saber cual tiene que atacar primero, y el
+        orden cambia el trabajo de la tarde.
+
+        `sin_fecha` va PRIMERO a proposito. Los otros tres se arreglan con trabajo
+        normal; este no. No es que falte un dato: es que el dato que hay no es el
+        del papel, y hasta que alguien mire el comprobante el resto del informe es
+        una afirmacion sobre un mes que todavia no se sabe cual es.
         """
         partes: list[str] = []
+        if self.sin_fecha_tickets:
+            partes.append(
+                f"{self.sin_fecha_tickets} sin fecha del comprobante"
+            )
         if self.sin_categoria_tickets:
             partes.append(f"{self.sin_categoria_tickets} sin categoria")
         if self.sin_conciliar_tickets:

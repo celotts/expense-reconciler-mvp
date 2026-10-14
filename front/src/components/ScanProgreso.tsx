@@ -105,6 +105,12 @@ function motivos(validationErrors: string | null): string[] {
  * silencioso es un switch que miente cuando el backend crece. */
 const GLOSARIO: Record<string, string> = {
   total_not_positive: 'no se leyó un total',
+  /* No es lo mismo que `total_not_positive`, y por eso va aparte: ahi el sistema
+   * no leyo importe; aqui leyo ALGO y resulto ser basura. MEDIDO el 2026-10-12
+   * con `IMG_4415.heic`: el OCR devolvio 750047801456, que no es un gasto grande
+   * sino ruido leido como numero. El revisor tiene que distinguir "no hay
+   * nada" de "esto que hay no sirve", porque la accion es distinta. */
+  total_out_of_range: 'el importe leído no es creíble (ruido de lectura)',
   provider_missing: 'no se leyó el comercio',
   date_missing: 'no se leyó la fecha',
   subtotal_plus_tax_mismatch: 'subtotal + IVA no da el total',

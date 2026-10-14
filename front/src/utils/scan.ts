@@ -77,6 +77,67 @@ export function motorLabel(motor: string | null): string {
   }
 }
 
+/** Que clase de archivo DEBERIA ser, por su extension.
+ *
+ *  MEDIDO el 2026-10-12: el aviso de "el archivo se llama X pero sus bytes son
+ *  Y" salia en los **8 de 8** archivos. La comparacion era
+ *  `'.jpeg'.includes('image')`, que es `false` SIEMPRE: una extension y una
+ *  categoria de formato no son comparables, asi que el aviso no detectaba
+ *  discrepancias: las notificaba todas.
+ *
+ *  Lo que si es una discrepancia: un archivo llamado `.pdf` cuyos bytes son una
+ *  imagen, o uno llamado `.heic` que en realidad es un PDF. Ahi el nombre y el
+ *  contenido dicen cosas distintas, y el sistema leyo bien: por los bytes.
+ *  Eso es lo que este mapa permite distinguir.
+ *
+ *  Devuelve `null` para una extension que no está en la lista, y quien llama lo
+ *  trata como "no hay opinion": es preferible no avisar a avisar de todo. */
+const CATEGORIA_POR_EXTENSION: Record<string, string> = {
+  // Imagenes. HEIC y HEIF entran porque el producto se define por la foto del
+  // telefono; `.jpg2` y `.tif` por el mismo motivo.
+  jpg: 'image', jpeg: 'image', png: 'image', heic: 'image', heif: 'image',
+  webp: 'image', gif: 'image', bmp: 'image', tif: 'image', tiff: 'image',
+  jpg2: 'image',
+  pdf: 'pdf',
+  txt: 'text', csv: 'text', text: 'text', log: 'text',
+};
+
+/** ¿El nombre del archivo contradice lo que dicen sus bytes?
+ *
+ *  `true` SOLO cuando hay una discrepancia real: la extension pertenece a una
+ *  categoria y los bytes son de OTRA. Cuando la extension no esta en el mapa se
+ *  devuelve `false`, porque ahi no hay nada que comparar y un aviso sin
+ *  fundamento entrena a ignorar los avisos.
+ *
+ *  Ojo con la asimetria que se acepto a proposito: `IMG_4253 2.HEIC` esta
+ *  guardado y **por sus bytes es un JPEG** — la camara del telefono lo nombro
+ *  mal. El sistema lo lee como lo que es y eso es lo correcto, pero el nombre
+ *  sigue diciendo HEIC y el usuario lo ve en su carpeta. Por eso el aviso
+ *  compara CATEGORIAS y no formatos exactos: un HEIC que es JPEG sigue siendo
+ *  una imagen, y ahi no hay nada que avisar. Lo que se avisa es un PDF
+ *  disfrazado de foto, que es lo que si confunde a un operador. */
+export function hayDiscrepanciaDeFormato(
+  declaredExtension: string | null | undefined,
+  detectedFormat: string | null | undefined,
+): boolean {
+  if (!declaredExtension || !detectedFormat) return false;
+
+  const ext = declaredExtension.replace(/^\./, '').trim().toLowerCase();
+  if (!ext) return false;
+
+  const declarada = CATEGORIA_POR_EXTENSION[ext];
+  if (!declarada) return false;
+
+  return declarada !== detectedFormat;
+}
+
+/** La categoria que el nombre sugiere, en palabras. Para el mensaje. */
+export function categoriaDeExtension(extension: string | null | undefined): string | null {
+  if (!extension) return null;
+  const ext = extension.replace(/^\./, '').trim().toLowerCase();
+  return CATEGORIA_POR_EXTENSION[ext] ?? null;
+}
+
 /** Que paso en la corrida, en palabras.
  *
  *  `accion` es lo que OCURRIO (creado, sin cambios, omitido) y `status` es en

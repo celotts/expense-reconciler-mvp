@@ -618,10 +618,19 @@ async def _actualizar_ticket(
     #
     # Y no es "quedarse con la fecha vieja" lo que evita la fabricacion: el
     # `date.today()` de aqui es la MISMA marca que ya acepta el alta de un ticket
-    # (`ticket_persistence.py`), con su `date_missing` al lado. Fabricar es lo que
-    # haria el gate si esto fuera `None`: un `date_missing` sin marcar, indistinguible
-    # de un gasto real de ese dia.
+    # (`ticket_persistence.py`), con su `date_missing` al lado Y con
+    # `fecha_provisional` en True. Fabricar es lo que haria el gate si esto fuera
+    # `None`: un `date_missing` sin marcar, indistinguible de un gasto real de ese
+    # dia.
+    #
+    # Y `fecha_provisional` se vuelve a poner en `True` aunque la fila ya lo
+    # tuviera en `False`. Una relectura que no encuentra fecha NO esta confirmando
+    # la anterior: esta escribiendo otra vez la del dia. Si se conservara la marca
+    # anterior, un comprobante que se sabia fechar pasaria a ser "fecha del papel"
+    # solo porque la segunda lectura fue peor — y el informe contaria como periodo
+    # un dato que nadie leyo. La regla es "esta fecha se leyo en ESTA lectura".
     ticket.expense_date = extracted.expense_date or date.today()
+    ticket.fecha_provisional = extracted.expense_date is None
 
     await db.commit()
     await db.refresh(ticket)

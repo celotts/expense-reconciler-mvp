@@ -93,14 +93,19 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "un documento ilegible se pierde en vez de ir a la cola",
         "app/services/capture.py",
-        # OJO: esta mutacion apuntaba a la forma antigua de `_exige_items`
-        # (`if ...: return False` / `return True`), que Ruff pidio reducir a un
-        # solo `return not (...)`. Al no encontrar el patron, el script la
-        # reportaba como SOBREVIVIDA —que es mentira: no se probo nada—. El
-        # `??` que ahora imprime distingue las dos cosas. Si se vuelve a cambiar
-        # esta linea, esta mutacion hay que reapuntarla.
-        "    return not (\n        resultado.provider_name == UNKNOWN_PROVIDER or resultado.total_amount <= 0\n    )",
-        "    return not (\n        resultado.provider_name == UNKNOWN_PROVIDER and resultado.total_amount <= 0\n    )",
+        # OJO: este patron se reapunto DOS veces, y las dos veces por lo mismo:
+        # apunta a texto LITERAL, y Ruff reformatea el bloque sin que nadie lo
+        # note. La primera version apuntaba a la forma antigua de `_exige_items`
+        # (`if ...: return False` / `return True`). Esta apunta a `_es_extraccion_util`,
+        # que Ruff redujo a un solo `return not (...)` y despues le anadio el
+        # termino de `_nombre_parece_basura`.
+        #
+        # Por eso el `??` del script distingue SOBREVIVIDA de NO PROBADA: una
+        # mutacion que no se aplica y sigue contando es PEOR que una que no
+        # existe, porque el conteo dice 28 y son 27. Si se vuelve a tocar esta
+        # funcion, hay que reapuntar el patron.
+        "    return not (\n        resultado.provider_name == UNKNOWN_PROVIDER\n        or resultado.total_amount <= 0\n        or _nombre_parece_basura(resultado.provider_name)\n    )",
+        "    return not (\n        resultado.provider_name == UNKNOWN_PROVIDER\n        and resultado.total_amount <= 0\n        and _nombre_parece_basura(resultado.provider_name)\n    )",
         [
             "tests/unit/test_capture.py::TestPdfConTexto",
             "tests/unit/test_capture.py::TestTiposDeArchivo",

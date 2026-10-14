@@ -41,12 +41,13 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fpdf import FPDF
 
 from app.core.enums import ExtractionStatus, MatchStatus, SpotCheckStatus
+from app.models.bank_transaction import BankTransactionModel
 from app.models.cierre_periodo import CierrePeriodoModel
 from app.models.company import CompanyModel
 from app.models.reconciliation import ReconciliationModel
@@ -289,6 +290,46 @@ async def _conciliacion(
         )
     )).scalar_one()
 
+    # LA PARTIDA CONCILIATORIA: comprados aqui, pagados alla.
+    #
+    # Se comparan los MESES de cada fecha, no los dias. Los dias no sirven aqui:
+    # el matching ya exige que esten dentro de `date_tolerance_days` para dar
+    # PERFECT, asi que lo unico que llega a este query tiene fecha correcta o esta
+    # fuera de la ventana. Y `PERFECT` SI puede caer en otro mes: compra el 29 y
+    # pago el 2 cruzan el cambio de mes con las dos fechas dentro de tolerancia.
+    # Con el filtro de `fecha_provisional` abajo, ademas, un gasto cuya fecha es
+    # el dia de la captura NO CUENTA como partida: no se sabe de que mes se
+    # compro, y contarlo aqui afirmaria un mes que nadie ha verificado.
+    #
+    # El `.is_(True)` y no `== True` porque en SQLite la columna se resuelve a 0/1
+    # y la comparacion con un booleano de Python devuelve la fila o no, que es
+    # justo el modo de fallo que hace que una defensa parezca inerte.
+    cruce = (await db.execute(
+        select(
+            func.count(TicketModel.id),
+            func.coalesce(func.sum(TicketModel.total_amount), 0),
+        )
+        .select_from(ReconciliationModel)
+        .join(TicketModel, ReconciliationModel.ticket_id == TicketModel.id)
+        .join(
+            BankTransactionModel,
+            ReconciliationModel.bank_transaction_id == BankTransactionModel.id,
+        )
+        .where(
+            and_(
+                TicketModel.company_id == company_id,
+                TicketModel.expense_date >= inicio.date(),
+                TicketModel.expense_date < fin.date(),
+                TicketModel.fecha_provisional.is_(False),
+                # Mismo periodo, distinta fecha: el pago cae fuera de este mes.
+                extract("year", BankTransactionModel.transaction_date)
+                == extract("year", TicketModel.expense_date),
+                extract("month", BankTransactionModel.transaction_date)
+                != extract("month", TicketModel.expense_date),
+            )
+        )
+    )).one()
+
     return SeccionConciliacion(
         por_estado=por_estado,
         conciliados=conciliados,
@@ -296,6 +337,8 @@ async def _conciliacion(
         # porque no se ha corrido el matching, y esa distincion es la accion.
         sin_conciliar=max(int(total_tickets) - conciliados - por_estado.get(MatchStatus.MANUAL.value, 0), 0),
         monto_discrepancias=_dec(monto_disc),
+        pagados_en_otro_periodo_tickets=int(cruce[0] or 0),
+        pagados_en_otro_periodo_monto=_dec(cruce[1]),
     )
 
 
@@ -411,6 +454,13 @@ async def _pendientes(
     informe que nadie puede cerrar nunca, y dejaria de servir para lo unico que
     tiene que servir. Los tickets de enero aparecen en el informe de enero, que
     es donde pueden corregirse.
+
+    **El "sin fecha" se cuenta sobre el periodo TAMPOCO, y por una razon distinta.**
+    No es trabajo pendiente de esta persona: es que el periodo todavia no se sabe
+    cual es. Un gasto cuya `expense_date` es el dia de la captura no pertenece a
+    octubre aunque la fila diga octubre — pertenece a un mes que nadie ha mirado
+    todavia. Contarlo aqui es lo que hace que el resto del informe se pueda leer
+    como una afirmacion sobre octubre y no como una suma sin основа.
     """
     sin_cat = (await db.execute(
         select(func.count(TicketModel.id), func.coalesce(func.sum(TicketModel.total_amount), 0))
@@ -427,6 +477,18 @@ async def _pendientes(
         )
     )).one()
 
+    sin_fecha = (await db.execute(
+        select(func.count(TicketModel.id), func.coalesce(func.sum(TicketModel.total_amount), 0))
+        .where(
+            and_(
+                TicketModel.company_id == company_id,
+                TicketModel.expense_date >= inicio.date(),
+                TicketModel.expense_date < fin.date(),
+                TicketModel.fecha_provisional.is_(True),
+            )
+        )
+    )).one()
+
     conciliacion = await _conciliacion(db, company_id, inicio, fin)
 
     return SeccionPendientes(
@@ -436,6 +498,8 @@ async def _pendientes(
         sin_conciliar_monto=Decimal("0.00"),
         discrepancias_abiertas=conciliacion.por_estado.get(MatchStatus.DISCREPANCY.value, 0),
         discrepancias_monto=conciliacion.monto_discrepancias,
+        sin_fecha_tickets=int(sin_fecha[0] or 0),
+        sin_fecha_monto=_dec(sin_fecha[1]),
     )
 
 
@@ -757,6 +821,25 @@ def generar_pdf(reporte: ReporteCierreMensual) -> bytes:
         size=9,
     )
 
+    # LA PARTIDA CONCILIATORIA, en la seccion de conciliacion y no en la de
+    # pendientes, porque no es trabajo pendiente: es una diferencia que ya ocurrio y
+    # que hay que REPORTAR.
+    c = reporte.conciliacion
+    if c.pagados_en_otro_periodo_tickets:
+        pdf.ln(2)
+        fila(
+            "Comprados aqui, pagados en otro periodo",
+            f"{c.pagados_en_otro_periodo_tickets} ({_dinero(c.pagados_en_otro_periodo_monto)})",
+        )
+        parrafo(
+            "Son gastos que forman parte de este periodo por su fecha de compra y "
+            "que se pagaron en otro mes. En contabilidad el gasto es de aqui "
+            "(devengo) y en el banco la salida es de alla; las dos fechas son "
+            "ciertas y esta linea es la que explica la diferencia. No es un error "
+            "de captura.",
+            size=9,
+        )
+
     # --- 5. Bloque de exactitud. EL CORAZON ---
     titulo("5. Exactitud de la lectura automatica")
     if reporte.exactitud is None:
@@ -834,9 +917,29 @@ def generar_pdf(reporte: ReporteCierreMensual) -> bytes:
     titulo("7. Pendientes")
     p = reporte.pendientes
     if not p.hay_pendientes:
-        parrafo("No hay pendientes: no hay tickets sin categoria, sin conciliar ni "
-                "discrepancias abiertas en este periodo.")
+        parrafo("No hay pendientes: no hay tickets sin fecha del comprobante, sin "
+                "categoria, sin conciliar ni discrepancias abiertas en este periodo.")
     else:
+        # El "sin fecha" va PRIMERO y con su propia frase, y no por jerarquia de
+        # estilo. Los otros tres pendientes son trabajo que alguien tiene que
+        # hacer. Este es distinto: la fecha que hay no es la del papel, asi que no
+        # se sabe todavia de que mes es este gasto — y mientras no se sepa, el
+        # "Total del periodo" de la pagina 1 excluye estos importes y el resto del
+        # documento no se puede leer como el resumen de octubre.
+        #
+        # Decirlo en el pie, pequeno y de ultimo, seria peor que no decirlo: un
+        # lector que llega al final ya dio por bueno el total de arriba.
+        if p.sin_fecha_tickets:
+            fila(
+                "Sin fecha del comprobante",
+                f"{p.sin_fecha_tickets} ({_dinero(p.sin_fecha_monto)})",
+            )
+            parrafo(
+                "Su fecha es el dia en que se digitalizo, no el de la compra. No se "
+                "suman al total de este periodo y no aparece en ninguna categoria "
+                "hasta que alguien la escriba mirando el comprobante.",
+                size=9,
+            )
         fila("Sin categoria", f"{p.sin_categoria_tickets} ({_dinero(p.sin_categoria_monto)})")
         fila("Sin conciliar", f"{p.sin_conciliar_tickets} ({_dinero(p.sin_conciliar_monto)})")
         fila(

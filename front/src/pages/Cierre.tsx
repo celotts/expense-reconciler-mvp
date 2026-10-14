@@ -317,6 +317,32 @@ const [loading, setLoading] = useState(!informeInicial);
               DISCREPANCY no cuenta como conciliado: hay un movimiento en la fecha
               correcta con otro monto, y eso lo tiene que ver una persona.
             </p>
+
+            {/* La partida conciliatoria va en la seccion de conciliacion y no en
+                la de pendientes, y no por criterio de seccion: no es trabajo
+                pendiente de esta persona. Es una diferencia que ya ocurrio y que
+                hay que REPORTAR — el gasto es de este periodo por su fecha de
+                compra, y la salida de dinero es del siguiente.
+
+                Se condiciona a `> 0` a proposito. Con cero sale una fila que
+                dice "no hay", que es una afirmacion sobre un dato que el usuario
+                todavia no conoce; y con el cero al lado de un numero que se ve
+                arriba, se lee como "el sistema no encontro ninguno", que es otra
+                cosa. */}
+            {reporte.conciliacion.pagados_en_otro_periodo_tickets > 0 && (
+              <>
+                <Fila
+                  k="Comprados aquí, pagados en otro periodo"
+                  v={`${numero(reporte.conciliacion.pagados_en_otro_periodo_tickets)} t. — ${dinero(reporte.conciliacion.pagados_en_otro_periodo_monto)}`}
+                />
+                <p className="mt-3 text-xs text-gray-500">
+                  Gastos que forman parte de este periodo por su fecha de compra y
+                  que se pagaron en otro mes. En contabilidad el gasto es de aquí
+                  y en el banco la salida es de allá; las dos fechas son ciertas.
+                  No es un error de captura.
+                </p>
+              </>
+            )}
           </Seccion>
 
           {/* 5. Exactitud. EL CORAZON */}
@@ -381,9 +407,29 @@ const [loading, setLoading] = useState(!informeInicial);
 
           {/* 7. Pendientes */}
           <Seccion titulo="7. Pendientes">
-            <Fila k="Sin categoría" v={`${numero(reporte.pendientes.sin_categoria_tickets)} t. — ${dinero(reporte.pendientes.sin_categoria_monto)}`} />
-            <Fila k="Sin conciliar" v={`${numero(reporte.pendientes.sin_conciliar_tickets)} t. — ${dinero(reporte.pendientes.sin_conciliar_monto)}`} />
-            <Fila k="Discrepancias abiertas" v={`${numero(reporte.pendientes.discrepancias_abiertas)} — ${dinero(reporte.pendientes.discrepancias_monto)}`} />
+            {/* El "sin fecha" va PRIMERO, y no por jerarquia: es el unico
+                pendiente que hace que el TOTAL de la seccion 1 este incompleto.
+                Los otros tres son trabajo normal —clasificar, conciliar— y el
+                total del periodo sigue siendo real mientras tanto. Este no: la
+                fecha que hay es el dia de la captura, no el de la compra, asi que
+                estos importes NO estan en el total de arriba y sin esta fila el
+                encabezado y el detalle dirian dos cosas distintas. */}
+            <Fila
+              k="Sin fecha del comprobante"
+              v={`${numero(reporte.pendientes.sin_fecha_tickets)} t. — ${dinero(reporte.pendientes.sin_fecha_monto)}`}
+            />
+            {reporte.pendientes.sin_fecha_tickets > 0 && (
+              <p className="mt-3 text-xs text-gray-500">
+                Su fecha es el día en que se digitalizó, no el de la compra. No suman
+                al total de este periodo ni aparecen en ninguna categoría hasta que
+                alguien escriba la fecha mirando el comprobante.
+              </p>
+            )}
+            <div className="mt-3">
+              <Fila k="Sin categoría" v={`${numero(reporte.pendientes.sin_categoria_tickets)} t. — ${dinero(reporte.pendientes.sin_categoria_monto)}`} />
+              <Fila k="Sin conciliar" v={`${numero(reporte.pendientes.sin_conciliar_tickets)} t. — ${dinero(reporte.pendientes.sin_conciliar_monto)}`} />
+              <Fila k="Discrepancias abiertas" v={`${numero(reporte.pendientes.discrepancias_abiertas)} — ${dinero(reporte.pendientes.discrepancias_monto)}`} />
+            </div>
             {reporte.pendientes.motivo && (
               <p className="mt-3 text-sm text-amber-700">
                 Motivo por el que no cierra: {reporte.pendientes.motivo}

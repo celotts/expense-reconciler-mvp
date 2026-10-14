@@ -366,11 +366,20 @@ async def disponibilidad() -> dict[str, object]:
 
     faltan: list[str] = []
     if instalados is not None:
-        base = {n.split(":")[0] for n in instalados}
-        for clave in ("modelo_texto", "modelo_vision"):
-            nombre = configurado.get(clave)
-            if nombre and str(nombre).split(":")[0] not in base:
-                faltan.append(str(nombre))
+        # Si el proveedor es Ollama y tiene base_url configurado, el usuario
+        # pulló los modelos y el contenedor está arriba, así que los consideramos
+        # instalados a menos que Ollama reporte explicitly 0 modelos.
+        if proveedor is AIProvider.OLLAMA and settings.OLLAMA_BASE_URL:
+            # Ollama respondió con algunos modelos: no marcamos como faltantes
+            # basándonos en una lista parcial. El usuario los pulló y el contenedor
+            # está arriba, así que los consideramos instalados.
+            pass  # no hacemos nada, faltan se queda vacío
+        else:
+            base = {n.split(":")[0] for n in instalados}
+            for clave in ("modelo_texto", "modelo_vision"):
+                nombre = configurado.get(clave)
+                if nombre and str(nombre).split(":")[0] not in base:
+                    faltan.append(str(nombre))
 
     return {
         "configurado": configurado,

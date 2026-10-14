@@ -2132,7 +2132,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5c. Subir CSV (SOLO previsualiza, no guarda)",
-      "description": "Preview CSV import without saving to database.",
+      "description": "Preview CSV import without saving to database.\n\nSin parametros de forma, detecta separador, encabezados y formato de fecha.\nVer `parse_bank_csv` y el comentario de los defaults vacios, arriba.",
       "method": "POST",
       "body": {
         "mimeType": "multipart/form-data",

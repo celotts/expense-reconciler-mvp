@@ -9,7 +9,7 @@ import {
   validateTicketForm, hasErrors, normalizeTicketForm,
   type TicketFormErrors, UNKNOWN_PROVIDER,
 } from '../utils/validation';
-import { dinero } from '../utils/format';
+import { dinero, fecha } from '../utils/format';
 import { VeredictoTicket } from '../components/VeredictoTicket';
 
 /** Como se filtra esta pantalla.
@@ -424,7 +424,10 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     { key: 'provider_tax_id', header: 'RFC Proveedor', render: (t: Ticket) => t.provider_tax_id ? <code className="text-sm">{t.provider_tax_id}</code> : <span className="text-gray-400">-</span> },
     { key: 'total_amount', header: 'Total', render: (t: Ticket) => <span className="font-medium text-green-700">{dinero(t.total_amount)}</span> },
     { key: 'tax_amount', header: 'IVA', render: (t: Ticket) => <span className="text-gray-600">{dinero(t.tax_amount)}</span> },
-    { key: 'expense_date', header: 'Fecha', render: (t: Ticket) => new Date(t.expense_date).toLocaleDateString('es-MX') },
+    // `fecha()`, no `new Date(...).toLocaleDateString()`. El segundo pinta el
+    // dia ANTERIOR en cualquier zona detras de UTC: un gasto del 1 de octubre
+    // sale como 30 de septiembre. MEDIDO el 2026-10-12. Ver `utils/format.ts`.
+    { key: 'expense_date', header: 'Fecha', render: (t: Ticket) => fecha(t.expense_date) },
     { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-amber-500 text-xs">sin clasificar</span> },
     { key: 'actions', header: 'Acciones', render: (t: Ticket) => (
       <div className="flex gap-2">

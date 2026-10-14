@@ -5,7 +5,7 @@ import type {
   ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
 import { Button, Card, Badge, Loading, EmptyState, Select, Modal } from '../components/ui';
-import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO } from '../utils/scan';
+import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO, hayDiscrepanciaDeFormato } from '../utils/scan';
 import { VerDocumento } from '../components/TicketDocumento';
 import { PanelProgreso } from '../components/ScanProgreso';
 import { CasillaArchivar } from '../components/CasillaArchivar';
@@ -622,8 +622,12 @@ function DetalleArchivo({ detalle, ticket, onReprocesar, onCerrar }: {
         {detalle.detected_format && <Badge>formato real: {detalle.detected_format}</Badge>}
       </div>
 
-      {detalle.declared_extension && detalle.detected_format
-        && !detalle.declared_extension.includes(detalle.detected_format) && (
+      {/* El aviso sale SOLO con una discrepancia real: la extension pertenece a
+          una categoria y los bytes son de otra. MEDIDO el 2026-10-12: salia en
+          los 8 de 8, porque comparaba `'.jpeg'.includes('image')`, que es falso
+          siempre — una extension y una categoria no son comparables. Un aviso
+          que aparece siempre no informa: entrena a ignorar el que si. */}
+      {hayDiscrepanciaDeFormato(detalle.declared_extension, detalle.detected_format) && (
         <p className="text-sm text-yellow-800 bg-yellow-50 border border-yellow-200 rounded p-2">
           El archivo se llama <code>{detalle.declared_extension}</code> pero sus bytes son{' '}
           <code>{detalle.detected_format}</code>. Se leyó como lo que dice el contenido, que es lo

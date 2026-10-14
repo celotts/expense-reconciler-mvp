@@ -512,13 +512,33 @@ async def get_review_queue(
     if company_id:
         base = base.where(TicketModel.company_id == company_id)
 
+    # `open_states` se define SIEMPRE, antes del `if`, y no dentro.
+    #
+    # `total_open` lo necesita en las dos ramas —es el conteo de la cola abierta
+    # y va en global, para que el encabezado no salte al filtrar—, asi que
+    # definirlo solo en el `else` lo deja sin valor en cuanto hay filtro y la
+    # ruta responde 500 con `UnboundLocalError`. MEDIDO: ese era el 500 de
+    # `?status=APROBADO`, que es el primer clic que hace cualquiera en la
+    # pantalla.
     open_states = [
         ExtractionStatus.REQUIERE_REVISION.value,
         ExtractionStatus.PENDIENTE.value,
     ]
-    open_q = base.where(TicketModel.extraction_status.in_(open_states))
+
+    # Si el usuario selecciono un filtro de estado, este trae todos los tickets
+    # con ese estatus (no solo los de la cola). Si no hay filtro, se usan los
+    # estados por defecto de la cola.
+    #
+    # Son ramas EXCLUYENTES, no dos filtros que se apilen. Con un
+    # `.where(...) == status` que sobrevive dentro del `else`, el `status` es
+    # `None` ahi y eso compila a `extraction_status IS NULL`: combinado con el
+    # `IN (...)` de arriba deja una condicion que no puede cumplirse, y la cola
+    # sale vacia sin decir por que. Un filtro que se contradice a si mismo
+    # devuelve "no hay nada" y eso se lee como una verdad.
     if status:
-        open_q = open_q.where(TicketModel.extraction_status == status)
+        open_q = base.where(TicketModel.extraction_status == status)
+    else:
+        open_q = base.where(TicketModel.extraction_status.in_(open_states))
     open_q = open_q.order_by(TicketModel.created_at.asc()).limit(limit)
 
     rows = (await db.execute(open_q)).scalars().all()
@@ -546,6 +566,9 @@ async def get_review_queue(
 
     return TicketReviewQueueResponse(
         company_id=company_id,
+        # `total_open` NO depende del filtro, por contrato: cuenta REQUIERE_REVISION
+        # + PENDIENTE aunque ahora `tickets` venga filtrado por otro estado. Es lo
+        # que hace que el encabezado no salte de 40 a 3 al cambiar el selector.
         total_open=sum(counts.get(s, 0) for s in open_states),
         por_estado=counts,
         antiguedad_promedio_dias=avg_age,
@@ -616,9 +639,53 @@ async def review_ticket(
         exclude_unset=True,
         exclude={"action", "notes"},
     )
+
+    # Se guarda el estado ANTES de tocar nada, para poder responder despues a
+    # la unica pregunta que importa aqui: ¿esta revision cambio algo?
+    estado_antes = ticket.extraction_status
+
+    # La fecha que HABA antes de que este endpoint la tocara. Se compara para
+    # distinguir "la corrigio" de "reenvio la misma"; ver `fecha_corregida` mas
+    # abajo, que es donde se usa.
+    fecha_antes = ticket.expense_date
+
+    # ¿Algún dato cambia DE VERDAD? Se compara contra el valor que ya estaba,
+    # y se mira ANTES de asignar: comparar despues daria siempre "si", porque
+    # el valor ya es el nuevo.
+    #
+    # Un "aprobar" que reenvia los mismos numeros que ya tenia no es una
+    # correccion. Se compara contra el valor de la FILA, no contra el del
+    # cuerpo, que es el mismo criterio que usa `ProductoUpdate` con
+    # `exclude_unset` para distinguir "no lo mandaron" de "lo mandaron igual".
+    hubo_correccion = any(
+        value is not None and getattr(ticket, field, None) != value
+        for field, value in corrections.items()
+    )
+
     for field, value in corrections.items():
         if value is not None:
             setattr(ticket, field, value)
+
+    # UNA FECHA ESCRITA A MANO DEJA DE SER PROVISIONAL
+    # ------------------------------------------------
+    # `fecha_provisional` dice de donde salio `expense_date`, no si es buena. Si
+    # una persona escribe la fecha, la fecha ya no es el dia de la captura: viene
+    # del papel que ella esta mirando. Y con eso deja de contar como "no
+    # pertenece a ningun periodo".
+    #
+    # Solo se limpia si el valor **cambio**. Aprobar reenviando los mismos numeros
+    # que ya tenia no es una correccion —es el mismo criterio que `hubo_correccion`
+    # de arriba, y por la misma razon: comparar el cuerpo contra la fila antes de
+    # asignar distingue "lo corrigio" de "lo reenvio igual".
+    #
+    # Y no se limpia en la relectura automatica (`scan_service._actualizar_ticket`):
+    # una lectura que no encuentra fecha no esta confirmando la anterior.
+    fecha_corregida = (
+        corrections.get("expense_date") is not None
+        and corrections["expense_date"] != fecha_antes
+    )
+    if fecha_corregida:
+        ticket.fecha_provisional = False
 
     if review_in.action == "reject":
         ticket.extraction_status = ExtractionStatus.RECHAZADO.value
@@ -655,13 +722,49 @@ async def review_ticket(
         ticket.validation_errors = None
 
     ticket.review_notes = review_in.notes
-    ticket.reviewed_at = utcnow()
-    # La identidad sale del token, no de un texto fijo. Antes era la cadena
-    # "user" en todas las revisiones, lo que hacia que la columna no dijera
-    # nada: veinte revisiones de tres personas son indistinguibles. Con esto,
-    # "quien rechazo esto" tiene respuesta, y es la misma que uso el token que
-    # autorizo la peticion.
-    ticket.reviewed_by = usuario.email
+
+    # CUANDO SE FIRMA, Y CUANDO NO
+    #
+    # La firma se escribe si la revision cambio ALGO: un dato corregido o un
+    # estado que paso de un valor a otro. No se escribe cuando no cambio nada.
+    #
+    # POR QUE "NO CAMBIO NADA" NO ES UN CASO TEORICO
+    #
+    # Aprobar un ticket que ya esta `APROBADO` sin tocar un dato no es un
+    # no-op de verdad: firma otra vez. `reviewed_at` y `reviewed_by` son la
+    # evidencia de QUIEN aprobo QUE y CUANDO, y un segundo clic los pisa con
+    # la hora del clic. MEDIDO: los 7 `APROBADO` de esta maquina tienen
+    # `reviewed_at` repartido entre las 01:29 y las 03:06, que son los clics y
+    # no la aprobacion original.
+    #
+    # Y esa firma no es decorativa: es lo que el resto del sistema consulta
+    # para decisiones que no admiten adivinar. `_es_revisado_por_humano`
+    # (`scan_service`) protege al ticket de que un reescaneo lo sobreescriba,
+    # `document_service` la consulta antes de reemplazar el comprobante, y
+    # `POST /scan/reset` se niega a borrar si hay alguno. Si un clic de mas
+    # firma un ticket que nadie toco, esas tres decisiones pasan a apoyarse en
+    # una firma falsa.
+    #
+    # POR QUE EL ESTADO CUENTA Y NO SOLO LOS DATOS
+    #
+    # Aprobar un `PENDIENTE` sin corregir nada SI es una decision: cambia el
+    # estado y es el caso normal de la cola. Medido en la cola real, es lo mas
+    # frecuente. Si la regla mirara solo `hubo_correccion`, ese approve —el
+    # que hace la cola— dejaria de firmarse y se perderia justo la evidencia
+    # mas importante. Por eso la condicion es "cambio el estado O cambio un
+    # dato", y no "cambio un dato".
+    #
+    # Un `request_info` sobre un ticket que ya estaba `REQUIERE_REVISION`, sin
+    # cambios, cae aqui: no firma. Es el mismo clic de mas, y por la misma
+    # razon no debe escribir una firma que nadie puso.
+    if hubo_correccion or ticket.extraction_status != estado_antes:
+        ticket.reviewed_at = utcnow()
+        # La identidad sale del token, no de un texto fijo. Antes era la cadena
+        # "user" en todas las revisiones, lo que hacia que la columna no dijera
+        # nada: veinte revisiones de tres personas son indistinguibles. Con esto,
+        # "quien rechazo esto" tiene respuesta, y es la misma que uso el token que
+        # autorizo la peticion.
+        ticket.reviewed_by = usuario.email
 
     await db.commit()
     await db.refresh(ticket)
@@ -1441,8 +1544,19 @@ async def update_ticket(
     # columna JSON. Setearlo como objeto y dejar que lo caste el driver seria
     # escribir `[{'LineaTicketUpdate': ...}]`.
     lineas = update_data.pop("items", None)
+    # Si la fecha viene en el cuerpo y es distinta de la que estaba, la escribio
+    # una persona mirando el papel, y deja de ser provisional. Es el mismo
+    # criterio que `review_ticket`: la procedencia de la fecha cambia cuando una
+    # persona la escribe, no cuando el valor resulta "parecido".
+    fecha_corregida = (
+        "expense_date" in update_data
+        and update_data["expense_date"] is not None
+        and update_data["expense_date"] != ticket.expense_date
+    )
     for field, value in update_data.items():
         setattr(ticket, field, value)
+    if fecha_corregida:
+        ticket.fecha_provisional = False
 
     if lineas is not None:
         # El `JSONConDecimal` de la columna convierte los importes a texto al

@@ -29,6 +29,42 @@ MONEY_TOLERANCE = Decimal("0.01")
 MAX_FUTURE_DAYS = 2
 MAX_PAST_YEARS = 3
 
+# ## EL TECHO DEL TOTAL
+#
+# `total_amount` es `NUMERIC(12,2)`: el maximo representable son 9,999,999,999.99.
+# Un importe mayor no es un gasto grande, es **ruido de OCR leido como numero**.
+#
+# MEDIDO el 2026-10-12 en esta maquina, con `IMG_4415.heic`: el OCR devolvio
+# `Decimal('750047801456')`. Son 750 MIL MILLONES de pesos. El `INSERT` reventó
+# con un error de PostgreSQL, la transaccion entera hizo rollback —con ella la
+# fila de `scan_files`—, el comprobante **desaparecio sin dejar rastro en
+# ningun lado**, y `POST /api/v1/scan/` respondio **200 OK**.
+#
+# Eso es lo que este check evita, y por que importa mas de lo que parece: el
+# modo de fallo no es un total equivocado, es un **comprobante perdido en
+# silencio**. Quien digitalizo no sabe que tiene que volver a subirlo, porque
+# la pantalla dijo que todo bien.
+#
+# EL VALOR, Y POR QUE ESTE Y NO OTRO
+# ----------------------------------
+# El techo real de la columna es ~10 mil millones. Este es MUCHO mas bajo, a
+# proposito, porque el check no existe para proteger la columna sino para
+# marcar una lectura que no es creible. El comprobante mas caro que justifiable
+# para un freelance o un negocio pequeno es una renta o una remodelacion de
+# varios millones; 50 millones ya es del orden de un error de lectura.
+#
+# Y es un parametro, no una constante escondida, para que si en algun momento
+# hace falta aceitar un comprobante mayor se cambie el numero y no se desmonte
+# el mecanismo.
+#
+# Lo que NO hace este check, y por que: no corrige el total ni lo pone en cero.
+# Marca `total_out_of_range` y el ticket va a la cola. Quien lo mire ve el
+# numero absurdo y lo escribe bien. Ponerlo en cero seria **inventar un dato**
+# —`0.00` dice "el papel no trae importe", que es distinto de "el sistema leyo
+# basura"— y es la misma mentira que `date.today()` arreglamos con
+# `fecha_provisional`, pero sin la marca que la sostiene.
+MAX_TOTAL_PLAUSIBLE = Decimal("50000000")
+
 
 @dataclass
 class ValidationOutcome:
@@ -138,6 +174,17 @@ def validate_extraction(
 
     if total_amount is None or total_amount <= 0:
         out.failures.append("total_not_positive")
+    elif total_amount > MAX_TOTAL_PLAUSIBLE:
+        # Ruido de OCR leido como numero, no un gasto grande. Ver
+        # `MAX_TOTAL_PLAUSIBLE`: el modo de fallo que esto evita NO es un total
+        # equivocado, es un comprobante perdido en silencio porque el INSERT no
+        # cabe en `NUMERIC(12,2)` y la pantalla dice 200 OK.
+        #
+        # Va DESPUES de `total_not_positive` y no junto a el porque son
+        # preguntas distintas: un total de cero dice "no lei importe" y uno de
+        # 750 millones dice "lei basura". Quien revisa tiene que saber cual de
+        # las dos corregir, y el orden del `if` dice el orden de la pregunta.
+        out.failures.append(f"total_out_of_range({total_amount})")
     else:
         out.passed.append("total_positive")
 

@@ -346,12 +346,38 @@ export function TicketEnCola({
           )}
         </div>
 
+        {/*
+          `Aprobar` NO se pinta si el ticket ya esta `APROBADO`.
+
+          Por que se oculta en vez de deshabilitarse: un boton gris encima de un
+          ticket verde que dice "Aprobado" es una pregunta sin respuesta. Quien
+          lo ve no sabe si el sistema esta fallando o si hay que hacer algo, y
+          la duda se resuelve probando — que es justo lo que no debe pasar en la
+          fila que sostiene un cierre.
+
+          Y el boton no era inocuo. Aprobar sin corregir volvia a FIRMAR el
+          ticket: `reviewed_at` y `reviewed_by` son la evidencia de quien
+          aprobo que y cuando (ver `app/api/tickets.py`), y un clic de mas los
+          pisaba con la hora del clic. El boton desaparece y el backend
+          tampoco firma cuando no hubo correccion — las dos mitades, porque
+          ocultar el boton no cierra la API.
+
+          Si el ticket se corrige, `Corregir` abre el editor y ahi se vuelve a
+          aprobar: ahi el clic SI significa algo, porque hay datos nuevos.
+
+          `Descartar` SIEMPRE se muestra, incluso en un `APROBADO`: rechazar un
+          ticket que se aprobo por error es una decision legitima y es la unica
+          forma de deshacerla desde aqui. Ocultarlo dejaria un aprobado sin
+          salida.
+        */}
         {!editando && (
           <div className="flex gap-2 shrink-0">
             <Button onClick={onEditar} variant="secondary">Corregir</Button>
-            <Button onClick={() => aprobar()} disabled={ocupado}>
-              Aprobar
-            </Button>
+            {ticket.extraction_status !== 'APROBADO' && (
+              <Button onClick={() => aprobar()} disabled={ocupado}>
+                Aprobar
+              </Button>
+            )}
             <Button onClick={onDescartar} variant="secondary" className="!text-red-700">
               Descartar
             </Button>

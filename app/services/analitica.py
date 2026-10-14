@@ -155,6 +155,11 @@ async def total_hasta(
     corta el dia equivalente al de hoy, no el dia 30. Comparar los primeros dos
     dias contra los treinta completos daria siempre una caida, y una caida que
     aparece en todos los meses es ruido, no informacion.
+
+    Comparte el filtro de `fecha_provisional` con `total_del_periodo` y por la
+    misma razon: si uno filtra y el otro no, el comparativo esta restando un total
+    que el periodo principal nunca mostro, y la variacion que sale no corresponde
+    a nada que el lector pueda ver.
     """
     q = select(
         func.coalesce(func.sum(TicketModel.total_amount), 0),
@@ -163,6 +168,7 @@ async def total_hasta(
         and_(
             TicketModel.expense_date >= desde.date(),
             TicketModel.expense_date < hasta.date(),
+            TicketModel.fecha_provisional.is_(False),
             *_filtro_empresa(company_id),
         )
     )
@@ -257,6 +263,21 @@ async def total_del_periodo(
     "cuanto se gasto en marzo" y "cuanto se metio al sistema en marzo". Para un
     cierre contable, lo que cuenta es la fecha del gasto: un comprobante de
     marzo subido hoy pertenece a marzo.
+
+    **Y se EXCLUYEN los que no tienen fecha del papel.** Una fila con
+    `fecha_provisional` tiene el dia de la captura en `expense_date`, no el dia de
+    la compra: contarla daria un total de octubre que incluye compras de meses que
+    nadie ha mirado. No es que el dato sea malo —es el unico dato que se sabe—,
+    es que **no pertenece a este periodo** y sumarlo aqui haria que el resto del
+    informe afirmara una cifra que la base no sostiene.
+
+    Y no se eliminan: se reportan aparte, en `SeccionPendientes.sin_fecha`. Un
+    gasto invisible es peor que uno mal fechado, porque nadie va a buscarlo.
+
+    El filtro va en la consulta y no como un `if` en Python por una razon que ya
+    esta escrita en el repo: una defensa que depende de que alguien recuerde
+    llamarla es una defensa que un dia no se llama. MEDIDO el 2026-10-12: 5 de los
+    8 comprobantes de esta maquina estaban en esta situacion.
     """
     q = select(
         func.coalesce(func.sum(TicketModel.total_amount), 0),
@@ -265,6 +286,7 @@ async def total_del_periodo(
         and_(
             TicketModel.expense_date >= desde.date(),
             TicketModel.expense_date < hasta.date(),
+            TicketModel.fecha_provisional.is_(False),
             *_filtro_empresa(company_id),
         )
     )
@@ -287,6 +309,13 @@ async def por_categoria(
     barras sumaran 98% y el encabezado dijera otra cosa. Un porcentaje que no
     cuadra con el total es la forma mas rapida de perder la confianza en la
     pantalla entera.
+
+    El filtro de `fecha_provisional` es OBLIGATORIO aqui y no por gusto: este
+    desglose se dibuja debajo de `total_del_periodo`, que si filtra. Si las barras
+    sumaran mas que el total de arriba —y lo harian, porque incluyen los gastos sin
+    fecha del papel— el tablero estaria affirmations dos cifras que no pueden ser
+    ciertas a la vez. Es el mismo motivo por el que `monto_total` se pasa en vez de
+    recalcularse.
     """
     etiqueta = func.coalesce(TicketModel.category, cat.SIN_CLASIFICAR)
 
@@ -302,6 +331,7 @@ async def por_categoria(
         and_(
             TicketModel.expense_date >= desde.date(),
             TicketModel.expense_date < hasta.date(),
+            TicketModel.fecha_provisional.is_(False),
             *_filtro_empresa(company_id),
         )
     ).group_by(etiqueta)

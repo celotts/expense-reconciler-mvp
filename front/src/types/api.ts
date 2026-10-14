@@ -316,6 +316,11 @@ export interface SeccionConciliacion {
   conciliados: number;
   sin_conciliar: number;
   monto_discrepancias: string;
+  /** Gastos de este periodo cuyo pago cae en otro mes. Son las partidas
+   *  conciliatorias: la contabilidad (devengo) y el banco (pago) dicen meses
+   *  distintos y las dos fechas son ciertas. No es un error de captura. */
+  pagados_en_otro_periodo_tickets: number;
+  pagados_en_otro_periodo_monto: string;
 }
 
 /** R5: los dos numeros van separados porque son afirmaciones de distinta fuerza.
@@ -344,7 +349,13 @@ export interface SeccionPendientes {
   sin_conciliar_monto: string;
   discrepancias_abiertas: number;
   discrepancias_monto: string;
-  /** `@computed_field` en el backend: derivado de los tres de arriba. */
+  /** Gastos cuya `expense_date` NO vino del papel: es el dia de la captura, no el
+   *  de la compra. No se suman al total del periodo ni a ninguna categoria, y por
+   *  eso se reportan aparte. Hasta que alguien escriba la fecha mirando el
+   *  comprobante no se sabe de que mes es este gasto. */
+  sin_fecha_tickets: number;
+  sin_fecha_monto: string;
+  /** `@computed_field` en el backend: derivado de los cuatro de arriba. */
   hay_pendientes: boolean;
   /** Los motivos nombrados, no "hay pendientes". `null` cuando no hay ninguno. */
   motivo: string | null;

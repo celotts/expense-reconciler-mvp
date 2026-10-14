@@ -1,0 +1,76 @@
+-- 0015: la fecha del comprobante deja de ser un dato y pasa a ser un dato con procedencia
+--
+-- EL PROBLEMA QUE ESTA MIGRACION ARREGLA
+-- ======================================
+--
+-- `tickets.expense_date` es NOT NULL, asi que un documento cuya fecha NO se pudo
+-- leer se guardaba con la fecha del dia en que se digitalizo:
+--
+--     expense_date=extracted.expense_date or date.today()
+--
+-- Es decir: un "no se" se guardaba como un "si, el dia 12 de octubre". Y como
+-- TODO el informe de cierre filtra por `expense_date` —12 consultas—, ese gasto
+-- entraba al total de octubre con toda la autoridad de un gasto real de octubre.
+--
+-- MEDIDO en esta maquina, sobre los 8 comprobantes leidos el 2026-10-12:
+-- 5 de 8 tienen `expense_date = 2026-10-12` con `date_missing` al lado. Es decir,
+-- la mitad del lote quedo en el mes en que se digitalizo y no en el mes de la
+-- compra.
+--
+-- Y no es un caso raro: la exactitud medida del OCR en el campo fecha es de 33%
+-- (ver AGENTS.md, medicion del 2026-10-10). Es el caso MAS FRECUENTE.
+--
+-- LA RAZON DE NO HACER NULA LA COLUMNA
+-- =====================================
+--
+-- Lo obvious seria `ALTER TABLE tickets ALTER COLUMN expense_date DROP NOT NULL`.
+-- No se hace a proposito, y la razon es un fallo PEOR que el que se arregla:
+--
+-- Los doce queries del informe de cierre filtran con
+-- `expense_date >= inicio AND expense_date < fin`. En SQL, `NULL >= x` es NULL, no
+-- verdadero. Una fila con la fecha nula NO CAE en ningun periodo: desaparece.
+-- El total de octubre bajaria, no habria ninguna fila que explicara por que, y un
+-- gasto que ayer aparecia equivocado pasaria a ser invisible.
+--
+-- Un numero visible equivocado se detecta. Un gasto invisible, no. Convertir este
+-- bug en un silencio es cambiar un defecto por otro mas caro.
+--
+-- LA REGLA QUE ESTA MIGRACION HACE POSIBLE
+-- =========================================
+--
+--     Una fecha provisional NO DEFINE UN PERIODO.
+--
+-- `fecha_provisional` dice si `expense_date` salio del papel o es un marcador de
+-- posicion. No es un valor: es su PROCEDENCIA, y por eso es un booleano y no una
+-- segunda fecha.
+--
+--   - `false` (por omision): la fecha se leyo del documento. DEFINE EL PERIODO.
+--   - `true`: la fecha es el dia de la captura. NO define el periodo, y el gasto
+--     se reporta aparte como "sin fecha" en vez de inflar un mes que no le
+--     corresponde.
+--
+-- `DEFAULT false` y no `true` a proposito. Las filas que ya existen en esta base
+-- tienen una fecha que en su mayoria se leyo (3 de 8); marcarlas todas como
+-- provisionales seria afirmar que el historico entero es ilegible. Y el
+-- `DEFAULT false` protege tambien a la alta manual, que si escribe una fecha que
+-- alguien leyo del papel.
+--
+-- LO QUE ESTA COLUMNA NO ES
+-- -----------------------
+-- No es "la fecha es mala". Una fecha provisional puede ser perfectamente
+-- creible y aun asi no provenir del papel. Y no es una calidad de la lectura: es
+-- una pregunta de quien escribio el dato, igual que `confidence_source` lo es de
+-- quien leyo el documento.
+--
+-- Quien la limpia: una persona que escribe la fecha a mano. La automaticidad
+-- NUNCA la limpia, porque una relectura que no encuentra fecha no esta
+-- confirmando la anterior: esta escribiendo otra vez la del dia. Ver
+-- `app/api/tickets.py:review_ticket` y `app/api/tickets.py:update_ticket`.
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS fecha_provisional BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- El indice del periodo ya existe (`idx_tickets_date`), y sigue siendo el que
+-- usa el informe. Este es adicional porque la consulta nueva filtra por las dos
+-- columnas a la vez: "los gastos de este periodo cuya fecha NO es del papel".
+CREATE INDEX IF NOT EXISTS idx_tickets_periodo_sin_fecha
+    ON tickets (company_id, expense_date, fecha_provisional);

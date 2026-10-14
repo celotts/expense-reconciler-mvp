@@ -173,6 +173,25 @@ function explicar(codigo: string): ValidationProblem {
           + 'si el total si se ve, escribelo a mano.',
       };
 
+    case 'total_out_of_range': {
+      /* Distinto de `total_not_positive`, y la accion lo es tambien: ahi el
+       * sistema no leyo importe y hay que buscarlo; aqui leyo algo que no es un
+       * importe —ruido de la foto— y hay que escribir el numero del papel.
+       *
+       * El valor va POSICIONAL (`total_out_of_range(750047801456)`) y no con
+       * clave, asi que se lee con `valorDe` y no con `argsDe`. Se muestra porque
+       * sin el no hay forma de saber si el problema es el papel o fue la lectura,
+       * y esa es exactamente la pregunta que se lleva la persona al comprobante. */
+      const leido = valorDe(codigo);
+      return {
+        code: codigo,
+        message: leido
+          ? `El sistema leyo ${leido} como importe, y eso no es un gasto real: es ruido `
+            + 'de la foto leido como numero. Escribe el total que aparece en el papel.'
+          : 'El importe leido no es creible. Escribe el total que aparece en el papel.',
+      };
+    }
+
     case 'tax_negative':
       return { code: codigo, message: 'El IVA es negativo, lo cual es imposible. Corrigelo o pon 0.00.' };
 

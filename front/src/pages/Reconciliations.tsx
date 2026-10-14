@@ -23,12 +23,14 @@ function dinero(valor: string | number | null | undefined): string {
   return Number.isNaN(n) ? '—' : `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** Una fecha ISO, o guion. `new Date(undefined)` es `Invalid Date`, no `null`. */
-function fecha(valor: string | null | undefined): string {
-  if (!valor) return '—';
-  const d = new Date(valor);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-MX');
-}
+// La fecha de esta pantalla NO es decorativa: es la que cruza el gasto con el
+// movimiento del banco, y la que el revisor mira para decidir si concilian.
+// MEDIDO el 2026-10-12: `new Date('2026-10-01')` es medianoche UTC y Mexico es
+// UTC-6, asi que un gasto del 1 de octubre se mostraba como 30 de septiembre
+// —al lado de un movimiento que si es del 1— y la fila parecia no cuadrar cuando
+// el problema era la pantalla. Se delega en `utils/format.ts`, que parte el texto
+// en vez de pasar la cadena por `Date`.
+import { fecha } from '../utils/format';
 
 export function Reconciliations() {
   // ## POR QUE ESTOS DOS ESTADOS YA NO SON `any[]`
@@ -91,6 +93,20 @@ export function Reconciliations() {
     companiesApi.list().then(setCompanies).catch(() => {});
   }, [selectedCompany]);
 
+  // ## POR QUE EL RESULTADO SE MUESTRA DENTRO DEL MODAL Y NO DETRAS
+  //
+  // MEDIDO el 2026-10-12: al pulsar "Ejecutar" el motor corria, devolvia 200, las
+  // cifras se actualizaban en la pagina... y el modal SE QUEDABA ABIERTO con el
+  // mismo formulario de siempre. El `runResult` se pintaba en una tarjeta de la
+  // pagina, DEBAJO del modal, asi que el usuario veia el formulario otra vez y
+  // ningun aviso de que algo habia pasado. Sin la fila de resultado a la vista,
+  // el unico sintoma de que la conciliacion corrio es que las cifras de atras
+  // cambiaron, y solo si se cierra el modal.
+  //
+  // Por eso el boton de Ejecutar se cambia por el resultado cuando ya hay
+  // resultado: el modal pasa de "configurar" a "esto es lo que salio". Cerrar y
+  // volver a abrir vuelve al formulario, porque `runResult` se limpia al cerrar
+  // (ver el `onClose` del modal mas abajo).
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -330,7 +346,7 @@ export function Reconciliations() {
                     <div key={m.id} className="p-3 bg-gray-50 rounded-lg flex items-center justify-between">
                       <div>
                         <p className="font-medium">{m.software_name}</p>
-                        <p className="text-sm text-gray-500">Creada: {new Date(m.created_at).toLocaleDateString('es-MX')}</p>
+                        <p className="text-sm text-gray-500">Creada: {fecha(m.created_at)}</p>
                       </div>
                     </div>
                   ))}
@@ -355,7 +371,56 @@ export function Reconciliations() {
         </Card>
       )}
 
-      <Modal isOpen={showRunModal} onClose={() => { setShowRunModal(false); setRunResult(null); }} title="Ejecutar Conciliación Automática">
+      {/* El modal tiene DOS estados, y el segundo es el que faltaba. Antes de correr
+          el motor es un formulario; despues, el resultado. Y el resultado va
+          AQUI DENTRO, no en la tarjeta de la pagina: MEDIDO el 2026-10-12, el
+          `runResult` se renderizaba en el cuerpo, que queda detras de este
+          overlay `z-50`. El usuario pulsaba "Ejecutar", el motor corria, y lo
+          unico que veia era el mismo formulario otra vez.
+
+          El titulo cambia con el estado porque el titulo es lo primero que se
+          lee: si dice "Ejecutar" cuando ya se ejecuto, el usuario pulses otra
+          vez. */}
+      <Modal
+        isOpen={showRunModal}
+        onClose={() => { setShowRunModal(false); setRunResult(null); }}
+        title={runResult ? 'Resultado de la conciliación' : 'Ejecutar Conciliación Automática'}
+      >
+        {runResult ? (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              El motor comparó {runResult.total_tickets} tickets contra{' '}
+              {runResult.total_bank_transactions} movimientos bancarios.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div><p className="text-sm text-gray-500">PERFECT</p><p className="text-2xl font-bold text-green-700">{runResult.perfect_matches}</p></div>
+              <div><p className="text-sm text-gray-500">MANUAL</p><p className="text-2xl font-bold text-yellow-700">{runResult.manual_review}</p></div>
+              <div><p className="text-sm text-gray-500">DISCREPANCY</p><p className="text-2xl font-bold text-red-700">{runResult.discrepancies}</p></div>
+              <div><p className="text-sm text-gray-500">Sin cruzar</p><p className="text-2xl font-bold">{runResult.unmatched_tickets}</p></div>
+            </div>
+            {runResult.discrepancies > 0 && (
+              <p className="text-sm text-amber-800">
+                Hay {runResult.discrepancies} {runResult.discrepancies === 1 ? 'discrepancia' : 'discrepancias'}: hay un movimiento en la fecha correcta con otro monto, y eso lo tiene que ver una persona.
+              </p>
+            )}
+            {runResult.perfect_matches + runResult.manual_review === 0 && runResult.unmatched_tickets > 0 && (
+              <p className="text-sm text-gray-600">
+                No se cruzó nada. Si no hay movimientos bancarios importados, el motor no tiene contra qué comparar.
+              </p>
+            )}
+            <div className="flex justify-end gap-3 pt-4 border-t">
+              <Button variant="secondary" type="button" onClick={() => { setShowRunModal(false); setRunResult(null); }}>
+                Cerrar
+              </Button>
+              <Button
+                type="button"
+                onClick={() => { setRunResult(null); }}
+              >
+                Ejecutar otra vez
+              </Button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleRun} className="space-y-4">
           <p className="text-sm text-gray-600">El motor comparará tickets vs movimientos bancarios por monto y fecha.</p>
           <div className="grid grid-cols-2 gap-4">
@@ -371,6 +436,7 @@ export function Reconciliations() {
             <Button type="submit" disabled={runLoading}>{runLoading ? 'Conciliando...' : 'Ejecutar'}</Button>
           </div>
         </form>
+        )}
       </Modal>
 
       <Modal isOpen={showExportModal} onClose={() => { setShowExportModal(false); setExportLoading(false); }} title={`Exportar ${exportFormat.toUpperCase()}`}>

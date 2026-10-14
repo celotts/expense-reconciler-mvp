@@ -43,6 +43,76 @@ export function porcentaje(valor: number | null | undefined, decimales = 1): str
   return `${valor.toFixed(decimales)}%`;
 }
 
+/** Una fecha de negocio, en español, SIN corrimiento de zona horaria.
+ *
+ *  ## POR QUE NO SE USA `new Date(...)`
+ *
+ *  `new Date('2026-10-01')` se interpreta como **medianoche UTC**, y al
+ *  renderizarlo con `toLocaleDateString` se pasa a la zona horaria **local**.
+ *  En cualquier zona detras de UTC —Mexico es UTC-6— eso convierte el 1 de
+ *  octubre en **30 de septiembre**.
+ *
+ *  MEDIDO el 2026-10-12: un movimiento bancario creado con
+ *  `transaction_date = "2026-10-01"` se mostraba como `30/9/2026`. En un
+ *  sistema contable eso no es un detalle de formato: quien revisa busca el papel
+ *  del dia 1 en una pantalla que le dice que es del dia 30, y el gasto se
+ *  busca en el mes equivocado.
+ *
+ *  Este error ya estaba escrito y corregido en `components/ScanProgreso.tsx`
+ *  (`fechaLegible`) pero se dejo en tres sitios mas. Una defensa aplicada en un
+ *  archivo no protege el proyecto: la siguiente pantalla escribe la version
+ *  vieja porque `new Date(...).toLocaleDateString()` es lo que todo el mundo
+ *  escribe.
+ *
+ *  ## POR QUE SE PARTE EL TEXTO Y NO SE USA `Date`
+ *
+ *  Una fecha de negocio no tiene hora ni zona: es un dia del calendario. El
+ *  parseo correcto es "el dia que dice el texto", y eso es una operacion de
+ *  texto. `Date` le anade un instante y una zona que el dato no tiene, y de ahi
+ *  sale el corrimiento.
+ *
+ *  ## Y CUANDO SI ES UNA FECHA-HORA
+ *
+ *  `created_at` y `matched_at` SI son instantes, y para esos la conversion a
+ *  hora local es lo correcto: uno quiere saber "a que hora se escaneo esto" en
+ *  su propio reloj. Por eso hay dos funciones y no una: mezclarlas seria volver
+ *  a la confusion en un sentido.
+ */
+export function fecha(iso: string | null | undefined): string {
+  if (!iso) return '—';
+
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return '—';
+
+  const [, anio, mes, dia] = m;
+  return new Intl.DateTimeFormat('es-MX', {
+    timeZone: 'UTC',      // <-- la parte que hace todo el trabajo
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date(`${anio}-${mes}-${dia}T00:00:00Z`));
+}
+
+/** Un instante con hora: `2026-10-01T13:45:00Z` -> `01/10/2026, 13:45`.
+ *
+ *  Distinto de `fecha` a proposito. Para un `created_at` la zona local es lo
+ *  que se quiere: el instante es el mismo en todas partes, y lo que cambia es
+ *  como se ve. Para una fecha de gasto no hay instante, y por eso no se
+ *  convierte de ninguna manera.
+ */
+export function fechaHora(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat('es-MX', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(d);
+}
+
 /** `+12.4%` o `−7.6%`, con el signo explicito.
  *
  *  El signo menos es el que cuesta: una variacion del `-7.6%` escrita como

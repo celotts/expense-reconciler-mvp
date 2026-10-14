@@ -62,10 +62,16 @@ class TestBankCSVParser:
         assert transactions[1].amount == Decimal("-89.90")
 
     def test_parse_csv_missing_required_columns_raises(self):
+        # El mensaje cambio de ingles a espanol Y ahora lista las columnas que si
+        # hay. MEDIDO el 2026-10-12: un CSV de punto y coma.reportaba "Missing
+        # required columns: {importe,fecha,concepto}" cuando las tres estaban a
+        # la vista. El mensaje describia la consecuencia de leer mal el separador,
+        # no la causa, y mandaba a buscar un problema de nombres donde no habia
+        # ninguno. Ver `tests/unit/test_csv_detecta_forma.py`.
         csv_content = b"""fecha,otro_campo
 15/01/2025,valor
 """
-        with pytest.raises(ValueError, match="Missing required columns"):
+        with pytest.raises(ValueError, match="Faltan columnas requeridas"):
             parse_bank_csv(
                 csv_content,
                 date_column="fecha",
@@ -73,7 +79,33 @@ class TestBankCSVParser:
                 description_column="concepto"
             )
 
+    def test_el_error_lista_las_columnas_que_si_hay(self):
+        """Un mensaje de "faltan columnas" sin decir cuales hay es medio arreglo.
+
+        El usuario ya sabe que algo falta, pero no tiene forma de resolverlo si
+        no sabe como se llaman las columnas del archivo. Este test falla si se
+        vuelve al mensaje seco de antes.
+        """
+        csv_content = b"""fecha,otro_campo
+15/01/2025,valor
+"""
+        with pytest.raises(ValueError) as exc:
+            parse_bank_csv(
+                csv_content,
+                date_column="fecha",
+                amount_column="importe",
+                description_column="concepto"
+            )
+        mensaje = str(exc.value)
+        assert "otro_campo" in mensaje, f"no lista las columnas que hay: {mensaje}"
+        assert "fecha" in mensaje
+
     def test_parse_csv_invalid_date_format_raises(self):
+        # Cuando el cliente FUERZA un formato que no corresponde a los datos, se
+        # respeta su formato y el archivo se rechaza. MEDIDO el 2026-10-12: sin
+        # formato explicito el backend ahora DETECTA el que sea (ISO incluido), y
+        # este caso —"yo se que mi papel usa dd/mm y aqui hay un ISO"— tiene que
+        # seguir fallando, porque ahi el cliente si sabe del papel que habla.
         csv_content = b"""fecha,importe,concepto
 2025-01-15,-125.50,PAGO
 """
@@ -85,6 +117,25 @@ class TestBankCSVParser:
                 description_column="concepto",
                 date_format="%d/%m/%Y"
             )
+
+    def test_iso_se_detecta_sin_formato_explicito(self):
+        """La contraparte del de arriba: sin formato, un ISO SI se lee.
+
+        Este es el fallo que se reporto desde el principio. Un banco que exporta
+        `2025-01-15` daba 400 con el `date_format` fijo de `%d/%m/%Y`, y no habia
+        forma de que el usuario dijera "es ISO" porque el front no mandaba nada:
+        el valor venia por omision. Ahora se omite y se detecta.
+        """
+        csv_content = b"""fecha,importe,concepto
+2025-01-15,-125.50,PAGO
+"""
+        transactions = parse_bank_csv(
+            csv_content,
+            date_column="fecha",
+            amount_column="importe",
+            description_column="concepto",
+        )
+        assert transactions[0].transaction_date.isoformat() == "2025-01-15"
 
     def test_parse_csv_empty_file_returns_empty_list(self):
         csv_content = b"""fecha,importe,concepto

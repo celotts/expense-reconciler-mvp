@@ -159,10 +159,136 @@ python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie 
 python3 scripts/verify_ocr_mutations.py             # 16 mutaciones: binarización + modelo de línea
 python3 scripts/verify_fecha_mutations.py           # 8 mutaciones: las reglas de fecha del parser
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
-#   Las 3 del signo se pueden romper a proposito: revirtiendo `IF NEW.tipo = 'SALIDA'`
-#   a `IF NEW.tipo = 'ENTRADA'` en `db/migrations/0013_compras_rechazables.sql`, el
-#   script tiene que salir con 1. Se comprobó. Ver `docs/known-issues.md` §26.
 ```
+
+Y los verificadores del front, que **no** corren con `npm run verify` porque ese
+tiene una etapa que falla siempre (ver §33):
+
+```bash
+cd front
+npm run build                      # corre `tsc`: es la puerta que sí sirve
+npm run verify:aviso               # el aviso de formato, que salía en 8 de 8
+npm run verify:fecha               # la fecha corrida un día, en 3 pantallas
+```
+
+> Las 3 del signo se pueden romper a proposito: revirtiendo `IF NEW.tipo = 'SALIDA'`
+> a `IF NEW.tipo = 'ENTRADA'` en `db/migrations/0013_compras_rechazables.sql`, el
+> script tiene que salir con 1. Se comprobó. Ver `docs/known-issues.md` §26.
+
+### El techo del total: un comprobante NO se pierde por un importe absurdo
+
+**MEDIDO el 2026-10-12.** El OCR devolvió `Decimal('750047801456')` (750 mil
+millones) para un comprobante real. `NUMERIC(12,2)` no lo admite: el `INSERT`
+revienta, la transacción **entera** hace rollback —con ella la fila de
+`scan_files`— y `POST /scan/` responde **200 OK**. El comprobante desaparece sin
+rastro y quien digitalizó ve que todo salió bien.
+
+Tres capas, porque **una sola no arregla nada**:
+
+1. `confidence_gate.MAX_TOTAL_PLAUSIBLE = 50 millones` — marca
+   `total_out_of_range(<numero>)` y **no lo aprueba solo**. El techo es de
+   *credibilidad*, no de capacidad: la columna admite ~10 mil millones y el
+   filtro está muy por debajo, porque un total de 9 mil millones también es basura.
+2. `ticket_persistence._al_rango_de_la_columna` — acota el importe a lo que la
+   columna aguanta, para que el `INSERT` no reviente. Sin esto, (1) rechaza el
+   total pero la excepción siguematando el comprobante.
+3. El total acaba en `0.00` con el motivo visible. **No se inventa un total
+   cercano**: un número inventado es peor que un hueco. Y `0.00` no pasa
+   `total_not_positive`, así que no hay forma de aprobarlo sin escribir el
+   importe de verdad.
+
+`tests/unit/test_techo_del_total.py`, 13 tests, 4 mutaciones verificadas a mano.
+
+### La fecha de un comprobante NO se puede correr un día
+
+**MEDIDO el 2026-10-12.** `new Date('2026-10-01')` es medianoche **UTC**;
+`toLocaleDateString` lo pasa a hora local, y en México (UTC-6) el 1 de octubre se
+mostraba **30 de septiembre**. En una conciliación esa fecha es la que cruza el
+gasto con el banco; en el cierre, la que decide el periodo.
+
+`utils/format.ts:fecha()` parte el texto en vez de pasar la cadena por `Date`.
+`fechaHora()` es otra función a propósito: para un `created_at` (un instante) la
+zona local sí es lo correcto.
+
+> **Una defensa en un archivo no protege el proyecto.** El bug ya estaba escrito
+> y corregido en `ScanProgreso.tsx`, y seguía en `Tickets.tsx`,
+> `BankTransactions.tsx` y `Reconciliations.tsx` — `new Date(x).toLocaleDateString()`
+> es lo que todo el mundo escribe. Por eso la función vive en `format.ts` y
+> `front/scripts/verificar_fecha.ts` falla si **cualquiera** de las tres vuelve a
+> la forma cruda.
+
+### El CSV del banco tiene la forma que le da el banco
+
+**MEDIDO el 2026-10-12.** Cuatro CSVs que un banco mexicano exporta de verdad:
+
+```
+Fecha;Descripcion;Importe / 05/10/2026;FARMACIA;-89.50   -> 400
+fecha,descripcion,importe / 2026-10-05,PANADERIA,-250.00 -> 400
+Fecha,Descripcion,Importe / 2026-10-05,PANADERIA,-250.00 -> 400
+Fecha,Importe,Concepto / 05/10/2026,-250.00,PANADERIA    -> 200
+```
+
+**Uno de cuatro**, y los tres que fallaban son el mismo archivo con distinta
+forma. El mensaje era además **engañoso**: un CSV de `;` reportaba "faltan las
+columnas importe, fecha y concepto" cuando lo que pasaba es que se leía como
+**una** columna. El error describía la consecuencia, no la causa.
+
+Tres arreglos, en `parse_bank_csv`:
+
+1. **Separador**: `csv.Sniffer` sobre el texto crudo, **antes** del primer
+   `read_csv` (leer con `,` un archivo de `;` devuelve una columna).
+2. **Encabezados por sinónimo**: `Descripcion`→concepto, `Amount`→importe,
+   `Date`→fecha. Si el **cliente** especifica un nombre, se respeta — elegir
+   entre dos columnas parecidas es adivinar.
+3. **Formato de fecha**: se prueba sobre las filas reales. El orden mexicano
+   (`%d/%m/%Y`) va antes que el americano: `01/02/2026` es ambiguo y a un
+   contador en México le llega en orden mexicano.
+
+> **Lo que NO se adivina**: los separadores de **decimal** y de **miles**. Se
+> dejan como los manda el cliente a propósito. Un banco reporta `890.00` y la
+> conciliación guarda `89,000.00` no producen un 400: producen una conciliación
+> "correcta" con todos los tickets en discrepancia y ningún indicio de por qué —
+> cien veces el importe real, sin error ni aviso.
+
+`tests/unit/test_csv_detecta_forma.py`, 17 tests, 3 mutaciones verificadas.
+
+### El aviso de formato que salía en 8 de 8
+
+**MEDIDO el 2026-10-12.** El aviso "el archivo se llama X pero sus bytes son Y"
+salía en **los 8 de 8** archivos, porque comparaba `'.jpeg'.includes('image')`:
+una **extensión** contra una **categoría**, que como cadenas nunca coinciden.
+
+`utils/scan.ts:hayDiscrepanciaDeFormato()` mapea extensión → categoría y solo
+avisa cuando se contradicen de verdad (un `.pdf` que es imagen). Un `.heic` que
+por sus bytes es JPEG **no avisa**: los dos son imágenes y el sistema leyó bien.
+
+> Un aviso que sale siempre no informa: entrena al operador a ignorarlo, y el día
+> que salga uno de verdad nadie lo va a leer.
+
+`front/scripts/verificar_aviso_formato.ts`, 20 comprobaciones, 3 mutaciones.
+
+### Las cifras del tablero SON botones, y antes tres estaban muertos
+
+**MEDIDO el 2026-10-12.** `Tickets`, `Por revisar` y `Banco conciliado` salían
+como `<button disabled>`: la misma forma que `Sin clasificar`, que sí es botón,
+y sin acción. Tres cifras grises con apariencia de algo roto. Un botón
+deshabilitado es una promesa, y la pantalla la hacía sin poder cumplirla.
+
+Las tres tienen destino: la lista, la cola, la conciliación. `disabled` **no**
+desaparece —una cifra sin destino es un dato, no un botón roto—, pero cada una
+lleva su `title` diciendo a dónde lleva.
+
+### El modal de conciliación tenía el resultado detrás
+
+**MEDIDO el 2026-10-12.** Al pulsar "Ejecutar" el motor corría (200), las cifras
+se actualizaban… y el modal **se quedaba abierto con el mismo formulario**.
+`runResult` se pintaba en una tarjeta de la página, **debajo** del overlay
+`z-50`. El único síntoma de que la conciliación corrió era que las cifras de
+atrás cambiaban, y solo si se cerraba el modal a mano.
+
+El modal tiene ahora **dos estados**: formulario antes, resultado después. El
+título cambia (`"Ejecutar"` cuando ya se ejecutó invita a pulsar otra vez), y el
+resultado va **dentro** del modal, no detrás.
 
 ### Inventario: la compra que suma stock exige una persona
 Cuatro tablas nuevas (`0010`): `productos`, `compras`, `compra_items`, `movimientos_inventario`.

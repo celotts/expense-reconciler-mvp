@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS tickets (
     total_amount NUMERIC(12, 2) NOT NULL,
     tax_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
     expense_date DATE NOT NULL,
+
+    -- Si esta fecha viene del papel. Una fecha provisional NO DEFINE UN PERIODO:
+    -- es el dia en que se digitalizo, no el dia de la compra, y sumarla al mes de
+    -- la captura infla un mes que no le corresponde. Ver la migracion 0015, que
+    -- explica por que la columna no se hace NULA: una fecha NULL desaparece de los
+    -- doce queries del informe, y un gasto invisible es peor que uno equivocado.
+    fecha_provisional BOOLEAN NOT NULL DEFAULT FALSE,
+
     category VARCHAR(100),
     raw_text TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -249,6 +257,10 @@ CREATE TABLE IF NOT EXISTS scan_events (
 -- el script se puede volver a correr sin reventar. Postgres no lo perdona si
 -- no.
 CREATE INDEX IF NOT EXISTS idx_tickets_date ON tickets(expense_date);
+-- El informe de cierre pregunta por las dos columnas a la vez: "los gastos de
+-- este periodo cuya fecha NO es del papel". `idx_tickets_date` solo no sirve.
+CREATE INDEX IF NOT EXISTS idx_tickets_periodo_sin_fecha
+    ON tickets(company_id, expense_date, fecha_provisional);
 CREATE INDEX IF NOT EXISTS idx_bank_tx_date ON bank_transactions(transaction_date);
 CREATE INDEX IF NOT EXISTS idx_bank_tx_amount ON bank_transactions(amount);
 

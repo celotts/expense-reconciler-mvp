@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -36,6 +37,70 @@ from app.services.inventario_service import registrar_compra
 from app.services.parser_service import TicketExtractionResult
 
 logger = logging.getLogger(__name__)
+
+
+# El maximo de `NUMERIC(12,2)`: nueve mil millones novecientos noventa y nueve
+# mil novecientos noventa y nueve con noventa y nueve centimos. Se calcula en vez
+# de escribirse a mano para que el dia que la columna cambie, este numero no
+# pueda quedar viejo y volver a permitir el INSERT que tumba la transaccion.
+_MAX_NUMERIC_12_2 = Decimal("9999999999.99")
+
+
+def _al_rango_de_la_columna(
+    valor: Decimal | None, *, cero_si_no_aplica: bool = False
+) -> Decimal | None:
+    """Un importe que la columna pueda guardar, o `None`.
+
+    POR QUE EXISTE, MEDIDO
+    ======================
+    El 2026-10-12, con `IMG_4415.heic` de esta maquina: el OCR devolvio
+    `Decimal('750047801456')` como total. El `INSERT` en una `NUMERIC(12,2)`
+    revienta con un error de PostgreSQL, la transaccion **entera** hace rollback
+    —con ella la fila de `scan_files`—, el comprobante desaparece de todos los
+    lados y `POST /api/v1/scan/` responde **200 OK**.
+
+    El modo de fallo no es "un total equivocado": es **un comprobante perdido en
+    silencio**. Quien digitalizo abre la pantalla, ve que todo bien, y no vuelve
+    a subirlo porque no tiene ninguna razon para pensar que se perdio. Ese es el
+    unico resultado que `capture.capture_ticket` declara inaceptable, y aqui se
+    estaba perdiendo justo asi.
+
+    POR QUE NO SE CORRIGE EL DATO
+    =============================
+    Un total de 750 mil millones **no es un total**: es ruido de OCR leido como
+    numero. Y un importe no se "arregla" mas cerca de la verdad, porque el papel
+    no dice 750 millones — el papel dice algo que el sistema no leyo. Poner un
+    numero inventado aqui seria repetir, en el total, la misma mentira que se
+    corrigio en la fecha con `fecha_provisional`, pero **sin la marca que la
+    sostiene**.
+
+    `cero_si_no_aplica` existe por las columnas `total_amount` y `tax_amount`,
+    que son `NOT NULL`. Sin el, un `None` ahi es un error de base de datos —y no
+    un dato ausente bien representado— y se perderia el comprobante igual que
+    antes, pero por otra razon: eso lo descubrio el test de integracion de este
+    cambio, y por eso el parametro existe en vez de decidirlo aqui.
+
+    Que el total acabe en `0.00` **no lo vuelve creible**: el gate ya lo marco
+    con `total_out_of_range` y `0.00` no pasa `total_not_positive`, asi que no
+    hay forma de aprobarlo sin que alguien escriba el importe de verdad. El
+    `0.00` es un hueco visible, no un dato.
+    """
+    if valor is None:
+        return Decimal("0.00") if cero_si_no_aplica else None
+
+    # Se compara con el maximo POSITIVO porque aqui todos los importes de un
+    # comprobante son magnitudes: el signo lo lleva el movimiento bancario, no el
+    # gasto. Un `tax_amount` negativo lo atrapa el gate (`tax_negative`) y llega
+    # aqui como negativo, y ahi si interesa que se guarde para poder mirarlo.
+    if valor <= _MAX_NUMERIC_12_2:
+        return valor
+
+    logger.warning(
+        "importe fuera del rango de la columna, se guarda como no leido: %s "
+        "(maximo %s); el gate lo marco como total_out_of_range",
+        valor, _MAX_NUMERIC_12_2,
+    )
+    return Decimal("0.00") if cero_si_no_aplica else None
 
 
 async def persistir_extraccion(
@@ -101,17 +166,20 @@ async def persistir_extraccion(
         company_id=company_id,
         provider_name=extracted.provider_name or UNKNOWN_PROVIDER,
         provider_tax_id=extracted.provider_tax_id,
-        total_amount=extracted.total_amount,
-        tax_amount=extracted.tax_amount,
+        # Los importes pasan por `_al_rango_de_la_columna`. Ver la razon entera
+        # en esa funcion: el problema que evita NO es un total equivocado, es un
+        # **comprobante perdido en silencio**.
+        total_amount=_al_rango_de_la_columna(extracted.total_amount, cero_si_no_aplica=True),
+        tax_amount=_al_rango_de_la_columna(extracted.tax_amount, cero_si_no_aplica=True),
         # Se guarda, aunque antes no se guardara. Es el campo con el que el
         # gate valido que `subtotal + IVA == total`, asi que sin el no se puede
         # auditar por que el ticket se aprobo. Va como None cuando el
         # documento no trae subtotal: un 0 seria un dato falso con apariencia
         # de dato, y haria que la cuenta pareciera cuadrar sin comprobar nada.
-        subtotal=extracted.subtotal,
+        subtotal=_al_rango_de_la_columna(extracted.subtotal),
         # El IEPS del comprobante, en pesos. `None` cuando el papel no lo trae:
         # ver la razon de por que no es `0.00` en `ai_extractor.ExtractedInvoice`.
-        ieps_amount=extracted.ieps_amount,
+        ieps_amount=_al_rango_de_la_columna(extracted.ieps_amount),
         # Las lineas, crudas. Antes no se guardaban porque no habia donde: el
         # inventario no existia. Ahora si, y sin ellas una compra no tiene
         # contenido — un comprobante dice que se gasto $4,093.80, no que se
@@ -126,13 +194,22 @@ async def persistir_extraccion(
         source_file=source_file,
         source_hash=source_hash,
         # `expense_date` es NOT NULL, asi que un documento sin fecha necesita
-        # un valor. Se guarda el dia local en que se registro, que es la unica
-        # fecha que si se sabe de cierto, y el ticket queda en la cola con
-        # `date_missing` a la vista. El tradeoff: un ticket fechado
-        # provisionalmente, marcado como pendiente de fecha. El que se
-        # descartaba antes era el otro: un ticket con fecha y sin nada que
-        # advertise que la fecha es inventada, que es indistinguible de un
-        # gasto real de ese dia.
+        # un valor. `date.today()` es la unica fecha que si se sabe de cierto, y
+        # `fecha_provisional` es lo que evita que esto sea una mentira.
+        #
+        # Con solo `date.today()`, un comprobante de marzo digitalizado en
+        # septiembre aparecia en el cierre de septiembre con la misma autoridad
+        # que un gasto real de septiembre. MEDIDO el 2026-10-12: 5 de 8
+        # comprobantes de esta maquina tenian `expense_date = 2026-10-12` con
+        # `date_missing` al lado, porque la exactitud del OCR en la fecha es de
+        # 33%. No es un caso raro: es el MAS FRECUENTE.
+        #
+        # La fila se guarda igual, y esto no es un retroceso de la decision
+        # anterior: lo que cambia es que el informe ya puede CONTAR las que no
+        # pertenecen al periodo en vez de sumarlas. Perder el comprobante no es
+        # una opcion —quien digitaliza no volveria a subirlo—, y un dato al que
+        # se le puede preguntar "de donde salio este dia" no es un dato
+        # inventado: es un dato marcado.
         #
         # `date.today()` y no `utcnow().date()`. No es indistinto: `utcnow()` es
         # lo correcto para `created_at`, que es un instante, y lo equivocado
@@ -141,6 +218,7 @@ async def persistir_extraccion(
         # quedaria fechado manana. Eso es el mismo error que se esta
         # corrigiendo aqui, con un dia de diferencia.
         expense_date=extracted.expense_date or date.today(),
+        fecha_provisional=extracted.expense_date is None,
         validation_errors=decision.validation.as_text(),
         # Muestreo de exactitud: se marca al insertar, por hash de contenido, y
         # solo si el gate aprobo solo. Tres condiciones, y cada una importa:
