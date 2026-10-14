@@ -1135,13 +1135,108 @@ async def _vision_pdf(
     return mejor
 
 
+async def _desde_imagen_con_vision(
+    content: bytes,
+    extract_from_image: ExtractFn,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """Vision primero, y el OCR SOLO si el modelo no entrega algo utilizable.
+
+    MEDIDO el 2026-10-13: vision leyo bien 3 de 3 fotos HEIC y el OCR 1 de 3,
+    fallando justo en las dosmas difiles. Ver el docstring de `_desde_imagen`
+    para la medicion completa y para lo que este cambio NO afirma.
+
+    LAS DOS DIFERENCIAS CON EL ORDEN ANTERIOR, y las dos importan:
+
+    1. **El OCR no se ejecuta si la vision sirve.** No es que se compare y se
+       elija: es que no se lee. Eso es lo que ahorra los 81 s, porque el
+       `_leer_tesseract` hace hasta 16 lecturas por foto y solo un total + RFC +
+       aritmetica lo cortan antes.
+
+    2. **El OCR se consulta igual cuando el modelo no sirve**, y no se descarta
+       su lectura: se queda en `por_ocr` para compararla con `_mejor_de`, igual
+       que en el orden anterior. Una foto ilegible para el modelo puede ser
+       legible para Tesseract, y perder ese caso seria una regresion real.
+
+    Y NO se degradan las reglas: cuando el modelo devuelve algo, la lectura se
+    marca con `_marcar_por_reglas(..., ConfidenceSource.LLM)`, que es lo mismo
+    que hacia el camino de vision de antes. Lo unico que cambia es quien se
+    consulta primero.
+    """
+    vision = await _vision_de_imagen(content, extract_from_image)
+
+    if _es_extraccion_util(vision) and not _exige_items(vision):
+        return vision
+
+    por_ocr: TicketExtractionResult | None = None
+    ocr = ocr_reader or _ocr_por_defecto
+    try:
+        leido = ocr(content)
+    except OCRNoDisponible as exc:
+        logger.info("vision no util y OCR no disponible: %s", exc)
+    except Exception as exc:
+        logger.warning("vision no util y el OCR fallo (%s)", exc)
+    else:
+        texto = (leido.texto or "").strip()
+        if len(texto) >= OCR_MIN_CHARS_PARA_INTENTAR:
+            por_ocr = _marcar_por_reglas(
+                _parse_receipt_text(texto), ConfidenceSource.OCR
+            )
+
+    if por_ocr is None:
+        return vision
+    return _mejor_de(por_ocr, vision)
+
+
 async def _desde_imagen(
     content: bytes,
     extract_from_image: ExtractFn | None,
     ocr_reader: OcrFn | None = None,
 ) -> TicketExtractionResult:
-    """Foto o escaneo: primero OCR local, y vision solo si el OCR no alcanza.
+    """Foto o escaneo: el orden lo decide `IMAGENES_VISION_PRIMERO`.
 
+    MEDIDO el 2026-10-13 sobre los 3 HEIC rotulados de esta maquina:
+
+    | archivo   | verdad   | OCR        | vision    |
+    |-----------|----------|------------|-----------|
+    | IMG_4398  | 193.65   | `5`        | `193.65`  |
+    | IMG_4409  | 279.93   | `219.93`   | `279.93`  |
+    | IMG_4407  | 234.00   | `234`      | `234.00`  |
+
+    **Vision 3 de 3. OCR 1 de 3**, y el OCR fallo justo en las dos fotos
+    DIFILES. Ese es el caso de uso: una persona toma la foto sin saber nada.
+
+    POR QUE SE INVIERTE Y NO SE MEJORA EL OCR
+
+    Porque el costo del OCR no es su calidad, es que se PAGA ENTERO y luego se
+    descarta. `_leer_tesseract` hace hasta **16 lecturas** (4 rotaciones x
+    variantes con y sin binarizacion), porque el corte temprano exige total +
+    RFC + aritmetica, y una foto de papel de ticket casi nunca trae RFC legible.
+    MEDIDO: **81 s por foto, siempre**.
+
+    Con vision primero, en el caso bueno —que es el mayoritario— el OCR no se
+    ejecuta: se ahorran 81 s. Y en el malo sigue estando, porque se consulta
+    cuando el modelo no entrega algo utilizable. No se pierde nada.
+
+    LO QUE CAMBIA, Y TIENE QUE QUEDAR ESCRITO
+
+    Que los dos caminos esten etiquetados distinto es lo que permite que el
+    reporte de exactitud diga algo. Con vision primero, **una foto legible queda
+    como `llm` y no como `ocr`** — y eso es la verdad: la leyo el modelo.
+
+    El numero que se mueve es el reporte de exactitud agrupado por origen, y por
+    eso va con interruptor y no a mano: si el reporte dice algo que ya no
+    describe lo que pasa, se vuelve a `false` sin tocar codigo.
+
+    Y LO QUE NO SE AFIRMA
+
+    Que vision "siempre" gane. Tres archivos son una anecdota —el propio script
+    de medicion lo dice: por debajo de ~30 casos el porcentaje se mueve mucho con
+    un solo comprobante—. Lo que sostiene el cambio es la DIRECCION, y que el OCR
+    no se pierde: queda de respaldo.
+
+    ANTES (docstring original, que se conserva el sentido)
+    ---------------------------------------------------
     El orden es el que decide el costo. Antes de este escalon, una foto
     SIEMPRE iba a un modelo de vision, incluso cuando era un ticket impreso
     legible que Tesseract leia sin equivocarse. Con OCR primero:
@@ -1162,6 +1257,9 @@ async def _desde_imagen(
     siguiente escalon igual, que es lo que hacia que la app sirviera antes de
     que existiera este modulo.
     """
+    if settings.IMAGENES_VISION_PRIMERO and extract_from_image is not None:
+        return await _desde_imagen_con_vision(content, extract_from_image, ocr_reader)
+
     ocr = ocr_reader or _ocr_por_defecto
     # Lo que el OCRReply leyo, para poder compararlo con lo que vea el modelo.
     por_ocr: TicketExtractionResult | None = None

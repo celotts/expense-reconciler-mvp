@@ -120,22 +120,21 @@ services:
     mem_limit: 8g
     mem_reservation: 512m
 
-    # MEDIDO el 2026-10-13: con `cpus: 4.0` una sola llamada de vision lleva el
-    # contenedor al 100% de CPU y el ventilador del Macbook a tope durante los
-    # ~250 s que tarda la inferencia. El usuario reporto que la maquina se
-    # calentaba, y este es el numero que lo explica: no es la RAM (que se
-    # controla con `mem_limit`), es que se le da CUATRO nucleos enteros a un
-    # proceso que no los necesita todos el tiempo.
+    # MEDIDO el 2026-10-13, y CORREGIDO el mismo dia. Con `cpus: 4.0` una
+    # llamada de vision tardaba ~250 s. Se bajo a 2.0 para que el ventilador no se
+    # calentara, y el efecto NO fue solo "un poco mas lento": una foto paso de
+    # ~250 s a **~500 s**, porque con 2 nucleos la inferencia va a la mitad.
     #
-    # 2.0 baja el techo a la mitad. El costo medido es que la inferencia va mas
-    # lenta; el beneficio es que el resto de la maquina (el editor, el
-    # navegador, el escaneo del filesystem) conserva nucleos. Es el mismo
-    # intercambio que `nice`, pero con techo en vez de prioridad.
+    # MEDIDO despues: una foto tardaba 757 s y el escaneo de 8 no terminaba en
+    # 11 minutos. Ese numero es el que hace volver esto a 4.0.
     #
-    # Y NO es gratis subirlo de vuelta: si se sube, suben juntos el calor y el
-    # tiempo. Ver `OLLAMA_KEEP_ALIVE` en config.py para el otro lado de este
-    # mismo problema.
-    cpus: 2.0
+    # El calor no era este limite: era `keep_alive: 30m`, que dejaba el modelo
+    # cargado 3.2 GB cuando ya no hacia falta. Ese si se corrigio, y ahi si esta
+    # la solucion al calor. Ver `OLLAMA_KEEP_ALIVE` en config.py.
+    #
+    # 3.0 es el punto intermedio que NO se ha medido. Si vuelve a calentarse la
+    # maquina, bajarlo aqui es el ajuste; pero medido: 2.0 doblo el tiempo.
+    cpus: 4.0
     restart: unless-stopped
     networks:
       - expense_network

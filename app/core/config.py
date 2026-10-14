@@ -97,6 +97,48 @@ class Settings(BaseSettings):
     # leyendo su total y su RFC de sobra. Si se sube, el tiempo sube con el.
     MAX_LADO_VISION: int = 2000
 
+    # Para una FOTO, consultar al modelo de vision ANTES que al OCR local.
+    #
+    # MEDIDO el 2026-10-13 sobre los 3 HEIC rotulados de esta maquina:
+    # vision leyo bien 3 de 3 y el OCR 1 de 3, fallando el OCR justo en las dos
+    # fotos mas difiles — que es el caso de uso del producto: alguien toma la
+    # foto sin saber nada.
+    #
+    # Ademas sale mas BARATO, y ese es el motivo que nadie espera: el OCR no se
+    # descarta, se PAGA ENTERO. `_leer_tesseract` hace hasta 16 lecturas por
+    # foto y solo un total + RFC + aritmetica lo cortan antes, y una foto de
+    # papel de ticket casi nunca trae RFC legible. MEDIDO: 81 s por foto, y en
+    # el orden anterior se pagaban completos y luego se tiraban.
+    #
+    # Es un interruptor y no un cambio fijo por una razon concreta: cambia el
+    # `confidence_source` de los tickets de foto de `ocr` a `llm`, y ese campo
+    # es lo que agrupa el reporte de exactitud. Si el reporte llega a decir algo
+    # que ya no describe lo que pasa, se vuelve a `false` sin editar codigo.
+    #
+    # Con `false` el orden es el de siempre (OCR primero) y nada mas cambia. El
+    # OCR sigue siendo el respaldo en los dos: con vision primero, si el modelo
+    # no entrega algo utilizable se consulta el OCR y se comparan con
+    # `_mejor_de`.
+    # CORREGIDO el 2026-10-13 con el escaneo COMPLETO, no con los 3 HEIC.
+    #
+    # Los 3 rotulados daban vision 3 de 3 y empujaron este interruptor a `true`. Con
+    # las 8 fotos del escaneo la cifra real es **vision 3 de 8 (37%)**: en 5 de
+    # 8 la vision no entrego nada utilizable y hubo que correr el OCR.
+    #
+    # Y vision-primero en ese caso es el PEOR camino: se paga la vision (~250 s)
+    # y despues el OCR (~81 s) porque se necesitan los dos. MEDIDO: una foto
+    # ~440 s, y el escaneo de 8 no terminaba en 11 minutos. Con OCR primero se
+    # pagan 81 s y se resuelve el 63% de los casos con el mismo lector que ya
+    # funcionaba.
+    #
+    # Osea: la muestra de 3 estaba sesgada. Los tres HEIC rotulados son los que
+    # el OCR fallaba, y quedarse solo con ellos esconde justo los casos donde el
+    # OCR SI funciona — que son la mayoria.
+    #
+    # El interruptor se queda: si vuelve a haber un motor que acierte mas que el
+    # OCR, se cambia aqui, sin editar la cascada.
+    IMAGENES_VISION_PRIMERO: bool = False
+
     # Local embedding fallback (sentence-transformers)
     LOCAL_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
