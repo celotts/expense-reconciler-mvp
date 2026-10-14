@@ -932,6 +932,64 @@ el gate no puede cuestionar. Por eso `raw_text` ahora se pide acotado ("máximo 
 líneas"): no por precisión — el rescate ya la cubría — sino por **costo**
 (`eval_count` 714→**351**, la mitad) y por quitar esa vía de contaminación.
 
+### La lectura que se guarda: gana la que **cuadra**, no la que llegó primero
+
+**MEDIDO el 2026-10-13.** `POST /tickets/extract` sobre los 3 HEIC rotulados:
+
+| archivo | verdad | lo que devolvió el API | quién ganó |
+|---|---|---|---|
+| `IMG_4398` | 193.65 | `5` | OCR ✗ |
+| `IMG_4409` | 279.93 | `219.93` | OCR ✗ |
+| `IMG_4407` | 234.00 | `234.0` + subtotal 217.27 | visión ✓ |
+
+**Visión 3 de 3. OCR 1 de 3.** Y el fallo no es "el número está mal": el gate lo
+contuvo (`REQUIERE_REVISION`, no `AUTO_APROBADO`). El fallo es que **el operador
+recibe el dato equivocado** y su revisión se pierde.
+
+La causa: `_puntaje_de_extraccion` preguntaba *"`total > 0`?"*. Los dos lo son, y
+el docstring dice *"el empate va al primero"* — que es el OCR.
+
+**El criterio nuevo es la aritmética del comprobante, y va TERCER**, después de
+`items`. No segundo, y esa posición se pagó con un test roto:
+
+> **La primera versión rompió un requisito de producto.** Puso la aritmética
+> segundo, antes de las líneas. `test_por_omision_una_foto_sin_lineas_si_va_al_
+> modelo` documenta que una foto sin líneas tiene que escalar al modelo, porque
+> **sin líneas no hay compra que confirmar** (`registrar_compra` devuelve `None`
+> y el inventario no se entera). El OCR traía `948.28 + 151.72 = 1100.00` exacto
+> y el modelo no traía subtotal, así que el criterio empujaba al OCR y se
+> saltaba las líneas — que es lo único que el modelo aporta.
+
+Y por eso devuelve **tres valores, no un bool**:
+
+| condición | valor | por qué |
+|---|---|---|
+| los números cuadran | `+1` | es lo único que dice si el total es **correcto** |
+| trae desglose y no suma | `-1` | se contradice a sí mismo: defecto de la lectura |
+| no trae desglose | `0` | **"no comprobable" NO es "incorrecto"** |
+
+El `0` es el que faltaba. Con un bool, la ausencia de subtotal contaba como error,
+y el criterio empujaba hacia el lector que llena más campos en vez del que lee
+mejor.
+
+> **El `-1` tiene una trampa que costó un test.** El check se registra **con los
+> números**: `"subtotal_plus_tax_mismatch(leido=279.93,esperado=225.41)"`. Una
+> comparación exacta con el nombre limpio nunca encuentra nada, y el `-1` no se
+> aplica nunca — un criterio que parece existir y no hace nada. Se compara por
+> prefijo.
+
+**Lo que este criterio NO puede ver, y hay que decirlo:** un desglose **repartido
+para que cuadre**. MEDIDO: el modelo devolvió `subtotal 241.41 + IVA 38.52` para
+un total de `279.93`, y `241.41 + 38.52 = 279.93` **exacto**. Es un reparto, no
+una lectura — el otro comprobante del mismo comercio (`IMG_4253 2.HEIC`) trae IVA
+incluido, `subtotal == total == 279.93` con `tax 0.00`. Un desglose inventado que
+cuadra es indistinguible de uno impreso. Lo que frena el dato inventado **no es
+este criterio**: es que el ticket no se auto-aprueba.
+
+Por qué la aritmética y no "que gane la visión": porque una defensa tiene que morir
+si se quita, y para eso tiene que ser una **propiedad del documento**. "Que gane la
+visión" es una constante aprendida de tres archivos.
+
 ### La binarización adaptativa: es una VARIANTE, no un reemplazo
 `ocr.py:_binarizar` es un umbral adaptativo gaussiano de OpenCV (`ADAPTIVE_THRESH_GAUSSIAN_C`),
 y **no se midió nunca**. §21 descartó unsharp, mediana y **umbrales GLOBALES** (110, 165),

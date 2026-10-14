@@ -644,6 +644,75 @@ def _exige_items(resultado: TicketExtractionResult) -> bool:
     return resultado.items is None
 
 
+def _aritmetica_se_sostiene(resultado: TicketExtractionResult) -> int:
+    """+1 si los numeros cuadran, -1 si se contradicen, 0 si no se pueden comprobar.
+
+    MEDIDO el 2026-10-13 sobre los 3 HEIC rotulados de esta maquina:
+
+    | archivo   | verdad   | OCR        | vision    |
+    |-----------|----------|------------|-----------|
+    | IMG_4398  | 193.65   | `5`        | `193.65`  |
+    | IMG_4409  | 279.93   | `219.93`   | `279.93`  |
+    | IMG_4407  | 234.00   | `234`      | `234.00`  |
+
+    La vision acierta 3 de 3; el OCR 1 de 3, y `POST /tickets/extract` devolvio
+    el del OCR: un total de `219.93` donde el papel decia `279.93`.
+
+    ## POR QUE DEVUELVE TRES VALORES Y NO UN BOOL
+
+    MEDIDO tambien el 2026-10-13, y el primer intento de esta funcion fue un
+    bool —"si la aritmetica cuadra"— y ROMPIO un test del repo que documenta un
+    requisito de producto: una foto sin lineas tiene que escalar al modelo, y lo
+    que vuelve (con lineas) es lo que queda, porque sin lineas no hay compra
+    que confirmar.
+
+    Quebro por esto: la lectura del OCR traia `subtotal 948.28 + IVA 151.72 =
+    1100.00` — cuadra EXACTO — y la del modelo no traia subtotal ni IVA. Con un
+    bool, "cuadra" = 1 y "no viene subtotal" = 0, o sea que **la ausencia de un
+    campo se contaba como un error de lectura**. No lo es: una lectura sin
+    desglose no afirma nada que la otra contradiga, y por lo tanto no puede
+    perder un desempate.
+
+    Esa distincion es el punto entero: **"no comprobable" no es "incorrecto"**, y
+    confundirlas hace que el criterio empuje el resultado hacia el lector que
+    lleno mas campos en vez de hacia el que lee mejor. El -1 es lo unico que
+    este criterio puede afirmar con honestidad: "estos numeros se contradicen
+    entre si", que es un defecto del documento segun quien lo leyo, no del
+    documento.
+    """
+    from app.services.confidence_gate import validate_extraction
+
+    if resultado.total_amount is None or resultado.total_amount <= 0:
+        return 0
+
+    outcome = validate_extraction(
+        resultado.provider_name,
+        resultado.total_amount,
+        resultado.tax_amount,
+        resultado.expense_date,
+        resultado.provider_tax_id,
+        resultado.subtotal,
+        resultado.ieps_amount,
+    )
+    if any(f.startswith("arithmetic_consistent") for f in outcome.passed):
+        return 1
+
+    # Solo es un defecto si la lectura TRAE el desglose y no suma. Sin subtotal
+    # o sin IVA no hay nada que contradecir.
+    if resultado.subtotal is not None and (
+        resultado.tax_amount is not None or resultado.ieps_amount is not None
+    ):
+        # OJO: el check se registra CON LOS NUMEROS, asi que el string es
+        # "subtotal_plus_tax_mismatch(leido=279.93,esperado=225.41)". Una
+        # comparacion exacta con el nombre limpio NUNCA encuentra nada y el -1
+        # no se aplica nunca, que es un criterio que parece existir y no hace
+        # nada. Se compara por prefijo, que es lo que sobrevive a que el check
+        # detalla su motivo.
+        if any(f.startswith("subtotal_plus_tax_mismatch") for f in outcome.failures):
+            return -1
+    return 0
+
+
 def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
     """Que tan completa es una lectura. Mayor es mejor.
 
@@ -678,6 +747,21 @@ def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
     return (
         1 if resultado.total_amount > 0 else 0,
         tiene_lineas,
+        # La aritmetica, TERCER criterio — y no segundo.
+        #
+        # MEDIDO el 2026-10-13: va deliberadamente DESPUES de las lineas. La
+        # primera version lo puso segundo y rompio `test_por_omision_una_foto_
+        # sin_lineas_si_va_al_modelo`, que documenta un requisito de producto:
+        # una foto sin lineas tiene que escalar al modelo porque SIN LINEAS NO
+        # HAY COMPRA QUE CONFIRMAR. Poner la aritmetica por encima convertia
+        # "el OCR trajo un desglose que suma" en motivo para saltarse las lineas
+        # del modelo, que es el unico escalon que las trae.
+        #
+        # Asi que: las lineas mandan sobre la aritmetica, y la aritmetica
+        # desempata entre lecturas que ya traen lo mismo. Sigue siendo lo unico
+        # criterio que dice algo sobre si el total es CORRECTO, que es distinto
+        # de cuanto se lleno el formulario.
+        _aritmetica_se_sostiene(resultado),
         1 if resultado.provider_name != UNKNOWN_PROVIDER else 0,
         # Un proveedor que no es basura vale MAS que uno que solo "no es
         # UNKNOWN". Sin esta cuarta posicion, dos lecturas con el mismo total se
