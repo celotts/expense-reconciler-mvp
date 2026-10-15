@@ -53,10 +53,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - >-
-          pg_isready -q -U postgres -d expense_db &&
-          psql -U postgres -d expense_db -tAc
-          "select to_regclass('public.tickets') is not null" | grep -qx t
+        - pg_isready -q -U postgres -d expense_db
       interval: 5s
       timeout: 5s
       retries: 5

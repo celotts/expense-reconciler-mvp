@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { registrarEventoFrontend } from '../services/auditoria';
 import { companiesApi, ticketsApi, type Company, type Ticket } from '../services/api';
 import type {
   ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
@@ -105,6 +106,10 @@ export function Scan() {
   useEffect(() => { cargar(); }, [cargar]);
   useEffect(() => { if (corrida) setPreparando(false); }, [corrida]);
   useEffect(() => { companiesApi.list().then(setCompanies).catch(() => setCompanies([])); }, []);
+  // Si solo hay UNA empresa, preseleccionarla por defecto (no todas)
+  useEffect(() => {
+    if (companies.length === 1) setCompanyId(companies[0].id);
+  }, [companies]);
 
   /** Corta el sondeo. Lo usan el `finally` del escaneo y el cleanup del unmount. */
   const clearIntervalActivo = useCallback(() => {
@@ -168,6 +173,7 @@ export function Scan() {
         archivar,
       });
       setUltimo(r);
+      await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { conEmpresa, company_id: companyId || null, archivos_vistos: r.archivos_vistos ?? null } });
       // Un ultimo Hald del canal para recoger el resumen final, que en el
       // POST puede venir con `terminada: false` si se respondio justo al cerrar.
       try {
@@ -265,7 +271,7 @@ export function Scan() {
           elegida y se apaga sin ella. Un solo boton con un parametro opcional
           deja la decision de crear tickets escondida en un estado que nadie ve.
         */}
-        <Button onClick={() => escanear(false)} disabled={escaneando} className={preparando ? 'opacity-80 cursor-wait' : ''}>
+        <Button onClick={() => escanear(false)} disabled={escaneando || !companyId} title={companyId ? undefined : 'Elige una empresa para escanear'} className={preparando ? 'opacity-80 cursor-wait' : ''}>
           {preparando ? (
             <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
           ) : escaneando ? 'Escaneando...' : 'Escanear (solo inventariar)'}

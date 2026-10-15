@@ -247,7 +247,7 @@ export function BankTransactions() {
                 },
                 { key: 'actions', header: 'Acciones', render: (t: BankTransaction) => (
                   <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
+                    <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
                     <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Eliminar</Button>
                   </div>
                 )},

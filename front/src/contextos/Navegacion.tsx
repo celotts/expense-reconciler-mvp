@@ -41,16 +41,17 @@ const NavegacionContext = createContext<NavegacionContextValue | null>(null);
 export type FiltroTickets = 'todos' | 'sinClasificar' | 'clasificados';
 
 export function NavegacionProvider({ children }: { children: ReactNode }) {
-  // Empieza en Inicio, que es el dashboard. Antes abria en Empresas, que es la
-  // pantalla de configuracion: obligaba a pasar por un formulario de alta para
-  // ver el estado del negocio, y la primera pregunta de quien abre la aplicacion
-  // es "como van mis gastos", no "creo otra empresa".
-  const [paginaActual, setPaginaActual] = useState<Page>('dashboard');
+  // Empieza en la pagina del hash si esta presente, para que un refresco
+  // (F5) preserve la ultima vista y la experiencia parezca un sitio real.
+  const paginaInicial = (window.location.hash.replace(/^#/, '') || 'dashboard') as Page;
+  const JOBS: Page[] = ['dashboard','companies','tickets','scan','review','spotcheck','bank','reconciliations','cierre','auditoria'];
+  const [paginaActual, setPaginaActual] = useState<Page>(JOBS.includes(paginaInicial) ? paginaInicial : 'dashboard');
   const [filtroTickets, setFiltroTickets] = useState<FiltroTickets | null>(null);
 
   const irA = (pagina: Page, filtro?: FiltroTickets) => {
     setPaginaActual(pagina);
     setFiltroTickets(filtro ?? null);
+    window.location.hash = pagina;
   };
   return (
     <NavegacionContext.Provider value={{ paginaActual, irA, filtroTickets }}>

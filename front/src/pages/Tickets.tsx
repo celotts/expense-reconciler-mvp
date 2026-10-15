@@ -428,7 +428,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     // dia ANTERIOR en cualquier zona detras de UTC: un gasto del 1 de octubre
     // sale como 30 de septiembre. MEDIDO el 2026-10-12. Ver `utils/format.ts`.
     { key: 'expense_date', header: 'Fecha', render: (t: Ticket) => fecha(t.expense_date) },
-    { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-amber-500 text-xs">sin clasificar</span> },
+    { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-red-500 text-xs uppercase">SIN CLASIFICAR</span> },
     { key: 'actions', header: 'Acciones', render: (t: Ticket) => (
       <div className="flex gap-2">
         <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
@@ -687,6 +687,20 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
               error={formErrors.category} placeholder="Ej: SUPERMERCADO" maxLength={100}
             />
           </div>
+          {/* Mostrar enlace para ver el comprobante original */}
+          {editingTicket && editingTicket.tiene_documento && (
+            <div className="mt-3 p-3 rounded-lg bg-blue-50 border border-blue-200">
+              <p className="text-xs text-blue-800 font-medium mb-1">Comprobante adjunto</p>
+              <a
+                href={`/ticket/${editingTicket.id}/documento`}
+                onClick={() => { window.open(`/ticket/${editingTicket.id}/documento`, "_blank"); return false; }}
+                rel="noopener noreferrer"
+                className="underline text-blue-600"
+              >
+                Ver comprobante original
+              </a>
+            </div>
+          )}
           <div className="flex justify-end gap-3 pt-4 border-t">
             <Button variant="secondary" type="button" onClick={() => { setShowModal(false); resetForm(); }}>Cancelar</Button>
             <Button type="submit" disabled={submitting}>{submitting ? 'Guardando...' : (editingTicket ? 'Actualizar' : 'Crear')}</Button>
@@ -786,7 +800,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                   </div>
                   <div className="flex gap-3 justify-end">
                     <Button variant="ghost" onClick={() => { setExtractionResult(null); setExtractionWarnings([]); }}>Nueva extracción</Button>
-                    <Button variant="secondary" onClick={editarAntesDeGuardar}>
+                    <Button variant="edit" onClick={editarAntesDeGuardar}>
                       Revisar y corregir
                     </Button>
                     <Button onClick={aceptarLecturaDeIA} disabled={submitting || !pendingFile}>

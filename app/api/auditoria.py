@@ -102,19 +102,21 @@ async def listar_auditoria(
     total = (await AsyncSessionLocal().execute(cq)).scalar_one()
     rows = (await AsyncSessionLocal().execute(q.limit(limit).offset(offset))).scalars().all()
 
+    # E-mail de usuario en UNA consulta (evita N+1 por fila)
+    user_ids = [r.usuario_id for r in rows if r.usuario_id is not None]
+    email_map = {}
+    if user_ids:
+        us = (await AsyncSessionLocal().execute(
+            select(UserModel).where(UserModel.id.in_(user_ids))
+        )).scalars().all()
+        email_map = {str(u.id): u.email for u in us}
+
     items = []
     for r in rows:
-        email = None
-        if r.usuario_id is not None:
-            u = (await AsyncSessionLocal().execute(
-                select(UserModel).where(UserModel.id == r.usuario_id)
-            )).scalar_one_or_none()
-            if u is not None:
-                email = u.email
         items.append(AuditoriaListadoItem(
             id=int(r.id),
             usuario_id=str(r.usuario_id) if r.usuario_id else None,
-            usuario_email=email,
+            usuario_email=email_map.get(str(r.usuario_id)) if r.usuario_id else None,
             rol=r.rol,
             accion=r.accion,
             modulo=r.modulo,

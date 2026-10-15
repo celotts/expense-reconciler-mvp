@@ -38,7 +38,7 @@ export function Button({
   type = 'button',
   className = '',
   ...props 
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost'; size?: 'sm' | 'md' }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'edit' | 'success'; size?: 'sm' | 'md' }) {
   const base = 'rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   const sizes = {
     sm: 'px-2.5 py-3 sm:py-1.5 text-sm',
@@ -49,6 +49,8 @@ export function Button({
     secondary: 'bg-gray-200 text-gray-800 hover:bg-gray-300',
     danger: 'bg-red-600 text-white hover:bg-red-700',
     ghost: 'bg-transparent text-gray-600 hover:bg-gray-100',
+    edit: 'bg-amber-500 text-white hover:bg-amber-600',
+    success: 'bg-emerald-600 text-white hover:bg-emerald-700',
   };
   return (
     <button 

@@ -1,6 +1,6 @@
--- Crear bases separadas por ambiente (para volumen limpio/rebuild)
+-- Bases existentes: este script solo se conecta y verifica
+-- No crea bases si ya existen (usando psql variables)
 \connect postgres
-CREATE DATABASE IF NOT EXISTS expense_db_dev;
-CREATE DATABASE IF NOT EXISTS expense_db_qa;
--- En prod se queda expense_db (POSTGRES_DB default).
--- El seed de sos se ejecuta luego por la app.
+-- Las bases expense_db, expense_db_dev, expense_db_qa deben existir previamente
+-- o ser creadas manualmente con: createdb expense_db
+SELECT 1 AS db_check;

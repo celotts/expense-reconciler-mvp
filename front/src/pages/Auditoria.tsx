@@ -24,6 +24,8 @@ export function Auditoria() {
   const [items, setItems] = useState<EventoAuditoria[]>([]);
   const [total, setTotal] = useState(0);
   const [cargando, setCargando] = useState(true);
+  const [pagina, setPagina] = useState(0);
+  const porPagina = 15;
 
   const [filtroAccion, setFiltroAccion] = useState('');
   const [filtroModulo, setFiltroModulo] = useState('');
@@ -34,7 +36,8 @@ export function Auditoria() {
     const params = new URLSearchParams();
     if (filtroAccion) params.set('accion', filtroAccion);
     if (filtroModulo) params.set('modulo', filtroModulo);
-    params.set('limit', '100');
+    params.set('limit', String(porPagina));
+    params.set('offset', String(pagina * porPagina));
     try {
       const r = await fetchApi<AuditoriaRespuesta>(`/auditoria?${params.toString()}`);
       setItems(r.items);
@@ -42,8 +45,9 @@ export function Auditoria() {
     } finally {
       setCargando(false);
     }
-  }, [filtroAccion, filtroModulo]);
+  }, [filtroAccion, filtroModulo, pagina]);
 
+  useEffect(() => { setPagina(0); }, [filtroAccion, filtroModulo]);
   useEffect(() => { cargar(); }, [cargar]);
 
   function mostrarDetalles(d: string | null) {
@@ -104,6 +108,27 @@ export function Auditoria() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="flex items-center justify-between px-4 py-2 text-sm">
+            <span className="text-xs text-gray-500">
+              {(total > 0) ? `${pagina * porPagina + 1}-${Math.min(total, (pagina + 1) * porPagina)} de ${total}` : '0 eventos'}
+            </span>
+            <div className="flex gap-2">
+              <button
+                disabled={pagina === 0 || cargando}
+                onClick={() => setPagina(p => Math.max(0, p - 1))}
+                className="px-3 py-1 text-xs border rounded disabled:opacity-40"
+              >
+                Anterior
+              </button>
+              <button
+                disabled={(pagina + 1) * porPagina >= total || cargando}
+                onClick={() => setPagina(p => p + 1)}
+                className="px-3 py-1 text-xs border rounded disabled:opacity-40"
+              >
+                Siguiente
+              </button>
+            </div>
           </div>
         </Card>
       )}

@@ -78,18 +78,19 @@ export function porcentaje(valor: number | null | undefined, decimales = 1): str
  *  su propio reloj. Por eso hay dos funciones y no una: mezclarlas seria volver
  *  a la confusion en un sentido.
  */
+import { getConfig } from '../configuracion';
+
 export function fecha(iso: string | null | undefined): string {
   if (!iso) return '—';
 
+  const cfg = getConfig();
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   if (!m) return '—';
 
   const [, anio, mes, dia] = m;
-  return new Intl.DateTimeFormat('es-MX', {
-    timeZone: 'UTC',      // <-- la parte que hace todo el trabajo
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
+  return new Intl.DateTimeFormat(cfg.locale, {
+    timeZone: 'UTC',
+    ...(cfg.date as any),
   }).format(new Date(`${anio}-${mes}-${dia}T00:00:00Z`));
 }
 
