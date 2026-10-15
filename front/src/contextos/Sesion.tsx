@@ -26,6 +26,10 @@ interface SesionContextValue {
   /** El aviso de caducidad, para mostrarlo encima del login. Se limpia al
    *  entrar, para que el exito borre el mensaje de fracaso anterior. */
   aviso: AvisoSesion | null;
+  /** Perfil de rol del usuario (consultor, digitalizador, supervisor, admin, qa, programador, develop) */
+  perfil: string | null;
+  /** Grupo asociado al perfil, controla el acceso CRUD y a información sensible. */
+  grupo: string | null;
   entro: (u: Usuario) => void;
   cerrarSesion: () => void;
 }
@@ -36,6 +40,8 @@ export function SesionProvider({ children }: { children: ReactNode }) {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
   const [cargando, setCargando] = useState(true);
   const [aviso, setAviso] = useState<AvisoSesion | null>(null);
+  const [perfil, setPerfil] = useState<string | null>(null);
+  const [grupo, setGrupo] = useState<string | null>(null);
 
   // La comprobacion de arranque. Se hace UNA vez y no en cada render: si
   // colgara de un `useEffect` sin dependencias, cada cambio de estado
@@ -51,12 +57,25 @@ export function SesionProvider({ children }: { children: ReactNode }) {
         // el estado de un componente ya desmontado es el aviso de React y, en
         // una app con dos personas usando el mismo reloj, el sintoma aparece
         // como un fallo intermitente que nadie reproduce.
-        if (vivo) setUsuario(u);
+          if (vivo) {
+          setUsuario(u);
+          // Establecer perfil a partir del campo del usuario
+          if (u?.perfil) {
+            setPerfil(u.perfil);
+          } else {
+            setPerfil('digitalizador');
+          }
+          setGrupo(u?.grupo || 'operaciones');
+        }
       } catch {
         // Un fallo de red al COMPROBAR no es un fallo de sesion: no se come el
         // token ni cierra la puerta. Se deja en `null` y se muestra el login,
         // pero el token sigue ahi y al siguiente intento puede funcionar.
-        if (vivo) setUsuario(null);
+        if (vivo) {
+          setUsuario(null);
+          setPerfil(null);
+          setGrupo(null);
+        }
       } finally {
         if (vivo) setCargando(false);
       }
@@ -73,6 +92,7 @@ export function SesionProvider({ children }: { children: ReactNode }) {
     () =>
       alCaducar(a => {
         setUsuario(null);
+        setPerfil(null);
         setAviso(a);
         // El token se borra aqui y no en quien dispara el aviso, para que las
         // tres cosas (usuario fuera, token fuera, aviso puesto) pasen siempre
@@ -87,16 +107,20 @@ export function SesionProvider({ children }: { children: ReactNode }) {
   const entro = useCallback((u: Usuario) => {
     setUsuario(u);
     setAviso(null);
+    setPerfil(u.perfil || 'digitalizador');
+    setGrupo(u.grupo || 'operaciones');
   }, []);
 
   const cerrarSesion = useCallback(() => {
     salir();
     setUsuario(null);
     setAviso(null);
+    setPerfil(null);
+    setGrupo(null);
   }, []);
 
   return (
-    <SesionContext.Provider value={{ usuario, cargando, aviso, entro, cerrarSesion }}>
+    <SesionContext.Provider value={{ usuario, cargando, aviso, perfil, grupo, entro, cerrarSesion }}>
       {children}
     </SesionContext.Provider>
   );

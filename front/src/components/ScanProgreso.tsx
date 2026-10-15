@@ -56,7 +56,12 @@
  * va en texto crudo y no como "3 errores": el operador tiene que saber *cual*.
  */
 
+import { useState } from 'react';
 import type { ScanCorrida, ScanProcesado } from '../types/scan';
+import type { Ticket } from '../types/api';
+import { ticketsApi } from '../services/api';
+import { Modal } from '../components/ui';
+import { VerDocumento } from '../components/TicketDocumento';
 
 /** Formatea un importe que llega como texto desde la API. */
 function dinero(valor: string | null | undefined): string {
@@ -229,8 +234,15 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
 }
 
 /** El progreso de una corrida, con el feed de lo que ya se leyo. */
-export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
+export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida; totalPosible?: number }) {
   const procesados = [...(corrida.procesados ?? [])].reverse();
+  const [ticketVer, setTicketVer] = useState<Ticket | null>(null);
+  const [cargandoTicket, setCargandoTicket] = useState(false);
+  async function abrirTicket(ticketId: string) {
+    setCargandoTicket(true);
+    try { const t = await ticketsApi.get(ticketId); setTicketVer(t); }
+    finally { setCargandoTicket(false); }
+  }
 
   // El total no se conoce hasta el final: el resumen se rellena al cerrar. Se
   // muestra el conteo real y NO un porcentaje inventado — con 200 archivos a
@@ -248,6 +260,7 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
   const leidos = corrida.con_ticket ?? 0;
 
   return (
+    <>
     <section
       className="mt-4 rounded-xl border-2 border-blue-200 bg-blue-50/50 overflow-hidden"
       aria-live="polite"
@@ -273,7 +286,7 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
                     Leyendo <span className="font-mono text-gray-800">{corrida.actual}</span>
                   </>
                 ) : corrida.terminada ? (
-                  `${corrida.archivos_vistos} archivos vistos en ${segundosLegibles(corrida.segundos)}`
+                  `${corrida.archivos_vistos}${totalPosible != null ? ` de ${totalPosible}` : ''} archivos vistos en ${segundosLegibles(corrida.segundos)}`
                 ) : (
                   'Preparando la carpeta...'
                 )}
@@ -358,6 +371,21 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
                     </span>
                   )}
 
+                  {p.ticket_id && (
+                    <button
+                      type="button"
+                      onClick={() => abrirTicket(p.ticket_id!)}
+                      className="shrink-0 text-blue-600 hover:text-blue-800 p-1"
+                      title="Ver comprobante original"
+                    >
+                      {cargandoTicket ? (
+                        <span className="animate-spin inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 12s.75-7.5 9.75-7.5S21.75 12 21.75 12s-.75 7.5-9.75 7.5S2.25 12 2.25 12z" /><circle cx="12" cy="12" r="3" /></svg>
+                      )}
+                    </button>
+                  )}
+
                   {/* El importe, y la distincion que hay que ensenar: lo que se
                       LEYO y lo que se AFIRMA. Cuando no coinciden, el monto va
                       atenuado y con el aviso al lado, porque un $4,093.80 sin
@@ -380,7 +408,7 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
 
                 {/* La segunda linea: QUE se leyo del papel.
                     Es lo que hace que la fila sea una tarea y no un contador. */}
-                {(p.proveedor || p.fecha || p.subtotal || p.iva) && (
+                {(p.monto || p.proveedor || p.fecha || p.subtotal || p.iva) && (
                   <div className="mt-1.5 pl-1 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-gray-600">
                     {p.proveedor && (
                       <span className="font-medium text-gray-800" title={p.proveedor}>
@@ -396,6 +424,10 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
                     {p.subtotal && <span>subtotal {dinero(p.subtotal)}</span>}
                     {p.iva && <span>IVA {dinero(p.iva)}</span>}
                     {p.ieps && <span>IEPS {dinero(p.ieps)}</span>}
+                    {p.monto && <span className="font-medium text-gray-900">total {dinero(p.monto)}</span>}
+                    {typeof p.lineas === 'number' && (
+                      <span>{p.lineas === 1 ? '1 artículo' : `${p.lineas} artículos`}</span>
+                    )}
                     {/* El conteo de lineas, y `null` NO es lo mismo que `0`: la
                         ruta OCR no trae detalle de partidas, y no decir nada es
                         mas honesto que decir "0 lineas". */}
@@ -405,6 +437,15 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
                       </span>
                     )}
                   </div>
+                )}
+
+                {/* Archivos leidos pero sin ticket (p. ej. sin empresa asignada):
+                    se leyo pero no se creo nada, que es otra cosa que un fallo. */}
+                {!p.ticket_id && p.accion && /OMIT/i.test(p.accion) && (
+                  <p className="mt-1 text-[11px] text-gray-500 italic">
+                    leído correctamente, pero no se creó ticket (probablemente sin
+                    empresa; usa «Escanear y crear tickets» con una empresa elegida)
+                  </p>
                 )}
 
                 {/* Los motivos del gate. SIEMPRE visibles, sin plegar.
@@ -496,5 +537,9 @@ export function PanelProgreso({ corrida }: { corrida: ScanCorrida }) {
         </footer>
       )}
     </section>
+      <Modal isOpen={ticketVer !== null} onClose={() => setTicketVer(null)} title="Comprobante original">
+        {ticketVer && <VerDocumento ticket={ticketVer} />}
+      </Modal>
+    </>
   );
 }

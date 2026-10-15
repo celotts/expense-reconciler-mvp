@@ -43,6 +43,7 @@ export function Scan() {
   const [pagina, setPagina] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [escaneando, setEscaneando] = useState(false);
+  const [preparando, setPreparando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ultimo, setUltimo] = useState<ScanResultado | null>(null);
   /** El progreso en vivo de la corrida que esta corriendo. */
@@ -102,6 +103,7 @@ export function Scan() {
   }, [filtro, companyId, pagina]);
 
   useEffect(() => { cargar(); }, [cargar]);
+  useEffect(() => { if (corrida) setPreparando(false); }, [corrida]);
   useEffect(() => { companiesApi.list().then(setCompanies).catch(() => setCompanies([])); }, []);
 
   /** Corta el sondeo. Lo usan el `finally` del escaneo y el cleanup del unmount. */
@@ -128,6 +130,7 @@ export function Scan() {
   const [archivar, setArchivar] = useState<boolean | null>(null);
 
   const escanear = async (conEmpresa: boolean) => {
+    setPreparando(true);
     setEscaneando(true);
     setError(null);
     setCorrida(null);
@@ -180,6 +183,7 @@ export function Scan() {
     } finally {
       clearIntervalActivo();
       setEscaneando(false);
+      setPreparando(false);
     }
   };
 
@@ -261,15 +265,19 @@ export function Scan() {
           elegida y se apaga sin ella. Un solo boton con un parametro opcional
           deja la decision de crear tickets escondida en un estado que nadie ve.
         */}
-        <Button onClick={() => escanear(false)} disabled={escaneando}>
-          {escaneando ? 'Escaneando...' : 'Escanear (solo inventariar)'}
+        <Button onClick={() => escanear(false)} disabled={escaneando} className={preparando ? 'opacity-80 cursor-wait' : ''}>
+          {preparando ? (
+            <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
+          ) : escaneando ? 'Escaneando...' : 'Escanear (solo inventariar)'}
         </Button>
         <Button
           onClick={() => escanear(true)}
           disabled={escaneando || !companyId}
           title={companyId ? undefined : 'Elige una empresa: sin ella no se puede atribuir ningún gasto'}
         >
-          Escanear y crear tickets
+          {preparando ? (
+            <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
+          ) : escaneando ? 'Escaneando...' : 'Escanear y crear tickets'}
         </Button>
       </div>
 
@@ -278,7 +286,13 @@ export function Scan() {
           salieron, y verlo despues de leerlos es leerlo al reves. */}
       <EstadoDeIa />
 
-      {corrida && <PanelProgreso corrida={corrida} />}
+      {preparando && (
+        <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm flex items-center gap-2">
+          <span className="animate-spin inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
+          <span>Preparando el escaneo, detectando archivos{stats?.total_archivos ? ` (0 de ${stats.total_archivos})` : '…'}</span>
+        </div>
+      )}
+      {corrida && <PanelProgreso corrida={corrida} totalPosible={stats?.total_archivos} />}
 
       {ultimo && <PanelResultado resultado={ultimo} />}
 
@@ -512,6 +526,9 @@ function TablaArchivos({ archivos, onAbrir }: {
         <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
           <tr>
             <th className="px-4 py-2">Archivo</th>
+            <th className="px-4 py-2">Negocio</th>
+            <th className="px-4 py-2">Fecha</th>
+            <th className="px-4 py-2">Total</th>
             <th className="px-4 py-2">Estado</th>
             <th className="px-4 py-2">Leído por</th>
             <th className="px-4 py-2">Intentos</th>
@@ -524,6 +541,15 @@ function TablaArchivos({ archivos, onAbrir }: {
             <tr key={f.id} className="hover:bg-gray-50">
               <td className="px-4 py-2 font-mono text-xs truncate max-w-xs" title={f.relative_path}>
                 {f.relative_path}
+              </td>
+              <td className="px-4 py-2 text-xs text-gray-700 truncate max-w-[160px]" title={f.ticket_negocio ?? ''}>
+                {f.ticket_negocio ?? '—'}
+              </td>
+              <td className="px-4 py-2 text-xs text-gray-600">
+                {f.ticket_fecha ?? '—'}
+              </td>
+              <td className="px-4 py-2 text-xs text-gray-900 font-medium tabular-nums">
+                {f.ticket_total ? `$${Number(f.ticket_total).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
               </td>
               <td className="px-4 py-2">
                 <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${COLOR_ESTADO[f.status]}`}>
@@ -673,13 +699,19 @@ function DetalleArchivo({ detalle, ticket, onReprocesar, onCerrar }: {
         ) : (
           <ul className="text-sm space-y-1">
             {detalle.events.map((e: ScanEvent) => (
-              <li key={e.id} className="flex items-baseline gap-2">
-                <span className="text-xs text-gray-400 whitespace-nowrap">
-                  {new Date(e.created_at).toLocaleString()}
-                </span>
-                <span className="font-medium">{accionLabel(e.action)}</span>
-                {e.actor && <span className="text-gray-500 text-xs">por {e.actor}</span>}
-                {e.detail && <span className="text-gray-500 text-xs">— {e.detail}</span>}
+              <li key={e.id} className="space-y-0.5 py-1">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="text-xs text-gray-400 whitespace-nowrap">
+                    {new Date(e.created_at).toLocaleString()}
+                  </span>
+                  <span className="font-medium">{accionLabel(e.action)}</span>
+                  {e.actor && <span className="text-gray-500 text-xs">por {e.actor}</span>}
+                </div>
+                {e.detail && (
+                  <p className="text-xs text-gray-500 pl-1 leading-relaxed">
+                    — {e.detail}
+                  </p>
+                )}
               </li>
             ))}
           </ul>

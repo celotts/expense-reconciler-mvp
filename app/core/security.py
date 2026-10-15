@@ -219,7 +219,7 @@ def hash_de_trampa() -> str:
 # ---------------------------------------------------------------------------
 
 
-def crear_token(usuario_id: str, email: str, expira_en_minutos: int | None = None) -> tuple[str, int]:
+def crear_token(usuario_id: str, email: str, perfil: str = "digitalizador", grupo: str = "operaciones", expira_en_minutos: int | None = None) -> tuple[str, int]:
     """Firma un token HS256. Devuelve el token y los segundos de vida.
 
     El `exp` va DENTRO del token firmado, no en un header. Un header se puede
@@ -237,6 +237,8 @@ def crear_token(usuario_id: str, email: str, expira_en_minutos: int | None = Non
     cuerpo = {
         "sub": usuario_id,
         "email": email,
+        "perfil": perfil,
+        "grupo": grupo,
         "iat": ahora,
         "exp": expira,
         # Marca el tipo de token. Un dia que haya refresh tokens, un access

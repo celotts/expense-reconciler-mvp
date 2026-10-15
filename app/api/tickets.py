@@ -51,6 +51,7 @@ from app.services.ai_extractor import ai_extractor
 from app.services.inventario_service import registrar_compra
 from app.services.ticket_persistence import persistir_extraccion
 from app.services import vista_previa
+from app.services.auditoria import registrar_auditoria, registrar_login_auditoria, registrar_digitalizacion_auditoria
 
 router = APIRouter(tags=["Tickets"])
 
@@ -232,6 +233,16 @@ async def create_ticket(
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
 
 
@@ -768,6 +779,16 @@ async def review_ticket(
 
     await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
 
 
@@ -1486,6 +1507,16 @@ async def put_documento(
 
     await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
 
 
@@ -1628,6 +1659,16 @@ async def update_ticket(
 
     await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
 
 

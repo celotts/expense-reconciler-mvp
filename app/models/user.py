@@ -47,6 +47,8 @@ class UserModel(Base):
     # declara exactamente la misma columna que declaraba `Column(Boolean, ...)` —
     # BOOLEAN NOT NULL. Por eso esto no necesita migracion.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    perfil: Mapped[str] = mapped_column(String(50), nullable=False, default='digitalizador')
+    grupo: Mapped[str] = mapped_column(String(50), nullable=False, default='operaciones')
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     # Anotado por la misma razon que `is_active`, y por el mismo motivo de que
     # aqui se nota: `auth.py:138` hace `usuario.last_login_at = utcnow()`. Sin

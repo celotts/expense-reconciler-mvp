@@ -15,7 +15,7 @@ import type {
   ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanIaEstado, ScanItem, ScanOcrEstado,
   ScanRequest, ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
-import { leerToken, notificarCaducidad, SesionVencida } from './sesion';
+import { estaVencido, leerToken, notificarCaducidad, SesionVencida } from './sesion';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
@@ -67,6 +67,18 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
     ...(resto.headers as Record<string, string> | undefined),
   };
 
+  // Comprobacion anticipada: si el token ya caduco localmente, no se manda
+  // la peticion. Cae en el mismo aviso de caducidad que un 401 del servidor,
+  // sin gap de ir y volver, y sobre todo sin que la transaccion caiga en un
+  // estado a medio guardar. Modo guardar datos.
+  if (!sinToken) {
+    const token = leerToken();
+    if (estaVencido(token)) {
+      void import('./sesion').then(m => m.notificarCaducidad(resto.method !== undefined && resto.method !== 'GET'));
+      throw new SesionVencida(resto.method !== undefined && resto.method !== 'GET');
+    }
+  }
+
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...resto,
     headers: cabeceras,
@@ -95,7 +107,16 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Error desconocido' }));
-    throw new Error(error.detail || `Error ${response.status}`);
+    const detail = error.detail;
+    let mensaje = `Error ${response.status}`;
+    if (typeof detail === 'string') {
+      mensaje = detail;
+    } else if (Array.isArray(detail)) {
+      mensaje = detail.map(d => d.msg || d.detail || JSON.stringify(d)).join('; ');
+    } else if (detail && typeof detail === 'object') {
+      mensaje = detail.msg || detail.message || JSON.stringify(detail);
+    }
+    throw new Error(mensaje);
   }
 
   if (response.status === 204) {

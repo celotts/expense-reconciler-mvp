@@ -13,6 +13,7 @@ from app.models.inventario import (
     MovimientoInventarioModel,
     ProductoModel,
 )
+from app.models.auditoria import Auditoria
 
 __all__ = [
     "CompanyModel",
@@ -29,4 +30,5 @@ __all__ = [
     "CompraModel",
     "CompraItemModel",
     "MovimientoInventarioModel",
+    "Auditoria",
 ]

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { registrarEventoFrontend } from './services/auditoria';
+import { estaVencido, leerToken, notificarCaducidad } from './services/sesion';
 import { Companies } from './pages/Companies';
 import { Tickets } from './pages/Tickets';
 import { BankTransactions } from './pages/BankTransactions';
@@ -9,7 +11,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { Scan } from './pages/Scan';
 import { Cierre } from './pages/Cierre';
-import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
+import { Auditoria } from './pages/Auditoria';import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
 import { SesionProvider, useSesion } from './contextos/Sesion';
 import { Loading } from './components/ui';
 import './App.css';
@@ -24,15 +26,16 @@ import './App.css';
 // aparecian la barra lateral. Una lista de pantallas en dos sitios es una lista
 // que va a diferir otra vez.
 const navigation = [
-  { key: 'dashboard' as Page, label: 'Inicio', icon: HomeIcon },
-  { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon },
-  { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon },
-  { key: 'scan' as Page, label: 'Escáner', icon: FolderScanIcon },
-  { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon },
-  { key: 'spotcheck' as Page, label: 'Muestreo', icon: CheckBadgeIcon },
-  { key: 'bank' as Page, label: 'Banco', icon: BankIcon },
-  { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon },
-  { key: 'cierre' as Page, label: 'Cierre mensual', icon: ClipboardCheckIcon },
+  { key: 'dashboard' as Page, label: 'Inicio', icon: HomeIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'auditoria' as Page, label: 'Auditoría', icon: ClipboardCheckIcon, roles: ['admin', 'qa', 'develop', 'programador'] },
+  { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'scan' as Page, label: 'Escáner', icon: FolderScanIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon, roles: ['supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'spotcheck' as Page, label: 'Muestreo', icon: CheckBadgeIcon, roles: ['supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'bank' as Page, label: 'Banco', icon: BankIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'cierre' as Page, label: 'Cierre mensual', icon: ClipboardCheckIcon, roles: ['consultor', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
 ];
 
 function ClipboardCheckIcon({ className = 'w-5 h-5' }: { className?: string }) {
@@ -126,7 +129,46 @@ function XIcon({ className = 'w-6 h-6' }: { className?: string }) {
 
 function AppInner() {
   const { paginaActual, irA, filtroTickets } = useNavegacion();
-  const { usuario, cerrarSesion } = useSesion();
+  const { usuario, perfil, grupo, cerrarSesion } = useSesion();
+  // Validación de acceso: si no hay usuario, se oculta el menú
+  // y se muestra el login (gestionado por SesionProvider)
+  const hayAcceso = !!usuario && !!perfil;
+  // Filtrar el menú según el perfil del usuario logueado
+  const menuFiltrado = navigation.filter(item =>
+    perfil ? item.roles.includes(perfil) : false
+  );
+
+  // Guardia: si la página actual no está permitida para el perfil,
+  // regresar al dashboard.
+  useEffect(() => {
+    if (!perfil) return;
+    const permitida = navigation.find(n => n.key === paginaActual)?.roles.includes(perfil);
+    if (paginaActual !== 'dashboard' && !permitida) {
+      irA('dashboard');
+    }
+  }, [perfil, paginaActual, irA]);
+
+  // Auditoria de navegacion: cada cambio de pantalla queda registrado.
+  useEffect(() => {
+    if (!usuario || !perfil) return;
+    registrarEventoFrontend({
+      accion: 'navegar',
+      modulo: 'frontend',
+      detalles: { pantalla: paginaActual },
+    });
+  }, [paginaActual, usuario, perfil]);
+
+  const perfilLabels: Record<string, string> = {
+    consultor: 'Consultor',
+    digitalizador: 'Digitalizador',
+    supervisor: 'Supervisor',
+    admin: 'Administrador',
+    qa: 'QA',
+    programador: 'Programador',
+    develop: 'Developer',
+  };
+  const perfilLabel = perfil ? perfilLabels[perfil] || 'Sin perfil' : 'Sin perfil';
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const renderPage = () => {
@@ -142,6 +184,7 @@ function AppInner() {
       case 'bank': return <BankTransactions />;
       case 'reconciliations': return <Reconciliations />;
       case 'cierre': return <Cierre />;
+      case 'auditoria': return <Auditoria />;
       default: return <Dashboard />;
     }
   };
@@ -178,10 +221,19 @@ function AppInner() {
 
           {/* Navigation */}
           <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-            {navigation.map(item => (
+            {menuFiltrado.map(item => (
               <button
                 key={item.key}
-                onClick={() => { irA(item.key); setSidebarOpen(false); }}
+                onClick={() => {
+                  if (!hayAcceso) return;
+                  const t = leerToken();
+                  if (estaVencido(t)) {
+                    notificarCaducidad(false);
+                    return;
+                  }
+                  irA(item.key);
+                  setSidebarOpen(false);
+                }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                   paginaActual === item.key
                     ? 'bg-blue-50 text-blue-700'
@@ -199,6 +251,22 @@ function AppInner() {
             <div className="mb-2">
               <p className="text-sm font-medium text-gray-800 truncate">{usuario?.nombre}</p>
               <p className="text-xs text-gray-500 truncate">{usuario?.email}</p>
+              <p className="text-xs text-blue-600 truncate font-medium">{perfilLabel}</p>
+              <p className="text-xs text-gray-400 truncate">{grupo ? `Grupo: ${grupo}` : ''}</p>
+              {perfil === 'develop' && (
+                <div className="mt-2">
+                  <label className="text-xs text-gray-500 block mb-1">Entorno</label>
+                  <select
+                    className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 bg-white"
+                    defaultValue="dev"
+                    onChange={e => console.log('ambiente:', e.target.value)}
+                  >
+                    <option value="dev">Dev</option>
+                    <option value="qa">QA</option>
+                    <option value="prod">Prod</option>
+                  </select>
+                </div>
+              )}
             </div>
             <button
               onClick={cerrarSesion}

@@ -172,6 +172,7 @@ CARPETAS: list[tuple[str, str]] = [
     ("/bank-transactions", "Bank Transactions"),
     ("/reconciliations", "Reconciliations"),
     ("/reports", "Reports"),
+    ("/auditoria", "Auditoria"),
 ]
 
 # El orden de ESTA lista es el orden de las carpetas, y el de las peticiones dentro de
@@ -335,6 +336,7 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("GET", "/usuarios/{usuario_id}"): "u2. Ver una cuenta",
     ("PATCH", "/usuarios/{usuario_id}"): "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
     ("POST", "/usuarios/{usuario_id}/contrasena"): "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
+    ("POST", "/auditoria/evento"): "a1. Evento de auditoria  <- navegacion/pantalla",
 }
 
 # Los tres scripts que hacen que la coleccion se sustains sola.

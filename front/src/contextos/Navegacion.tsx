@@ -17,7 +17,8 @@ export type Page =
   | 'spotcheck'
   | 'bank'
   | 'reconciliations'
-  | 'cierre';
+  | 'cierre'
+  | 'auditoria';
 
 interface NavegacionContextValue {
   paginaActual: Page;

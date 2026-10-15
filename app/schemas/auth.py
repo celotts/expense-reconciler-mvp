@@ -61,6 +61,8 @@ class UsuarioResponse(BaseModel):
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None = None
+    perfil: str = "digitalizador"
+    grupo: str = "operaciones"
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -84,6 +86,8 @@ class UsuarioUpdate(BaseModel):
 
     nombre: str | None = Field(default=None, min_length=1, max_length=120)
     is_active: bool | None = None
+    perfil: str | None = Field(default=None)
+    grupo: str | None = Field(default=None)
 
 
 class CambioContrasenaRequest(BaseModel):

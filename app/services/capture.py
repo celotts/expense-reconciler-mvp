@@ -644,6 +644,29 @@ def _exige_items(resultado: TicketExtractionResult) -> bool:
     return resultado.items is None
 
 
+def _trae_desglose(resultado: TicketExtractionResult) -> bool:
+    """¿La lectura trae un desglose que AFIRMA algo, o solo los campos en cero?
+
+    La diferencia importa porque `_aritmetica_se_sostiene` **penaliza con -1** a
+    la lectura que se contradice a si misma, y la aritmetica pesa mas que el
+    proveedor al comparar dos lecturas. Un `0 + 0` sin total que lo respalde no
+    es una contradiccion: es un modelo que no devolvio desglose, y penarlo hace
+    que su respuesta correcta pierda contra un `Unknown Provider`.
+
+    Ver el docstring de `_aritmetica_se_sostiene` para la medicion.
+    """
+    if resultado.subtotal is None:
+        return False
+    if resultado.tax_amount is None and resultado.ieps_amount is None:
+        return False
+    # Todos en cero: el desglose no dice nada. Con el total en positivo, un
+    # desglose de `0 + 0` no es "leido mal", es "no leido".
+    return any(
+        valor not in (None, Decimal("0"))
+        for valor in (resultado.subtotal, resultado.tax_amount, resultado.ieps_amount)
+    )
+
+
 def _aritmetica_se_sostiene(resultado: TicketExtractionResult) -> int:
     """+1 si los numeros cuadran, -1 si se contradicen, 0 si no se pueden comprobar.
 
@@ -699,9 +722,26 @@ def _aritmetica_se_sostiene(resultado: TicketExtractionResult) -> int:
 
     # Solo es un defecto si la lectura TRAE el desglose y no suma. Sin subtotal
     # o sin IVA no hay nada que contradecir.
-    if resultado.subtotal is not None and (
-        resultado.tax_amount is not None or resultado.ieps_amount is not None
-    ):
+    #
+    # MEDIDO el 2026-10-14, y este -1 estaba COSTANDO LECTURAS CORRECTAS.
+    #
+    # `ExtractedInvoice` declara `subtotal` y `tax_amount` como `Decimal("0")`,
+    # no como `None` (a diferencia de `ieps_amount`, que SI es `Optional`). Un
+    # modelo que devuelve SOLO el total deja un desglose de `0 + 0`, y el guard
+    # de arriba lo daba por bueno: hay subtotal, hay IVA, hay algo que no suma.
+    #
+    # MEDIDO: un modelo que lee `Tiendas Ramirez SA de CV / 1100.00` — que es
+    # una respuesta CORRECTA — puntuaba `(1, 0, -1, 1, 1, 0, 1)`, y las reglas
+    # con `provider_name = "Unknown Provider"` puntuaban
+    # `(1, 0, 0, 0, 1, 1, 0)`. Como la aritmetica va ANTES que el proveedor en
+    # la tupla, ganaba el `Unknown Provider`: se pagaba la vision y se tiraba su
+    # respuesta. Lo documenta
+    # `test_sin_proveedor_escala_a_la_ia_aunque_tenga_total`.
+    #
+    # `0 + 0` no es un desglose, es la AUSENCIA de desglose: no afirma nada que
+    # el total pueda contradecir. Por eso lo que se pide para penar a una
+    # lectura es que el desglose CARGUE algo, no solo que los campos existan.
+    if _trae_desglose(resultado):
         # OJO: el check se registra CON LOS NUMEROS, asi que el string es
         # "subtotal_plus_tax_mismatch(leido=279.93,esperado=225.41)". Una
         # comparacion exacta con el nombre limpio NUNCA encuentra nada y el -1
@@ -747,7 +787,32 @@ def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
     return (
         1 if resultado.total_amount > 0 else 0,
         tiene_lineas,
-        # La aritmetica, TERCER criterio — y no segundo.
+        # Saber DE QUIEN es el gasto, antes que la aritmetica.
+        #
+        # MEDIDO el 2026-10-14. El proveedor estaba DESPUES de la aritmetica, y
+        # eso hacia que una lectura SIN proveedor le ganara a una que si lo
+        # tiene. El caso medido:
+        #
+        #   reglas = prov "Unknown Provider", 964.00 + 136.00 = 1100.00 EXACTO
+        #   modelo = prov "Tiendas Ramirez SA de CV", sin desglose
+        #
+        # Las reglas ganan en aritmetica (+1 contra 0) y el proveedor nunca llega
+        # a compararse. Se pagaba la vision, el modelo sabia de quien era el
+        # gasto, y se guardaba `Unknown Provider`.
+        #
+        # La razon de fondo: `_aritmetica_se_sostiene` devuelve 0 cuando NO hay
+        # desglose, y ese 0 significa "no comprobable", no "incorrecto". Meter un
+        # "no comprobable" (0) en la misma escala que un "comprobado" (+1)
+        # confunde CERTEZA con IDENTIDAD: que los numeros sumen dice que el total
+        # esta bien, pero no dice de quien es el gasto, y sin eso el ticket no es
+        # una compra.
+        #
+        # El total sigue mandando: el punto 1 no se mueve, y un total en cero
+        # pierde contra cualquier total bueno aunque traiga proveedor. Lo que se
+        # adelanta es solo el proveedor. Lo fija
+        # `test_sin_proveedor_escala_a_la_ia_aunque_tenga_total`.
+        1 if resultado.provider_name != UNKNOWN_PROVIDER else 0,
+        # La aritmetica, DESPUES del proveedor y de las lineas.
         #
         # MEDIDO el 2026-10-13: va deliberadamente DESPUES de las lineas. La
         # primera version lo puso segundo y rompio `test_por_omision_una_foto_
@@ -757,14 +822,12 @@ def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
         # "el OCR trajo un desglose que suma" en motivo para saltarse las lineas
         # del modelo, que es el unico escalon que las trae.
         #
-        # Asi que: las lineas mandan sobre la aritmetica, y la aritmetica
-        # desempata entre lecturas que ya traen lo mismo. Sigue siendo lo unico
-        # criterio que dice algo sobre si el total es CORRECTO, que es distinto
-        # de cuanto se lleno el formulario.
+        # Sigue siendo lo unico criterio que dice algo sobre si el total es
+        # CORRECTO, que es distinto de cuanto se lleno el formulario y de quien
+        # es el gasto.
         _aritmetica_se_sostiene(resultado),
-        1 if resultado.provider_name != UNKNOWN_PROVIDER else 0,
         # Un proveedor que no es basura vale MAS que uno que solo "no es
-        # UNKNOWN". Sin esta cuarta posicion, dos lecturas con el mismo total se
+        # UNKNOWN". Sin esta posicion, dos lecturas con el mismo total se
         # desempatan por las lineas y el RFC, y el nombre se decide al azar:
         # `gt Edson Nte hunera 1235` ganaba el empate contra `CREMERIA` si las
         # dos traian lineas.

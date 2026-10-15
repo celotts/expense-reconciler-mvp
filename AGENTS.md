@@ -5,7 +5,8 @@ Si algo aquí contradice al código, el código gana: avisa y actualiza este arc
 
 Documentos hermanos: `README.md` es para humanos, `docs/known-issues.md` es el backlog de
 defectos verificados, `docs/captura.md` explica la ruta de lectura de comprobantes y
-`docs/testing.md` cómo se verifica el código. `agent.md` se eliminó: su contenido vive aquí.
+`docs/testing.md` cómo se verifica el código. `docs/buenas-practicas.md` recoge las
+buenas prácticas operativas. `agent.md` se eliminó: su contenido vive aquí.
 
 ---
 

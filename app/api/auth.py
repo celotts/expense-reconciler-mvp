@@ -133,7 +133,7 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
     # no debe dejar a la persona esperando a que expire el bloqueo.
     anotar_intento_exitoso(correo, ip)
 
-    token, segundos = crear_token(str(usuario.id), usuario.email)
+    token, segundos = crear_token(str(usuario.id), usuario.email, usuario.perfil, usuario.grupo)
 
     usuario.last_login_at = utcnow()
     await db.commit()

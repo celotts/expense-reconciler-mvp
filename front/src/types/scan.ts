@@ -49,6 +49,10 @@ export interface ScanFile {
   last_error: string | null;
   ticket_id: string | null;
   company_id: string | null;
+  /** Resumen del ticket asociado para mostrarlo en el registro sin abrirlo. */
+  ticket_negocio: string | null;
+  ticket_fecha: string | null;
+  ticket_total: string | null;
   first_seen_at: string;
   last_scanned_at: string | null;
   processed_at: string | null;

@@ -42,6 +42,7 @@ from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
 from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
+from app.models.ticket import TicketModel
 from app.models.user import UserModel
 from app.schemas.lectura import DiagnosticoLecturaResponse
 from app.schemas.scan import (
@@ -742,11 +743,33 @@ async def listar_registro(
         )
     ).scalars().all()
 
+    # Resumen del ticket asociado a cada archivo, para que el listado muestre de
+    # una pasada negocio, fecha y total sin abrir cada comprobante.
+    tickets_ids = [f.ticket_id for f in archivos if f.ticket_id is not None]
+    info_ticket: dict = {}
+    if tickets_ids:
+        q = await db.execute(
+            select(TicketModel.id, TicketModel.provider_name, TicketModel.expense_date, TicketModel.total_amount)
+            .where(TicketModel.id.in_(tickets_ids))
+        )
+        for tid, prov, fecha, total_amt in q.all():
+            info_ticket[tid] = (prov, fecha, str(total_amt) if total_amt is not None else None)
+
+    respuesta_archivos = []
+    for f in archivos:
+        fila = ScanFileResponse.model_validate(f)
+        if f.ticket_id is not None and f.ticket_id in info_ticket:
+            prov, fecha, total_amt = info_ticket[f.ticket_id]
+            fila.ticket_negocio = prov
+            fila.ticket_fecha = fecha
+            fila.ticket_total = total_amt
+        respuesta_archivos.append(fila)
+
     return ScanFileListResponse(
         total=int(total),
         limit=limit,
         offset=offset,
-        archivos=[ScanFileResponse.model_validate(f) for f in archivos],
+        archivos=respuesta_archivos,
     )
 
 

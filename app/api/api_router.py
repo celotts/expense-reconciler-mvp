@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.auth import router as auth_router
+from app.api.auditoria import router as auditoria_router
 from app.api.bank_transactions import router as bank_transactions_router
 from app.api.categorias import router as categorias_router
 from app.api.companies import router as companies_router
@@ -22,6 +23,12 @@ api_router = APIRouter()
 # "dice que soy yo" no dependa de que el router entero este protegido.
 # ---------------------------------------------------------------------------
 api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
+api_router.include_router(
+    auditoria_router,
+    prefix="/auditoria",
+    tags=["Auditoria"],
+    dependencies=[Depends(get_current_user)],
+)
 
 # A partir de aqui, TODO lo demas pide token. Se pone a nivel de router, no
 # endpoint por endpoint: escrito a mano serian 35 oportunidades de que el

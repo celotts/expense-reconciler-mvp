@@ -1,8 +1,17 @@
 .PHONY: build up up-force down logs ps stats disk clean prune insomnia insomnia-check \
-        migrar migrar-list migrar-estado
+        migrar migrar-list migrar-estado up-dev up-qa up-prod up_dev up_qa
+
+# Ambiente: prod (default), dev o qa. Se puede usar con `make up ENV=dev`.
+ENV ?= prod
+COMPOSE_FILES := -f docker-compose.yml
+ifeq ($(ENV),dev)
+COMPOSE_FILES += -f docker-compose.dev.yml
+else ifeq ($(ENV),qa)
+COMPOSE_FILES += -f docker-compose.qa.yml
+endif
 
 build:
-	docker compose build
+	docker compose $(COMPOSE_FILES) build
 
 # up reconstruye las imagenes (usa cache de capas) antes de levantar,
 # para no usar imagenes vieja cuando cambia requirements.txt o el codigo del front.
@@ -25,17 +34,32 @@ build:
 # codigo != 0 y dice CUAL contenedor no llego — que es la unica forma de que un
 # fallo de arranque sea visible en vez de silencioso.
 up: build
-	docker compose up -d --remove-orphans --wait --wait-timeout 120
+	docker compose $(COMPOSE_FILES) up -d --remove-orphans --wait --wait-timeout 120
 
 # up-force ignora la cache de Docker y rehace todas las capas.
 # El `--wait` es el mismo y por el mismo motivo: `--no-cache` tarda mas, no
 # significa que la app quede mas lista.
 up-force:
-	docker compose build --no-cache
-	docker compose up -d --remove-orphans --wait --wait-timeout 120
+	docker compose $(COMPOSE_FILES) build --no-cache
+	docker compose $(COMPOSE_FILES) up -d --remove-orphans --wait --wait-timeout 120
+
+up-dev:
+	$(MAKE) up ENV=dev
+
+up-qa:
+	$(MAKE) up ENV=qa
+
+up-prod:
+	$(MAKE) up ENV=prod
+
+up_dev:
+	$(MAKE) up ENV=dev
+
+up_qa:
+	$(MAKE) up ENV=qa
 
 down:
-	docker compose down
+	docker compose $(COMPOSE_FILES) down
 
 ps:
 	docker compose ps

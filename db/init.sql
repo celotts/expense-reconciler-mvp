@@ -22,9 +22,25 @@ CREATE TABLE IF NOT EXISTS users (
     nombre VARCHAR(120) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    perfil VARCHAR(50) NOT NULL DEFAULT 'digitalizador',
+    grupo VARCHAR(50) NOT NULL DEFAULT 'operaciones',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_login_at TIMESTAMP WITH TIME ZONE
 );
+
+CREATE TABLE IF NOT EXISTS auditoria (
+    id BIGSERIAL PRIMARY KEY,
+    usuario_id UUID,
+    rol VARCHAR(50),
+    accion VARCHAR(100) NOT NULL,
+    modulo VARCHAR(50),
+    registro_afectado UUID,
+    detalles TEXT,
+    ip_inet VARCHAR(45),
+    fecha TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ix_auditoria_fecha ON auditoria (fecha DESC);
+CREATE INDEX IF NOT EXISTS ix_auditoria_usuario ON auditoria (usuario_id);
 
 -- Sobre `lower(email)`, no sobre `email`: el login siempre normaliza a
 -- minúsculas antes de buscar, así que un índice sobre la columna tal cual

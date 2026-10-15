@@ -25,6 +25,36 @@ app.add_middleware(
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
+@app.on_event("startup")
+async def _sembrar_sos() -> None:
+    """Crea el usuario sos (super usuario) si no existe. Permite iniciar
+    la administracion de perfiles y crear admins desde el primer arranque."""
+    try:
+        from app.core.database import AsyncSessionLocal
+        from app.core.security import hashear_contrasena
+        from app.models.user import UserModel
+        from sqlalchemy import select
+
+        async with AsyncSessionLocal() as db:
+            existente = (await db.execute(
+                select(UserModel).where(UserModel.email == "sos@empresa.mx")
+            )).scalar_one_or_none()
+            if existente is None:
+                sos = UserModel(
+                    email="sos@empresa.mx",
+                    nombre="Super Sos",
+                    password_hash=hashear_contrasena("SosTesting123"),
+                    perfil="admin",
+                    grupo="administracion",
+                    is_active=True,
+                )
+                db.add(sos)
+                await db.commit()
+    except Exception:  # noqa: BLE001
+        # No abortar el arranque si el esquema aun no esta listo.
+        pass
+
+
 @app.get("/health", tags=["Health Check"])
 async def health_check(
     response: Response,

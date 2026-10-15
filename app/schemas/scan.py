@@ -101,6 +101,11 @@ class ScanFileResponse(BaseModel):
     last_error: str | None = None
     ticket_id: UUID | None = None
     company_id: UUID | None = None
+    # Resumen del ticket asociado, para que el registro de archivos no obligue a
+    # abrir cada uno. Ayuda a ver de un vistazo si la lectura funciono.
+    ticket_negocio: str | None = None
+    ticket_fecha: date | None = None
+    ticket_total: str | None = None
     first_seen_at: datetime
     last_scanned_at: datetime | None = None
     processed_at: datetime | None = None

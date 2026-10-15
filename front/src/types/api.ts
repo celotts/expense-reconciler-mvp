@@ -15,6 +15,8 @@ export interface Usuario {
   is_active: boolean;
   created_at: string;
   last_login_at: string | null;
+  perfil?: string;
+  grupo?: string;
 }
 
 /** Lo que devuelve `POST /auth/login`.

@@ -221,6 +221,22 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
 
   return (
     <div className="mt-3">
+      <div className="mb-3 p-3 rounded-lg bg-gray-50 border border-gray-200 text-xs space-y-2">
+        <div className="min-w-0">
+          <p className="font-semibold text-gray-900 truncate" title={ticket.provider_name || 'Sin proveedor'}>{ticket.provider_name || 'Sin proveedor'}</p>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500">
+            {ticket.provider_tax_id && <span className="font-mono">{ticket.provider_tax_id}</span>}
+            {ticket.expense_date && <span>Fecha: {ticket.expense_date}</span>}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 tabular-nums pt-0.5">
+          {ticket.subtotal && <p><span className="text-gray-500">Subtotal:</span> ${ticket.subtotal}</p>}
+          {ticket.tax_amount && <p><span className="text-gray-500">IVA:</span> ${ticket.tax_amount}</p>}
+          {ticket.ieps_amount && <p><span className="text-gray-500">IEPS:</span> ${ticket.ieps_amount}</p>}
+          <p className="font-semibold"><span className="text-gray-500">Total:</span> ${ticket.total_amount}</p>
+        </div>
+      </div>
+
       <button
         onClick={alternar}
         disabled={cargando}
