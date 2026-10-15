@@ -1,11 +1,12 @@
-from typing import List
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
 from app.models.company import CompanyModel
-from app.schemas.company import CompanyCreate, CompanyUpdate, CompanyResponse
+from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
 
 router = APIRouter(tags=["Companies"])
 
@@ -22,7 +23,7 @@ async def create_company(
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Company with this tax_id already exists"
+            detail="Ya hay una empresa con ese RFC"
         )
     
     company = CompanyModel(**company_in.model_dump())
@@ -32,12 +33,10 @@ async def create_company(
     return company
 
 
-@router.get("/", response_model=List[CompanyResponse])
+@router.get("/", response_model=list[CompanyResponse])
 async def list_companies(
-    skip: int = 0,
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-) -> List[CompanyModel]:
+    skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)
+) -> list[CompanyModel]:
     """List all companies with pagination."""
     result = await db.execute(select(CompanyModel).offset(skip).limit(limit))
     return list(result.scalars().all())
@@ -54,7 +53,7 @@ async def get_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     return company
 
@@ -71,7 +70,7 @@ async def update_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     update_data = company_in.model_dump(exclude_unset=True)
@@ -86,7 +85,7 @@ async def update_company(
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Company with this tax_id already exists"
+                detail="Ya hay una empresa con ese RFC"
             )
     
     for field, value in update_data.items():
@@ -108,7 +107,7 @@ async def delete_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     await db.delete(company)

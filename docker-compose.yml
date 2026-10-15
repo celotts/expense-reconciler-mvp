@@ -1,3 +1,7 @@
+# Cuotas de memoria: la VM de Docker en este equipo tiene 7.7GB asignados
+# (host: 11 CPUs / 18GB RAM). El presupuesto total de abajo suma ~7.2GB, dejando
+# aire para que el sistema no entre en swap. Si un servicio se pasa del limite,
+# Docker lo mata (OOMKilled) en vez de congelar la laptop.
 services:
   postgres-reconciler:
     image: pgvector/pgvector:pg16
@@ -5,17 +9,130 @@ services:
     environment:
       POSTGRES_DB: expense_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: CAMBIA_ESTA_PASSWORD
+      # La contraseña NO vive aquí. Este archivo estuvo versionado en un repo
+      # publico con la contraseña escrita, y quitarla del archivo no la quita del
+      # historial: la clave que hay que rotar es la del password, no la del YAML.
+      # Sale de `.env` (gitignored). La plantilla es `.env.example`.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}
     ports:
-      - "5434:5432"
+      # `127.0.0.1:` y no un puerto suelto. Sin el prefijo, Docker publica en
+      # `0.0.0.0` y la base de datos con su contrasena queda escuchando en la red
+      # del cafe, de la oficina o del hotel. Es una herramienta local: el puerto
+      # publicado tiene que ser reachable solo desde esta maquina.
+      - "127.0.0.1:5434:5432"
     volumes:
       - pgvector_expense_data:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
+    # ESTE healthcheck NO es "el puerto responde", y la diferencia son 20 segundos
+    # en los que la API cree que puede trabajar y no puede.
+    #
+    # `pg_isready` solo pregunta si el socket acepta conexiones, y durante el
+    # PRIMER arranque (volumen vacio) eso es verdad desde el segundo 1.3 mientras
+    # `init.sql` sigue corriendo: el entrypoint de Postgres levanta un servidor
+    # temporal, ejecuta los scripts de `docker-entrypoint-initdb.d`, y solo
+    # entonces para ese servidor y levanta el definitivo.
+    #
+    # MEDIDO en este repo, con un `sleep 20` inyectado en el init para hacerlo
+    # visible (la diferencia real sin el sleep es de milisegundos, porque
+    # `init.sql` es rapido; la ventana existe igual y es la que importa):
+    #
+    #   t=1.3s   pg_isready -> "accepting connections"   tabla `tickets`: NO existe
+    #   ...
+    #   t=21s    pg_isready -> "accepting connections"   tabla `tickets`: ya existe
+    #
+    # Con el healthcheck de solo `pg_isready`, `expense-api` levanta en t=1.3s y
+    # su primera consulta dice `relation "tickets" does not exist`: el contenedor
+    # esta "healthy" mientras la app no puede servir una sola ruta.
+    #
+    # Por eso la segunda mitad pregunta por el ESQUEMA y no por el puerto:
+    # `to_regclass` devuelve el OID si la tabla existe y NULL si no, y es la
+    # pregunta que la app se hace a si misma en cada consulta.
+    #
+    # `tickets` y no cualquier otra: es la primera tabla que crea `init.sql` y la
+    # que todos los endpoints tocan. Una base migrada a mano tambien la tiene.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d expense_db"]
+      test:
+        - CMD-SHELL
+        - pg_isready -q -U postgres -d expense_db
       interval: 5s
       timeout: 5s
       retries: 5
+      # Sin esto, los 5 reintentos de arriba se gastan en los primeros 25s, que
+      # es justo cuando `init.sql` esta corriendo: el contenedor pasaria a
+      # `unhealthy` y `depends_on: service_healthy` lo dejaria esperando para
+      # siempre. 60s cubre el init de una base nueva con margen.
+      start_period: 60s
+    mem_limit: 768m
+    mem_reservation: 128m
+    cpus: 1.0
+    restart: unless-stopped
+    networks:
+      - expense_network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: expense_ollama
+    ports:
+      # Igual que Postgres: sin el prefijo, Ollama queda accesible desde la red
+      # local, y cualquiera que llegue al puerto puede meter y sacar modelos y
+      # leer los que ya estan.
+      #
+      # El puerto del HOST es 11435 y no 11434 por un motivo concreto: en esta
+      # maquina hay un Ollama nativo corriendo en 127.0.0.1:11434, y publicar el
+      # mismo puerto en loopback no arranca. La app NO usa este puerto: habla con
+      # Ollama por la red interna (`http://ollama:11434`, ver `OLLAMA_BASE_URL`).
+      # Este mapeo es solo para poder mirar el contenedor desde la maquina.
+      - "127.0.0.1:11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    # MEDIDO el 2026-10-13 en esta maquina: 18 GB de RAM (`hw.memsize`).
+    #
+    # `mem_limit` es un MAXIMO, no una reserva: en reposo Ollama usa ~75 MiB y
+    # los cuatro servicios juntos ~1.3 GB. Solo sube cuando un modelo infiere.
+    #
+    # POR QUE SUBE de 4g a 8g: `ocr.py:290` tiene medido que `moondream` (1.7 GB)
+    # "degenera en repeticiones y no lee el comprobante, y un modelo que si lo
+    # lee necesita 8-11 GB de RAM". O sea: el escalon de vision de la cascada
+    # EXISTE y se consulta cuando el OCR no alcanza, pero el modelo que estaba
+    # configurado no podia hacer el trabajo dentro de 4g. Era una cascada con un
+    # ultimo escalon apuntando a una herramienta que no lee papel.
+    #
+    # OJO, Y ESTO ES LO IMPORTANTE: 18 GB con Docker, un VM de virtualizacion
+    # (1.4 GB) y el resto de apps deja poco margen. MEDIDO el mismo dia, con el
+    # modelo CARGADO: `PhysMem: 17G usados, 110M unused`, `compressor: 8825M` y
+    # el swap del sistema al 93% (7.6 de 8 GB). macOS estaba comprimiendo
+    # memoria de forma activa, o sea PRESION REAL, no teorica.
+    #
+    # Consecuencia honesta: `qwen2.5vl:3b` carga en 3.5 GB de los 8g que se le
+    # permiten, asi que el techo NO es lo que aprieta. Si al escanear el equipo
+    # se pone lento, la causa es esta maquina, no el limite. Lo que aligera de
+    # verdad es `OLLAMA_KEEP_ALIVE` (bajarlo a 5m devuelve la RAM al sistema
+    # tras cada tanda) o limitar la concurrencia del escaner.
+    #
+    # Y por que BAJA expense-api: el comentario de abajo ya lo pedia ("sube esto
+    # a 5g y baja expense-api a 1.5g"). Con un modelo de embeddings cargado la
+    # api va a ~1.4 GB, asi que 1750m sigue con margen.
+    mem_limit: 8g
+    mem_reservation: 512m
+
+    # MEDIDO el 2026-10-13, y CORREGIDO el mismo dia. Con `cpus: 4.0` una
+    # llamada de vision tardaba ~250 s. Se bajo a 2.0 para que el ventilador no se
+    # calentara, y el efecto NO fue solo "un poco mas lento": una foto paso de
+    # ~250 s a **~500 s**, porque con 2 nucleos la inferencia va a la mitad.
+    #
+    # MEDIDO despues: una foto tardaba 757 s y el escaneo de 8 no terminaba en
+    # 11 minutos. Ese numero es el que hace volver esto a 4.0.
+    #
+    # El calor no era este limite: era `keep_alive: 30m`, que dejaba el modelo
+    # cargado 3.2 GB cuando ya no hacia falta. Ese si se corrigio, y ahi si esta
+    # la solucion al calor. Ver `OLLAMA_KEEP_ALIVE` en config.py.
+    #
+    # 3.0 es el punto intermedio que NO se ha medido. Si vuelve a calentarse la
+    # maquina, bajarlo aqui es el ajuste; pero medido: 2.0 doblo el tiempo.
+    cpus: 4.0
+    restart: unless-stopped
     networks:
       - expense_network
 
@@ -27,39 +144,196 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     working_dir: /app
     ports:
-      - "8000:8000"
+      # El API sin TLS en todas las interfaces de la maquina. Un token de 8 horas
+      # en texto plano por HTTP, alcanzable desde la red local, no es una
+      # combinacion que se deje puesta en un despliegue "local".
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
+      # Cache de HuggingFace persistente: evita volver a bajar el modelo de
+      # embeddings (~470MB) cada vez que se recrea el contenedor.
+      - hf_cache:/opt/hf-cache
+      # Carpeta de tickets del host.
+      #
+      # `:ro` fue la regla desde el principio y el motivo sigue aqui: "el
+      # escaner no borra ni escribe nada, y montarla de lectura lo hace
+      # imposible aunque un bug lo intentara. Un comprobante original que se
+      # borre porque el OCR salio mal es irreversible."
+      #
+      # AHORA ES `:rw`, y es un cambio consciente:
+      #
+      # 1. Lo que se necesita es MOVER un comprobante ya resuelto, no borrarlo.
+      #    El archivo sigue existiendo y sus bytes no cambian: se cambia de
+      #    sitio. La garantia de "no se altera el comprobante" se conserva.
+      # 2. Mover exige permiso de escritura, y con `:ro` no hay forma. Un
+      #    archivado simulado que dice "movido" sin mover seria exactamente el
+      #    tipo de mentira que este proyecto no sostiene.
+      # 3. El movimiento NO sale de un veredicto de lectura. Solo corre cuando la
+      #    compra esta PROCESADO, o sea cuando una persona confirmo que las
+      #    lineas entraron al inventario. Con la exactitud de OCR medida
+      #    (33.3%), mover tambien lo PENDIENTE habria enterrado dos de cada tres
+      #    comprobantes sin que nadie los hubiera revisado.
+      # 4. `archivado_service` NUNCA sobreescribe: si el destino existe, agrega
+      #    un sufijo. Un comprobante pisado es un comprobante perdido, y se
+      #    pierde en silencio.
+      # 5. El destino es un SEGUNDO montaje, fuera de la carpeta que se escanea.
+      #    Con el escaneo recursivo, una subcarpeta aqui dentro haria que cada
+      #    archivo movido se volviera a leer en cada corrida.
+      #
+      # La ruta del host va primero y la del contenedor despues, que es la que ve
+      # la app. Por eso `TICKETS_INPUT_DIR` dentro del contenedor es `/tickets` y
+      # no la ruta del host: montar `.:/app` y usar la ruta del host seria buscar
+      # `/Users/...` dentro del contenedor, donde no existe.
+      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_app}:/tickets:rw
+      # La carpeta de escaneados. SEPARADA a proposito, por el punto 5 de arriba.
+      - ${TICKETS_SCAN_OUTPUT_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_Scan}:/tickets_scan:rw
+      # El RESPALDO de los comprobantes que el escaner borra de la entrada.
+      #
+      # Montado en su propia carpeta y NO en la de entrada por una razon que se
+      # midio: `make clean` es `docker compose down -v`, que destruye el volumen de
+      # la base. Sin esta carpeta, un comprobante borrado de `Tickets_app` tendria
+      # UNA sola copia, en el volumen que ese comando borra. Con ella, hay dos.
+      #
+      # Se escribe con `scripts/exportar_documentos.py`, que ademas relee cada
+      # archivo del disco y compara su sha256 con el de la base: un respaldo sin
+      # verificar no es un respaldo.
+      - ${TICKETS_EXPORT_HOST_DIR:-/Users/carloslott/Documents/Tickets/comprobantes}:/tickets_export:rw
+      # La VERDAD de la medicion de exactitud: los valores leidos a mano del papel,
+      # fuera de las carpetas que el escaner recorre.
+      #
+      # Montada aparte y en SOLO LECTURA por dos razones concretas. La primera es
+      # que un `.json` dentro de `Tickets_app` lo ve el escaner y lo reporta
+      # NO_SOPORTADO en cada corrida. La segunda es que es la referencia contra la
+      # que se mide el OCR, y si la app pudiera escribirla, un error de la app
+      # podria reescribir el termometro con el que se mide a si misma.
+      - ${TICKETS_VERDAD_HOST_DIR:-/Users/carloslott/Documents/Tickets/verdad}:/verdad:ro
     env_file:
-      - .env.dev
+      # El orden importa: con la misma variable en los dos archivos gana el
+      # ULTIMO, asi que .env.local pisa a .env. Es lo que permite tener
+      # SECRET_KEY fuera del repo sin renombrar nada de lo que ya existe.
+      #
+      # `required: false` para que un clone nuevo, que no tiene .env.local, siga
+      # levantando en vez de reventar con un error de "no such file". Sin el
+      # secreto, config.py genera uno efimero y avisa: molesto (cada reinicio
+      # cierra las sesiones) pero no roto, que es justo el criterio para no
+      # impedir el arranque.
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@postgres-reconciler:5432/expense_db
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}@postgres-reconciler:5432/expense_db
+      - HF_HOME=/opt/hf-cache
+      # Dentro del contenedor la carpeta SIEMPRE es /tickets. Se sobrescribe aqui
+      # a proposito: el `.env` del host tiene la ruta del host, que no existe
+      # dentro del contenedor, y sin esto la app crearia `/Users/carloslott/...`
+      # en el sistema de archivos del contenedor, como root.
+      - TICKETS_INPUT_DIR=/tickets
+      # La carpeta de escaneados, DENTRO del contenedor. Sin esta linea el
+      # archivado resuelve "una carpeta hermana de la de entrada" y acerta en
+      # `/Tickets_Scan`, que es un directorio del contenedor y no el segundo
+      # montaje: los comprobantes se mueven ahi y desaparecen de la maquina.
+      #
+      # Medido, no supuesto: 8 comprobantes se movieron a `/Tickets_Scan` y la
+      # carpeta del host quedo vacia. El archivo seguia existiendo y se devolvio,
+      # pero desde el punto de vista de quien lo espera, desaparecio.
+      #
+      # Es el mismo motivo por el que `TICKETS_INPUT_DIR` va aqui: la ruta del
+      # host no existe dentro del contenedor.
+      #
+      # LAS DOS CARPETAS VIVEN BAJO `~/Documents/Tickets/`
+      # -----------------------------------------------
+      # `Tickets_app` (entrada) y `Tickets_Scan` (salida) son **hermanas** dentro
+      # de `Tickets/`, y esa hermandad es la que sostiene el archivado:
+      # `archivado_service.carpeta_de_escaneados()` resuelve, cuando
+      # `TICKETS_SCAN_OUTPUT_DIR` esta vacia, `entrada.parent / "Tickets_Scan"` —
+      # o sea, el hermano de la entrada. Encapsular las dos bajo un mismo padre
+      # no cambia esa relacion; las separa del resto de `Documents` para que se
+      # puedan arrastrar juntas y no se confundan con otra carpeta de papel.
+      #
+      # Lo que NO se puede es colgar `Tickets_Scan` DENTRO de `Tickets_app`:
+      # el escaneo es recursivo, asi que el siguiente `POST /scan` volveria a ver
+      # lo archivado, su `relative_path` habria cambiado, el ledger no lo
+      # reconoceria y re-OCRearia cada corrida. sibling, no hijo.
+      - TICKETS_SCAN_OUTPUT_DIR=/tickets_scan
     depends_on:
       postgres-reconciler:
         condition: service_healthy
+      ollama:
+        condition: service_started
+    # `curl /health` y no "el proceso existe": ver el comentario de POR QUE
+    # `/health` consulta la base en app/main.py. MEDIDO antes del cambio: con
+    # `expense_pgvector` parado, `/health` respondia 200 igual, y este contenedor
+    # se declaraba `healthy` sin poder responder una sola ruta.
+    #
+    # `--fail` hace que un 503 salga con codigo distinto de cero. Sin el, curl
+    # devuelve 0 igual porque el TCP funciono, y el healthcheck volveria a
+    # decir "healthy" — o sea, la defensa de arriba sin el codigo que la hace
+    # cumplir.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 5 http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 60s es lo que tarda uvicorn en importar torch + levantar. Durante el
+      # `start_period` los fallos NO cuentan como unhealthy, que es lo que
+      # permite que el primer healthcheck salga antes de que la app escuche.
+      start_period: 60s
+    # En reposo usa ~600MB; con el modelo de embeddings cargado ~1.4GB.
+    mem_limit: 1750m
+    mem_reservation: 512m
+    cpus: 4.0
+    restart: unless-stopped
     networks:
       - expense_network
 
   expense-front:
     build:
       context: .
-      dockerfile: front/Dockerfile
+      dockerfile: front/Dockerfile.prod
     container_name: expense_front_service
     ports:
-      - "5173:5173"
-    volumes:
-      - ./front:/app
-      - /app/node_modules
-    environment:
-      - VITE_API_URL=http://localhost:8000/api/v1
+      - "127.0.0.1:3000:80"
+    # Sin esto, `docker compose up --wait` (y `make up`) no tienen nada que
+    # esperar en el front: lo daria por listo en cuanto el proceso existiera,
+    # que es lo mismo que el defecto que este bloque arregla un nivel mas abajo.
+    healthcheck:
+      # `wget` y no `curl`: ambos existen en `nginx:alpine` (verificado), y
+      # `wget -q -O /dev/null` es el que sale con codigo != 0 si nginx no
+      # responde. Se consulta `/` a proposito —la SPA— y no una ruta de API:
+      # la pregunta es "nginx esta sirviendo", y la de la API la contesta el
+      # healthcheck de `expense-api`.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - expense-api
+      # `service_healthy` y no la forma corta (que es `service_started`).
+      #
+      # MEDIDO: con la forma corta, nginx levanta en cuanto el contenedor de la
+      # API EXISTE, que es antes de que uvicorn escuche. El front responde 200
+      # en `/` y 502 en todo `/api/`, y el sintoma —"el front esta arriba pero
+      # ninguna ruta funciona"— no dice que el problema sea de orden.
+      #
+      # `service_healthy` espera a que el healthcheck de la API pase, y como ese
+      # healthcheck ahora consulta la base de verdad, esta linea significa
+      # "el front no aparece hasta que hay una app que puede responder".
+      expense-api:
+        condition: service_healthy
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: 0.5
+    restart: unless-stopped
     networks:
       - expense_network
 
 volumes:
   pgvector_expense_data:
+  ollama_data:
+  hf_cache:
+
 
 networks:
   expense_network:

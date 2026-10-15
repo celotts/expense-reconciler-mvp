@@ -150,12 +150,27 @@ class TestReconciliationsAPI:
         
         assert response.status_code == 200
         data = response.json()
-        # No debería hacer match porque diferencia > tolerancia
+        # No concilia porque la diferencia de monto se pasa de la tolerancia,
+        # pero el banco SI movio dinero ese dia. Eso es una discrepancia y se
+        # reporta.
+        #
+        # Antes este test afirmaba `discrepancies == 0` con este mismo caso:
+        # el nombre del test prometia la categoria y la asercion decia
+        # que la categoria no existe. Era la rama muerta de `_find_best_match`
+        # hecha test. Lo que faltaba era que se notara que el dinero salio por
+        # otra cantidad, que es justo lo que hay que ver al cerrar el mes.
         assert data["perfect_matches"] == 0
         assert data["manual_review"] == 0
-        assert data["discrepancies"] == 0
-        assert data["unmatched_tickets"] == 1
-        assert data["unmatched_bank_transactions"] == 1
+        assert data["discrepancies"] == 1
+        # Queda contabilizado, no perdido: no vuelve a "sin nada".
+        assert data["unmatched_tickets"] == 0
+        assert data["unmatched_bank_transactions"] == 0
+        assert data["matches"][0]["match_status"] == "DISCREPANCY"
+        assert data["matches"][0]["amount_diff"] == "50.00"
+        # Y dice POR QUE. Sin esto la fila dice que se reporto, pero no deja
+        # reconstruir la decision, y "lo decidio el motor" no es una razon que
+        # se pueda auditar en un cierre.
+        assert "50.00" in data["matches"][0]["criterio"]
 
     @pytest.mark.asyncio
     async def test_list_reconciliations(self, async_client: AsyncClient, test_company, setup_reconciliation_data):
@@ -287,7 +302,9 @@ class TestReconciliationsAPI:
         )
         
         assert response.status_code == 409
-        assert "already reconciled" in response.json()["detail"]
+        # Ver `docs/known-issues.md` §29: estaba en ingles ("Bank transaction
+        # already reconciled") y ahora dice que paso y no solo que fallo.
+        assert response.json()["detail"] == "Este movimiento bancario ya está conciliado"
 
     @pytest.mark.asyncio
     async def test_delete_reconciliation_unreconciles_bank(self, async_client: AsyncClient, test_company):
@@ -403,8 +420,16 @@ class TestReconciliationsAPI:
         
         # Listar
         list_resp = await async_client.get(f"/api/v1/reconciliations/mappings?company_id={test_company.id}")
+        # El codigo de estado va explicito y ANTES de mirar el cuerpo. Antes
+        # esta linea solo afirmaba len(json) == 1, y el {"detail": [...]} de un
+        # 422 tambien cumple: el test pasaba en verde sobre un endpoint roto.
+        # Un 422 aqui significa que una ruta literal quedo atrapada detras de
+        # un path con placeholder. Ver el comentario de /{reconciliation_id}.
+        assert list_resp.status_code == 200, f"/mappings devolvio {list_resp.status_code}"
         assert len(list_resp.json()) == 1
-        
+        assert list_resp.json()[0]["id"] == mapping_id
+
         # Obtener
         get_resp = await async_client.get(f"/api/v1/reconciliations/mappings/{mapping_id}")
+        assert get_resp.status_code == 200, f"/mappings/{{id}} devolvio {get_resp.status_code}"
         assert get_resp.json()["id"] == mapping_id

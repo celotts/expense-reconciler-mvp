@@ -1,0 +1,1394 @@
+"""La unica ruta por la que entra un comprobante al sistema.
+
+Un archivo llega como foto, escaneo o PDF y sale de aqui como
+`TicketExtractionResult` con la confianza y el origen ya decididos. Ni la API
+ni el worker de carga masiva deciden nada: convergent los dos aqui, y por eso
+no pueden divergir.
+
+La ruta es una cascada y cada escalon se usa solo si el anterior no pudo:
+
+    foto                    vision: no hay texto, hay que mirar
+    pdf con texto           reglas, sin IA
+    pdf con texto ilegible  el modelo lee el texto
+    pdf sin texto           el modelo mira las paginas renderizadas
+
+El orden importa y no es obvio. Un PDF impreso se lee exacto con pdfplumber:
+mandarlo a un modelo cuesta tiempo y tokens, y encima puede equivocarse donde
+el texto no se equivoca. Al reves, un PDF escaneado no tiene texto que leer, y
+un regex sobre una cadena vacia no produce nada: produce un ticket falso.
+
+Que la cascada termine en vision no significa que el resultado sea malo.
+Significa que el documento no se pudo leer de forma exacta, y eso queda dicho:
+el origen se guarda como `llm`, no como `pdf_text`, y quien audite lo ve.
+
+Lo que esta cascada no hace, a proposito:
+
+- No descarta un documento porque el modelo falle. Un papel que el sistema no
+  pudo leer sigue siendo un papel que alguien tiene que revisar, y se guarda
+  en la cola con su motivo. Perder el archivo es peor que tener un dato
+  pendiente, porque nadie llega a saber que hubo que subirlo.
+- No inventa datos. Si el documento no trae fecha, la fecha queda en None y el
+  ticket entra a la cola con el motivo `date_missing`, en vez de quedar
+  fechado el dia de hoy.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import unicodedata
+from collections.abc import Awaitable, Callable
+from decimal import Decimal
+from typing import TYPE_CHECKING, Protocol
+
+from app.core.config import settings
+from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
+
+# `ResultadoOCR` viene en el mismo import que `OCRNoDisponible` y no le cuesta
+# nada: el modulo ya se carga y es solo un dataclass (pytesseract se resuelve
+# dentro de `leer_imagen`). Por eso sus anotaciones pueden ir SIN comillas:
+# importar el modulo no ejecuta el OCR.
+from app.services.ocr import OCRNoDisponible, ResultadoOCR
+from app.services.parser_service import (
+    TicketExtractionResult,
+    _parse_receipt_text,
+    extract_pdf_text,
+    render_pdf_pages,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
+    # `ai_extractor` arrastra `ai_client` al cargarse, y ese es el modulo que
+    # `capture` no quiere tocar al importarse. Por eso va aqui y no arriba, y por
+    # eso las anotaciones que lo nombran van entrecomilladas: sin este import el
+    # type checker marca F821 sobre un nombre que el archivo si usa.
+    from app.services.ai_extractor import ExtractedInvoice
+
+logger = logging.getLogger(__name__)
+
+
+class ExtractFn(Protocol):
+    """Como se le pide una lectura por imagen al extractor.
+
+    Es un `Protocol` y no `Callable[[bytes], Awaitable[...]]` porque
+    `AIExtractor.extract_from_image` es un metodo `async`: un `Callable` solo
+    puede describir funciones, y hace falta poder nombrar el tipo sin importar
+    `ai_extractor` —que arrastra `ai_client` al cargarse, y ese es el modulo
+    que `capture` no quiere tocar al importarse—.
+
+    Antes esta firma llevaba `mime_type: str = "image/png"`, porque el extractor
+    lo aceptaba. Ya no lo acepta: el parametro no se usaba en el cuerpo del
+    extractor y se borro (ver `AIExtractor.extract_from_image`). Sin ese
+    parametro muerto, un `Callable` de un argumento habria bastado — y el tipo de
+    la cascada ya no nombra un valor que el extractor ignoraba.
+
+    El `/` del parametro no es cosmetico: sin el, el protocolo prometeria que
+    se puede llamar `extract_from_image(content=...)`, y el extractor real se
+    llama `image_bytes`. `pyright` acepta las dos formas, `mypy` solo la que
+    coincide en el nombre — y el que no acepta reporta un error donde el otro
+    dice que esta bien, que es la peor forma de tener dos type checkers.
+    """
+
+    def __call__(self, content: bytes, /) -> Awaitable[ExtractedInvoice]: ...
+
+
+ExtractTextFn = Callable[[str], Awaitable["ExtractedInvoice"]]
+
+# El OCR es sincrono (Tesseract y EasyOCR no son awaitables) y devuelve su
+# propio tipo. Se tipa aparte de los otros dos extractores a proposito: es el
+# unico que no es `async`, y declararlo `async` obligaria a envolverlo en un
+# hilo sin ganar nada.
+OcrFn = Callable[[bytes], ResultadoOCR]
+
+
+class ExtractionUnavailable(RuntimeError):
+    """El archivo no se pudo abrir.
+
+    Distinto de "lei mal" a proposito: leer mal deja un ticket en la cola con
+    motivo, que es recuperable. Esto es un archivo que ni siquiera se pudo
+    abrir, y no hay nada que revisar todavia. Un PDF corrupto o un tipo de
+    archivo que no existe tiene que decir eso, no aparecer como un comprobante
+    sin proveedor.
+    """
+
+
+# Los centinelas que la capa de IA usa para decir "no pude leer el proveedor".
+#
+# Son tres y ninguno es el canonico. Sin normalizarlos aqui, un ticket con
+# proveedor "AI_DISABLED" pasa el check de proveedor del gate (la cadena no es
+# la centinela, es no vacia) y la cola muestra "AI_DISABLED" como si fuera el
+# nombre de un comercio. Se normalizan en un solo punto: el mapeo.
+SENTINELS_SIN_PROVEEDOR = frozenset({"UNKNOWN", "ERROR_PARSING", "AI_DISABLED"})
+
+# Encabezados de un comprobante. Si el "proveedor" que salio de la lectura es
+# uno de estos, lo que se leyo fue la etiqueta de una casilla del papel.
+#
+# Medido en los 7 comprobantes reales, con `confidence_source=ocr`:
+#
+#   CANT. TOTAL              234.00   <- el encabezado del total, como proveedor
+#   Y ARTICULO TOT           117.00   <- "articulo" y "tot" (total truncado)
+#   PRUNE MIEN FIC 104 Py LEN As
+#
+# Los tresirements tienen un total *correcto* detras, que es lo que hace el
+# dano: el ticket pasa la aritmetica del gate con un proveedor que no existe, y
+# eso no se ve en ninguna revision porque el numero cuadra.
+#
+# La comparacion es por TOKEN EXACTO, no por subcadena, y por eso
+# "Ticketmaster" y "Total Fitness" no entran: "ticketmaster" no es "ticket".
+# Se acepta el falso positivo de "Total Fitness" a proposito: rechazar cuesta
+# una llamada a vision, y aceptar basura cuesta una mentira en la base.
+PALABRAS_DE_ENCABEZADO = frozenset({
+    "total", "totales", "subtotal", "base", "iva", "ieps", "isr",
+    "impuesto", "impuestos", "importe", "monto", "cantidad", "cant",
+    "articulo", "articulos", "descripcion", "producto", "productos",
+    "fecha", "hora", "folio", "factura", "comprobante", "recibo",
+    "rfc", "curp", "cambio", "efectivo", "tarjeta", "debito", "credito",
+    "transferencia", "transferencia", "cuenta", "vendedor", "cajero",
+    "cajera", "ticket", "venta", "consumidor",
+})
+
+# Palabras que delatan una DIRECCION leida como si fuera el nombre del negocio.
+#
+# Medido: `gt Edson Nte hunera 1235` con total 51.50. El sistema guardo la
+# direccion del emisor como proveedor. `Nte` es "norte" abreviado, que es como
+# los comprobantes mexicanos escriben la calle.
+#
+# "norte" NO esta en la lista a proposito: "Comercial del Norte SA de CV" es un
+# nombre de empresa real, y abreviado a token no seria lo mismo que la palabra.
+PALABRAS_DE_DIRECCION = frozenset({
+    "calle", "avenida", "ave", "nte", "colonia", "cp",
+    "tel", "telefono", "direccion", "domicilio",
+})
+
+# Y LA LISTA DE ARRIBA ES CORTA A PROPOSITO
+# ----------------------------------------
+# Una primera version metia tambien `esquina`, `local`, `bodega`, `entre`, `col`
+# y `av`, y **`Taqueria La Esquina` —que es una empresa real de este repo—
+# salia marcada como basura**. "Esquina" y "Local" son palabras de un nombre de
+# comercio tan corrientes como de una direccion, asi que no distinguen nada.
+#
+# `Nte` si se queda: es la abreviatura de "norte" que escriben los comprobantes
+# en la linea del domicilio, y no aparece en nombres de empresa.
+#
+# Lo que no se puede es hacer una lista de palabras que ya no de contexto: el
+# nombre de un comercio se parece a una palabra de direccion porque las dos son
+# palabras. Lo que si distingue a la basura es la FORMA.
+
+# Articulos y preposiciones que ABIERTEN un nombre de empresa. `La Comer` y
+# `El Puerto` son comercios reales, asi que un arranque de dos letras no basta
+# para condemnar: hay que mirar que el token NO sea uno de estos.
+ARTICULOS = frozenset({"la", "el", "los", "las", "de", "del", "un", "una"})
+
+
+def _tokens_de(nombre: str) -> list[str]:
+    """El nombre del proveedor partido en palabras, sin acentos ni puntuacion.
+
+    Sin acentos porque el mismo rótulo sale como `ARTICULO` de un PDF y
+    `Artículo` de una foto, y son la misma casilla. Sin puntuacion porque
+    `CANT. TOTAL` y `CANT TOTAL` son el mismo encabezado.
+
+    Lo que sale de aca no se guarda: es solo el insumo del juicio de "¿esto es un
+    nombre o es basura?". El nombre que se persiste es el que dio la lectura,
+    sin tocar.
+    """
+    sin_acentos = "".join(
+        c for c in unicodedata.normalize("NFD", nombre.lower())
+        if unicodedata.category(c) != "Mn"
+    )
+    return [t for t in re.split(r"[^a-z0-9]+", sin_acentos) if t]
+
+
+def _nombre_parece_basura(nombre: str) -> bool:
+    """¿El "proveedor" de la lectura es ruido y no un comercio?
+
+    Existe por el motivo del benchmark de los 7 comprobantes reales: el criterio
+    de utilidad era "proveedor distinto de UNKNOWN y total mayor que cero", y eso
+    lo cumple `gt Edson Nte hunera 1235` con un total de 51.50. El ticket se
+    guardaba con una direccion como proveedor y con `confidence_source=ocr`, sin
+    que nadie escalara a vision, que era el unico escalon que podia leerlo bien.
+
+    **Rechaza de mas, no de menos.** Un falso positivo cuesta una llamada a
+    vision y un `_mejor_de` que se queda con la mejor de las dos. Un falso
+    negativo cuesta una fila en la base que afirma que el gasto fue en "CANT.
+    TOTAL", y eso no lo detecta nadie despues.
+
+    Contenido
+    ---------
+    1. Un centinela del modelo (`UNKNOWN`, `AI_DISABLED`...).
+    2. Una palabra de direccion inequivoca: `CALLE`, `NTE`, `DOMICILIO`.
+    3. Que TODAS las palabras con sustancia sean encabezados de casilla del
+       papel. `CANT. TOTAL` son dos y es basura; `Total Fitness` es una palabra
+       buena con un encabezado pegado, y es un gimnasio. El que decide es
+       "todas", no "alguna": `Ticketmaster` empieza con "ticket" y no es un
+       encabezado.
+
+    Forma
+    -----
+    4. Un numero suelto que no sea el arranque. `PRUNE MIEN FIC 104 Py LEN As`
+       tiene un `104` que no es parte de ningun nombre; `7 Eleven` abre con uno
+       y es una tienda de verdad.
+    5. Arrancar con un fragmento que no sea articulo. `A ~ NERCASTAR`,
+       `gt Edson Nte...`, `y UPO COMERCIAL DSW S.A.`: el OCR empezo a media
+       linea. `La Comer` si abre con articulo y se salva.
+    6. Una palabra de una sola letra en medio. `UN POLE Tag mA ee ki` trae una
+       `m` y una `a` sueltas. No se perdona por ser articulo: solo se perdonan
+       si ABREN el nombre, y aqui van en medio.
+    7. Que **todas** las palabras sean de tres letras o menos. `AAA AI` es ruido;
+       "La Esquina" tiene una palabra de siete y se salva. A proposito "todas" y
+       no "la mayoria": `OXXO SA DE CV` tiene tres de cuatro cortas y es valido.
+
+    Y un minimo de cuatro caracteres, porque por debajo no hay un comercio que
+    quepa.
+
+    LO QUE ESTA MEDIDO Y NO SE ATRAPA
+    ---------------------------------
+    `Pog ae — TAPA` se escapa: dos palabras cortas y una buena, sin ninguna
+    senal de las de arriba. Se acepta la laguna, porque las reglas que lo
+    cazarian empiezan a rechazar nombres reales, que es el peor de los dos
+    errores.
+    """
+    limpio = (nombre or "").strip()
+    if not limpio:
+        return True
+
+    if limpio.upper() in SENTINELS_SIN_PROVEEDOR:
+        return True
+
+    tokens = _tokens_de(limpio)
+    if not tokens:
+        return True
+
+    if sum(len(t) for t in tokens) < 4:
+        return True
+
+    if any(t in PALABRAS_DE_DIRECCION for t in tokens):
+        return True
+
+    # Un numero que no abre el nombre. "7 Eleven" abre con uno y es una tienda.
+    if any(t.isdigit() for t in tokens[1:]):
+        return True
+
+    # Un arranque de una o dos letras. El digito se perdona porque "7 Eleven",
+    # "24 Seven" y "3M" son nombres de verdad y abren con un numero.
+    if (
+        len(tokens[0]) <= 2
+        and tokens[0] not in ARTICULOS
+        and not tokens[0].isdigit()
+    ):
+        return True
+
+    if any(len(t) == 1 for t in tokens[1:]):
+        return True
+
+    if all(len(t) <= 3 for t in tokens):
+        return True
+
+    con_sustancia = [t for t in tokens if len(t) > 2 and t not in ARTICULOS]
+    if con_sustancia and all(t in PALABRAS_DE_ENCABEZADO for t in con_sustancia):
+        return True
+
+    return False
+
+# Fallos que son del sistema y no del documento. La diferencia importa porque
+# se reportan distinto: `AI_DISABLED` es una configuracion (el extractor esta
+# apagado) y `ERROR_PARSING` es un fallo de la llamada (el modelo devolvio algo
+# que no se pudo leer). Ninguno de los dos es "el papel esta borroso", y
+# reportarlos como si lo fueran esconde la causa raiz detras de la palabra
+# "ilegible".
+FALLOS_DEL_MODELO = {
+    "ERROR_PARSING": "el modelo devolvio una respuesta que no se pudo interpretar",
+    "AI_DISABLED": "el extractor de IA esta apagado o no respondio",
+    # El archivo llego como imagen pero no se pudo decodificar. Antes este caso
+    # caia en un `except: pass` y los bytes crudos se mandaban al modelo
+    # declarados `image/jpeg`: basura que el modelo podia devolver con
+    # apariencia de lectura. Con nombre propio, el ticket va a la cola con el
+    # motivo real en vez de con un "Unknown Provider" de pantalla.
+    "IMAGEN_ILEGIBLE": "el archivo es una imagen que no se pudo decodificar",
+}
+
+# Debajo de esto no hay documento que leer, solo ruido de escaner. Por debajo
+# de unos 40 caracteres un comprobante no tiene proveedor, ni total, ni fecha;
+# lo que suele estar es la marca de agua o el nombre del archivo del escaner.
+PDF_MIN_CHARS_PARA_INTENTAR = 40
+
+# Lo mismo para el OCR, pero con un piso mas alto que el del PDF.
+#
+# El OCR devuelve texto aunque la foto sea una pared: leeria el ruido como
+# letras sueltas y, con el piso del PDF (40), pasaria, se parsearia y con suerte
+# saldria un comprobante sin proveedor que se guarda en la cola. Con este piso
+# mas alto, una foto que no es un ticket se queda en "no se leyo" y se va a
+# vision, que si tiene forma de decir "esto no es un comprobante".
+#
+# EL NUMERO ESTA MEDIDO, NO ESTIMADO. Se puso en 120 y habia que rechazaba
+# tickets de verdad: un comprobante minimo con proveedor, RFC, fecha, subtotal,
+# IVA y total son 112 caracteres. Un cafe de 50 pesos son menos de 40, y ahi si
+# toca aceptar que vision decida. El piso tiene que quedar debajo del ticket mas
+# chico que se quiere aceptar y encima del ruido, y con 120 el primero de los
+# dos estaba mal: 60 esta debajo de los 112 del ticket minimo real y encima de
+# los ~40 de una linea suelta de un muro.
+#
+# Si se sube, hay que medir contra receipts reales, no subirlo "por seguridad":
+# un piso que rechaza comprobantes legitimos no es conservatism, es un escaner
+# que pierde gastos y manda el ticket a vision a pagar un modelo.
+OCR_MIN_CHARS_PARA_INTENTAR = 60
+
+# Cuantas paginas se mandan a vision. Un comprobante de hotel son tres paginas;
+# un CFDI de ferreteria, veinte lineas. Mandar veinte paginas al modelo cuesta
+# tiempo y tokens que no vuelven en forma de datos, y las ultimas paginas de un
+# comprobante largo
+# casi siempre son condiciones generales.
+PDF_MAX_PAGINAS_A_VISION = 3
+
+# Escala de render. A 2.0 una pagina letter queda en ~1700x2200: se lee bien un
+# total en letra pequena sin pagar por megapixeles de mas.
+PDF_ESCALA_RENDER = 2.0
+
+# Confianza del parseo por reglas, segun lo que encontro de verdad.
+#
+# Son priors y no medidas: el acierto exacto de un regex sobre un tipo de
+# comprobante no se conoce hasta que alguien revise una muestra y diga cuantos
+# estaban bien. Ese muestreo es el que quedo de acuerdo para medir el 96%;
+# estos numeros son el punto de partida, no el resultado.
+#
+# Que dependa de lo encontrado y no sea un numero fijo importa: un parseo que
+# saco RFC, subtotal y fecha no es el mismo resultado que uno que adivino un
+# total suelto, y cobrarlos igual aplana el detalle que sirve para medir.
+#
+# Las ocho combinaciones estan escritas, no se calculan. Una combinacion que
+# llegara faltando produce un AssertionError en vez de un `None` silencioso, y
+# `None` aqui significa confianza nula: el ticket cae a la cola sin que nadie
+# sepa que la tabla esta incompleta.
+#
+# El orden es por evidencia acumulada: rfc*2 + subtotal*3 + fecha*1. El
+# subtotal pesa mas que el RFC porque es el unico de los tres que deja
+# verificar aritmeticamente (`subtotal + iva == total`); un RFC que no cuadra
+# con las cuentas no prueba nada. La confianza nunca baja al agregar evidencia,
+# y eso se comprueba en los tests.
+CONFIANZA_POR_CAMPOS: tuple[tuple[tuple[bool, bool, bool], float], ...] = (
+    # (rfc, subtotal, fecha) -> confianza
+    ((False, False, False), 0.86),  # solo un total suelto
+    ((False, False, True), 0.88),
+    ((True, False, False), 0.90),
+    ((False, True, False), 0.90),   # mismo puntaje: el subtotal solo no ancla
+    ((True, False, True), 0.90),
+    ((False, True, True), 0.92),
+    ((True, True, False), 0.94),
+    ((True, True, True), 0.97),
+)
+
+
+def confianza_por_campos(
+    tiene_rfc: bool,
+    tiene_subtotal: bool,
+    tiene_fecha: bool,
+) -> float:
+    """Confianza del parseo por reglas, derivada de la evidencia encontrada.
+
+    Cada campo que se cruza con el documento es una fuente menos de error
+    posible. Un total sin RFC puede ser el total de otra cosa; con RFC, con
+    fecha y con un subtotal que cuadra con el IVA, es el total.
+    """
+    for (rfc, subtotal, fecha), confianza in CONFIANZA_POR_CAMPOS:
+        if (rfc, subtotal, fecha) == (tiene_rfc, tiene_subtotal, tiene_fecha):
+            return confianza
+    raise AssertionError(
+        "falta una combinacion en CONFIANZA_POR_CAMPOS: "
+        f"rfc={tiene_rfc} subtotal={tiene_subtotal} fecha={tiene_fecha}"
+    )
+
+
+# La misma evidencia, leida por OCR, vale menos. Y no por distrusto del OCR en
+# abstracto, sino por una cosa concreta y medible: el OCR cambia caracteres sin
+# avisar. Un "1" se vuelve "l", un "0" se vuelve "O", y un total de 1,100.00
+# puede salir 1,1OO.OO. El regex de total no lo detecta, porque para el regex
+# "1,1OO.OO" es un total tan valido como el otro: no hay forma de saber que
+# esta mal desde el texto.
+#
+# En un PDF con capa de texto eso no pasa: los bytes son los que el emisor
+# escribio. Por eso la tabla de arriba no le aplica a OCR, y usar la misma para
+# los dos seria afirmar que leer una foto es tan seguro como leer el PDF, que es
+# justo lo que este proyecto no hace en ningun otro lado.
+#
+# Que la tabla este descontada no significa que un ticket con OCR no se pueda
+# cerrar solo. Significa que para cerrarlo hace falta la evidencia completa
+# (RFC, subtotal y fecha), y que el gate tiene quenadar la aritmetica. Un OCR
+# que se equivoco en un digito casi siempre rompe `subtotal + IVA == total`, y
+# esa es la comprobacion que atrapa el error. El descuento y la aritmetica
+# hacen el mismo trabajo por los dos lados: el numero baja, y lo que lo baja
+# esta verificado.
+#
+# Esta tabla tambien se escribe entera, con las ocho combinaciones, por la misma
+# razon que la de arriba.
+CONFIANZA_POR_CAMPOS_OCR: tuple[tuple[tuple[bool, bool, bool], float], ...] = (
+    # (rfc, subtotal, fecha) -> confianza, leyendo de una FOTO
+    ((False, False, False), 0.60),  # un total suelto de OCR: es ruido, no un dato
+    ((False, False, True), 0.68),   # fecha y ya: no dice de quien ni cuanto
+    ((True, False, False), 0.72),   # RFC sin subtotal no deja verificar nada
+    ((False, True, False), 0.76),   # el subtotal solo, con fecha perdida
+    ((True, False, True), 0.80),
+    ((False, True, True), 0.86),    # dos de tres: a revision
+    ((True, True, False), 0.88),    # RFC + subtotal, sin fecha
+    ((True, True, True), 0.93),     # completo, y el gate exige que la aritmetica cuadre
+)
+
+
+def confianza_por_campos_ocr(
+    tiene_rfc: bool,
+    tiene_subtotal: bool,
+    tiene_fecha: bool,
+) -> float:
+    """La confianza de un parseo hecho sobre texto que viene de OCR.
+
+    Es una tabla aparte y no `confianza_por_campos` con un factor, porque un
+    factor no puede expresar lo que pasa aqui: la diferencia entre "un total
+    suelto de PDF" y "un total suelto de OCR" no es la misma que la diferencia
+    entre "todo de PDF" y "todo de OCR". Un total sin RFC ni fecha es un dato
+    dudoso en cualquier papel, y es ruido en una foto.
+    """
+    for (rfc, subtotal, fecha), confianza in CONFIANZA_POR_CAMPOS_OCR:
+        if (rfc, subtotal, fecha) == (tiene_rfc, tiene_subtotal, tiene_fecha):
+            return confianza
+    raise AssertionError(
+        "falta una combinacion en CONFIANZA_POR_CAMPOS_OCR: "
+        f"rfc={tiene_rfc} subtotal={tiene_subtotal} fecha={tiene_fecha}"
+    )
+
+
+class TablaDeConfianza(Protocol):
+    """Una de las dos tablas de confianza de arriba, con la misma firma.
+
+    Es un `Protocol` y no `Callable[[bool, bool, bool], float]` por una razon
+    concreta: quien la llama nombra los tres argumentos (`tiene_rfc=`,
+    `tiene_subtotal=`, `tiene_fecha=`), y un `Callable` sin nombres no puede
+    prometerlos. Ademas fija que las dos tablas son intercambiables, que es
+    justo lo que `_tabla_de_confianza_para` decide.
+    """
+
+    def __call__(
+        self, tiene_rfc: bool, tiene_subtotal: bool, tiene_fecha: bool
+    ) -> float: ...
+
+
+def _tabla_de_confianza_para(source: ConfidenceSource) -> TablaDeConfianza:
+    """Un quinto escalon para las tablas de confianza: de donde salio el texto.
+
+    Va en un solo punto a proposito. Si cada llamador eligiera la tabla, un
+    escalon nuevo podria marcar con la tabla de PDF lo que leyo de una foto, y
+    el numero seria mas alto que el de un PDF con la misma evidencia.
+
+    OJO con lo que devuelve: **la tabla, no el numero**. El numero sale de
+    llamarla. La anotacion decia `-> float` y por eso el editor marcaba la
+    llamada siguiente como "float is not callable": el codigo nunca estuvo mal,
+    la declaracion si — y esa es la clase de defecto que no se ve en la suite
+    porque aqui no hay nada que ejecutar, solo que mentir.
+    """
+    return confianza_por_campos_ocr if source is ConfidenceSource.OCR else confianza_por_campos
+
+
+def _rfc_en_forma(valor: str | None) -> str | None:
+    """El RFC solo si tiene la forma completa de uno mexicano.
+
+    Sin esta comprobacion, lo que devuelve el modelo se guarda tal cual. Se vio
+    con una foto real: `vision` devolvio `provider_tax_id="1905-01-01"`, que es
+    un numero de ticket mal leido como si fuera una fecha. El gate lo marca
+    `malformed_rfc` y manda el ticket a la cola, asi que no se aprueba como
+    bueno; pero el dato basura queda EN LA FILA, y lo que el operador ve en la
+    cola de revision es un RFC inventado al lado de su total.
+
+    No es lo mismo "el sistema no sabe el RFC" (vacio, y el gate dice
+    `rfc_missing` o nada) y "el sistema guardo esto" (basura, con forma de
+    dato). Lo primero se corrige a mano; lo segundo hace dudar de toda la fila.
+    Por eso se descarta aqui y no se deja pasar a la base.
+    """
+    if not valor:
+        return None
+    from app.services.parser_service import RFC_CANDIDATO_RE
+
+    candidato = valor.strip().upper()
+    if RFC_CANDIDATO_RE.fullmatch(candidato):
+        return candidato
+    return None
+
+
+def invoice_to_result(invoice: ExtractedInvoice) -> TicketExtractionResult:
+    """Traduce lo que devuelve el modelo a lo que el gate entiende.
+
+    Vive aqui y no en la API porque es parte de la ruta de captura: el worker
+    de carga masiva tambien lo necesita, y si cada capa tuviera el suyo,
+    acabarian normalizando los centinelas de forma distinta.
+    """
+
+    nombre = (invoice.provider_name or "").strip()
+    if nombre in SENTINELS_SIN_PROVEEDOR or not nombre:
+        nombre = UNKNOWN_PROVIDER
+
+    return TicketExtractionResult(
+        provider_name=nombre,
+        # Pasa por `_rfc_en_forma`: lo que devuelve el modelo no se guarda sin
+        # comprobar su forma. Ver ahi el caso de una foto real.
+        provider_tax_id=_rfc_en_forma(invoice.provider_tax_id),
+        total_amount=invoice.total if invoice.total is not None else Decimal("0.00"),
+        tax_amount=invoice.tax_amount if invoice.tax_amount is not None else Decimal("0.00"),
+        expense_date=invoice.invoice_date,
+        category=None,
+        raw_text=invoice.raw_text,
+        subtotal=invoice.subtotal if invoice.subtotal is not None else None,
+        # El IEPS que el modelo separo del IVA. Si aqui no se copiara, el gate
+        # recibiria `ieps_amount=None` en todos los casos y el check con IEPS
+        # no se activaria nunca: la columna nueva existiria y estaria siempre
+        # vacia. Es el mismo bug que las lineas, que el modelo pedia y este
+        # constructor no copiaba.
+        ieps_amount=invoice.ieps_amount if invoice.ieps_amount is not None else None,
+        # Las lineas del comprobante. Antes se perdian aqui: el modelo las
+        # devolvia (`ai_extractor.ExtractedInvoice.items`) y este constructor no
+        # las copiaba, de modo que la linea desaparecia antes de llegar al
+        # gate y nunca se guardaba. Sin ellas no hay inventario posible, porque un
+        # comprobante dice que se gasto $4,093.80 y no que se compro que.
+        # Ver db/migrations/0010_inventario.sql.
+        items=list(invoice.items) if invoice.items else None,
+        confidence=float(invoice.confidence) if invoice.confidence else None,
+        # El modelo puede leer un PDF escaneado o una foto: en los dos casos
+        # lo que hizo fue mirar. `llm` es la verdad en ambos.
+        confidence_source=ConfidenceSource.LLM,
+        # Quien contesto. `AIResponse.model` lo traia desde antes y se perdia en
+        # este constructor, que es el mismo bug que las lineas y el IEPS: el dato
+        # existe aguas arriba y nadie lo copia.
+        #
+        # Sin esto, cambiar de modelo no deja rastro: `confidence_source` dice
+        # `llm` para los dos, y un A/B entre `qwen2.5:3b` y `llama3.1:8b` es
+        # indistinguible en el reporte de exactitud.
+        model_name=invoice.model_name,
+        model_provider=invoice.model_provider,
+    )
+
+
+def motivo_de_fallo_del_modelo(invoice: ExtractedInvoice) -> str | None:
+    """Razon en español de un fallo del modelo, o None si no hay fallo.
+
+    Se separa de la normalizacion de centinelas a proposito. "El proveedor no
+    se pudo leer" y "el extractor esta apagado" producen el mismo ticket (sin
+    proveedor, en la cola), pero piden cosas opuestas: al primero se le
+    busca otro escalon de lectura, al segundo se le enciende el extractor. Si
+    los dos se reportan igual, el segundo se manifesta como "muchos tickets
+    raros" y nadie lo reconoce como una configuracion apagada.
+    """
+    return FALLOS_DEL_MODELO.get((invoice.provider_name or "").strip())
+
+
+def _es_extraccion_util(resultado: TicketExtractionResult) -> bool:
+    """¿Sirvio de algo la lectura?
+
+    Proveedor y total son el minimo para que un ticket tenga sentido. Si falta
+    uno de los dos, el documento no se entendio y todavia se le puede pedir a
+    otro escalon que lo mire. Guardar medio comprobante en la cola cuando aun
+    queda un escalon disponible es trabajo humano desperdiciado.
+
+    Y SIN LINEAS DE PRODUCTO NO ES UTIL, Y ESTE ES EL CAMBIO IMPORTANTE
+    ================================================================
+
+    Antes bastaba con proveedor y total. Ese criterio es el que hacia que una
+    foto leida por Tesseract con un total verosimil **nunca llegara al modelo
+    de vision**: las reglas parseaban `97.56`, eso se veía bien, y la cascada
+    devolvia. El ticket quedaba `REQUIERE_REVISION` con `read_by=ocr`, sin una
+    sola linea de producto, y no habia forma de que el inventario lo supiera.
+
+    Medido en `IMG_4220.jpeg`, que esta en la base con esa forma exacta.
+
+    La razon de fondo: un total sin lineas no describe una compra, la describe a
+    medias. Y el motivo por el que el modelo de vision sigue existiendo es
+    justo este —es el unico escalon que puede con una foto mala—, asi que
+    saltarselo porque "el OCR ya dio algo" es usar el escalon mas caro como si
+    fuera el mas barato.
+
+    `_exige_items` se apaga para los formatos donde no aplica: en un PDF que solo
+    se gasta, las reglas pueden acertar el encabezado sin que haya nada que leer
+    linea por linea, y ahi exigir items seria pedirle al modelo un gasto de
+    nuevo sin motivo.
+
+    Y UN PROVEEDOR QUE ES BASURA NO ES UN PROVEEDOR
+    ===============================================
+
+    La tercera condicion es la que faltaba, y aparecio midiendo los 7
+    comprobantes reales. Con las dos primeras, `gt Edson Nte hunera 1235` con
+    total 51.50 contaba como lectura util: el nombre no era `UNKNOWN` y el total
+    era positivo. La cascada lo devolvia sin consultar a vision, se guardaba con
+    una direccion como proveedor y con `read_by=ocr`.
+
+    Los 7 salieron con `confidence_source=ocr`. Ninguno llego al modelo de vision,
+    que estaba cargado y sin usar, porque para el sistema un numero plausible era
+    suficiente.
+
+    Con `_nombre_parece_basura`, esa lectura ya no es util y cae al escalon
+    siguiente, que es el unico que puede mirar el papel en vez de adivinar sobre
+    los errores de Tesseract.
+    """
+    return not (
+        resultado.provider_name == UNKNOWN_PROVIDER
+        or resultado.total_amount <= 0
+        or _nombre_parece_basura(resultado.provider_name)
+    )
+
+
+def _exige_items(resultado: TicketExtractionResult) -> bool:
+    """¿Hay que pedirle a la IA porque a esta lectura le faltan las lineas?
+
+    Depende de `ESCALAR_A_IA_SIN_LINEAS`, y el ajuste explica la tension: "una
+    foto buena no toca ningun modelo" contra "sin lineas no hay inventario".
+
+    NO es lo mismo que "falta el encabezado": exigir el encabezado es
+   decir el minimo para que el ticket valga, y exigir items es decidir si vale
+    la pena pagar un modelo por el detalle. Son preguntas distintas y por eso son
+    dos funciones.
+    """
+    if not settings.ESCALAR_A_IA_SIN_LINEAS:
+        return False
+    return resultado.items is None
+
+
+def _trae_desglose(resultado: TicketExtractionResult) -> bool:
+    """¿La lectura trae un desglose que AFIRMA algo, o solo los campos en cero?
+
+    La diferencia importa porque `_aritmetica_se_sostiene` **penaliza con -1** a
+    la lectura que se contradice a si misma, y la aritmetica pesa mas que el
+    proveedor al comparar dos lecturas. Un `0 + 0` sin total que lo respalde no
+    es una contradiccion: es un modelo que no devolvio desglose, y penarlo hace
+    que su respuesta correcta pierda contra un `Unknown Provider`.
+
+    Ver el docstring de `_aritmetica_se_sostiene` para la medicion.
+    """
+    if resultado.subtotal is None:
+        return False
+    if resultado.tax_amount is None and resultado.ieps_amount is None:
+        return False
+    # Todos en cero: el desglose no dice nada. Con el total en positivo, un
+    # desglose de `0 + 0` no es "leido mal", es "no leido".
+    return any(
+        valor not in (None, Decimal("0"))
+        for valor in (resultado.subtotal, resultado.tax_amount, resultado.ieps_amount)
+    )
+
+
+def _aritmetica_se_sostiene(resultado: TicketExtractionResult) -> int:
+    """+1 si los numeros cuadran, -1 si se contradicen, 0 si no se pueden comprobar.
+
+    MEDIDO el 2026-10-13 sobre los 3 HEIC rotulados de esta maquina:
+
+    | archivo   | verdad   | OCR        | vision    |
+    |-----------|----------|------------|-----------|
+    | IMG_4398  | 193.65   | `5`        | `193.65`  |
+    | IMG_4409  | 279.93   | `219.93`   | `279.93`  |
+    | IMG_4407  | 234.00   | `234`      | `234.00`  |
+
+    La vision acierta 3 de 3; el OCR 1 de 3, y `POST /tickets/extract` devolvio
+    el del OCR: un total de `219.93` donde el papel decia `279.93`.
+
+    ## POR QUE DEVUELVE TRES VALORES Y NO UN BOOL
+
+    MEDIDO tambien el 2026-10-13, y el primer intento de esta funcion fue un
+    bool —"si la aritmetica cuadra"— y ROMPIO un test del repo que documenta un
+    requisito de producto: una foto sin lineas tiene que escalar al modelo, y lo
+    que vuelve (con lineas) es lo que queda, porque sin lineas no hay compra
+    que confirmar.
+
+    Quebro por esto: la lectura del OCR traia `subtotal 948.28 + IVA 151.72 =
+    1100.00` — cuadra EXACTO — y la del modelo no traia subtotal ni IVA. Con un
+    bool, "cuadra" = 1 y "no viene subtotal" = 0, o sea que **la ausencia de un
+    campo se contaba como un error de lectura**. No lo es: una lectura sin
+    desglose no afirma nada que la otra contradiga, y por lo tanto no puede
+    perder un desempate.
+
+    Esa distincion es el punto entero: **"no comprobable" no es "incorrecto"**, y
+    confundirlas hace que el criterio empuje el resultado hacia el lector que
+    lleno mas campos en vez de hacia el que lee mejor. El -1 es lo unico que
+    este criterio puede afirmar con honestidad: "estos numeros se contradicen
+    entre si", que es un defecto del documento segun quien lo leyo, no del
+    documento.
+    """
+    from app.services.confidence_gate import validate_extraction
+
+    if resultado.total_amount is None or resultado.total_amount <= 0:
+        return 0
+
+    outcome = validate_extraction(
+        resultado.provider_name,
+        resultado.total_amount,
+        resultado.tax_amount,
+        resultado.expense_date,
+        resultado.provider_tax_id,
+        resultado.subtotal,
+        resultado.ieps_amount,
+    )
+    if any(f.startswith("arithmetic_consistent") for f in outcome.passed):
+        return 1
+
+    # Solo es un defecto si la lectura TRAE el desglose y no suma. Sin subtotal
+    # o sin IVA no hay nada que contradecir.
+    #
+    # MEDIDO el 2026-10-14, y este -1 estaba COSTANDO LECTURAS CORRECTAS.
+    #
+    # `ExtractedInvoice` declara `subtotal` y `tax_amount` como `Decimal("0")`,
+    # no como `None` (a diferencia de `ieps_amount`, que SI es `Optional`). Un
+    # modelo que devuelve SOLO el total deja un desglose de `0 + 0`, y el guard
+    # de arriba lo daba por bueno: hay subtotal, hay IVA, hay algo que no suma.
+    #
+    # MEDIDO: un modelo que lee `Tiendas Ramirez SA de CV / 1100.00` — que es
+    # una respuesta CORRECTA — puntuaba `(1, 0, -1, 1, 1, 0, 1)`, y las reglas
+    # con `provider_name = "Unknown Provider"` puntuaban
+    # `(1, 0, 0, 0, 1, 1, 0)`. Como la aritmetica va ANTES que el proveedor en
+    # la tupla, ganaba el `Unknown Provider`: se pagaba la vision y se tiraba su
+    # respuesta. Lo documenta
+    # `test_sin_proveedor_escala_a_la_ia_aunque_tenga_total`.
+    #
+    # `0 + 0` no es un desglose, es la AUSENCIA de desglose: no afirma nada que
+    # el total pueda contradecir. Por eso lo que se pide para penar a una
+    # lectura es que el desglose CARGUE algo, no solo que los campos existan.
+    if _trae_desglose(resultado):
+        # OJO: el check se registra CON LOS NUMEROS, asi que el string es
+        # "subtotal_plus_tax_mismatch(leido=279.93,esperado=225.41)". Una
+        # comparacion exacta con el nombre limpio NUNCA encuentra nada y el -1
+        # no se aplica nunca, que es un criterio que parece existir y no hace
+        # nada. Se compara por prefijo, que es lo que sobrevive a que el check
+        # detalla su motivo.
+        if any(f.startswith("subtotal_plus_tax_mismatch") for f in outcome.failures):
+            return -1
+    return 0
+
+
+def _puntaje_de_extraccion(resultado: TicketExtractionResult) -> tuple:
+    """Que tan completa es una lectura. Mayor es mejor.
+
+    LA REGLA QUE HACE FALTA ARRIBA DE ESTO
+    =======================================
+
+    **Un lector no reemplaza a otro con una lectura peor.** La escalada a la IA
+    se introdujo para conseguir lineas de producto, y funciona: el modelo las
+    trae. Pero en una foto que el OCR leia *medianamente*, el modelo devolvio
+    `total_amount = 0.00` y eso **sobrescribio** los 97.56 que el OCR si habia
+    leido.
+
+    Medido en los 7 comprobantes reales: con la escalada activa, los siete
+    quedaron en 0.00. Sin ella, `IMG_4220` tenia 97.56. O sea: el cambio mejoro
+    una cosa y rompio otra, y sin este criterio la ruta que gana es la del
+    modelo aunque no haya leido nada.
+
+    El orden de los campos es deliberado y NO es el de "que se ve primero":
+
+      1. `total_amount > 0`. Sin total no hay gasto. Un ticket en cero no es un
+         ticket: es un papel que nadie pudo leer, y se distingue por ser cero,
+         no por no estar.
+      2. Las lineas de producto. Es lo que la escalada va a buscar.
+      3. El proveedor. Sin el, el gasto no tiene a quien pertenece.
+      4. El RFC y el subtotal. Afinan la confianza pero no hacen falta para que
+         el ticket valga.
+
+    Se compara tupla a tupla, asi que gana la primera diferencia y no un peso
+    inventado que alguien puedailverar despues.
+    """
+    tiene_lineas = 1 if resultado.items else 0
+    return (
+        1 if resultado.total_amount > 0 else 0,
+        tiene_lineas,
+        # Saber DE QUIEN es el gasto, antes que la aritmetica.
+        #
+        # MEDIDO el 2026-10-14. El proveedor estaba DESPUES de la aritmetica, y
+        # eso hacia que una lectura SIN proveedor le ganara a una que si lo
+        # tiene. El caso medido:
+        #
+        #   reglas = prov "Unknown Provider", 964.00 + 136.00 = 1100.00 EXACTO
+        #   modelo = prov "Tiendas Ramirez SA de CV", sin desglose
+        #
+        # Las reglas ganan en aritmetica (+1 contra 0) y el proveedor nunca llega
+        # a compararse. Se pagaba la vision, el modelo sabia de quien era el
+        # gasto, y se guardaba `Unknown Provider`.
+        #
+        # La razon de fondo: `_aritmetica_se_sostiene` devuelve 0 cuando NO hay
+        # desglose, y ese 0 significa "no comprobable", no "incorrecto". Meter un
+        # "no comprobable" (0) en la misma escala que un "comprobado" (+1)
+        # confunde CERTEZA con IDENTIDAD: que los numeros sumen dice que el total
+        # esta bien, pero no dice de quien es el gasto, y sin eso el ticket no es
+        # una compra.
+        #
+        # El total sigue mandando: el punto 1 no se mueve, y un total en cero
+        # pierde contra cualquier total bueno aunque traiga proveedor. Lo que se
+        # adelanta es solo el proveedor. Lo fija
+        # `test_sin_proveedor_escala_a_la_ia_aunque_tenga_total`.
+        1 if resultado.provider_name != UNKNOWN_PROVIDER else 0,
+        # La aritmetica, DESPUES del proveedor y de las lineas.
+        #
+        # MEDIDO el 2026-10-13: va deliberadamente DESPUES de las lineas. La
+        # primera version lo puso segundo y rompio `test_por_omision_una_foto_
+        # sin_lineas_si_va_al_modelo`, que documenta un requisito de producto:
+        # una foto sin lineas tiene que escalar al modelo porque SIN LINEAS NO
+        # HAY COMPRA QUE CONFIRMAR. Poner la aritmetica por encima convertia
+        # "el OCR trajo un desglose que suma" en motivo para saltarse las lineas
+        # del modelo, que es el unico escalon que las trae.
+        #
+        # Sigue siendo lo unico criterio que dice algo sobre si el total es
+        # CORRECTO, que es distinto de cuanto se lleno el formulario y de quien
+        # es el gasto.
+        _aritmetica_se_sostiene(resultado),
+        # Un proveedor que no es basura vale MAS que uno que solo "no es
+        # UNKNOWN". Sin esta posicion, dos lecturas con el mismo total se
+        # desempatan por las lineas y el RFC, y el nombre se decide al azar:
+        # `gt Edson Nte hunera 1235` ganaba el empate contra `CREMERIA` si las
+        # dos traian lineas.
+        #
+        # Va DESPUES del total a proposito. Un total bueno con un nombre
+        # inutil sigue siendo mejor que un total cero con un nombre perfecto,
+        # porque el total es el numero que se concilia contra el banco.
+        0 if _nombre_parece_basura(resultado.provider_name) else 1,
+        1 if resultado.provider_tax_id else 0,
+        1 if resultado.subtotal is not None else 0,
+    )
+
+
+def _marcar_por_reglas(
+    resultado: TicketExtractionResult,
+    source: ConfidenceSource,
+) -> TicketExtractionResult:
+    """Anota origen y confianza de una extraccion determinista.
+
+    El parser por reglas no estima confianza: no tiene nada que decir. Lo que
+    hace es reportar cuanto encontro, y de ahi sale el numero. Es una distincion
+    que importa: no es la certeza del modelo, es el conteo de evidencia.
+    """
+    resultado.confidence_source = source
+    resultado.confidence = _tabla_de_confianza_para(source)(
+        tiene_rfc=bool(resultado.provider_tax_id),
+        tiene_subtotal=resultado.subtotal is not None,
+        tiene_fecha=resultado.expense_date is not None,
+    )
+    return resultado
+
+
+def _ilegible(motivo: str, raw_text: str = "") -> TicketExtractionResult:
+    """Un documento que llego pero del que no se sabe nada.
+
+    Se construye en vez de lanzar excepcion para que el archivo no se pierda:
+    esto termina en la cola con motivo, que es donde un humano lo resuelve.
+    """
+    logger.warning("documento ilegible: %s", motivo)
+    return TicketExtractionResult(
+        provider_name=UNKNOWN_PROVIDER,
+        provider_tax_id=None,
+        total_amount=Decimal("0.00"),
+        tax_amount=Decimal("0.00"),
+        expense_date=None,
+        category=None,
+        raw_text=raw_text or f"[no se pudo leer: {motivo}]",
+        confidence=None,
+        confidence_source=ConfidenceSource.LLM,
+    )
+
+
+def _mejor_de(
+    primero: TicketExtractionResult, segundo: TicketExtractionResult
+) -> TicketExtractionResult:
+    """De dos lecturas, la que mas dice de verdad.
+
+    ANTES COMPARABA SOLO EL TOTAL, y eso no basta desde que existe inventario.
+    Con la escalada a la IA —que se introduce para conseguir lineas de
+    producto—, un modelo que devuelve `total 0.00` le ganaba a unas reglas que si
+    habian leido 97.56, porque `0.00 > 97.56` es falso pero el `return modelo`
+    de despues no comparaba nada.
+
+    Medido en los 7 comprobantes reales: con la escalada activa los siete
+    quedaron en 0.00. Antes, `IMG_4220` tenia 97.56 del OCR. El cambio mejoro una
+    cosa y rompio otra, y sin este criterio gana siempre el modelo aunque no haya
+    leido nada.
+
+    Ver `_puntaje_de_extraccion` para el orden de los campos y por que es ese.
+
+    Empate va a `primero`, que es el escalon mas barato y por tanto el que menos
+    esta inventando. Es la razon de que las reglas sean el primer escalon.
+    """
+    if _puntaje_de_extraccion(segundo) > _puntaje_de_extraccion(primero):
+        return segundo
+    return primero
+
+
+# ---------------------------------------------------------------------------
+# La cascada
+# ---------------------------------------------------------------------------
+
+
+def _ocr_por_defecto(datos: bytes) -> ResultadoOCR:
+    """El OCR real. Se resuelve aqui y no al importar, por dos razones.
+
+    Una: `app.services.ocr` no importa pytesseract ni EasyOCR al cargarse, pero
+    si lo hiciera, importar `capture` arrastraria los dos. La app tiene que
+    poder arrancar en una maquina sin Tesseract para poder reportar que no lo
+    tiene.
+
+    Dos: los tests inyectan un OCR falso por `capture_ticket(ocr_reader=...)` y
+    asi no dependen de que haya un binario instalado. Que la suite pase en una
+    maquina sin Tesseract no es un detalle: si dependiera del binario, el que
+    no lo tiene veria tests rojos y aprenderia a saltarselos.
+    """
+    from app.services.ocr import leer_imagen
+
+    return leer_imagen(datos)
+
+
+async def capture_ticket(
+    content: bytes,
+    file_type: str,
+    *,
+    extract_from_image: ExtractFn | None = None,
+    extract_from_text: ExtractTextFn | None = None,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """Punto de entrada unico de un comprobante.
+
+    Los extractores se inyectan para poder probar la politica de cascada sin un
+    modelo. Sin ellos se usa el extractor real.
+
+    Args:
+        content: bytes del archivo tal como lo subio el usuario.
+        file_type: `image`, `pdf` o `text`.
+        ocr_reader: como leer texto de una foto. Por defecto el OCR local. Se
+            inyecta para probar la politica de cascada sin un binario de
+            Tesseract instalado.
+
+    Returns:
+        `TicketExtractionResult` con `confidence` y `confidence_source`
+        resueltos. No lanza por no poder leer el contenido: eso se traduce en
+        un resultado vacio con motivo, para que el documento llegue a la cola.
+        Si ni siquiera se puede abrir el archivo, lanza
+        `ExtractionUnavailable`, que si es un error de verdad.
+
+    Raises:
+        ExtractionUnavailable: tipo de archivo desconocido.
+    """
+    if file_type == "image":
+        return await _desde_imagen(content, extract_from_image, ocr_reader)
+
+    if file_type == "text":
+        texto = content.decode("utf-8", errors="replace")
+        # `exigir_items=False`: un `.txt` puede ser cualquier cosa y no se sabe que
+        # sea una compra con detalle. Preguntar por lineas aqui seria gastar un
+        # modelo para obtener una lista vacia.
+        return await _cascada_texto(
+            texto, ConfidenceSource.RULES, extract_from_text, exigir_items=False
+        )
+
+    if file_type != "pdf":
+        raise ExtractionUnavailable(f"tipo de archivo no soportado: {file_type!r}")
+
+    try:
+        texto = extract_pdf_text(content)
+    except Exception as exc:
+        # Un PDF que pdfplumber no abre puede estar corrupto, cifrado, o no ser
+        # un PDF. Puede tambien ser un escaneado raro que otro lector si abre.
+        # Se intenta vision antes de rendirse: un ticket vale mas que una
+        # excepcion.
+        logger.info("pdfplumber no pudo abrir el PDF (%s); se intenta vision", exc)
+        return await _vision_pdf(content, extract_from_image, ocr_reader)
+
+    if len(texto.strip()) < PDF_MIN_CHARS_PARA_INTENTAR:
+        # Escaneado: no hay nada que parsear. Un regex sobre cadena vacia
+        # devolveria ceros, y un ticket de ceros es un ticket falso.
+        return await _vision_pdf(content, extract_from_image, ocr_reader)
+
+    # Un PDF si es un comprobante: se exige el detalle.
+    return await _cascada_texto(
+        texto, ConfidenceSource.PDF_TEXT, extract_from_text, exigir_items=True
+    )
+
+
+async def _cascada_texto(
+    texto: str,
+    source: ConfidenceSource,
+    extract_from_text: ExtractTextFn | None,
+    *,
+    exigir_items: bool = True,
+) -> TicketExtractionResult:
+    """Hay texto: primero las reglas, el modelo solo si las reglas no pueden.
+
+    El orden no es una preferencia de rendimiento. Un regex sobre texto extraido
+    no inventa un total: o lo encuentra o no lo encuentra. Un modelo puede
+    inventarlo. Cuando las reglas fallan, lo que el modelo devuelve ya no esta
+    leyendo el documento con reglas, esta suponiendo, y su respuesta hay que
+    leerla desconfiando.
+
+    `exigir_items` es la excepcion que la cascada normal no tiene: aunque las
+    reglas acierten el ENCABEZADO, si el documento es un comprobante y las reglas
+    no traen lineas de producto, se le pregunta al modelo de todos modos.
+
+    Ver `ESCALAR_A_IA_SIN_LINEAS` en `app/core/config.py`, que explica por que es
+    una decision y no un descuido: es "pagar un modelo" contra "tener inventario".
+    """
+    reglas = _marcar_por_reglas(_parse_receipt_text(texto), source)
+
+    # `exigir_items=False` para `file_type=text`: un archivo de texto puede ser
+    # cualquier cosa y no se sabe que sea una compra con detalle.
+    if _es_extraccion_util(reglas) and not (exigir_items and _exige_items(reglas)):
+        return reglas
+
+    if extract_from_text is None:
+        return reglas
+
+    logger.info(
+        "el parseo por reglas no sirvio (proveedor=%r total=%s); se pide al modelo",
+        reglas.provider_name, reglas.total_amount,
+    )
+    try:
+        invoice = await extract_from_text(texto)
+    except Exception as exc:
+        # El modelo fallo y las reglas tampoco. Se conserva lo que las reglas
+        # si encontraron: un total sin proveedor es mejor que nada, y la cola
+        # lo va a marcar con `provider_missing`.
+        logger.warning("el modelo no pudo leer el texto (%s); se guarda lo parcial", exc)
+        return reglas
+
+    motivo = motivo_de_fallo_del_modelo(invoice)
+    if motivo:
+        # Fallo del sistema, no del documento. Las reglas ya se probaron y no
+        # pudieron, asi que no queda mas escalon: se guarda lo que hay.
+        logger.warning("el modelo fallo sobre texto legible: %s", motivo)
+        return reglas
+
+    modelo = invoice_to_result(invoice)
+
+    # Ni aqui gana el modelo por defecto. Un modelo que lee menos que las
+    # reglas NO debe replaces lo que las reglas si leyeron: ese fue el bug que
+    # dejo los 7 comprobantes en 0.00.
+    return _mejor_de(reglas, modelo)
+
+
+def _ocr_de_paginas(paginas: list[bytes], ocr: OcrFn) -> TicketExtractionResult | None:
+    """El mejor resultado de OCR sobre las paginas renderizadas, o `None`.
+
+    `None` significa "el OCR no dio nada utilizable" y es distinto de "el OCR
+    no esta instalado": los dos llevan a vision, pero se registran distinto
+    porque uno se arregla instalando un paquete y el otro mirando la foto.
+
+    Una sola pagina legible basta. En un comprobante de varias paginas, la que
+    tiene el resumen es la que tiene el total, y las demas son articulos o
+    condiciones. Se elige la de mayor total por la misma razon que en
+    `_vision_pdf`: el resumen esta al final.
+    """
+    utiles: list[TicketExtractionResult] = []
+
+    for indice, pagina in enumerate(paginas):
+        try:
+            leido = ocr(pagina)
+        except OCRNoDisponible as exc:
+            logger.info("OCR no disponible para la pagina %d: %s", indice + 1, exc)
+            return None
+        except Exception as exc:
+            # Una pagina que el OCR no puede leer no invalida las otras: un
+            # comprobante de tres paginas con una ilegible sigue siendo legible
+            # por las otras dos.
+            logger.warning("el OCR fallo en la pagina %d: %s", indice + 1, exc)
+            continue
+
+        texto = (leido.texto or "").strip()
+        if len(texto) < OCR_MIN_CHARS_PARA_INTENTAR:
+            continue
+
+        resultado = _marcar_por_reglas(_parse_receipt_text(texto), ConfidenceSource.OCR)
+        if _es_extraccion_util(resultado):
+            utiles.append(resultado)
+
+    if not utiles:
+        return None
+
+    if len(utiles) == 1:
+        return utiles[0]
+
+    mejor = max(utiles, key=lambda r: r.total_amount)
+    # El origen se vuelve a poner explicito. Viene de `_marcar_por_reglas` como
+    # `ocr`, pero si otro dia `_mejor_de` o una comparacion de aqui se llevan el
+    # resultado mas alto sin su `confidence_source`, esta linea es la que
+    # impide que un multi-pagina se reporte como si lo hubiera leido un modelo.
+    mejor.confidence_source = ConfidenceSource.OCR
+    return mejor
+
+
+async def _vision_pdf(
+    content: bytes,
+    extract_from_image: ExtractFn | None,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """PDF sin capa de texto: se renderiza y se lee con OCR, luego con vision.
+
+    El mismo orden que una foto suelta, y por la misma razon: un PDF escaneado
+    es una foto dentro de un PDF. Antes de que existiera el OCR, cada escaneo
+    iba directo a un modelo de vision; ahora se lee en local primero y solo se
+    paga el modelo cuando la lectura local no da un comprobante.
+
+    Que las paginas se rendericen para el OCR y no solo para vision es lo que
+    hace que esto no sea un feature aparte: el mismo `render_pdf_pages` alimenta
+    los dos caminos, y no hay una segunda manera de convertir un PDF en imagen.
+    """
+    ocr = ocr_reader or _ocr_por_defecto
+
+    try:
+        paginas = render_pdf_pages(
+            content,
+            max_pages=PDF_MAX_PAGINAS_A_VISION,
+            scale=PDF_ESCALA_RENDER,
+        )
+    except Exception as exc:
+        logger.warning("no se pudo renderizar el PDF a imagen: %s", exc)
+        return _ilegible(f"PDF ilegible y no renderizable: {exc}")
+
+    if not paginas:
+        return _ilegible("el PDF no tiene paginas")
+
+    por_ocr = _ocr_de_paginas(paginas, ocr)
+    if por_ocr is not None:
+        return por_ocr
+
+    if extract_from_image is None:
+        return _ilegible(
+            "el PDF no tiene capa de texto y no hay extractor de vision disponible"
+        )
+
+    resultados: list[TicketExtractionResult] = []
+    fallos_del_modelo: list[str] = []
+    errores_de_pagina: list[str] = []
+    for indice, pagina in enumerate(paginas):
+        try:
+            invoice = await extract_from_image(pagina)
+        except Exception as exc:
+            # El motivo se acumula ademas de registrarse en el log. La cola
+            # tiene que poder decir por que no se pudo leer, no solo "no se
+            # pudo leer": un error que se queda en el log del servidor obliga
+            # a que alguien vaya a buscarlo, y si nadie busca, se repite
+            # para siempre.
+            errores_de_pagina.append(f"pagina {indice + 1}: {exc}")
+            logger.warning("la pagina %d del PDF no se pudo leer: %s", indice + 1, exc)
+            continue
+
+        motivo = motivo_de_fallo_del_modelo(invoice)
+        if motivo:
+            fallos_del_modelo.append(motivo)
+            continue
+
+        resultados.append(invoice_to_result(invoice))
+
+    if not resultados and fallos_del_modelo:
+        # Las paginas se renderizaron bien y el extractor las recibio. Lo que
+        # fallo es el modelo, y eso se dice con su palabra, no como
+        # "documento ilegible".
+        return _ilegible("; ".join(dict.fromkeys(fallos_del_modelo)))
+
+    utiles = [r for r in resultados if _es_extraccion_util(r)]
+    if not utiles:
+        if resultados:
+            # Las paginas se leyeron pero ninguna dio algo entendible. Se
+            # devuelve el primer intento para que la cola muestre el motivo que
+            # produjo el modelo, no un "ilegible" generico.
+            return resultados[0]
+        detalle = "; ".join(errores_de_pagina) if errores_de_pagina else (
+            "sin error registrado, pero ninguna pagina devolvio un comprobante"
+        )
+        return _ilegible(f"ninguna pagina del PDF se pudo leer con vision ({detalle})")
+
+    if len(utiles) == 1:
+        return utiles[0]
+
+    # Varias paginas con datos: se toma la de mayor total, que en un comprobante
+    # multi-pagina es la del final, donde esta el resumen. Es un supuesto
+    # documentado y no una certeza, asi que la confianza no se sube: lo que se
+    # tiene aqui es una lectura entre varias, no una lectura verificada.
+    mejor = max(utiles, key=lambda r: r.total_amount)
+    mejor.confidence_source = ConfidenceSource.LLM
+    return mejor
+
+
+async def _desde_imagen_con_vision(
+    content: bytes,
+    extract_from_image: ExtractFn,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """Vision primero, y el OCR SOLO si el modelo no entrega algo utilizable.
+
+    MEDIDO el 2026-10-13: vision leyo bien 3 de 3 fotos HEIC y el OCR 1 de 3,
+    fallando justo en las dosmas difiles. Ver el docstring de `_desde_imagen`
+    para la medicion completa y para lo que este cambio NO afirma.
+
+    LAS DOS DIFERENCIAS CON EL ORDEN ANTERIOR, y las dos importan:
+
+    1. **El OCR no se ejecuta si la vision sirve.** No es que se compare y se
+       elija: es que no se lee. Eso es lo que ahorra los 81 s, porque el
+       `_leer_tesseract` hace hasta 16 lecturas por foto y solo un total + RFC +
+       aritmetica lo cortan antes.
+
+    2. **El OCR se consulta igual cuando el modelo no sirve**, y no se descarta
+       su lectura: se queda en `por_ocr` para compararla con `_mejor_de`, igual
+       que en el orden anterior. Una foto ilegible para el modelo puede ser
+       legible para Tesseract, y perder ese caso seria una regresion real.
+
+    Y NO se degradan las reglas: cuando el modelo devuelve algo, la lectura se
+    marca con `_marcar_por_reglas(..., ConfidenceSource.LLM)`, que es lo mismo
+    que hacia el camino de vision de antes. Lo unico que cambia es quien se
+    consulta primero.
+    """
+    vision = await _vision_de_imagen(content, extract_from_image)
+
+    if _es_extraccion_util(vision) and not _exige_items(vision):
+        return vision
+
+    por_ocr: TicketExtractionResult | None = None
+    ocr = ocr_reader or _ocr_por_defecto
+    try:
+        leido = ocr(content)
+    except OCRNoDisponible as exc:
+        logger.info("vision no util y OCR no disponible: %s", exc)
+    except Exception as exc:
+        logger.warning("vision no util y el OCR fallo (%s)", exc)
+    else:
+        texto = (leido.texto or "").strip()
+        if len(texto) >= OCR_MIN_CHARS_PARA_INTENTAR:
+            por_ocr = _marcar_por_reglas(
+                _parse_receipt_text(texto), ConfidenceSource.OCR
+            )
+
+    if por_ocr is None:
+        return vision
+    return _mejor_de(por_ocr, vision)
+
+
+async def _desde_imagen(
+    content: bytes,
+    extract_from_image: ExtractFn | None,
+    ocr_reader: OcrFn | None = None,
+) -> TicketExtractionResult:
+    """Foto o escaneo: el orden lo decide `IMAGENES_VISION_PRIMERO`.
+
+    MEDIDO el 2026-10-13 sobre los 3 HEIC rotulados de esta maquina:
+
+    | archivo   | verdad   | OCR        | vision    |
+    |-----------|----------|------------|-----------|
+    | IMG_4398  | 193.65   | `5`        | `193.65`  |
+    | IMG_4409  | 279.93   | `219.93`   | `279.93`  |
+    | IMG_4407  | 234.00   | `234`      | `234.00`  |
+
+    **Vision 3 de 3. OCR 1 de 3**, y el OCR fallo justo en las dos fotos
+    DIFILES. Ese es el caso de uso: una persona toma la foto sin saber nada.
+
+    POR QUE SE INVIERTE Y NO SE MEJORA EL OCR
+
+    Porque el costo del OCR no es su calidad, es que se PAGA ENTERO y luego se
+    descarta. `_leer_tesseract` hace hasta **16 lecturas** (4 rotaciones x
+    variantes con y sin binarizacion), porque el corte temprano exige total +
+    RFC + aritmetica, y una foto de papel de ticket casi nunca trae RFC legible.
+    MEDIDO: **81 s por foto, siempre**.
+
+    Con vision primero, en el caso bueno —que es el mayoritario— el OCR no se
+    ejecuta: se ahorran 81 s. Y en el malo sigue estando, porque se consulta
+    cuando el modelo no entrega algo utilizable. No se pierde nada.
+
+    LO QUE CAMBIA, Y TIENE QUE QUEDAR ESCRITO
+
+    Que los dos caminos esten etiquetados distinto es lo que permite que el
+    reporte de exactitud diga algo. Con vision primero, **una foto legible queda
+    como `llm` y no como `ocr`** — y eso es la verdad: la leyo el modelo.
+
+    El numero que se mueve es el reporte de exactitud agrupado por origen, y por
+    eso va con interruptor y no a mano: si el reporte dice algo que ya no
+    describe lo que pasa, se vuelve a `false` sin tocar codigo.
+
+    Y LO QUE NO SE AFIRMA
+
+    Que vision "siempre" gane. Tres archivos son una anecdota —el propio script
+    de medicion lo dice: por debajo de ~30 casos el porcentaje se mueve mucho con
+    un solo comprobante—. Lo que sostiene el cambio es la DIRECCION, y que el OCR
+    no se pierde: queda de respaldo.
+
+    ANTES (docstring original, que se conserva el sentido)
+    ---------------------------------------------------
+    El orden es el que decide el costo. Antes de este escalon, una foto
+    SIEMPRE iba a un modelo de vision, incluso cuando era un ticket impreso
+    legible que Tesseract leia sin equivocarse. Con OCR primero:
+
+    - una foto buena no toca ningun modelo, y sale con `confidence_source=ocr`,
+      que es la verdad sobre quien leyo el papel;
+    - una foto mala (borrosa, rotada, con la tinta corrida) cae a vision, que
+      es el unico escalon que puede con ella, y queda registrada como `llm`, que
+      tambien es la verdad.
+
+    Que los dos caminos esten etiquetados distinto es lo que permite que
+    el reporte de exactitud diga algo. Si los dos se guardaran como `llm`, el
+    numero mezcla "el modelo leyo esto" con "Tesseract leyo esto y la foto
+    estaba bien", y promedia dos cosas que no se parecen.
+
+    El OCR no se consulta si no hay quien lo lea. Un `OCRNoDisponible` no es un
+    fallo de este escalon: es la configuracion de la maquina, y se sigue al
+    siguiente escalon igual, que es lo que hacia que la app sirviera antes de
+    que existiera este modulo.
+    """
+    if settings.IMAGENES_VISION_PRIMERO and extract_from_image is not None:
+        return await _desde_imagen_con_vision(content, extract_from_image, ocr_reader)
+
+    ocr = ocr_reader or _ocr_por_defecto
+    # Lo que el OCRReply leyo, para poder compararlo con lo que vea el modelo.
+    por_ocr: TicketExtractionResult | None = None
+
+    try:
+        leido = ocr(content)
+    except OCRNoDisponible as exc:
+        logger.info("OCR no disponible, se va directo a vision: %s", exc)
+    except Exception as exc:
+        # Un OCR que revienta (imagen corrupta, motor caido) no puede tumbar la
+        # lectura: todavia queda vision. Se registra y se sigue.
+        logger.warning("el OCR fallo (%s); se intenta vision", exc)
+    else:
+        texto = (leido.texto or "").strip()
+        if len(texto) < OCR_MIN_CHARS_PARA_INTENTAR:
+            logger.info(
+                "el OCR devolvio %d caracteres, menos que el minimo; se intenta vision",
+                len(texto),
+            )
+        else:
+            # Aqui NO se llama a `extract_from_text`. A diferencia de un PDF con
+            # texto, el texto de una foto es una transcripcion con errores: si
+            # las reglas no lo entienden, es porque el documento no se leyo bien,
+            # y un modelo al que se le pasa esa transcripcion va a suponer un
+            # total. Vision, que mira el papel, tiene mas probabilidades que un
+            # modelo leyendo los errores de Tesseract. Y asi una foto cuesta un
+            # modelo, no dos.
+            resultado = _marcar_por_reglas(
+                _parse_receipt_text(texto), ConfidenceSource.OCR
+            )
+            if _es_extraccion_util(resultado) and not _exige_items(resultado):
+                return resultado
+            # Se guarda para comparar. Sin esto, lo que el modelo devuelva
+            # REEMPLAZA a lo que el OCR leyo, sin mirar: medido en los 7
+            # comprobantes reales, un modelo que devolvio `total 0.00` dejo los
+            # siete en cero, y `IMG_4220` ya habia leido 97.56.
+            por_ocr = resultado
+            logger.info(
+                "el OCR leyo el papel pero las reglas no lo entendieron bien "
+                "(proveedor=%r total=%s items=%s); se mira la imagen con el modelo",
+                resultado.provider_name,
+                resultado.total_amount,
+                "si" if resultado.items else "NO",
+            )
+
+    vision = await _vision_de_imagen(content, extract_from_image)
+    if por_ocr is None:
+        return vision
+    return _mejor_de(por_ocr, vision)
+
+
+async def _vision_de_imagen(content: bytes, extract_from_image: ExtractFn | None) -> TicketExtractionResult:
+    """Vision: el ultimo escalon, el que mas caro es."""
+    if extract_from_image is None:
+        return _ilegible("no hay extractor de vision disponible")
+
+    try:
+        invoice = await extract_from_image(content)
+    except Exception as exc:
+        # Un archivo que se subio y no se pudo leer no se pierde: entra a la
+        # cola. Perderlo es el unico resultado inaceptable, porque nadie llega a
+        # saber que hubo que subir.
+        return _ilegible(f"la IA no pudo leer la imagen: {exc}")
+
+    motivo = motivo_de_fallo_del_modelo(invoice)
+    if motivo:
+        return _ilegible(motivo, invoice.raw_text)
+
+    return invoice_to_result(invoice)
