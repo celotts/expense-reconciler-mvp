@@ -45,7 +45,7 @@ def _credenciales_malas() -> HTTPException:
     # Un solo mensaje para las tres causas. Ver la nota del modulo.
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Correo o contrasena incorrectos",
+        detail="Correo o contraseña incorrectos",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -133,7 +133,7 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
     # no debe dejar a la persona esperando a que expire el bloqueo.
     anotar_intento_exitoso(correo, ip)
 
-    token, segundos = crear_token(str(usuario.id), usuario.email)
+    token, segundos = crear_token(str(usuario.id), usuario.email, usuario.perfil, usuario.grupo)
 
     usuario.last_login_at = utcnow()
     await db.commit()

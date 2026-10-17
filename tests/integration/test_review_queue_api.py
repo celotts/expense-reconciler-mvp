@@ -282,6 +282,52 @@ class TestColaDeRevision:
         assert data["tickets"][0]["extraction_status"] == "PENDIENTE"
 
     @pytest.mark.asyncio
+    async def test_filtrar_por_un_estado_fuera_de_la_cola_no_rompe(self, async_client, db_session, test_company):
+        """El filtro acepta estados que NO son de la cola, y tiene que responder 200.
+
+        MEDIDO, no teorico. El selector de la pantalla ofrece los cinco estados
+        de `ExtractionStatus`, no solo los dos de la cola, asi que `?status=APROBADO`
+        es un clic normal de cualquiera. Ese camino devolvia 500
+        (`UnboundLocalError`) porque `open_states` se definia solo en la rama sin
+        filtro y `total_open` lo necesita siempre.
+
+        Lo que hace el test es fijarlo: si alguien vuelve a mover la definicion
+        dentro del `else`, este test muere.
+        """
+        await _trio_de_prueba(db_session, test_company.id)
+
+        resp = await async_client.get(
+            f"/api/v1/tickets/review-queue?company_id={test_company.id}&status=APROBADO"
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # El filtro manda sobre `tickets`...
+        assert all(t["extraction_status"] == "APROBADO" for t in data["tickets"])
+        # ...pero `total_open` sigue siendo global: son los dos de la cola, no
+        # los del filtro. Si `total_open` acompanara al filtro, el encabezado
+        # diria que no hay nada abierto mientras el selector muestra "APROBADO".
+        assert data["total_open"] == 2
+
+    @pytest.mark.asyncio
+    async def test_un_filtro_no_deja_la_cola_vacia_sin_explicar(self, async_client, db_session, test_company):
+        """Sin filtro, la cola trae REQUIERE_REVISION y PENDIENTE.
+
+        Este es el otro lado del mismo cambio: un `.where(extraction_status ==
+        status)` que sobrevive dentro de la rama sin filtro compila a `IS NULL`
+        (aqui `status` es `None`) y se multiplica con el `IN (...)` de al lado. Una
+        condicion que no puede cumplirse devuelve una lista vacia, y una lista
+        vacia sin error se lee como "no hay nada pendiente".
+        """
+        await _trio_de_prueba(db_session, test_company.id)
+
+        resp = await async_client.get(f"/api/v1/tickets/review-queue?company_id={test_company.id}")
+
+        assert resp.status_code == 200
+        estados = {t["extraction_status"] for t in resp.json()["tickets"]}
+        assert estados == {"PENDIENTE", "REQUIERE_REVISION"}
+
+    @pytest.mark.asyncio
     async def test_filtrar_por_only_open(self, async_client, db_session, test_company):
         await _trio_de_prueba(db_session, test_company.id)
 
@@ -334,6 +380,117 @@ class TestRevisionHumana:
         assert data["validation_errors"] is None
         assert data["review_notes"] == "Leido a mano del papel"
         assert data["reviewed_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_aprobar_un_aprobado_no_vuelve_a_firmar(self, async_client, db_session, test_company):
+        """Aprobar lo que ya esta `APROBADO` sin corregir nada NO toca la firma.
+
+        MEDIDO en esta maquina: los 7 `APROBADO` tienen `reviewed_at` repartido
+        entre las 01:29 y las 03:06, que son los clics y no la aprobacion
+        original. `reviewed_at`/`reviewed_by` son la evidencia de quien aprobo
+        que y cuando, y `_es_revisado_por_humano`, `document_service` y
+        `POST /scan/reset` deciden sobre ellos. Un clic de mas fabrica una
+        firma que nadie puso.
+
+        El ticket se aprueba primero de verdad, se guarda cuando quedo
+        firmado, y se vuelve a aprobar. Si la segunda vez moviera la fecha,
+        este test muere.
+        """
+        ticket = await self._pendiente(db_session, test_company.id)
+        primera = await async_client.patch(
+            f"/api/v1/tickets/{ticket.id}/review",
+            json={
+                "action": "approve",
+                "provider_name": "OXXO",
+                "total_amount": "150.00",
+                "tax_amount": "20.69",
+            },
+        )
+        assert primera.status_code == 200
+        firmado = primera.json()["reviewed_at"]
+        assert firmado is not None
+
+        segunda = await async_client.patch(
+            f"/api/v1/tickets/{ticket.id}/review",
+            json={"action": "approve"},
+        )
+
+        assert segunda.status_code == 200
+        assert segunda.json()["reviewed_at"] == firmado
+
+    @pytest.mark.asyncio
+    async def test_aprobar_uno_pendiente_si_firma(self, async_client, db_session, test_company):
+        """El caso NORMAL de la cola: aprobar un `PENDIENTE` sin corregir nada.
+
+        Este es el que el arreglo anterior rompia, y por eso esta aqui. Aprobar
+        un pendiente sin correccion NO cambia ningun dato, pero SI cambia el
+        estado, y eso es una decision de una persona. Si la regla mirara solo
+        "hubo correccion", este approve —el mas frecuente de la cola— dejaria
+        de firmarse y se perderia la evidencia de quien lo aprobo.
+        """
+        ticket = await self._pendiente(db_session, test_company.id)
+        assert ticket.extraction_status == "PENDIENTE"
+
+        resp = await async_client.patch(
+            f"/api/v1/tickets/{ticket.id}/review",
+            json={
+                "action": "approve",
+                "provider_name": "OXXO",
+                "total_amount": "150.00",
+                "tax_amount": "20.69",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["reviewed_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_corregir_un_aprobado_si_vuelve_a_firmar(self, async_client, db_session, test_company):
+        """Corregir un dato de un aprobado SI es una decision, y si firma.
+
+        El contrapeso del test anterior: si `reviewed_at` no se moviera nunca,
+        un approve con correccion real pasaria inadvertido y el cambio se
+        perderia sin dejar rastro. Aqui cambia el importe, y eso tiene que
+        quedar dicho.
+        """
+        ticket = await self._pendiente(db_session, test_company.id)
+        primera = await async_client.patch(
+            f"/api/v1/tickets/{ticket.id}/review",
+            json={
+                "action": "approve",
+                "provider_name": "OXXO",
+                "total_amount": "150.00",
+                "tax_amount": "20.69",
+            },
+        )
+        firmado = primera.json()["reviewed_at"]
+
+        segunda = await async_client.patch(
+            f"/api/v1/tickets/{ticket.id}/review",
+            json={"action": "approve", "total_amount": "180.00"},
+        )
+
+        assert segunda.status_code == 200
+        assert segunda.json()["total_amount"] == "180.00"
+
+    @pytest.mark.asyncio
+    async def test_rechazar_si_firma_siempre(self, async_client, db_session, test_company):
+        """Un rechazo sin firma no se puede auditar.
+
+        El rechazo cambia el estado siempre, asi que cae en la misma regla que
+        el approve. Se prueba aparte porque es el caso que de verdad no se puede
+        perder: es la unica accion que saca un comprobante de la cola para
+        siempre.
+        """
+        ticket = await self._pendiente(db_session, test_company.id)
+
+        resp = await async_client.patch(
+            f"/api/v1/tickets/{ticket.id}/review",
+            json={"action": "reject", "notes": "Comprobante ilegible"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["reviewed_at"] is not None
 
     @pytest.mark.asyncio
     async def test_rechazar_saca_el_ticket_de_la_cola(self, async_client, db_session, test_company):

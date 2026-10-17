@@ -1,294 +1,3097 @@
-
 {
   "_type": "export",
   "__export_format": 4,
-  "__export_date": "2025-01-21T23:00:00.000Z",
-  "__export_version": "2025-01-21",
+  "__export_date": "2026-10-02T00:00:00.000Z",
+  "__export_version": "2026-10-02",
   "resources": [
     {
       "_id": "wrk_expense_reconciler",
       "parentId": null,
-      "modified": 1705872000000,
-      "created": 1705872000000,
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Expense Reconciler MVP",
-      "description": "API para conciliación de gastos y exportación contable",
+      "description": "Coleccion generada por scripts/generar_insomnia.py",
       "scope": "collection",
       "_type": "workspace"
     },
     {
       "_id": "env_base",
       "parentId": "wrk_expense_reconciler",
-      "modified": 1705872000000,
-      "created": 1705872000000,
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Base Environment",
+      "description": "Variables del environment.\n\n`password` va VACIA a proposito: este archivo esta versionado en git con remoto\nen GitHub, y una contrasena escrita aqui queda publicada. Pegala una vez en\nInsomnia (o escribela en el environment local, que no se exporta).\n\nLo demas se llena solo, y no hace falta tocarlo a mano:\n  token                  <- POST /auth/login\n  company_id             <- GET /companies/\n  ticket_id              <- GET /tickets/\n  bank_transaction_id    <- GET /bank-transactions/\n  reconciliation_id      <- GET /reconciliations/\n  file_id                <- GET /scan/files\n  compra_id              <- GET /inventario/compras\n  compra_item_id         <- GET /inventario/cola (pegar el id de una linea)\n  producto_id            <- GET /inventario/productos\n  usuario_id             <- GET /usuarios\n\nEl orden importa: login, companies, y despues todo lo demas. El token dura 8\nhoras (ACCESS_TOKEN_EXPIRE_MINUTES); cuando devuelva 401 por caducado, repite\nel login y solo eso.\n\nDOS ENDPOINTS QUE PIDEN UNA CABECERA, Y NO UNA VARIABLE\n======================================================\n\n`PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` exigen\n`X-Contrasena-Actual` con la contrasena de quien llama. Si la mandas vacia o no la\nmandas, la respuesta es 401 con el mensaje de que falta — y no es un problema de\nautenticacion: el token puede estar bien.\n\nLa cabecera ya viene puesta en esas peticiones, apuntando a `{{ contrasena_actual }}`.\nRellena esa variable una vez y las dos funcionan. Se deja vacia a proposito, y por\nla misma razon que `password`: este archivo esta versionado y una contrasena\nescrita ahi queda publicada.\n\nY `usuario_id` no es la cuenta propia a proposito: la ultima cuenta activa no se\npuede dar de baja (409), asi que probarlo sobre la unica cuenta real no probaria\nnada. Crea una cuenta de prueba con `scripts/crear_usuario.py` y pega aqui su id.\n\nAVISO SOBRE LOS IDs VACIOS\n\nSi `{{ company_id }}` esta vacia, `GET /companies/{{ company_id }}` se manda\ncomo `GET /companies/` y devuelve 200 con la LISTA, no con el detalle. No es un\nerror: es otra ruta. Lo mismo con `ticket_id`, `reconciliation_id` y `file_id`.\nPor eso los scripts de listado llenan la variable antes de usar las rutas de\ndetalle: si ves una lista donde esperabas un objeto, casi siempre es que la\nvariable quedo vacia.",
       "data": {
-        "base_url": "http://localhost:8000/api/v1",
+        "api_root": "http://127.0.0.1:8000",
+        "base_url": "http://127.0.0.1:8000/api/v1",
+        "email": "insomnia@test.mx",
+        "password": "",
+        "token": "",
         "company_id": "",
         "ticket_id": "",
-        "bank_tx_id": "",
-        "recon_id": ""
+        "bank_transaction_id": "",
+        "reconciliation_id": "",
+        "mapping_id": "",
+        "file_id": "",
+        "compra_id": "",
+        "compra_item_id": "",
+        "producto_id": "",
+        "usuario_id": "",
+        "contrasena_actual": ""
+      },
+      "dataOrder": {
+        "api_root": 0,
+        "base_url": 1,
+        "email": 2,
+        "password": 3,
+        "token": 4,
+        "company_id": 5,
+        "ticket_id": 6,
+        "bank_transaction_id": 7,
+        "reconciliation_id": 8,
+        "mapping_id": 9,
+        "file_id": 10,
+        "compra_id": 11,
+        "compra_item_id": 12,
+        "producto_id": 13,
+        "usuario_id": 14,
+        "contrasena_actual": 15
       },
       "scope": "environment",
       "_type": "environment"
     },
     {
-      "_id": "req_health",
+      "_id": "col_api",
       "parentId": "wrk_expense_reconciler",
-      "name": "Health Check",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "API v1",
+      "description": "Bearer token a nivel de carpeta: hereda el {{ token }} que deja el login. Solo /auth/login y /health lo apagan.",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "environment": {
+        "id": "env_base"
+      },
+      "metaSortKey": -2000,
+      "_type": "request_group"
+    },
+    {
+      "_id": "fld_01",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Auth",
+      "environment": {},
+      "metaSortKey": -999,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_01",
+      "parentId": "fld_01",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "1. Login  <- TIENE que ir primero",
+      "description": "",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"{{ email }}\",\n  \"password\": \"{{ password }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "url": "{{ base_url }}/auth/login",
+      "metaSortKey": 1,
+      "collectionId": "col_api",
+      "_type": "request",
+      "authentication": {
+        "type": "none"
+      },
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'responde 200',\n  fn: () => {\n    if (response.code !== 200) {\n      throw new Error('HTTP ' + response.code + ': ' + response.text.slice(0, 200));\n    }\n    return true;\n  },\n});\n\npruebas.push({\n  name: 'guarda el token en el environment',\n  fn: () => {\n    const d = JSON.parse(response.text);\n    if (!d.access_token) {\n      throw new Error('la respuesta no trae access_token');\n    }\n    env.set('token', d.access_token);\n    console.log('token guardado. Caduca en ' + d.expires_in + ' s (' +\n                Math.round(d.expires_in / 3600) + ' h).');\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_02",
+      "parentId": "fld_01",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "2. Quien soy (token valido)",
+      "description": "Existe para que el cliente confirme su sesion al arrancar.\n\nLa alternativa habitual es fiarse del token guardado en el navegador. Un\ntoken puede seguir siendo criptograficamente valido con la cuenta dada de\nbaja, o haber caducado mientras la pestana estaba cerrada: este endpoint es\nlo que dice la verdad, y por eso se llama en cada carga de la aplicacion.",
       "method": "GET",
-      "url": "{{ _.base_url }}/../health",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/auth/me",
+      "metaSortKey": 2,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_02",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Dashboard",
+      "environment": {},
+      "metaSortKey": -998,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_03",
+      "parentId": "fld_02",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "z3. Dashboard",
+      "description": "El tablero.\n\n`usuario` se declara y no se usa: la proteccion la pone el router entero en\n`api_router.py`, no este endpoint. Se deja para que quede a la vista que\naqui no hay puerta, y no porque sirva de algo.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "meses",
+          "value": "12",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/dashboard/",
+      "metaSortKey": 3,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_03",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Categorias",
+      "environment": {},
+      "metaSortKey": -997,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_04",
+      "parentId": "fld_03",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "z1. Categorias de gasto",
+      "description": "Las categorias, en el orden canonico y con su etiqueta legible.\n\nEl orden es el mismo con el que el tablero las dibuja, para que la persona\nelija viendo la misma secuencia en los dos lados. Y cada una trae su tipo\n(fijo o variable) porque clasificar tambien dice si un gasto se mueve con la\nactividad, y eso se decide al clasificar, no despues.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/categorias",
+      "metaSortKey": 4,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_05",
+      "parentId": "fld_03",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "z2. Sin clasificar",
+      "description": "El pseudo-valor con el que se saca un ticket de la barra gris.\n\nExiste para poder **desclasificar**. Un ticket mal clasificado es peor que\nuno sin clasificar: el primero se cuenta en un rubro que no es el suyo y\nnadie lo ve, el segundo al menos esta en la barra que avisa. Sin una manera\nde quitar la categoria, corregir un error de captura es imposible, y la\nclasificacion se vuelve irreversible.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/categorias/sin-clasificar",
+      "metaSortKey": 5,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_04",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Companies",
+      "environment": {},
+      "metaSortKey": -996,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_06",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "3. Listar Empresas  <- fija {{ company_id }} sola",
+      "description": "List all companies with pagination.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/",
+      "metaSortKey": 6,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'responde 200 y trae al menos una empresa',\n  fn: () => {\n    const d = JSON.parse(response.text);\n    const lista = Array.isArray(d) ? d : (d.items || d.archivos || []);\n    if (!lista.length) {\n      console.warn('No hay empresas. Crea una con POST /companies/ primero.');\n      return true;\n    }\n    env.set('company_id', lista[0].id);\n    console.log('company_id = ' + lista[0].id + '  (' + lista[0].name + ')');\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_07",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c1. Crear empresa",
+      "description": "Create a new company.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"name\": \"Mi Taqueria\",\n  \"tax_id\": \"MTA123456789\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/",
+      "metaSortKey": 7,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_08",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c2. Ver una empresa",
+      "description": "Get a company by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}",
+      "metaSortKey": 8,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_09",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c3. Corregir una empresa",
+      "description": "Update a company.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"name\": \"Mi Taqueria\",\n  \"tax_id\": \"MTA123456789\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}",
+      "metaSortKey": 9,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_10",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c4. Borrar una empresa (CASCADE: se lleva todo)",
+      "description": "Delete a company.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}",
+      "metaSortKey": 10,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_05",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Tickets",
+      "environment": {},
+      "metaSortKey": -995,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_11",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "4a. DIAGNOSTICO: lee y explica, NO guarda",
+      "description": "Que se leyo, por que se leyo asi, y que haria el gate. Sin escribir nada.\n\n**Por que existe.** `POST /tickets/extract` devuelve el resultado, y con eso no se\npuede depurar una lectura mala: si el comprobante cae a `REQUIERE_REVISION`, la\nrespuesta dice que no se pudo leer el proveedor, y no dice si fue que el OCR no\nvio texto, que el parser no encontro el folio, o que el extractor de vision esta\napagado. Esas tres piden arreglos distintos y son indistinguibles desde la\nrespuesta. Un error que se queda en el log del servidor obliga a que alguien vaya a\nbuscarlo, y si nadie busca, el mismo comprobante falla igual mañana.\n\n**No guarda nada.** Ni ticket, ni documento, ni compra, ni movimiento. Es el\nmismo criterio que `simular` en `POST /scan`: con `archivar` activo por omision la\nprimera corrida deja la carpeta vacia, y conviene ver eso antes de que pase. Aqui\nla razon es mas fuerte, porque **repetir el mismo archivo muchas veces no llenaria\nla base de duplicados** — que es justo lo que pasa al probar con\n`extract-and-create`.\n\nPor eso no hay forma de guardar desde aqui: un endpoint que \"a veces guarda\" es un\nendpoint del que nadie sabe que hace. Para guardar, `POST /tickets/extract-and-create`\no `POST /scan/files/{id}/reprocess`, que son explicitos.\n\n**El `file_type` no decide nada.** El formato sale de los bytes, como en el resto de\nla API (regla 3 de `AGENTS.md`), y si el cliente declaro otra cosa, el motivo sale\nen `formato_corregido`. Un PDF subido como `image` entra por vision y sale con otra\nconfianza; sin ese campo el cliente se lleva un resultado distinto del que esperaba\nsin enterarse.\n\n**El veredicto es el del gate de verdad**, no una copia de sus reglas: se corre\n`gate_ticket` con la lectura y se devuelve lo que habria pasado. Un diagnostico que\ndijera \"pasaria\" con checks distintos a los del gate seria el fallo de \"el sistema\nafirma mas de lo que sostiene\", en el sitio donde mas dano hace.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "file_type",
+            "value": "pdf",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "ticket_id",
+            "value": "{{ ticket_id }}",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/extract-diagnostico",
+      "metaSortKey": 11,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'no es un error de servidor',\n  fn: () => {\n    if (response.code >= 500) {\n      throw new Error('HTTP ' + response.code + ': ' + response.text.slice(0, 300));\n    }\n    return true;\n  },\n});\n\npruebas.push({\n  name: 'digo que escalones hubo y por que',\n  fn: () => {\n    const d = JSON.parse(response.text);\n\n    if (!d.pasos || !d.pasos.length) {\n      console.warn('Sin pasos. Un documento de texto sin comprobante no recorre la ' +\n                   'cascada de escalones, y eso no es un fallo.');\n      return true;\n    }\n\n    console.log('Formato: ' + d.formato_detectado +\n                (d.formato_corregido ? '  (corregido: ' + d.formato_corregido + ')'\n                                     : ''));\n    console.log('');\n\n    d.pasos.forEach(p => {\n      const marca = p.aceptado ? 'ok  ' : 'FALLA';\n      console.log('  [' + marca + '] ' + p.escalon + ' (' + p.motor + ')' +\n                  (p.costo ? '  ' + p.costo : ''));\n      if (p.dio && p.dio.proveedor !== undefined) {\n        console.log('         proveedor=' + JSON.stringify(p.dio.proveedor) +\n                    ' total=' + p.dio.total +\n                    ' caracteres=' + (p.dio.caracteres !== undefined\n                                        ? p.dio.caracteres : '-'));\n      } else if (p.dio && p.dio.caracteres !== undefined) {\n        console.log('         caracteres=' + p.dio.caracteres);\n      }\n      if (p.motivo) console.log('         -> ' + p.motivo);\n    });\n\n    if (d.error) {\n      console.log('');\n      console.log('ERROR DE LECTURA: ' + d.error);\n      return true;\n    }\n\n    if (d.datos) {\n      console.log('');\n      console.log('LEYO: ' + d.datos.proveedor + '  total ' + d.datos.total +\n                  '  confianza ' + d.datos.confianza + '  (' + d.datos.origen + ')');\n    }\n\n    if (d.veredicto) {\n      const v = d.veredicto;\n      console.log('GATE: ' + v.status + '  confianza ' + v.confidence +\n                  '  (' + v.confidence_source + ')');\n      if (v.checks_fallidos.length) {\n        console.log('  Checks que fallan:');\n        v.checks_fallidos.forEach(c => console.log('    - ' + c));\n      }\n      if (v.coincide_con_guardado === false) {\n        console.log('');\n        console.log('OJO: releer DARIA otro estado que el guardado (' +\n                    d.ticket_status_actual + ' vs ' + v.status + ').');\n        console.log('      El problema no es el lector: mira los checks de arriba.');\n      }\n    }\n\n    console.log('');\n    console.log('No se guardo nada (guardado=' + d.guardado + ').');\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_12",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "6. Subir un comprobante (SI guarda)  <- fija {{ ticket_id }}",
+      "description": "Extract ticket data from file and create ticket.\n\nAntes insertaba directo sin validar. Un total en 0 o un RFC malformado\nllegaban a la BD sin filtro. Ahora pasa por el gate: si los checks no\ncuadran, el ticket se guarda igual pero en estado pendiente de revision,\nnunca como aprobado.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "company_id",
+            "value": "{{ company_id }}",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "file_type",
+            "value": "pdf",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/extract-and-create",
+      "metaSortKey": 12,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'responde 201 y trae el ticket',\n  fn: () => {\n    if (response.code !== 201) {\n      throw new Error('HTTP ' + response.code + ': ' + response.text.slice(0, 300));\n    }\n    const d = JSON.parse(response.text);\n    env.set('ticket_id', d.id);\n    console.log('ticket_id = ' + d.id);\n    return true;\n  },\n});\n\npruebas.push({\n  name: 'digo como quedo, y si hay que revisarlo',\n  fn: () => {\n    const d = JSON.parse(response.text);\n\n    console.log('  proveedor: ' + d.provider_name);\n    console.log('  total:     ' + d.total_amount);\n    console.log('  fecha:     ' + (d.expense_date || '(sin leer)'));\n    console.log('  origen:    ' + d.confidence_source +\n                '  confianza: ' + (d.confidence === null ? 'n/a' : d.confidence));\n\n    if (d.extraction_status === 'AUTO_APROBADO') {\n      console.log('');\n      console.log('AUTO_APROBADO: el sistema responde por esta lectura y ya entra');\n      console.log('a conciliacion. Va a aparecer en el muestreo del 5%.');\n    } else {\n      console.log('');\n      console.log(d.extraction_status + ': NO esta listo para conciliar.');\n      if (d.validation_errors && d.validation_errors.length) {\n        console.log('  Checks que fallaron:');\n        d.validation_errors.forEach(v => console.log('    - ' + v));\n      }\n      console.log('  Corrigelo con PATCH /tickets/' + d.id + '/review');\n    }\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_13",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "7. Listar Tickets  <- fija {{ ticket_id }}",
+      "description": "List tickets with optional company filter and review-state filter.\n\n`sin_categoria` y `con_categoria` son las dos caras de la misma pregunta, que\nes la que hace el tablero con la barra gris. Se ponen los tres filtros\nexcluyentes de forma explicita en vez de confiar en el orden en que llegan:\n`categoria` manda sobre los otros dos (es el mas especifico), y si vienen\n`sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto\nque cumpla las dos, y devolver vacio seria un fallo silencioso.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "extraction_status",
+          "value": "REQUIERE_REVISION",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "only_open",
+          "value": "false",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "sin_categoria",
+          "value": "false",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "con_categoria",
+          "value": "false",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "categoria",
+          "value": "ALIMENTACION",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/",
+      "metaSortKey": 13,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'fija {{ ticket_id }} con el primer ticket',\n  fn: () => {\n    const d = JSON.parse(response.text);\n    const lista = Array.isArray(d) ? d : (d.items || []);\n    if (!lista.length) {\n      console.warn('No hay tickets para esta empresa. Sube uno con ' +\n                   'POST /tickets/extract-and-create.');\n      return true;\n    }\n    env.set('ticket_id', lista[0].id);\n    console.log('ticket_id = ' + lista[0].id);\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_14",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "8. Cola de revision (lo que el sistema NO pudo leer)",
+      "description": "Cola agrupada de tickets pendientes de revision.\n\nSin esto, los documentos que no se pudieron leer son invisibles: el usuario\nno tiene forma de saber que existen. Un error silencioso es peor que un\nerror visible porque nadie lo va a corregir.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets`     viene filtrado por `status` si se paso\n  - `por_estado`  y `total_open` son SIEMPRE globales\n\nAsi el badge del encabezado no salta de 40 a 3 al filtrar, y el usuario ve\nde entrada quantos hay de cada tipo. El filtro es para trabajar, no para\nperder de vista el tamano de la cola.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "status",
+          "value": "PENDIENTE",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/review-queue",
+      "metaSortKey": 14,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_15",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "8b. Ver un ticket",
+      "description": "Get a ticket by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}",
+      "metaSortKey": 15,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_16",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "8c. Aprobar / rechazar en la cola",
+      "description": "Revision humana de un ticket en cola.\n\nAprobar re-corre los checks deterministas sobre los datos finales. Si\nsiguen rotos, no se aprueba: la revision es una opinion, los checks son\nuna ley.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"action\": \"approve\",\n  \"notes\": \"Revisado contra el papel\",\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"subtotal\": 1.0,\n  \"ieps_amount\": 1.0\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/review",
+      "metaSortKey": 16,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_17",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "9c. Exactitud por origen (medida, no prometida)",
+      "description": "Lo que la muestra sostiene sobre el objetivo de exactitud.\n\nEl reporte no devuelve un porcentaje. Devuelve cuantos se revisaron, cuantos\nacertaron, y el intervalo que esos datos sostienen. Es menos vistoso y es la\nunica forma de que el numero signifique algo: con 25 revisiones, \"96%\" tiene\nun intervalo de [80%, 99%], y publicar el 96% sin el 80% seria afirmar una\ncerteza que nadie midio.\n\nY nunca promedia entre metodos de lectura. Un ticket leido con regex y uno\nleido con un modelo se reportan por separado, porque mezclarlos sube el\npromedio con el metodo que casi no falla y esconde al que falla.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/accuracy",
+      "metaSortKey": 17,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_18",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "9. Muestreo del 5% (cuenta la exactitud)",
+      "description": "La muestra a revisar, y el conteo de lo ya verificado.\n\nLa lista se filtra SIEMPRE por un estado de la muestra, y por defecto es el\nPENDIENTE. Ese unico filtro hace las dos cosas:\n\n- Saca los tickets que NO estan en la muestra. El 95% que no fue elegido\n  tiene `spot_check_status` en NULL, y NULL no es igual a ningun estado, asi\n  que no puede colarse. Sin esto el endpoint devolvia los 10 000 tickets de\n  una empresa para que el revisor descartara a mano los que no tocan.\n\n- Saca lo ya revisado. Una cola de trabajo es trabajo: con 500 muestreados y\n  400 ya hechos, mezclar los dos deja la primera pagina con 20 cosas que\n  hacer entre 100 filas. Es el mismo criterio que usa la cola de revision,\n  y por la misma razon.\n\nAntes habia dos filtros, `IS NOT NULL` y el de estado. El primero resulto\nser redundante: quitarlo no cambia ninguna consulta, porque\n`status = 'PENDIENTE'` ya excluye los NULL. Se quito porque un filtro que\nno hace nada, con un comentario que afirma que es imprescindible, es peor\nque no tenerlo: el que lo lea creera que la garantia depende de ahi, y\ncambiara el otro sin avisar. La mutacion que borra el filtro de estado\n(`scripts/verify_spot_check_mutations.py`) es la que protege la garantia.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets` viene filtrado por estado\n  - `total_pendientes`, `total_revisados`, `aciertos` e `incorrectos` son\n    SIEMPRE globales\n\nAsi el encabezado no salta de 200 a 3 al filtrar, y se ve de entrada\ncuantos hay de cada clase. El filtro es para trabajar, no para perder de\nvista el tamano de la cola.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "status",
+          "value": "PENDIENTE",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/spot-check",
+      "metaSortKey": 18,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_19",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "9b. Registrar veredicto del muestreo",
+      "description": "Registra si la extraccion coincidia con el papel. No modifica el ticket.\n\nUn ticket que no estaba en la muestra se puede registrar igual: el sistema\nno le cierra la puerta a quien ya lo reviso de rebote. Se acepta solo si el\nticket es AUTO_APROBADO, que es la unica condicion bajo la que la respuesta\nmide algo. Un ticket en la cola no se puede \"dar por correcto\": su estado\nya lo decidio el gate.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"correct\": true,\n  \"campos_incorrectos\": [\n    \"total_amount\"\n  ],\n  \"notes\": \"Revisado contra el papel\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/spot-check",
+      "metaSortKey": 19,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_20",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t1. Alta manual (sin archivo)",
+      "description": "Create a new ticket manually.\n\nUna persona tecleo los datos, asi que no hay confianza que medir, pero si\npasan los mismos checks deterministas que la IA. Escribirlos a mano no\nexime de que el total sea positivo.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/",
+      "metaSortKey": 20,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_21",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t2. Corregir un ticket",
+      "description": "Update a ticket.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"subtotal\": 1.0,\n  \"ieps_amount\": 1.0,\n  \"items\": [\n    \"texto\"\n  ]\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}",
+      "metaSortKey": 21,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_22",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t3. Ver el comprobante original",
+      "description": "Los bytes del comprobante, tal como los subio la persona.\n\nEs lo que hace posible el muestreo: la pregunta \"¿la extraccion coincidio con\nel papel?\" solo tiene respuesta si hay papel. Y es lo que hace auditable un\nveredicto meses despues, cuando el papel ya no esta en la carpeta de\nquien lo subio.\n\nEl `Content-Type` sale de una lista cerrada y no de lo que declaro el\ncliente. Ver `app.models.ticket_document.content_type_servible`: servir\n`text/html` con bytes sin revisar seria XSS desde el propio dominio, con\nsesion iniciada, disparado por alguien de confianza de la empresa.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
+      "metaSortKey": 22,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_23",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t3b. Vista previa (convierte HEIC a JPEG; NO altera el original)",
+      "description": "El comprobante en un formato que el navegador SI puede pintar.\n\n## POR QUE EXISTE, Y NO ES \"OTRA FORMA DE SERVIR EL MISMO ARCHIVO\"\n\nMEDIDO: las fotos de iPhone son HEIC, y ni Chrome ni Firefox las pintan. El\nbackend las sirve como `application/octet-stream` —a proposito, `image/heic`\nno esta en su lista cerrada de tipos servibles—, y en la pantalla de\nrevision el papel salia como \"no se puede mostrar aqui\".\n\nEso rompe el muestreo de exactitud de raiz: su trabajo es **contrastar la\nlectura contra el papel**, y un papel que no se ve se revisa a ciegas.\n\nAsi que aqui se sirve un **JPEG derivado** y el archivo guardado sigue siendo\nel HEIC, byte por byte. La conversion es una representacion, no una\nreescritura: `ticket_documents` es append-only y el comprobante es la\nevidencia contra la que se contrasta cualquier lectura; cambiarlo al mirarlo\nseria justo lo que esa regla existe para impedir.\n\nY por eso son dos endpoints y no uno con un parametro:\n`/{id}/documento` da el ORIGINAL (para descargar) y este da la VISTA PREVIA.\n\n## LO QUE DEVUELVE CUANDO NO HAY NADA QUE CONVERTIR\n\nLos bytes originales, con su tipo. Un JPEG, un PNG o un PDF no se tocan: ya\nse ven, y convertirlos de mas seria gastar CPU y cambiar lo que el revisor\ncree estar mirando.\n\nSi la conversion falla, tambien: se sirve el original. Un fallo aqui es \"no\nhay vista previa\", nunca \"no hay comprobante\"; esas dos cosas piden acciones\ndistintas y confundirlas hace que el revisor busque un archivo que si existe.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento/vista-previa",
+      "metaSortKey": 23,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_24",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t4. Historial de versiones del comprobante",
+      "description": "La cadena de papeles de un ticket, de la mas antigua a la vigente.\n\nNo devuelve bytes, sino el recorrido: que version hay, quien la puso, por\nque, y cuando. Sin esto, un cambio de comprobante queda escrito en la base\npero invisible para quien opera el sistema, que es el mismo problema que\nhacia peligroso al reemplazo silencioso.\n\nEs tambien lo que responde \"¿este gasto se puede auditar?\". Si hay una sola\nversion, el papel es el que subio el escaner. Si hay mas de una, la cadena\ndice quien lo cambio y por que, y el hash de cada version permite verificar\nlos bytes que quedaron.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documentos",
+      "metaSortKey": 24,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_25",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t5. Subir version nueva (NO borra la anterior)",
+      "description": "AGREGA una version nueva del documento. La anterior no se borra.\n\nEs lo que hace recuperable un documento que no se pudo leer. Un PDF que no\nllego a leerse porque el extractor estaba apagado queda ilegible para\nsiempre aunque manana se encienda: los bytes se habian perdido con el\n`request`. Con este endpoint, el mismo archivo se vuelve a subir sobre el\nticket que ya existe y el documento queda disponible para que alguien lo\nrevise o para que se reextraiga.\n\nNO REEMPLAZA: APENDA. Antes este endpoint hacia `DELETE` + `INSERT` y los\nbytes originales desaparecian sin dejar ni hash, ni autor, ni fecha. Ahora\nla tabla es una cadena (`db/migrations/0009_documento_inmutable.sql`): el\ndocumento vigente es el que no fue reemplazado, el anterior queda apuntado,\ny un trigger de Postgres prohibe `UPDATE` y `DELETE` mientras el ticket\nexista. El comprobante es la evidencia contra la que se contrasta cualquier\nlectura, y una evidencia que se borra en silencio no es evidencia.\n\nPor eso `motivo` es obligatorio y por eso se guarda `usuario.email`. Sin\nellos la cadena diria que algo paso sin decir quien ni por que, que es\nexactamente el silencio que esta regla viene a cerrar. La base tambien los\nexige, asi que un INSERT directo por SQL tampoco puede saltarselos.\n\nNo crea un ticket nuevo ni cambia los datos que ya se extrajeron. Reextraer\nes otra operacion y otra decision: la lectura guardada es la que se sometio\na muestreo, y cambiarla en silencio haria que el veredicto registrado no\ncorrespondiera a lo que el sistema leyo.\n\nEl `PUT` y no el `POST` porque el recurso es el documento de ESE ticket, y\nhay exactamente uno vigente: es un cambio de papel, no un agregado. El\nhistorial se consulta en `GET /tickets/{id}/documentos`.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "motivo",
+            "value": "El papel estaba borroso; subo la foto mejor",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
+      "metaSortKey": 25,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_26",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t6. Leer SIN gate ni persistencia (solo el resultado)",
+      "description": "Extract ticket data from uploaded file (PDF/Image).\n\n`file_type` se acepta por compatibilidad, pero no decide nada: el formato\nsale de los bytes. Ver `_tipo_real_del_archivo`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "file_type",
+            "value": "pdf",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/extract",
+      "metaSortKey": 26,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_27",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t7. Clasificar varios de una vez",
+      "description": "Pone la misma categoria a varios tickets de una vez.\n\n**No cambia `extraction_status` ni toca la cola de revision.** Clasificar es\nun dato del gasto, no una validacion de la lectura: un ticket puede estar\nAUTO_APROBADO y no tener categoria, y clasificarlo no lo convierte en\nrevisado ni al reves. Mezclar las dos cosas haria que \"ya lo clasifique\"\npareciera una entrada mas en la cola, y el trabajo de verdad se perderia de\nvista.\n\n**Un `UPDATE` con `IN (...)`, no un bucle de PATCH.** Con 200 tickets son 200\nviajes de ida y vuelta, y cada uno abre su propia transaccion. Ademas un\nbucle que falla en el ticket 150 deja los 149 anteriores escritos y el 150 sin\nhacer, y el cliente no puede saber cuales. Con un solo `UPDATE` es todo o\nnada.\n\n`None` desclasifica: deja la categoria en NULL y el ticket vuelve a la barra\ngris. Es lo que permite corregir una clasificacion equivocada.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"ticket_ids\": [\n    \"{{ ticket_id }}\"\n  ],\n  \"category\": \"ALIMENTACION\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/categoria",
+      "metaSortKey": 27,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_28",
+      "parentId": "fld_05",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "t8. Borrar un ticket",
+      "description": "Delete a ticket.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tickets/{{ ticket_id }}",
+      "metaSortKey": 28,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_06",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Scan",
+      "environment": {},
+      "metaSortKey": -994,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_29",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "4b. Archivos vistos  <- fija {{ file_id }}",
+      "description": "El registro de archivos, filtrado y paginado.\n\n`limit` tiene tope porque no hay tope sin el: un `GET /files` sin limite\nsobre una carpeta de diez mil comprobantes devuelve diez mil filas y se come\nla memoria del proceso, que es el mismo proceso que sirve el resto de la API.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "estado",
+          "value": "PROCESADO",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "offset",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/files",
+      "metaSortKey": 29,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'fija {{ file_id }} con el primer archivo',\n  fn: () => {\n    const d = JSON.parse(response.text);\n    const lista = Array.isArray(d) ? d : (d.archivos || d.items || []);\n    if (!lista.length) {\n      console.warn('El escaner no ha visto archivos. Corre POST /scan/ primero.');\n      return true;\n    }\n    env.set('file_id', lista[0].id);\n    console.log('file_id = ' + lista[0].id + '  (' + lista[0].relative_path + ')');\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_30",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "4c. DIAGNOSTICO de un archivo ya escaneado, NO guarda",
+      "description": "La lectura de un archivo ya escaneado, paso por paso, sin escribir nada.\n\nPOR QUE ESTE Y NO SUBIR EL ARCHIVO DE NUEVO\n--------------------------------------------\n\nPor dos razones, y la segunda es la que importa:\n\n  1. Desde Insomnia es un click. `{{ file_id }}` ya se autocompleta con\n     `GET /scan/files`, y aqui no hay que elegir ningun archivo: la variable\n     `producto_id`-de-archivo ya esta. Subir el archivo obliga a ir al disco a\n     buscarlo en cada llamada.\n  2. **El archivo ya se movio.** Con `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR` en `true`\n     (la omision), `POST /scan` mueve cada comprobante a `Tickets_Scan` al\n     digitalizarlo. Volver a subirlo significaria que se puede diagnosticar un\n     comprobante que el sistema ya no tiene delante, que no es el caso que\n     interesa.\n\nY es el mismo archivo que leyo el escaner, con el mismo contenido: el diagnostico\nno dice por que salio mal *ayer*, dice por que saldria mal ahora.\n\n**No guarda nada**, ni actualiza `scan_files` ni sus `attempts`. Es la diferencia\ncon `POST /files/{id}/reprocess`, que si lo hace: ese es el unico camino que puede\nsobreescribir un ticket con correcciones humanas, y por eso es explicito. Este solo\nmira.\n\n**No pide `company_id`.** No escribe nada, asi que no hay a quien atribuir el\nticket. Y el contraste con lo guardado sale del `ticket_id` que el propio registro\nya tiene, que es la atribucion que hizo el escaner.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/files/{{ file_id }}/diagnostico",
+      "metaSortKey": 30,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'no es un error de servidor',\n  fn: () => {\n    if (response.code >= 500) {\n      throw new Error('HTTP ' + response.code + ': ' + response.text.slice(0, 300));\n    }\n    return true;\n  },\n});\n\npruebas.push({\n  name: 'digo que escalones hubo y por que',\n  fn: () => {\n    const d = JSON.parse(response.text);\n\n    if (!d.pasos || !d.pasos.length) {\n      console.warn('Sin pasos. Un documento de texto sin comprobante no recorre la ' +\n                   'cascada de escalones, y eso no es un fallo.');\n      return true;\n    }\n\n    console.log('Formato: ' + d.formato_detectado +\n                (d.formato_corregido ? '  (corregido: ' + d.formato_corregido + ')'\n                                     : ''));\n    console.log('');\n\n    d.pasos.forEach(p => {\n      const marca = p.aceptado ? 'ok  ' : 'FALLA';\n      console.log('  [' + marca + '] ' + p.escalon + ' (' + p.motor + ')' +\n                  (p.costo ? '  ' + p.costo : ''));\n      if (p.dio && p.dio.proveedor !== undefined) {\n        console.log('         proveedor=' + JSON.stringify(p.dio.proveedor) +\n                    ' total=' + p.dio.total +\n                    ' caracteres=' + (p.dio.caracteres !== undefined\n                                        ? p.dio.caracteres : '-'));\n      } else if (p.dio && p.dio.caracteres !== undefined) {\n        console.log('         caracteres=' + p.dio.caracteres);\n      }\n      if (p.motivo) console.log('         -> ' + p.motivo);\n    });\n\n    if (d.error) {\n      console.log('');\n      console.log('ERROR DE LECTURA: ' + d.error);\n      return true;\n    }\n\n    if (d.datos) {\n      console.log('');\n      console.log('LEYO: ' + d.datos.proveedor + '  total ' + d.datos.total +\n                  '  confianza ' + d.datos.confianza + '  (' + d.datos.origen + ')');\n    }\n\n    if (d.veredicto) {\n      const v = d.veredicto;\n      console.log('GATE: ' + v.status + '  confianza ' + v.confidence +\n                  '  (' + v.confidence_source + ')');\n      if (v.checks_fallidos.length) {\n        console.log('  Checks que fallan:');\n        v.checks_fallidos.forEach(c => console.log('    - ' + c));\n      }\n      if (v.coincide_con_guardado === false) {\n        console.log('');\n        console.log('OJO: releer DARIA otro estado que el guardado (' +\n                    d.ticket_status_actual + ' vs ' + v.status + ').');\n        console.log('      El problema no es el lector: mira los checks de arriba.');\n      }\n    }\n\n    console.log('');\n    console.log('No se guardo nada (guardado=' + d.guardado + ').');\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_31",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "5. Escanear carpeta (SI guarda)",
+      "description": "Recorre la carpeta y procesa lo que corresponda.\n\nEl body NO lleva carpeta. Se lee `TICKETS_INPUT_DIR` de la configuracion y\nno de la peticion, por seguridad: ver la nota del modulo.\n\nSin `company_id` el escaneo inventaria y NO crea tickets. Es a proposito, y\nes el primer paso que conviene: correrlo para ver que hay en la carpeta antes\nde atribuir los gastos a una empresa.\n\nY sin `company_id` NO se archiva nada, aunque `archivar` veniga en `true`:\nmover un comprobante sin que se haya guardado su contenido deja el papel en\nun sitio donde nadie lo va a buscar y sin registro de lo que se leyo.\n\nCOMO USAR `simular`\n====================\n\nCon `archivar` activo por omision, la primera corrida deja la carpeta de\nentrada vacia. Eso conviene verlo antes de que ocurra:\n\n    POST /scan {\"company_id\": \"...\", \"simular\": true}\n\nDevuelve exactamente lo que moveria, con la ruta de destino de cada archivo\ny si su lectura quedo pendiente, y no mueve nada.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"reprocesar\": false,\n  \"solo_pendientes\": false,\n  \"archivar\": false,\n  \"simular\": false,\n  \"confirmar\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/",
+      "metaSortKey": 31,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_32",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s1. Configuracion del escaner",
+      "description": "La configuracion efectiva del escaneo.\n\nSe expone porque el valor por defecto de la carpeta es una ruta de una\nmaquina concreta (`/Users/carloslott/...`). En cualquier otra maquina, en\nun contenedor o en la de otra persona, hay que cambiar la variable, y sin\neste endpoint la unica forma de saber si el cambio tomo efecto es correr un\nescaneo y mirar la ruta que salio en el resumen.\n\n`archivar_por_defecto` ESTA, y no es un dato de mas. Es lo que permite que la\ncasilla de la pantalla muestre el valor **real** en vez de suponerlo: sin este\ncampo, el front tendria que hardcodear `true` —porque asi viene por omision en\n`Settings`— y mentiria en cuanto alguien apagara `TICKETS_SCAN_ARCHIVAR` en el\n`.env`, que es justo lo que hace falta para probar el escaneo varias veces.\n\nUna casilla de archivado que arranca marcada cuando el archivado esta apagado es\nuna forma de mover comprobantes de carpeta sin querer, y el operador no tendria\nforma de saber por que desaparecieron de la bandeja.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/config",
+      "metaSortKey": 32,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_33",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s2b. Que modelo esta configurado y si esta instalado",
+      "description": "Que modelo de IA esta configurado, y si de verdad esta disponible.\n\nEs el mismo motivo que `/ocr`: \"el modelo no responde\" y \"el modelo esta mal\nconfigurado\" se ven igual desde afuera y piden acciones opuestas.\n\n## POR QUE RESPONDE LO CONFIGURADO Y LO INSTALADO POR SEPARADO\n\nMEDIDO en esta maquina: la `.env` declara `OLLAMA_MODEL=qwen2.5:3b` y\n`OLLAMA_VISION_MODEL=moondream`, pero en el contenedor **solo esta\n`moondream`**. Ese modelo de texto no ha contestado ni una sola vez, y no hay\nforma de saberlo mirando un log de lectura: `confidence_source` dice `llm`\npara los dos motores y nadie puede distinguir \"no leyo\" de \"no existe\".\n\nPor eso `configurado` y `disponible` son dos preguntas, y el endpoint contesta\nlas dos. Un booleano diria \"la IA funciona\" con la mitad de la verdad.\n\n## POR QUE DICE COMO ARREGLARLO\n\nUn `ollama pull` equivocado en un ticket de incidencia cuesta media hora. El\nnombre va en la respuesta, copiado y pegable.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/ia",
+      "metaSortKey": 33,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_34",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s2. Estado del OCR (hay Tesseract?)",
+      "description": "Que motores de OCR se pueden usar ahora mismo.\n\nExiste porque \"OCR no funciona\" y \"OCR esta apagado\" piden acciones\nopuestas, y verlas separadas evita la diagnostica de quince minutos. Cuando\nTesseract no esta instalado, esto dice como instalarlo, en vez de dejar que\ncada foto falle con un error que hay que buscar en el log del servidor.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/ocr",
+      "metaSortKey": 34,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_35",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s3. Resumen del escaneo",
+      "description": "Como va el escaneo: conteos por estado, por motor y por antiguedad.\n\nVa antes que `/files/{file_id}` por el orden de rutas. Sin eso,\n`GET /scan/stats` se buscaria como un UUID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/stats",
+      "metaSortKey": 35,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_36",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s4. Corridas del escaner",
+      "description": "Las corridas de escaneo recientes, la que esta corriendo primero.\n\nEs el canal de progreso. `POST /scan` es sincrono y con fotos tarda minutos,\nasi que sin esto el cliente no tiene nada que mostrar mientras espera: solo un\n`cargando` que puede ser \"va bien\" o \"se trabo en el archivo 3 de 200\".\n\nLo que responde, en una linea: `terminada=false` con `actual` puesto es una\ncorrida en marcha, y `actual` es el archivo que se esta leyendo ahora.\n\nEN MEMORIA, Y POR QUE NO ES UN TRABAJO EN COLA\n----------------------------------------------\nAl reiniciar el contenedor esta lista sale vacia aunque la carpeta tenga 200\narchivos a medio leer. Es correcto: un proceso que murio no sigue trabajando,\ny fingir lo contrario seria peor. Lo que NO se pierde es el estado real de cada\narchivo, que esta en `scan_files` y `scan_events` y es lo que evita repetir\ntrabajo en la proxima pasada.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "limite",
+          "value": "10",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/runs",
+      "metaSortKey": 36,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_37",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s5. Detalle de una corrida",
+      "description": "El progreso de UNA corrida.\n\nEs la llamada que hace el cliente cada dos o tres segundos mientras el\n`POST /scan` sigue abierto. Devuelve el resumen final cuando ya termino, asi\nque el mismo endpoint sirve para el progreso y para el resultado.\n\nUn 404 aqui NO es \"no existio\": el registro es en memoria y se descarta a las\ndos horas, y tambien al reiniciar. El mensaje lo dice, para que el cliente no\nlo presente como un error del servidor.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/runs/{{ corrida_id }}",
+      "metaSortKey": 37,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_38",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s6. Releer UN archivo (SI sobrescribe)",
+      "description": "Relee UN archivo. Este es el camino explicito para forzar una relectura.\n\nEs el unico endpoint que puede sobreescribir un ticket que ya tiene\ncorrecciones humanas, y lo hace porque la peticion es explicita: alguien\npidio reprocesar ESTE archivo. El escaneo automatico nunca lo hace, y esa\ndiferencia es el motivo de que los dos caminos existan.\n\nSi el archivo ya no esta en el disco, devuelve 409 con el motivo y no un\nexito: reprocesar el registro de un archivo que alguien movio tiene que\nverse, no reportarse como leido.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/files/{{ file_id }}/reprocess",
+      "metaSortKey": 38,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_39",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s7. Detalle de un archivo",
+      "description": "Un archivo con su historico completo.\n\nEl historico va aqui y no en un endpoint aparte de auditoria porque la\npregunta casi siempre es \"que le paso a ESTE archivo\", y separarla obliga a\ndos requests para la misma pantalla.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/files/{{ file_id }}",
+      "metaSortKey": 39,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_40",
+      "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s8. DEJAR LA BASE LIMPIA (destructivo, 4 cerrojos)",
+      "description": "Deja la base limpia para volver a probar el escaneo.\n\nCUATRO CERRADJOS, Y EN QUE ORDEN SE EJECUTAN\n=============================================\n\n1. **El flag** (`_reset_habilitado`, dependencia). Apagado -> **404**, y sin\n   llegar a mirar el token. Ver el docstring de esa funcion: es el primero que\n   corre, y por eso es una dependencia y no un `if`.\n2. **La contrasena del que llama** (`UsuarioVerificado`): token **y**\n   `X-Contrasena-Actual`. Es el mismo cerrojo de `usuarios.py`, y por el mismo\n   motivo —un token robado no debe alcanzar para borrar el historico\n   contable—.\n3. **La frase.** `confirmar` tiene que decir `BORRAR_YA` exacta. No un\n   booleano: un `true` se manda con un clic de mas y no distingue \"me\n   confirme a mi mismo\" de \"el sistema me lo pregunto\".\n4. **No hay trabajo humano.** Si hay un ticket con `reviewed_at` o una compra\n   `PROCESADO`, responde **409** y no borra nada. Es el unico cerrojo que\n   protege lo irrepetible: una correccion contra el papel, o una compra que\n   alguien autorizo para que el stock empezara a contar.\n\nY ADEMAS, el modo por omision (`ejecutar=false`) solo cuenta. Un endpoint\ndestructivo cuyo modo por omision es el destructivo es del que hay que\nacordarse de no usar.\n\nLO QUE NO SE BORRA\n------------------\nNi las cuentas, ni las empresas, ni el catalogo de productos. Las empresas\nporque el escaneo necesita una para atribuir (sin ella `POST /scan` solo\ninventaria); las cuentas porque borrarlas deja el sistema sin puerta de\nentrada; el catalogo porque son horas de dar de alta y no tiene que ver con\nprobar el escaneo. La respuesta los lista en `lo_que_no_se_borra`.\n\nEl detalle de por que el borrado vive en `services/scan_reset.py` y no aqui:\nel orden de los `DELETE` no es estilo, porque `ticket_documents` es append-only\ny **solo** se puede borrar cuando su ticket ya no existe.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"confirmar\": \"texto\",\n  \"ejecutar\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/scan/reset",
+      "metaSortKey": 40,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_07",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Usuarios",
+      "environment": {},
+      "metaSortKey": -993,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_41",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u1. Cuentas del sistema",
+      "description": "Las cuentas del sistema.\n\n`UsuarioActual` y no `UsuarioVerificado`: ver la lista es un endpoint de lectura\ny no compromete a nadie. Pedir la contrasena para mirar una lista haria que el\nuso diario molestase, y una defensa que molesta se deja de usar.\n\n`password_hash` no sale: `UsuarioResponse` no declara el campo, y con\n`from_attributes` eso es lo que lo mantiene fuera. Ver el modulo de\n`app/schemas/auth.py`.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "solo_activas",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios",
+      "metaSortKey": 41,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_42",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u2. Ver una cuenta",
+      "description": "Una cuenta por id. Sin hash, como todas.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
+      "metaSortKey": 42,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_43",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
+      "description": "Cambia el nombre o da de baja la cuenta.\n\nLO QUE NO SE PUEDE CAMBIAR, Y POR QUE\n-------------------------------------\n\n- **`id`.** La PK la pone la base.\n- **`email`.** El correo va dentro de la clave del rate limit del login\n  (`rate_limit.esta_bloqueado(correo, ip)`). Cambiarlo deja de contar los\n  intentos de fuerza bruta de la cuenta antigua, y el bloqueo deja de\n  proteger. Por eso no hay `email` en `UsuarioUpdate`.\n- **`password_hash` directo.** Por aqui no se cambia una contrasena: se cambia\n  con el endpoint que exige la actual. Un `PATCH {\"password_hash\": \"...\"}`\n  aceptaria un hash cualquiera sin verificar la contrasena de nadie.\n\nDAR DE BAJA A LA CUENTA PROPIA\n------------------------------\n\nSe permite, y es decision. Bloquearlo tendria sentido si hubiera un\nadministrador que te pudiera reponer el acceso; sin roles, \"no te puedes dar de\nbaja\" es tambien \"no te puede dar de baja nadie\", y el unico camino seria el\nscript con la base de datos. Que sea el unico sistema con una sola cuenta y\nesta se cierre a si misma es un fallo de recuperacion, no un agujero: el\nefectivo del que se trata esta en la base y en los papeles.\n\nLo que si se bloquea es dar de baja a la **ultima cuenta activa**, que si es\nun agujero: deja el sistema entero sin puerta de entrada y la unica\nrecuperacion es entrar a Postgres a mano.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"texto\",\n  \"is_active\": false,\n  \"perfil\": \"texto\",\n  \"grupo\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        },
+        {
+          "name": "X-Contrasena-Actual",
+          "value": "{{ contrasena_actual }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
+      "metaSortKey": 43,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_44",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
+      "description": "Rota la contrasena de una cuenta.\n\nDOS PUERTAS, Y POR QUE HACE FALTA LAS DOS\n------------------------------------------\n\n- `X-Contrasena-Actual` (el header): la contrasena de **quien esta\n  llamando**. Es `UsuarioVerificado`, y es lo que impide que un token robado\n  tome la cuenta. Ver `deps.get_current_user_verificado`.\n- `contrasena_actual` (el cuerpo): la contrasena de **la cuenta que se va a\n  cambiar**. Es lo que impide que quien llama cambie la contrasena de OTRA\n  cuenta sin saber la de esa cuenta.\n\nSon la misma palabra y no se pueden fusionar, porque responden a preguntas\ndistintas: \"quien eres tu\" y \"de quien es esta cuenta\". Con una sola, un\natacante con un token robado podria cambiar la contrasena de cualquiera, que\nes el takeover permanente que `CambioContrasenaRequest` documenta.\n\nY POR QUE NO SE INVALIDAN LOS TOKENS\n------------------------------------\n\nPorque no hay forma de hacerlo. `crear_token` firma con `SECRET_KEY` y sin un\n`jti` ni una lista de revocacion, un token emitido antes del cambio sigue\nsiendo criptograficamente valido hasta que caduca (8 horas). `AGENTS.md` ya lo\ndice de `SECRET_KEY`: \"lo que NO hay es revocacion de tokens: uno robado vive\n8 horas\". Rotar la contrasena acorta la ventana a partir del siguiente login,\nno de golpe, y decirlo aqui es mejor que prometer lo que no hace.\n\nCuando la cuenta es la propia, esto no importa: la sesion del que la rotó\nsigue viva, que es lo comodo. Cuando es otra, es lo que hay.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"contrasena_actual\": \"texto\",\n  \"contrasena_nueva\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        },
+        {
+          "name": "X-Contrasena-Actual",
+          "value": "{{ contrasena_actual }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena",
+      "metaSortKey": 44,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_08",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Inventario",
+      "environment": {},
+      "metaSortKey": -992,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_45",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i1. Lineas sin producto (la cola de trabajo)",
+      "description": "Las lineas de compra sin producto asignado.\n\nEs la cola de trabajo del inventario. No hay una tabla de \"pendientes\": esta\nconsulta ES la cola, y es `compra_items WHERE producto_id IS NULL`. Una tabla\nmas seria una segunda fuente de verdad que se puede desincronizar de\n`compra_items`.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/cola",
+      "metaSortKey": 45,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_46",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i2. Compras  <- fija {{ compra_id }}",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "estado",
+          "value": "PROCESADO",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras",
+      "metaSortKey": 46,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_47",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i3. Ver una compra",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
+      "metaSortKey": 47,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_48",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i4. Asignar producto a una linea",
+      "description": "Resuelve una linea de la cola.\n\nGuarda QUIEN asigno y cuando: \"lo eligio el sistema\" y \"lo eligio Ana\" son\nrespuestas distintas a \"de donde salio este producto del catalogo\", y sin la\ncolumna de actor la segunda no se puede reconstruir.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"producto_id\": \"{{ producto_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
+      "metaSortKey": 48,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_49",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i5. Autorizar  << SUMA STOCK, no se deshace",
+      "description": "Autoriza la compra y hace que sus lineas entren al inventario.\n\nEs el unico endpoint del proyecto que escribe en `movimientos_inventario`, y\npor eso devuelve 409 y no 200 en los tres casos que importan: ya confirmada\n(no se vuelve a sumar), con lineas sin producto (el inventario quedaria\nincompleto sin rastro), o sin quien firmar.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nota\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
+      "metaSortKey": 49,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_50",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i6. Rechazar: no es una compra",
+      "description": "Descarta una compra sin borrarla.\n\nPor que no se borra: `compras.ticket_id` es UNIQUE, asi que borrar deja el\nticket libre y el proximo reescaneo vuelve a crear la compra desde\n`registrar_compra`. El bucle aparece cada vez que se toca el comprobante y no\nrecuerda que alguien ya la habia mirado. Con RECHAZADO el veredicto queda\nescrito.\n\nUna compra PROCESADA no se puede rechazar: ya sumo stock y el kardex es\nappend-only, no hay forma de deshacerlo. El 409 dice que la via es el AJUSTE.\n\nQuien rechaza sale del token, nunca del body. Ver `RechazarCompraRequest`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"motivo\": \"El papel estaba borroso; subo la foto mejor\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/rechazar",
+      "metaSortKey": 50,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_51",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i7. Deshacer el rechazo",
+      "description": "Devuelve una compra rechazada a la cola de autorizacion.\n\nNo reabre una compra PROCESADA, y hay un endpoint distinto para cada cosa a\nproposito: uno que aceptara las dos necesitaria adivinar cual es cual, y el\nerror —dar por reversible una compra que ya movio stock— es el que no tiene\nsalida. Ver `inventario_service.reabrir_compra`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/reabrir",
+      "metaSortKey": 51,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_52",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i8. El kardex",
+      "description": "La linea de tiempo del inventario.\n\nEs la respuesta a \"el conteo fisico no cuadra, que movio este producto\".",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "producto_id",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "200",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/movimientos",
+      "metaSortKey": 52,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_53",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i9. Venta o ajuste  << SUMA/RESTA STOCK, no se deshace",
+      "description": "Escribe una fila del kardex a mano.\n\nES LA RESPUESTA A \"el conteo fisico no cuadra, que movio este producto\". El\nkardex es append-only por trigger, asi que corregir un movimiento viejo es\nagregar uno nuevo que diga lo contrario, y este endpoint es el unico camino\npara hacerlo.\n\n`es_ajuste=true` pone `referencia_tipo='AJUSTE'` y es lo que permite una\n`ENTRADA`: sin el, una entrada seria indistinguible de una compra y el servicio\nla rechaza con 409, porque `confirmar_compra` es la unica via que puede sumar\nstock. Ver `inventario_service.registrar_movimiento`.\n\nEl cliente no manda `referencia_tipo`: sale de `es_ajuste`. Pedirlo seria\nabrir la puerta a que alguien escriba `referencia_tipo='COMPRA'` a mano, y una\nfila con esa etiqueta es lo que `export_service` y las auditorias toman como\n\"esto vino de una compra\".",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"producto_id\": \"{{ producto_id }}\",\n  \"tipo\": \"ENTRADA\",\n  \"cantidad\": 1.0,\n  \"es_ajuste\": false,\n  \"referencia_id\": \"texto\",\n  \"descripcion_origen\": \"texto\"\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/movimientos",
+      "metaSortKey": 53,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_54",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i10. Catalogo de productos (con stock)",
+      "description": "El catalogo, con el stock de cada uno.\n\nEl stock sale del kardex (`stock_de`), no de una columna: ver el modulo de\n`inventario_service`. Por eso la consulta del catalogo y la del stock son dos\ny despues se pegan: una columna `stock` seria una copia que se desincroniza.\n\n`solo_sin_verificar=true` es la cola de revision de productos. Es la parte que\nhace manejable el alta automatica: el inventario funciona desde el primer dia\ny a la vez hay una lista de lo que hay que limpiar. Ver\ndb/migrations/0011_productos_origen.sql.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "incluir_inactivos",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "solo_sin_verificar",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/productos",
+      "metaSortKey": 54,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_55",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i11. Alta manual de producto",
+      "description": "Da de alta un producto. A mano, no desde una linea de OCR.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"texto\",\n  \"codigo\": \"texto\",\n  \"unidad_medida\": \"PZA\",\n  \"precio_referencia\": 1.0\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/productos",
+      "metaSortKey": 55,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_56",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i12. Ver un producto",
+      "description": "Un producto del catalogo, con el stock que le da el kardex.\n\nEl `company_id` es obligatorio y se comprueba contra el producto. No es\ndecorativo: `AGENTS.md` advierte que no hay multi-tenancy, asi que sin esta\ncomparacion un `producto_id` de otra empresa se leeria igual y el stock que\nsaliera en la respuesta seria el de la empresa equivocada —un 200 con el\nnumero de otro, que es peor que un 403 porque no parece un error.\n\nPor que responde `ProductoConStock` y no `ProductoResponse`: el listado\ndevuelve stock, y que el detalle no lo devuelva obliga al cliente a hacer una\nsegunda llamada para saber el mismo numero.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
+      "metaSortKey": 56,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_57",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "i13. Renombrar / verificar / dar de baja",
+      "description": "Corrige el catalogo. Es lo que hace que la cola se pueda vaciar.\n\n`GET /inventario/productos?solo_sin_verificar=true` devuelve la cola de\nproductos que salieron de leer un papel, y `AGENTS.md` le atribuye la tarea de\n\"revisar, renombrar o fusionar\". Sin este endpoint la cola se podia mirar pero\nno limpiar: el `verificado` de un producto de OCR no tenia ninguna puerta por\nla que cambiarlo.\n\nLo que el servicio NO deja cambiar, y por que, esta en\n`inventario_service.actualizar_producto`: `company_id`, `origen`, y poner\n`verificado` a un producto de OCR sin codigo.\n\n`exclude_unset=True` y no `exclude_none`: es la diferencia entre \"no lo\nmandaron\" y \"lo mandaron en null\". Ver `ProductoUpdate`.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"texto\",\n  \"codigo\": \"texto\",\n  \"unidad_medida\": \"texto\",\n  \"precio_referencia\": 1.0,\n  \"verificado\": false,\n  \"activo\": false\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
+      "metaSortKey": 57,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_09",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Bank Transactions",
+      "environment": {},
+      "metaSortKey": -991,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_58",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Movimientos bancarios",
+      "description": "List bank transactions with optional company filter.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/",
+      "metaSortKey": 58,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'fija {{ bank_transaction_id }} con el primer movimiento',\n  fn: () => {\n    const d = JSON.parse(response.text);\n    const lista = Array.isArray(d) ? d : (d.items || []);\n    if (!lista.length) {\n      console.warn('No hay movimientos bancarios para esta empresa.');\n      return true;\n    }\n    env.set('bank_transaction_id', lista[0].id);\n    console.log('bank_transaction_id = ' + lista[0].id);\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_59",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r5b. Alta manual de un movimiento",
+      "description": "Create a new bank transaction manually.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"transaction_date\": \"2026-09-15\",\n  \"amount\": \"1500.00\",\n  \"description\": \"Compra con tarjeta\",\n  \"reference\": \"AUTOCARD ****1234\",\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/",
+      "metaSortKey": 59,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_60",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r5c. Subir CSV (SOLO previsualiza, no guarda)",
+      "description": "Preview CSV import without saving to database.\n\nSin parametros de forma, detecta separador, encabezados y formato de fecha.\nVer `parse_bank_csv` y el comentario de los defaults vacios, arriba.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "date_column",
+            "value": "fecha",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "amount_column",
+            "value": "importe",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "description_column",
+            "value": "concepto",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "reference_column",
+            "value": "referencia",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "date_format",
+            "value": "%d/%m/%Y",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "decimal_separator",
+            "value": ".",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "thousands_separator",
+            "value": ",",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "encoding",
+            "value": "utf-8",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/import-csv",
+      "metaSortKey": 60,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_61",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r5d. Subir CSV y guardar",
+      "description": "Parse CSV and create bank transactions in database.",
+      "method": "POST",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          {
+            "name": "file",
+            "type": "file",
+            "fileName": "",
+            "description": ""
+          },
+          {
+            "name": "company_id",
+            "value": "{{ company_id }}",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "date_column",
+            "value": "fecha",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "amount_column",
+            "value": "importe",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "description_column",
+            "value": "concepto",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "reference_column",
+            "value": "referencia",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "date_format",
+            "value": "%d/%m/%Y",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "decimal_separator",
+            "value": ".",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "thousands_separator",
+            "value": ",",
+            "type": "text",
+            "description": ""
+          },
+          {
+            "name": "encoding",
+            "value": "utf-8",
+            "type": "text",
+            "description": ""
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
+      "metaSortKey": 61,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_62",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r5e. Ver un movimiento",
+      "description": "Get a bank transaction by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
+      "metaSortKey": 62,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_63",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r5f. Corregir un movimiento",
+      "description": "Update a bank transaction.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"transaction_date\": \"2026-09-15\",\n  \"amount\": \"1500.00\",\n  \"description\": \"Compra con tarjeta\",\n  \"reference\": \"AUTOCARD ****1234\",\n  \"is_reconciled\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
+      "metaSortKey": 63,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_64",
+      "parentId": "fld_09",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r5g. Borrar un movimiento",
+      "description": "Delete a bank transaction.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
+      "metaSortKey": 64,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_10",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Reconciliations",
+      "environment": {},
+      "metaSortKey": -990,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_65",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r1. Conciliaciones  <- fija {{ reconciliation_id }}",
+      "description": "List reconciliations with optional filters.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "match_status",
+          "value": "PERFECT",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "skip",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "100",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/",
+      "metaSortKey": 65,
+      "collectionId": "col_api",
+      "_type": "request",
+      "scripts": [
+        {
+          "name": "Autocompletar",
+          "type": "post-response",
+          "exec": "const env = insomnia.environment;\nconst pruebas = [];\n\npruebas.push({\n  name: 'fija {{ reconciliation_id }} con la primera conciliacion',\n  fn: () => {\n    const d = JSON.parse(response.text);\n    const lista = Array.isArray(d) ? d : (d.items || []);\n    if (!lista.length) {\n      console.warn('No hay conciliaciones. Corre POST /reconciliations/run.');\n      return true;\n    }\n    env.set('reconciliation_id', lista[0].id);\n    console.log('reconciliation_id = ' + lista[0].id);\n    return true;\n  },\n});\n\nreturn pruebas;"
+        }
+      ]
+    },
+    {
+      "_id": "req_66",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r1b. Crear una conciliacion a mano",
+      "description": "Create a manual reconciliation link.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"ticket_id\": \"{{ ticket_id }}\",\n  \"bank_transaction_id\": \"{{ bank_transaction_id }}\",\n  \"match_status\": \"PERFECT\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/",
+      "metaSortKey": 66,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_67",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r2. Correr el motor de conciliacion",
+      "description": "Run the automatic reconciliation engine.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"date_from\": \"2026-01-01\",\n  \"date_to\": \"2026-12-31\",\n  \"amount_tolerance\": \"1.00\",\n  \"date_tolerance_days\": 3\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/run",
+      "metaSortKey": 67,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_68",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r2b. Ver una conciliacion",
+      "description": "Get a reconciliation by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 68,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_69",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r3. Corregir un veredicto a mano",
+      "description": "Una persona corrige el `match_status` que produjo el motor.\n\nQUE POR QUE HAY UNA COLUMNA `revisado_por` Y NO SOLO EL CAMBIO\n-----------------------------------------------------------\n\nPorque `match_status` decide que se exporta: `export_service` filtra por\n`MATCHED_STATUSES`, y `DISCREPANCY` esta fuera a proposito. Sin `revisado_por`,\nun `PERFECT` que decidio el motor y uno que aprobo una persona serían la misma\nfila, y no habria forma de saber cual se esta mandando a CONTPAQI.\n\nEs el mismo motivo por el que existe `confidence_source` en `tickets`, y por el\nque `compras.confirmada_por` es obligatorio para PROCESADO: \"lo automatico lo\nhizo\" y \"lo hizo una persona\" no se suman, y mezclarlos produce un numero que\nno describe a ninguno de los dos.\n\nPOR QUE NO SE CAMBIA EL TICKET NI EL MOVIMIENTO AQUI\n---------------------------------------------------\n\nPorque un emparejamiento equivocado se corrige de otra manera —`DELETE` y\n`POST`—, y mezclar las dos cosas en un endpoint deja la fila sin poder decir\nque se cambio. Ver `ReconciliationUpdate`.\n\nY ADEMAS el estado del movimiento bancario. Este endpoint NO toca\n`bank_transactions.is_reconciled`: un cruce a mano sigue siendo un cruce\n(hay reconciliacion, y el movimiento esta emparejado), lo que cambio es si\ncuenta como cuadrado. Marcar el movimiento como no conciliado desde aqui\ndejaria la fila de `reconciliations` apuntando a un movimiento que dice que no\nesta conciliado, que es la contradiccion que `delete_reconciliation` si\nresuelve.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"match_status\": \"PERFECT\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 69,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_70",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r4. Borrar una conciliacion",
+      "description": "Delete a reconciliation and mark bank transaction as unreconciled.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 70,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_71",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r6. Exportar Excel",
+      "description": "Export reconciliations to standard Excel format.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "date_from",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "date_to",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "only_reconciled",
+          "value": "true",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/export/excel",
+      "metaSortKey": 71,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_72",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r7. Exportar CONTPAQI",
+      "description": "Export reconciliations to CONTPAQI format.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "date_from",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "date_to",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "only_reconciled",
+          "value": "true",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "mapping_id",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/export/contpaqi",
+      "metaSortKey": 72,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_73",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r8. Exportar generico",
+      "description": "Export reconciliations with custom columns.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "date_from",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "date_to",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "only_reconciled",
+          "value": "true",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "columns",
+          "value": "Fecha,Proveedor,Total,EstatusConciliacion",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/export/generic",
+      "metaSortKey": 73,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_74",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r9. Mapeos contables  <- fija {{ mapping_id }}",
+      "description": "List accounting mappings.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/mappings",
+      "metaSortKey": 74,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_75",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r10. Crear mapeo contable",
+      "description": "Create an accounting mapping template.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"software_name\": \"CONTPAQI\",\n  \"column_mappings\": {\n    \"Fecha\": \"expense_date\",\n    \"Proveedor\": \"provider_name\",\n    \"Total\": \"total_amount\"\n  },\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/mappings",
+      "metaSortKey": 75,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_76",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r11. Ver un mapeo",
+      "description": "Get an accounting mapping by ID.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
+      "metaSortKey": 76,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_77",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r12. Corregir un mapeo",
+      "description": "Corrige un mapeo: el nombre del software o el diccionario de columnas.\n\n`exclude_unset=True` y no `exclude_none`: sin eso, un `PATCH` que solo manda\n`software_name` borraria `column_mappings`, que es el cuerpo del mapeo. El\n200 llegaria igual y el export CONTPAQI dejaria de encontrar las columnas.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"software_name\": \"CONTPAQI\",\n  \"column_mappings\": {\n    \"Fecha\": \"expense_date\",\n    \"Proveedor\": \"provider_name\",\n    \"Total\": \"total_amount\"\n  }\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
+      "metaSortKey": 77,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_78",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r13. Borrar un mapeo",
+      "description": "Borra un mapeo.\n\nQue el borrado sea definitivo y no una baja logica es una decision distinta de\nla de los productos, y merece decirse: un mapeo no tiene historial. No es una\nfila de la que se deriven saldos ni una firma de un cierre; es un diccionario\nde tradaccion de columnas que el export lee. Guardarlo como `activo=false`\nanadiria una columna y una condicion al unico consumidor, a cambio de poder\ndeshacer un `DELETE` equivocado.\n\nY lo que NO se borra con el es lo que el mapeo hizo: los tickets, los\nmovimientos y las conciliaciones no lo referencian. Por eso esto no toca el\nhistorico contable y por eso es seguro.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
+      "metaSortKey": 78,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_11",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Reports",
+      "environment": {},
+      "metaSortKey": -989,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_79",
+      "parentId": "fld_11",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r1. Informe de cierre (JSON, para revisar antes de firmar)",
+      "description": "El mismo informe en JSON, para el preview del front.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "periodo",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reports/cierre-mensual",
+      "metaSortKey": 79,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_80",
+      "parentId": "fld_11",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r2. Descargar el PDF  <- lo que se entrega al cliente",
+      "description": "El PDF del cierre. Se declara ANTES del literal sin sufijo.\n\n`firmed_por` sale del token y nunca del cuerpo: si el nombre de quien firma se\naceptara en la peticion, un informe podria salir firmado por quien no lo reviso\n(regla 23 de `AGENTS.md`).",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "periodo",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reports/cierre-mensual.pdf",
+      "metaSortKey": 80,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_12",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Auditoria",
+      "environment": {},
+      "metaSortKey": -988,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_81",
+      "parentId": "fld_12",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "a1. Evento de auditoria  <- navegacion/pantalla",
+      "description": "",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"accion\": \"texto\",\n  \"modulo\": \"texto\",\n  \"registro_afectado\": \"texto\",\n  \"detalles\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/auditoria/evento",
+      "metaSortKey": 81,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_82",
+      "parentId": "fld_12",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "accion",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "modulo",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "fecha_desde",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "fecha_hasta",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "offset",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/auditoria",
+      "metaSortKey": 82,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_13",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Sistema",
+      "environment": {},
+      "metaSortKey": -987,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_83",
+      "parentId": "fld_13",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Health",
+      "description": "El chequeo de vida, y de qué la app depende para funcionar.\n\n## POR QUE CONSULTA LA BASE Y NO SOLO EL PROCESO\n\nMEDIDO en este repo antes de este cambio: con `expense_pgvector` parado,\neste endpoint respondía **200 `{\"status\": \"healthy\"}`**. El contenedor se\ndeclaraba `healthy` y `docker compose ps` decía que todo estaba en orden\nmientras **ninguna ruta que lea datos funcionaba**: cada una devolvía 500\npor conexión rechazada.\n\nEso es un healthcheck que no sabe nada, y el daño no es solo theoretical:\nes el que decide si `expense-front` puede levantarse\n(`depends_on: service_healthy`). Con esta mentira, el front levantaba\napuntando a una API que no podía contestar y el síntoma era \"el front está\narriba pero nada carga\".\n\n## POR QUE NO ES UNA DEFENSA CONTRA CUALQUIER FALLA\n\n`SELECT 1` prueba que hay una conexión y que Postgres responde. **No**\ncomprueba que el esquema esté cargado: una base a la que le falta `tickets`\npasa este chequeo y falla en cada endpoint. Para eso está el healthcheck del\ncontenedor de Postgres, que pregunta por `to_regclass('public.tickets')` y\nno por el socket — porque durante el init la conexión responde antes de que\nlas tablas existan. Son dos preguntas distintas y cada una la contesta su\nhealthcheck: esta dice \"hay base\", el otro dice \"la base tiene el esquema\".\n\n## POR SIGUE SIN PEDIR TOKEN\n\nUn monitor externo no tiene credenciales, y uno que las pide reporta caído un\nservicio que está arriba. Y la respuesta no dice nada del dominio: ni\ntickets, ni montos, ni cuentas. Solo el estado de la conexión.\n\nEl 503 lleva `Connection: close` porque, sin él, nginx y el navegador\npueden cachear el 503 y seguir mostrando \"caído\" después de que la base\nvolvió. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en\nuna URL de Postgres el usuario y la contraseña viajan dentro, y un\nhealthcheck abierto a localhost no es el lugar donde se publican.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
       "parameters": [],
       "headers": [],
-      "body": {},
-      "_type": "request"
-    },
-    {
-      "_id": "fld_companies",
-      "parentId": "wrk_expense_reconciler",
-      "name": "Companies",
-      "_type": "request_group"
-    },
-    {
-      "_id": "req_create_company",
-      "parentId": "fld_companies",
-      "name": "Crear Empresa",
-      "method": "POST",
-      "url": "{{ _.base_url }}/companies/",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"name\": \"Mi Taquería\",\n  \"tax_id\": \"MTA123456789\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_list_companies",
-      "parentId": "fld_companies",
-      "name": "Listar Empresas",
-      "method": "GET",
-      "url": "{{ _.base_url }}/companies/",
-      "parameters": [{"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
-      "_type": "request"
-    },
-    {
-      "_id": "req_get_company",
-      "parentId": "fld_companies",
-      "name": "Obtener Empresa",
-      "method": "GET",
-      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_update_company",
-      "parentId": "fld_companies",
-      "name": "Actualizar Empresa",
-      "method": "PATCH",
-      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"name\": \"Mi Taquería SA de CV\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_delete_company",
-      "parentId": "fld_companies",
-      "name": "Eliminar Empresa",
-      "method": "DELETE",
-      "url": "{{ _.base_url }}/companies/{{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "fld_tickets",
-      "parentId": "wrk_expense_reconciler",
-      "name": "Tickets",
-      "_type": "request_group"
-    },
-    {
-      "_id": "req_create_ticket",
-      "parentId": "fld_tickets",
-      "name": "Crear Ticket Manual",
-      "method": "POST",
-      "url": "{{ _.base_url }}/tickets/",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"provider_name\": \"GAS PROVEEDOR SA\",\n  \"provider_tax_id\": \"GPS010101XXX\",\n  \"total_amount\": \"500.00\",\n  \"tax_amount\": \"80.00\",\n  \"expense_date\": \"2025-01-15\",\n  \"category\": \"SUMINISTROS\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_extract_ticket",
-      "parentId": "fld_tickets",
-      "name": "Extraer de PDF/Imagen (Preview)",
-      "method": "POST",
-      "url": "{{ _.base_url }}/tickets/extract",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "factura.pdf"},
-        {"name": "file_type", "value": "pdf", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_extract_and_create",
-      "parentId": "fld_tickets",
-      "name": "Extraer y Crear Ticket",
-      "method": "POST",
-      "url": "{{ _.base_url }}/tickets/extract-and-create",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "factura.pdf"},
-        {"name": "file_type", "value": "pdf", "type": "text"},
-        {"name": "company_id", "value": "{{ _.company_id }}", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_list_tickets",
-      "parentId": "fld_tickets",
-      "name": "Listar Tickets",
-      "method": "GET",
-      "url": "{{ _.base_url }}/tickets/",
-      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
-      "_type": "request"
-    },
-    {
-      "_id": "req_get_ticket",
-      "parentId": "fld_tickets",
-      "name": "Obtener Ticket",
-      "method": "GET",
-      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_update_ticket",
-      "parentId": "fld_tickets",
-      "name": "Actualizar Ticket",
-      "method": "PATCH",
-      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"category\": \"COMBUSTIBLE\",\n  \"total_amount\": \"520.00\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_delete_ticket",
-      "parentId": "fld_tickets",
-      "name": "Eliminar Ticket",
-      "method": "DELETE",
-      "url": "{{ _.base_url }}/tickets/{{ _.ticket_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "fld_bank",
-      "parentId": "wrk_expense_reconciler",
-      "name": "Bank Transactions",
-      "_type": "request_group"
-    },
-    {
-      "_id": "req_create_bank_tx",
-      "parentId": "fld_bank",
-      "name": "Crear Movimiento Manual",
-      "method": "POST",
-      "url": "{{ _.base_url }}/bank-transactions/",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"transaction_date\": \"2025-01-15\",\n  \"amount\": \"-500.00\",\n  \"description\": \"PAGO GAS PROVEEDOR SA\",\n  \"reference\": \"REF001\"\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_import_csv_preview",
-      "parentId": "fld_bank",
-      "name": "Preview CSV Import",
-      "method": "POST",
-      "url": "{{ _.base_url }}/bank-transactions/import-csv",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "movimientos.csv"},
-        {"name": "date_column", "value": "fecha", "type": "text"},
-        {"name": "amount_column", "value": "importe", "type": "text"},
-        {"name": "description_column", "value": "concepto", "type": "text"},
-        {"name": "reference_column", "value": "referencia", "type": "text"},
-        {"name": "date_format", "value": "%d/%m/%Y", "type": "text"},
-        {"name": "decimal_separator", "value": ".", "type": "text"},
-        {"name": "thousands_separator", "value": ",", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_import_csv_create",
-      "parentId": "fld_bank",
-      "name": "Importar CSV y Guardar",
-      "method": "POST",
-      "url": "{{ _.base_url }}/bank-transactions/import-csv-and-create",
-      "body": {"mimeType": "multipart/form-data", "params": [
-        {"name": "file", "type": "file", "fileName": "movimientos.csv"},
-        {"name": "company_id", "value": "{{ _.company_id }}", "type": "text"},
-        {"name": "date_column", "value": "fecha", "type": "text"},
-        {"name": "amount_column", "value": "importe", "type": "text"},
-        {"name": "description_column", "value": "concepto", "type": "text"},
-        {"name": "reference_column", "value": "referencia", "type": "text"},
-        {"name": "date_format", "value": "%d/%m/%Y", "type": "text"},
-        {"name": "decimal_separator", "value": ".", "type": "text"},
-        {"name": "thousands_separator", "value": ",", "type": "text"}
-      ]},
-      "_type": "request"
-    },
-    {
-      "_id": "req_list_bank_tx",
-      "parentId": "fld_bank",
-      "name": "Listar Movimientos",
-      "method": "GET",
-      "url": "{{ _.base_url }}/bank-transactions/",
-      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
-      "_type": "request"
-    },
-    {
-      "_id": "fld_reconciliations",
-      "parentId": "wrk_expense_reconciler",
-      "name": "Reconciliations",
-      "_type": "request_group"
-    },
-    {
-      "_id": "req_run_reconciliation",
-      "parentId": "fld_reconciliations",
-      "name": "Ejecutar Conciliación",
-      "method": "POST",
-      "url": "{{ _.base_url }}/reconciliations/run",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"amount_tolerance\": \"0.01\",\n  \"date_tolerance_days\": 3\n}"},
-      "_type": "request"
-    },
-    {
-      "_id": "req_list_reconciliations",
-      "parentId": "fld_reconciliations",
-      "name": "Listar Conciliaciones",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/",
-      "parameters": [{"name": "company_id", "value": "{{ _.company_id }}"}, {"name": "skip", "value": "0"}, {"name": "limit", "value": "100"}],
-      "_type": "request"
-    },
-    {
-      "_id": "req_export_excel",
-      "parentId": "fld_reconciliations",
-      "name": "Exportar Excel Estándar",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/export/excel?company_id={{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_export_contpaqi",
-      "parentId": "fld_reconciliations",
-      "name": "Exportar CONTPAQI",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/export/contpaqi?company_id={{ _.company_id }}",
-      "_type": "request"
-    },
-    {
-      "_id": "req_export_generic",
-      "parentId": "fld_reconciliations",
-      "name": "Exportar Genérico",
-      "method": "GET",
-      "url": "{{ _.base_url }}/reconciliations/export/generic?company_id={{ _.company_id }}&columns=Fecha,Proveedor,Total,Estatus%20Conciliacion",
-      "_type": "request"
-    },
-    {
-      "_id": "req_create_mapping",
-      "parentId": "fld_reconciliations",
-      "name": "Crear Plantilla CONTPAQI",
-      "method": "POST",
-      "url": "{{ _.base_url }}/reconciliations/mappings",
-      "headers": [{"name": "Content-Type", "value": "application/json"}],
-      "body": {"mimeType": "application/json", "text": "{\n  \"company_id\": \"{{ _.company_id }}\",\n  \"software_name\": \"CONTPAQI_CUSTOM\",\n  \"column_mappings\": {\n    \"Fecha\": \"Fecha\",\n    \"Concepto\": \"Concepto\",\n    \"RFC\": \"RFC\",\n    \"Nombre\": \"Proveedor\",\n    \"Importe\": \"Subtotal\",\n    \"IVA\": \"IVA\",\n    \"Total\": \"Total\",\n    \"Cuenta\": \"6000\",\n    \"Referencia\": \"Referencia Banco\",\n    \"TipoComprobante\": \"I\",\n    \"Serie\": \"A\",\n    \"Folio\": \"001\",\n    \"Moneda\": \"MXN\",\n    \"TipoCambio\": \"1.0000\",\n    \"MetodoPago\": \"PUE\",\n    \"UsoCFDI\": \"G03\"\n  }\n}"},
-      "_type": "request"
+      "url": "{{ api_root }}/health",
+      "metaSortKey": 83,
+      "collectionId": "col_api",
+      "_type": "request",
+      "authentication": {
+        "type": "none"
+      }
     }
   ]
 }

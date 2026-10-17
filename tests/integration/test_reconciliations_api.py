@@ -302,7 +302,9 @@ class TestReconciliationsAPI:
         )
         
         assert response.status_code == 409
-        assert "already reconciled" in response.json()["detail"]
+        # Ver `docs/known-issues.md` §29: estaba en ingles ("Bank transaction
+        # already reconciled") y ahora dice que paso y no solo que fallo.
+        assert response.json()["detail"] == "Este movimiento bancario ya está conciliado"
 
     @pytest.mark.asyncio
     async def test_delete_reconciliation_unreconciles_bank(self, async_client: AsyncClient, test_company):
@@ -418,8 +420,16 @@ class TestReconciliationsAPI:
         
         # Listar
         list_resp = await async_client.get(f"/api/v1/reconciliations/mappings?company_id={test_company.id}")
+        # El codigo de estado va explicito y ANTES de mirar el cuerpo. Antes
+        # esta linea solo afirmaba len(json) == 1, y el {"detail": [...]} de un
+        # 422 tambien cumple: el test pasaba en verde sobre un endpoint roto.
+        # Un 422 aqui significa que una ruta literal quedo atrapada detras de
+        # un path con placeholder. Ver el comentario de /{reconciliation_id}.
+        assert list_resp.status_code == 200, f"/mappings devolvio {list_resp.status_code}"
         assert len(list_resp.json()) == 1
-        
+        assert list_resp.json()[0]["id"] == mapping_id
+
         # Obtener
         get_resp = await async_client.get(f"/api/v1/reconciliations/mappings/{mapping_id}")
+        assert get_resp.status_code == 200, f"/mappings/{{id}} devolvio {get_resp.status_code}"
         assert get_resp.json()["id"] == mapping_id

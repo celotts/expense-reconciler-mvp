@@ -1,40 +1,69 @@
+import logging
 from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status,
+    APIRouter, Depends, File, Form, HTTPException, Query, Response,
+    UploadFile, status,
 )
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from decimal import Decimal
+
+from app.core.archivo_real import media_type_real, resolver_tipo
+from app.core.subida import leer_ticket
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
-from app.core.enums import (
-    UNKNOWN_PROVIDER, ExtractionStatus, SourceType, SpotCheckStatus,
-)
+from app.core.enums import ConfidenceSource, ExtractionStatus, SourceType, SpotCheckStatus
 from app.core.time import dias_desde, utcnow
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
+from app.schemas.lectura import (
+    DiagnosticoLecturaResponse,
+    LecturaCamposResponse,
+    PasoLecturaResponse,
+    VeredictoLecturaResponse,
+)
 from app.schemas.ticket import (
+    ClasificarLoteRequest, ClasificarLoteResponse,
+    DocumentoHistorialResponse,
     ExactitudPorOrigenResponse, ReporteExactitudResponse, SpotCheckItemResponse,
     SpotCheckQueueResponse, SpotCheckRequest, TicketCreate, TicketResponse,
     TicketReviewQueueResponse, TicketReviewRequest, TicketUpdate,
 )
-from app.services.confidence_gate import (
-    compute_source_hash, gate_manual_ticket, gate_ticket,
-)
+from app.services.confidence_gate import gate_manual_ticket
 from app.services.accuracy_service import (
     NIVEL_CONFIANZA, ORIGENES_A_REPORTAR, SLO_EXACTITUD, MedidaPorOrigen,
-    Veredicto, en_muestra,
+    Veredicto,
 )
 from app.services.capture import ExtractionUnavailable, capture_ticket
+from app.services.lectura_diagnostico import (
+    ResultadoLectura,
+    diagnosticar_lectura,
+)
+from app.services.document_service import (
+    documento_de_ticket, documentos_del_ticket, guardar_documento,
+    reemplazar_documento,
+)
 from app.services.parser_service import TicketExtractionResult
 from app.services.ai_extractor import ai_extractor
+from app.services.inventario_service import registrar_compra
+from app.services.ticket_persistence import persistir_extraccion
+from app.services import vista_previa
+from app.services.auditoria import registrar_auditoria, registrar_login_auditoria, registrar_digitalizacion_auditoria
 
 router = APIRouter(tags=["Tickets"])
 
+# Cuando el `file_type` declarado no coincide con los bytes, el motivo va aqui.
+# No es un 400: el documento es valido y se procesa igual, pero el log deja
+# constancia de quien esta etiquetando mal sus subidas.
+logger = logging.getLogger(__name__)
 
-async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtractionResult:
+
+async def _extract_from_upload(
+    content: bytes, file_type: str
+) -> TicketExtractionResult:
     """Unico camino de captura. Toda la politica vive en `capture.capture_ticket`.
 
     Antes esta funcion decidia: si era imagen la mandaba a la IA, si no la
@@ -45,6 +74,10 @@ async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtracti
     `llm`.
 
     Ahora la cascada esta en un solo sitio y la API solo traduce sus errores.
+
+    El `file_type` que llega aqui ya no es el que declaro el cliente: lo
+    dedujo `_tipo_real_del_archivo` de los bytes. Ver el docstring de ahi para
+    por que. Esta funcion no vuelve a decidir nada sobre el formato.
     """
     try:
         return await capture_ticket(
@@ -61,6 +94,100 @@ async def _extract_from_upload(content: bytes, file_type: str) -> TicketExtracti
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se pudo procesar el archivo: {exc}",
         )
+
+
+def _a_diagnostico(resultado: ResultadoLectura) -> DiagnosticoLecturaResponse:
+    """El dataclass del servicio al schema de la API, en un solo lugar.
+
+    Vive aqui y no en el servicio porque el servicio no importa `schemas/`: la
+    separacion de capas que `scan_service` respeta tambien ("el resumen lo arma como
+    `dict` para no importar schemas; aqui es donde se valida").
+
+    La forma de la respuesta si es un `model_validate` por campo, porque los
+    dataclasses del servicio son planos y los schemas tienen sus defaults. Lo que no es
+    trivial son los `Decimal`: viajan como texto dentro de `_resumen` (el paso), y aqui
+    se pasan como `Decimal` de verdad al schema. Se declara `Decimal` y no `float` en
+    `LecturaCamposResponse`, y por el mismo motivo que en el resto del proyecto: un
+    `Decimal` a texto y de vuelta es exacto, mientras que un `float` de ida ya perdio
+    centavos. Un total que saliera como `4094.8` en vez de `4094.80` haria dudar de si
+    el sistema perdio un centimo o si es el JSON.
+    """
+    datos = None
+    if resultado.extraccion is not None:
+        e = resultado.extraccion
+        datos = LecturaCamposResponse(
+            proveedor=e.provider_name,
+            rfc=e.provider_tax_id,
+            total=e.total_amount,
+            subtotal=e.subtotal,
+            iva=e.tax_amount,
+            ieps=e.ieps_amount,
+            fecha=e.expense_date,
+            categoria=e.category,
+            confianza=e.confidence,
+            origen=e.confidence_source,
+            lineas=e.items,
+            muestra_texto=(e.raw_text or "")[:400],
+        )
+
+    veredicto = None
+    if resultado.veredicto_status is not None:
+        veredicto = VeredictoLecturaResponse(
+            status=resultado.veredicto_status,
+            confidence=resultado.veredicto_confidence or 0.0,
+            confidence_persisted=resultado.veredicto_confidence_persisted,
+            confidence_source=resultado.veredicto_confidence_source
+            or ConfidenceSource.LLM,
+            reasons=resultado.veredicto_reasons,
+            checks_pasados=resultado.checks_pasados,
+            checks_fallidos=resultado.checks_fallidos,
+        )
+
+    return DiagnosticoLecturaResponse(
+        formato_detectado=resultado.formato_detectado,
+        formato_declarado=resultado.formato_declarado,
+        formato_corregido=resultado.formato_corregido,
+        pasos=[
+            PasoLecturaResponse(
+                escalon=p.escalon,
+                motor=p.motor,
+                dio=p.dio,
+                aceptado=p.aceptado,
+                motivo=p.motivo,
+                costo=p.costo,
+            )
+            for p in resultado.pasos
+        ],
+        datos=datos,
+        veredicto=veredicto,
+        error=resultado.error,
+        ticket_id=resultado.ticket_id,
+        ticket_status_actual=resultado.ticket_status_actual,
+        ticket_source_actual=resultado.ticket_source_actual,
+        ticket_leido_en=resultado.ticket_leido_en,
+        coincide_con_guardado=resultado.coincide_con_guardado,
+        guardado=False,
+    )
+
+
+def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
+    """Deduce el formato de los BYTES y descarta el que declaro el cliente.
+
+    Por que no puede ser el declarado: `file_type` decide el escalon de la
+    cascada, y con el la regla 3 de `AGENTS.md` ("un PDF con texto no toca el
+    modelo") la salta quien llama. Medido: el mismo PDF con `file_type=image`
+    entra por vision, sale con `confidence_source=llm` y total 0.00, y esa
+    lectura contaminaria el reporte de exactitud, que agrupa por origen.
+
+    Cuando los bytes y lo declarado no coinciden, gana el sniffing y se deja
+    rastro en el log. No es un 400: el documento es valido, lo que estaba mal
+    era la etiqueta, y rechazar el comprobante de un contador porque su
+    cliente mando `image` en vez de `pdf` seria un fallo nuestro.
+    """
+    formato, motivo = resolver_tipo(contenido, declarado)
+    if motivo:
+        logger.warning("Tipo de archivo corregido: %s", motivo)
+    return formato
 
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
@@ -80,7 +207,7 @@ async def create_ticket(
     if not company_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
 
     decision = gate_manual_ticket(
@@ -93,7 +220,7 @@ async def create_ticket(
     if not decision.validation.ok:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Datos invalidos: {decision.validation.as_text()}",
+            detail=f"Datos inválidos: {decision.validation.as_text()}",
         )
 
     ticket = TicketModel(
@@ -106,7 +233,79 @@ async def create_ticket(
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
+
+
+@router.post(
+    "/extract-diagnostico",
+    response_model=DiagnosticoLecturaResponse,
+    tags=["Tickets"],
+    summary="Lee un comprobante y explica COMO se leyo. No guarda nada.",
+)
+async def extract_diagnostico(
+    file: UploadFile = File(...),
+    file_type: str = Form("pdf"),
+    db: AsyncSession = Depends(get_db),
+    ticket_id: UUID | None = Form(
+        None,
+        description=(
+            "Ticket ya guardado con el que contrastar. Responde 'esta bien leido y "
+            "el problema es otro': si releer daria el mismo estado, el problema no "
+            "es el lector."
+        ),
+    ),
+) -> DiagnosticoLecturaResponse:
+    """Que se leyo, por que se leyo asi, y que haria el gate. Sin escribir nada.
+
+    **Por que existe.** `POST /tickets/extract` devuelve el resultado, y con eso no se
+    puede depurar una lectura mala: si el comprobante cae a `REQUIERE_REVISION`, la
+    respuesta dice que no se pudo leer el proveedor, y no dice si fue que el OCR no
+    vio texto, que el parser no encontro el folio, o que el extractor de vision esta
+    apagado. Esas tres piden arreglos distintos y son indistinguibles desde la
+    respuesta. Un error que se queda en el log del servidor obliga a que alguien vaya a
+    buscarlo, y si nadie busca, el mismo comprobante falla igual mañana.
+
+    **No guarda nada.** Ni ticket, ni documento, ni compra, ni movimiento. Es el
+    mismo criterio que `simular` en `POST /scan`: con `archivar` activo por omision la
+    primera corrida deja la carpeta vacia, y conviene ver eso antes de que pase. Aqui
+    la razon es mas fuerte, porque **repetir el mismo archivo muchas veces no llenaria
+    la base de duplicados** — que es justo lo que pasa al probar con
+    `extract-and-create`.
+
+    Por eso no hay forma de guardar desde aqui: un endpoint que "a veces guarda" es un
+    endpoint del que nadie sabe que hace. Para guardar, `POST /tickets/extract-and-create`
+    o `POST /scan/files/{id}/reprocess`, que son explicitos.
+
+    **El `file_type` no decide nada.** El formato sale de los bytes, como en el resto de
+    la API (regla 3 de `AGENTS.md`), y si el cliente declaro otra cosa, el motivo sale
+    en `formato_corregido`. Un PDF subido como `image` entra por vision y sale con otra
+    confianza; sin ese campo el cliente se lleva un resultado distinto del que esperaba
+    sin enterarse.
+
+    **El veredicto es el del gate de verdad**, no una copia de sus reglas: se corre
+    `gate_ticket` con la lectura y se devuelve lo que habria pasado. Un diagnostico que
+    dijera "pasaria" con checks distintos a los del gate seria el fallo de "el sistema
+    afirma mas de lo que sostiene", en el sitio donde mas dano hace.
+    """
+    content = await leer_ticket(file, file.filename or "")
+    resultado = await diagnosticar_lectura(
+        db,
+        content,
+        declarado=file_type or None,
+        nombre=file.filename,
+        ticket_id=ticket_id,
+    )
+    return _a_diagnostico(resultado)
 
 
 @router.post("/extract", response_model=TicketExtractionResult)
@@ -114,15 +313,30 @@ async def extract_ticket(
     file: UploadFile = File(...),
     file_type: str = Form("pdf")
 ) -> TicketExtractionResult:
-    """Extract ticket data from uploaded file (PDF/Image)."""
-    content = await file.read()
+    """Extract ticket data from uploaded file (PDF/Image).
+
+    `file_type` se acepta por compatibilidad, pero no decide nada: el formato
+    sale de los bytes. Ver `_tipo_real_del_archivo`.
+    """
+    content = await leer_ticket(file, file.filename or "")
+    tipo_real = _tipo_real_del_archivo(content, file_type)
     try:
-        return await _extract_from_upload(content, file_type)
-    except Exception as e:
+        return await _extract_from_upload(content, tipo_real)
+    except Exception:
+        # El detalle de la excepcion va al LOG, no a la pantalla. Antes el
+        # `detail` era f"Failed to extract ticket data: {e!s}": en ingles, y con
+        # el texto crudo de la excepcion dentro de la respuesta.
+        #
+        # Eso ultimo es lo que importa. Un `ConnectionError` de Ollama o una
+        # `KeyError` de un campo del modelo son internos: se leen bien en un
+        # log con traceback, y en la pantalla son ruido que ademas hace parecer
+        # que el fallo es del comprobante del usuario cuando no lo es. El log
+        # lleva el traceback entero, asi que la depuracion no pierde nada.
+        logger.exception("No se pudo extraer el ticket de %s", file.filename)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to extract ticket data: {e!s}",
-        )
+            detail="No se pudo leer el comprobante. Revisa que el archivo no este dañado.",
+        ) from None
 
 
 @router.post("/extract-and-create", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
@@ -145,24 +359,43 @@ async def extract_and_create_ticket(
     if not company_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
 
-    content = await file.read()
+    content = await leer_ticket(file, file.filename or "")
+    tipo_real = _tipo_real_del_archivo(content, file_type)
     try:
-        extracted = await _extract_from_upload(content, file_type)
+        extracted = await _extract_from_upload(content, tipo_real)
     except HTTPException:
+        # Un `HTTPException` de `_extract_from_upload` ya es un mensaje pensado
+        # para el usuario (tipo de archivo no soportado, y asi). Se relanza tal
+        # cual y NO entra al `except Exception` de abajo, que es lo que
+        # mantienen estos dos bloques alineados.
         raise
-    except Exception as e:
+    except Exception:
+        # Ver el otro bloque: el traceback va al log y la pantalla recibe un
+        # mensaje que dice que hacer.
+        logger.exception("No se pudo extraer el ticket de %s", file.filename)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to extract ticket data: {e!s}",
-        )
+            detail="No se pudo leer el comprobante. Revisa que el archivo no este dañado.",
+        ) from None
 
     return await _persist_extracted(
         db, company_id, extracted, content,
-        source_type=SourceType(file_type) if file_type in {t.value for t in SourceType} else SourceType.IMAGE,
+        # El `source_type` tambien sale de los bytes, no de la etiqueta del
+        # cliente. Antes, ademas, un `text` caia al fallback y se guardaba como
+        # "image": `text` no existe en el enum `SourceType`
+        # (`docs/known-issues.md` §11). El fallback se mantiene explicito para
+        # no cambiar el esquema en este commit; lo que si cambia es que el
+        # valor de entrada ya no lo elige el cliente.
+        source_type=(
+            SourceType(tipo_real)
+            if tipo_real in {t.value for t in SourceType}
+            else SourceType.IMAGE
+        ),
         source_file=file.filename,
+        content_type=file.content_type,
     )
 
 
@@ -173,95 +406,33 @@ async def _persist_extracted(
     content: bytes,
     source_type: SourceType,
     source_file: str | None = None,
+    content_type: str | None = None,
 ) -> TicketModel:
-    """Gate + persistencia. Unico camino de entrada para datos extraidos."""
-    # El origen lo decide la ruta de captura, no esta funcion. Antes todo se
-    # guardaba como `llm` porque el gate recibia su default, y con eso la
-    # columna `confidence_source` miente sobre de donde salio el dato: un PDF
-    # leido con regex aparecia como lectura de modelo. Sin esa verdad no hay
-    # forma de medir la exactitud de la IA, porque se promedia la IA con un
-    # regex que casi nunca falla.
-    decision = gate_ticket(
-        provider_name=extracted.provider_name,
-        total_amount=extracted.total_amount,
-        tax_amount=extracted.tax_amount,
-        # Un documento sin fecha no se fecha con la de hoy: se guarda con la
-        # fecha que se va a resolver en la cola. Fabricar la de hoy esconde un
-        # gasto de marzo en el cierre de septiembre, que es el error que este
-        # producto no puede cometer.
-        expense_date=extracted.expense_date,
-        provider_tax_id=extracted.provider_tax_id,
-        subtotal=extracted.subtotal,
-        confidence=extracted.confidence,
-        source=extracted.confidence_source,
-    )
-    source_hash = compute_source_hash(content)
+    """Gate + persistencia. Unico camino de entrada para datos extraidos.
 
-    # Idempotencia de carga masiva: el mismo archivo no crea dos tickets.
-    existing = await db.execute(
-        select(TicketModel).where(TicketModel.source_hash == source_hash)
-    )
-    dup = existing.scalar_one_or_none()
-    if dup is not None:
-        return dup
+    Delegacion a `app/services/ticket_persistence.py`. La implementacion se movio
+    ahi porque el escaner de carpeta necesita la misma operacion y no puede
+    importar de un router sin invertir la capa: lo que se acababa teniendo eran
+    dos "crear ticket desde extraccion", una con el muestreo de exactitud y otra
+    sin el.
 
-    ticket = TicketModel(
-        company_id=company_id,
-        provider_name=extracted.provider_name or UNKNOWN_PROVIDER,
-        provider_tax_id=extracted.provider_tax_id,
-        total_amount=extracted.total_amount,
-        tax_amount=extracted.tax_amount,
-        # Se guarda, aunque antes no se guardara. Es el campo con el que el
-        # gate valido que `subtotal + IVA == total`, asi que sin el no se puede
-        # auditar por que el ticket se aprobo. Va como None cuando el
-        # documento no trae subtotal: un 0 seria un dato falso con apariencia
-        # de dato, y haria que la cuenta pareciera cuadrar sin comprobar nada.
-        subtotal=extracted.subtotal,
-        category=extracted.category,
-        raw_text=extracted.raw_text,
-        confidence=decision.persisted_confidence,
-        confidence_source=decision.confidence_source.value,
-        extraction_status=decision.status.value,
-        source_type=source_type.value,
+    `content` es el archivo original y `extracted` lo que se entendio de el. Los
+    dos se guardan, y son cosas distintas: el segundo sin el primero no se puede
+    revisar ni auditar. Ver `app/services/document_service.py`.
+
+    El nombre y la firma se conservan porque tres archivos de test la importan
+    desde aqui y porque la ruta que ya existe tiene que seguir siendo la misma
+    ruta. No hay dos caminos de persistencia: hay uno y dos nombres.
+    """
+    return await persistir_extraccion(
+        db,
+        company_id,
+        extracted,
+        content,
+        source_type=source_type,
         source_file=source_file,
-        source_hash=source_hash,
-        # `expense_date` es NOT NULL, asi que un documento sin fecha necesita
-        # un valor. Se guarda el dia local en que se registro, que es la unica
-        # fecha que si se sabe de cierto, y el ticket queda en la cola con
-        # `date_missing` a la vista. El tradeoff: un ticket fechado
-        # provisionalmente, marcado como pendiente de fecha. El que se
-        # descartaba antes era el otro: un ticket con fecha y sin nada que
-        # advertise que la fecha es inventada, que es indistinguible de un
-        # gasto real de ese dia.
-        #
-        # `date.today()` y no `utcnow().date()`. No es indistinto: `utcnow()` es
-        # lo correcto para `created_at`, que es un instante, y lo equivocado
-        # aqui, que es una fecha de negocio. Un servidor en UTC-6 que corre a
-        # las 20:00 del dia 27 ya esta en el dia 28 en UTC, y el ticket
-        # quedaria fechado manana. Eso es el mismo error que se esta
-        # corrigiendo aqui, con un dia de diferencia.
-        expense_date=extracted.expense_date or date.today(),
-        validation_errors=decision.validation.as_text(),
-        # Muestreo de exactitud: se marca al insertar, por hash de contenido, y
-        # solo si el gate aprobo solo. Tres condiciones, y cada una importa:
-        #
-        # - Solo AUTO_APROBADO. Un ticket que esta en la cola no se puede medir:
-        #   su exactitud ya la decidio el gate, no el extractor. Y meterlo
-        #   inflaria el promedio con casos que nunca fueron automaticos.
-        # - Solo si tiene hash. La captura manual no es automatismo.
-        # - La decision va por el contenido, no al azar, para que sea
-        #   reproducible y no se pueda elegir la muestra a conveniencia.
-        spot_check_status=(
-            SpotCheckStatus.PENDIENTE.value
-            if decision.status == ExtractionStatus.AUTO_APROBADO
-            and en_muestra(source_hash)
-            else None
-        ),
+        content_type=content_type,
     )
-    db.add(ticket)
-    await db.commit()
-    await db.refresh(ticket)
-    return ticket
 
 
 @router.get("/", response_model=list[TicketResponse])
@@ -269,11 +440,22 @@ async def list_tickets(
     company_id: UUID | None = None,
     extraction_status: str | None = None,
     only_open: bool = False,
+    sin_categoria: bool = False,
+    con_categoria: bool = False,
+    categoria: str | None = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ) -> list[TicketModel]:
-    """List tickets with optional company filter and review-state filter."""
+    """List tickets with optional company filter and review-state filter.
+
+    `sin_categoria` y `con_categoria` son las dos caras de la misma pregunta, que
+    es la que hace el tablero con la barra gris. Se ponen los tres filtros
+    excluyentes de forma explicita en vez de confiar en el orden en que llegan:
+    `categoria` manda sobre los otros dos (es el mas especifico), y si vienen
+    `sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto
+    que cumpla las dos, y devolver vacio seria un fallo silencioso.
+    """
     query = select(TicketModel)
     if company_id:
         query = query.where(TicketModel.company_id == company_id)
@@ -284,6 +466,33 @@ async def list_tickets(
         ]))
     elif extraction_status:
         query = query.where(TicketModel.extraction_status == extraction_status)
+
+    if categoria:
+        query = query.where(TicketModel.category == categoria)
+    elif sin_categoria and con_categoria:
+        # Las dos a la vez: no hay conjunto que cumpla las dos. Se anulan y se
+        # devuelve la lista completa, que es lo honesto ("no me dijiste que
+        # filtrara") en vez de devolver vacio ("no hay nada").
+        pass
+    elif sin_categoria:
+        # Solo lo que esta en blanco de verdad. Un `category = ''` (cadena
+        # vacia) se cuela si se filtra por `IS NULL` unicamente, y un ticket con
+        # la cadena vacia se ve igual de "sin clasificar" que uno con `NULL`,
+        # pero en la base son filas distintas.
+        query = query.where(
+            or_(
+                TicketModel.category.is_(None),
+                func.trim(TicketModel.category) == "",
+            )
+        )
+    elif con_categoria:
+        query = query.where(
+            and_(
+                TicketModel.category.is_not(None),
+                func.trim(TicketModel.category) != "",
+            )
+        )
+
     query = query.offset(skip).limit(limit).order_by(TicketModel.expense_date.desc())
     result = await db.execute(query)
     return list(result.scalars().all())
@@ -314,13 +523,33 @@ async def get_review_queue(
     if company_id:
         base = base.where(TicketModel.company_id == company_id)
 
+    # `open_states` se define SIEMPRE, antes del `if`, y no dentro.
+    #
+    # `total_open` lo necesita en las dos ramas —es el conteo de la cola abierta
+    # y va en global, para que el encabezado no salte al filtrar—, asi que
+    # definirlo solo en el `else` lo deja sin valor en cuanto hay filtro y la
+    # ruta responde 500 con `UnboundLocalError`. MEDIDO: ese era el 500 de
+    # `?status=APROBADO`, que es el primer clic que hace cualquiera en la
+    # pantalla.
     open_states = [
         ExtractionStatus.REQUIERE_REVISION.value,
         ExtractionStatus.PENDIENTE.value,
     ]
-    open_q = base.where(TicketModel.extraction_status.in_(open_states))
+
+    # Si el usuario selecciono un filtro de estado, este trae todos los tickets
+    # con ese estatus (no solo los de la cola). Si no hay filtro, se usan los
+    # estados por defecto de la cola.
+    #
+    # Son ramas EXCLUYENTES, no dos filtros que se apilen. Con un
+    # `.where(...) == status` que sobrevive dentro del `else`, el `status` es
+    # `None` ahi y eso compila a `extraction_status IS NULL`: combinado con el
+    # `IN (...)` de arriba deja una condicion que no puede cumplirse, y la cola
+    # sale vacia sin decir por que. Un filtro que se contradice a si mismo
+    # devuelve "no hay nada" y eso se lee como una verdad.
     if status:
-        open_q = open_q.where(TicketModel.extraction_status == status)
+        open_q = base.where(TicketModel.extraction_status == status)
+    else:
+        open_q = base.where(TicketModel.extraction_status.in_(open_states))
     open_q = open_q.order_by(TicketModel.created_at.asc()).limit(limit)
 
     rows = (await db.execute(open_q)).scalars().all()
@@ -348,11 +577,54 @@ async def get_review_queue(
 
     return TicketReviewQueueResponse(
         company_id=company_id,
+        # `total_open` NO depende del filtro, por contrato: cuenta REQUIERE_REVISION
+        # + PENDIENTE aunque ahora `tickets` venga filtrado por otro estado. Es lo
+        # que hace que el encabezado no salte de 40 a 3 al cambiar el selector.
         total_open=sum(counts.get(s, 0) for s in open_states),
         por_estado=counts,
         antiguedad_promedio_dias=avg_age,
         tickets=[TicketResponse.model_validate(r) for r in rows],
     )
+
+
+@router.patch("/categoria", response_model=ClasificarLoteResponse)
+async def clasificar_lote(
+    datos: ClasificarLoteRequest,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> ClasificarLoteResponse:
+    """Pone la misma categoria a varios tickets de una vez.
+
+    **No cambia `extraction_status` ni toca la cola de revision.** Clasificar es
+    un dato del gasto, no una validacion de la lectura: un ticket puede estar
+    AUTO_APROBADO y no tener categoria, y clasificarlo no lo convierte en
+    revisado ni al reves. Mezclar las dos cosas haria que "ya lo clasifique"
+    pareciera una entrada mas en la cola, y el trabajo de verdad se perderia de
+    vista.
+
+    **Un `UPDATE` con `IN (...)`, no un bucle de PATCH.** Con 200 tickets son 200
+    viajes de ida y vuelta, y cada uno abre su propia transaccion. Ademas un
+    bucle que falla en el ticket 150 deja los 149 anteriores escritos y el 150 sin
+    hacer, y el cliente no puede saber cuales. Con un solo `UPDATE` es todo o
+    nada.
+
+    `None` desclasifica: deja la categoria en NULL y el ticket vuelve a la barra
+    gris. Es lo que permite corregir una clasificacion equivocada.
+    """
+    ids = list(dict.fromkeys(datos.ticket_ids))  # sin repetidos, y conservando orden
+
+    resultado = await db.execute(
+        update(TicketModel)
+        .where(TicketModel.id.in_(ids))
+        .values(category=datos.category)
+        # `synchronize_session=False` porque no hay objetos de ticket cargados en
+        # la sesion: sin esto SQLAlchemy intenta refrescarlos uno por uno y con
+        # 500 filas eso es trabajo que no se usa para nada.
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+
+    return ClasificarLoteResponse(actualizados=resultado.rowcount, pedidos=len(ids))
 
 
 @router.patch("/{ticket_id}/review", response_model=TicketResponse)
@@ -371,16 +643,60 @@ async def review_ticket(
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe")
 
     # Correcciones aplicadas durante la revision.
     corrections = review_in.model_dump(
         exclude_unset=True,
         exclude={"action", "notes"},
     )
+
+    # Se guarda el estado ANTES de tocar nada, para poder responder despues a
+    # la unica pregunta que importa aqui: ¿esta revision cambio algo?
+    estado_antes = ticket.extraction_status
+
+    # La fecha que HABA antes de que este endpoint la tocara. Se compara para
+    # distinguir "la corrigio" de "reenvio la misma"; ver `fecha_corregida` mas
+    # abajo, que es donde se usa.
+    fecha_antes = ticket.expense_date
+
+    # ¿Algún dato cambia DE VERDAD? Se compara contra el valor que ya estaba,
+    # y se mira ANTES de asignar: comparar despues daria siempre "si", porque
+    # el valor ya es el nuevo.
+    #
+    # Un "aprobar" que reenvia los mismos numeros que ya tenia no es una
+    # correccion. Se compara contra el valor de la FILA, no contra el del
+    # cuerpo, que es el mismo criterio que usa `ProductoUpdate` con
+    # `exclude_unset` para distinguir "no lo mandaron" de "lo mandaron igual".
+    hubo_correccion = any(
+        value is not None and getattr(ticket, field, None) != value
+        for field, value in corrections.items()
+    )
+
     for field, value in corrections.items():
         if value is not None:
             setattr(ticket, field, value)
+
+    # UNA FECHA ESCRITA A MANO DEJA DE SER PROVISIONAL
+    # ------------------------------------------------
+    # `fecha_provisional` dice de donde salio `expense_date`, no si es buena. Si
+    # una persona escribe la fecha, la fecha ya no es el dia de la captura: viene
+    # del papel que ella esta mirando. Y con eso deja de contar como "no
+    # pertenece a ningun periodo".
+    #
+    # Solo se limpia si el valor **cambio**. Aprobar reenviando los mismos numeros
+    # que ya tenia no es una correccion —es el mismo criterio que `hubo_correccion`
+    # de arriba, y por la misma razon: comparar el cuerpo contra la fila antes de
+    # asignar distingue "lo corrigio" de "lo reenvio igual".
+    #
+    # Y no se limpia en la relectura automatica (`scan_service._actualizar_ticket`):
+    # una lectura que no encuentra fecha no esta confirmando la anterior.
+    fecha_corregida = (
+        corrections.get("expense_date") is not None
+        and corrections["expense_date"] != fecha_antes
+    )
+    if fecha_corregida:
+        ticket.fecha_provisional = False
 
     if review_in.action == "reject":
         ticket.extraction_status = ExtractionStatus.RECHAZADO.value
@@ -393,6 +709,17 @@ async def review_ticket(
             tax_amount=ticket.tax_amount,
             expense_date=ticket.expense_date,
             provider_tax_id=ticket.provider_tax_id,
+            # El subtotal se pasa porque el aprobador puede acabarlo de corregir, y
+            # sin el `subtotal + IVA == total` no se comprueba. Medido: con el
+            # total en 234.00 y el subtotal en 97.56 la aprobacion pasaba sin que
+            # nadie notara que la aritmetica no cuadraba.
+            subtotal=ticket.subtotal,
+            # El IEPS tambien se pasa, y por la misma razon: es lo que hace que
+            # un ticket con IVA e IEPS pueda aprobarse. Sin esta linea, una
+            # persona tendria que haber puesto un `tax_amount` que NO es el IVA
+            # para que la cuenta cuadrara, y entonces el contador recibiria un
+            # IVA inventado. Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+            ieps_amount=ticket.ieps_amount,
         )
         if not decision.validation.ok:
             raise HTTPException(
@@ -406,16 +733,62 @@ async def review_ticket(
         ticket.validation_errors = None
 
     ticket.review_notes = review_in.notes
-    ticket.reviewed_at = utcnow()
-    # La identidad sale del token, no de un texto fijo. Antes era la cadena
-    # "user" en todas las revisiones, lo que hacia que la columna no dijera
-    # nada: veinte revisiones de tres personas son indistinguibles. Con esto,
-    # "quien rechazo esto" tiene respuesta, y es la misma que uso el token que
-    # autorizo la peticion.
-    ticket.reviewed_by = usuario.email
+
+    # CUANDO SE FIRMA, Y CUANDO NO
+    #
+    # La firma se escribe si la revision cambio ALGO: un dato corregido o un
+    # estado que paso de un valor a otro. No se escribe cuando no cambio nada.
+    #
+    # POR QUE "NO CAMBIO NADA" NO ES UN CASO TEORICO
+    #
+    # Aprobar un ticket que ya esta `APROBADO` sin tocar un dato no es un
+    # no-op de verdad: firma otra vez. `reviewed_at` y `reviewed_by` son la
+    # evidencia de QUIEN aprobo QUE y CUANDO, y un segundo clic los pisa con
+    # la hora del clic. MEDIDO: los 7 `APROBADO` de esta maquina tienen
+    # `reviewed_at` repartido entre las 01:29 y las 03:06, que son los clics y
+    # no la aprobacion original.
+    #
+    # Y esa firma no es decorativa: es lo que el resto del sistema consulta
+    # para decisiones que no admiten adivinar. `_es_revisado_por_humano`
+    # (`scan_service`) protege al ticket de que un reescaneo lo sobreescriba,
+    # `document_service` la consulta antes de reemplazar el comprobante, y
+    # `POST /scan/reset` se niega a borrar si hay alguno. Si un clic de mas
+    # firma un ticket que nadie toco, esas tres decisiones pasan a apoyarse en
+    # una firma falsa.
+    #
+    # POR QUE EL ESTADO CUENTA Y NO SOLO LOS DATOS
+    #
+    # Aprobar un `PENDIENTE` sin corregir nada SI es una decision: cambia el
+    # estado y es el caso normal de la cola. Medido en la cola real, es lo mas
+    # frecuente. Si la regla mirara solo `hubo_correccion`, ese approve —el
+    # que hace la cola— dejaria de firmarse y se perderia justo la evidencia
+    # mas importante. Por eso la condicion es "cambio el estado O cambio un
+    # dato", y no "cambio un dato".
+    #
+    # Un `request_info` sobre un ticket que ya estaba `REQUIERE_REVISION`, sin
+    # cambios, cae aqui: no firma. Es el mismo clic de mas, y por la misma
+    # razon no debe escribir una firma que nadie puso.
+    if hubo_correccion or ticket.extraction_status != estado_antes:
+        ticket.reviewed_at = utcnow()
+        # La identidad sale del token, no de un texto fijo. Antes era la cadena
+        # "user" en todas las revisiones, lo que hacia que la columna no dijera
+        # nada: veinte revisiones de tres personas son indistinguibles. Con esto,
+        # "quien rechazo esto" tiene respuesta, y es la misma que uso el token que
+        # autorizo la peticion.
+        ticket.reviewed_by = usuario.email
 
     await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
 
 
@@ -581,7 +954,7 @@ async def registrar_veredicto(
         select(TicketModel).where(TicketModel.id == ticket_id)
     )).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+        raise HTTPException(status_code=404, detail="El ticket no existe")
 
     if row.extraction_status != ExtractionStatus.AUTO_APROBADO.value:
         raise HTTPException(
@@ -820,6 +1193,351 @@ def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
     return " ".join(lineas)
 
 
+# =====================================================================
+# El documento original
+# =====================================================================
+#
+# Sin esto, las dos pantallas que existen para revisar un documento --
+# la cola de revision y el muestreo de exactitud -- dicen "contrasta contra el
+# documento original" sin que haya documento. Ver el docstring de
+# `app/models/ticket_document.py` para que se rompia y por que esto lo arregla.
+
+
+@router.get("/{ticket_id}/documento", response_class=Response)
+async def get_documento(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Los bytes del comprobante, tal como los subio la persona.
+
+    Es lo que hace posible el muestreo: la pregunta "¿la extraccion coincidio con
+    el papel?" solo tiene respuesta si hay papel. Y es lo que hace auditable un
+    veredicto meses despues, cuando el papel ya no esta en la carpeta de
+    quien lo subio.
+
+    El `Content-Type` sale de una lista cerrada y no de lo que declaro el
+    cliente. Ver `app.models.ticket_document.content_type_servible`: servir
+    `text/html` con bytes sin revisar seria XSS desde el propio dominio, con
+    sesion iniciada, disparado por alguien de confianza de la empresa.
+    """
+    # El ticket primero. Sin el, el `404` seria indistinguible del "no hay
+    # documento", y quien llama no podria saber si se equivoco en el id o si el
+    # ticket es de captura manual.
+    ticket = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    documento = await documento_de_ticket(db, ticket_id)
+    if documento is None:
+        # 404 y no 204. Un `204` parece un exito, y el cliente lo trata como
+        # "no hay nada que ver", que es exactamente el bug que se quiere evitar.
+        # El mensaje distingue las dos causas, que piden cosas distintas: un
+        # ticket tecleado a mano no tiene documento y no deberia, uno de una
+        # captura antigua si deberia y se puede reintentar.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Este ticket no tiene documento guardado. "
+                + (
+                    "Es de captura manual, asi que no hay ningun archivo que revisar."
+                    if ticket.source_type == SourceType.MANUAL.value
+                    else "Vuelve a subir el comprobante para poder revisarlo."
+                )
+            ),
+        )
+
+    return Response(
+        content=documento.contenido,
+        media_type=documento.content_type_servible,
+        headers={
+            # `inline` y no `attachment`: el objetivo es que el revisor pueda
+            # VER el papel, que es lo que hace el muestreo posible. Con
+            # `attachment` tendria que descargarlo, abrirlo en otro programa, y
+            # volver: en un celular, en una pantalla de la cola, es el camino que
+            # hace que la gente termine revisando a ciegas.
+            "Content-Disposition": (
+                f'inline; filename="{_nombre_seguro(documento.nombre_archivo)}"'
+            ),
+            # El nombre que el navegador propone al guardar. Va aparte porque
+            # `filename*` es la forma estandar y la que entiende el rango de
+            # caracteres no ASCII, que es justo el caso de un archivo con
+            # acentos.
+            "Access-Control-Expose-Headers": "Content-Disposition",
+            # Cache privado y en el navegador, nunca en un proxy compartido: el
+            # documento es un comprobante fiscal de una empresa concreta.
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
+@router.get("/{ticket_id}/documento/vista-previa", response_class=Response)
+async def get_vista_previa(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """El comprobante en un formato que el navegador SI puede pintar.
+
+    ## POR QUE EXISTE, Y NO ES "OTRA FORMA DE SERVIR EL MISMO ARCHIVO"
+
+    MEDIDO: las fotos de iPhone son HEIC, y ni Chrome ni Firefox las pintan. El
+    backend las sirve como `application/octet-stream` —a proposito, `image/heic`
+    no esta en su lista cerrada de tipos servibles—, y en la pantalla de
+    revision el papel salia como "no se puede mostrar aqui".
+
+    Eso rompe el muestreo de exactitud de raiz: su trabajo es **contrastar la
+    lectura contra el papel**, y un papel que no se ve se revisa a ciegas.
+
+    Asi que aqui se sirve un **JPEG derivado** y el archivo guardado sigue siendo
+    el HEIC, byte por byte. La conversion es una representacion, no una
+    reescritura: `ticket_documents` es append-only y el comprobante es la
+    evidencia contra la que se contrasta cualquier lectura; cambiarlo al mirarlo
+    seria justo lo que esa regla existe para impedir.
+
+    Y por eso son dos endpoints y no uno con un parametro:
+    `/{id}/documento` da el ORIGINAL (para descargar) y este da la VISTA PREVIA.
+
+    ## LO QUE DEVUELVE CUANDO NO HAY NADA QUE CONVERTIR
+
+    Los bytes originales, con su tipo. Un JPEG, un PNG o un PDF no se tocan: ya
+    se ven, y convertirlos de mas seria gastar CPU y cambiar lo que el revisor
+    cree estar mirando.
+
+    Si la conversion falla, tambien: se sirve el original. Un fallo aqui es "no
+    hay vista previa", nunca "no hay comprobante"; esas dos cosas piden acciones
+    distintas y confundirlas hace que el revisor busque un archivo que si existe.
+    """
+    ticket = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    documento = await documento_de_ticket(db, ticket_id)
+    if documento is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Este ticket no tiene documento guardado.",
+        )
+
+    # `media_type_real` y no `documento.content_type`: el tipo que se decide por
+    # los BYTES, para que un `Content-Type` declarado no pueda falsear la
+    # pregunta de si esto es un HEIC.
+    tipo_real = media_type_real(documento.contenido)
+
+    if not vista_previa.es_convertible(tipo_real):
+        return Response(
+            content=documento.contenido,
+            media_type=documento.content_type_servible,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    jpeg = vista_previa.convertir_a_jpeg(documento.contenido)
+    if jpeg is None:
+        # Se sirve el original en vez de un 404: el comprobante EXISTE y hay que
+        # poder mirarlo, aunque sea descargando.
+        return Response(
+            content=documento.contenido,
+            media_type=documento.content_type_servible,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={
+            # El nombre del JPEG derivado dice que es una vista previa. Sin esto,
+            # quien lo descargue tiene un `documento.jpg` sin relacion apparent
+            # con el archivo que subio.
+            "Content-Disposition": 'inline; filename="vista_previa.jpg"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
+@router.get(
+    "/{ticket_id}/documentos",
+    response_model=list[DocumentoHistorialResponse],
+    tags=["Tickets"],
+    summary="Historial de versiones del comprobante",
+)
+async def listar_documentos(
+    ticket_id: UUID,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentoHistorialResponse]:
+    """La cadena de papeles de un ticket, de la mas antigua a la vigente.
+
+    No devuelve bytes, sino el recorrido: que version hay, quien la puso, por
+    que, y cuando. Sin esto, un cambio de comprobante queda escrito en la base
+    pero invisible para quien opera el sistema, que es el mismo problema que
+    hacia peligroso al reemplazo silencioso.
+
+    Es tambien lo que responde "¿este gasto se puede auditar?". Si hay una sola
+    version, el papel es el que subio el escaner. Si hay mas de una, la cadena
+    dice quien lo cambio y por que, y el hash de cada version permite verificar
+    los bytes que quedaron.
+    """
+    existe = (
+        await db.execute(
+            select(TicketModel.id).where(TicketModel.id == ticket_id)
+        )
+    ).scalar_one_or_none()
+    if existe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    documentos = await documentos_del_ticket(db, ticket_id)
+    return [
+        DocumentoHistorialResponse(
+            id=documento.id,
+            version=documento.version,
+            sha256=documento.sha256,
+            tamano=documento.tamano,
+            content_type=documento.content_type,
+            nombre_archivo=documento.nombre_archivo,
+            actor=documento.actor,
+            motivo=documento.motivo,
+            created_at=documento.created_at,
+            # Vigente = el ultimo de la cadena. Con `reemplaza_a IS NULL` solo
+            # la version 1 daria True, que es exactamente la que no se descarga.
+            vigente=documento is documentos[-1],
+        )
+        for documento in documentos
+    ]
+
+
+@router.put("/{ticket_id}/documento", response_model=TicketResponse)
+async def put_documento(
+    ticket_id: UUID,
+    # `usuario` va antes que `file` porque en Python un parametro sin default no
+    # puede ir despues de uno que lo tiene, y `File(...)` cuenta como default.
+    usuario: UsuarioActual,
+    file: UploadFile = File(...),
+    motivo: str = Form(
+        ...,
+        description=(
+            "Por que se cambia el papel. Queda escrito en la version nueva y es "
+            "obligatorio: es la pregunta que un contador hace despues."
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> TicketModel:
+    """AGREGA una version nueva del documento. La anterior no se borra.
+
+    Es lo que hace recuperable un documento que no se pudo leer. Un PDF que no
+    llego a leerse porque el extractor estaba apagado queda ilegible para
+    siempre aunque manana se encienda: los bytes se habian perdido con el
+    `request`. Con este endpoint, el mismo archivo se vuelve a subir sobre el
+    ticket que ya existe y el documento queda disponible para que alguien lo
+    revise o para que se reextraiga.
+
+    NO REEMPLAZA: APENDA. Antes este endpoint hacia `DELETE` + `INSERT` y los
+    bytes originales desaparecian sin dejar ni hash, ni autor, ni fecha. Ahora
+    la tabla es una cadena (`db/migrations/0009_documento_inmutable.sql`): el
+    documento vigente es el que no fue reemplazado, el anterior queda apuntado,
+    y un trigger de Postgres prohibe `UPDATE` y `DELETE` mientras el ticket
+    exista. El comprobante es la evidencia contra la que se contrasta cualquier
+    lectura, y una evidencia que se borra en silencio no es evidencia.
+
+    Por eso `motivo` es obligatorio y por eso se guarda `usuario.email`. Sin
+    ellos la cadena diria que algo paso sin decir quien ni por que, que es
+    exactamente el silencio que esta regla viene a cerrar. La base tambien los
+    exige, asi que un INSERT directo por SQL tampoco puede saltarselos.
+
+    No crea un ticket nuevo ni cambia los datos que ya se extrajeron. Reextraer
+    es otra operacion y otra decision: la lectura guardada es la que se sometio
+    a muestreo, y cambiarla en silencio haria que el veredicto registrado no
+    correspondiera a lo que el sistema leyo.
+
+    El `PUT` y no el `POST` porque el recurso es el documento de ESE ticket, y
+    hay exactamente uno vigente: es un cambio de papel, no un agregado. El
+    historial se consulta en `GET /tickets/{id}/documentos`.
+    """
+    ticket = (await db.execute(
+        select(TicketModel).where(TicketModel.id == ticket_id)
+    )).scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    # El mismo lector con el mismo tope que la subida original. No se reusa la
+    # constante aqui: si el tope de la subida subiera y este no, la diferencia
+    # seria un endpoint que acepta archivos que el otro rechaza, y el que
+    # fallaria seria el que no parece tener limite.
+    contenido = await leer_ticket(file, file.filename or "")
+
+    guardado = await reemplazar_documento(
+        db, ticket_id, contenido,
+        actor=usuario.email,
+        motivo=motivo,
+        content_type=file.content_type,
+        nombre_archivo=file.filename,
+    )
+    if not guardado:
+        # El servicio devuelve `False` por dos motivos que NO son el mismo
+        # problema, y responder 422 a los dos le diria a la persona que su archivo
+        # estaba mal cuando lo que paso es que el ticket ya habia sido revisado.
+        # El 409 es el que corresponde a un conflicto de estado, no a un archivo
+        # invalido.
+        if ticket.reviewed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Este ticket ya fue revisado por una persona y su documento "
+                    "no se cambia por esta via. Reemplazar el papel invalidaria "
+                    "esa revision. Usa el endpoint de reproceso, que es "
+                    "explicito."
+                ),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "No se pudo guardar el documento. El ticket sigue como estaba, "
+                "con los datos que ya tenia."
+            ),
+        )
+
+    await db.commit()
+    await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
+    return ticket
+
+
+def _nombre_seguro(nombre: str | None) -> str:
+    """El nombre del archivo, sin caracteres que rompan la cabecera HTTP.
+
+    Va dentro de `Content-Disposition`, que es una cabecera de texto: un nombre
+    con comillas, salto de linea o backslash la rompe, y con una respuesta mal
+    formada el navegador muestra un error en vez del documento. Se sustituye
+    en vez de rechazar: el nombre es informacion, el documento es el dato, y
+    perder el documento por un caracter raro en el nombre seria disparar a lo
+    que no importa.
+    """
+    if not nombre:
+        return "comprobante"
+    limpio = "".join(
+        c if c.isprintable() and c not in '"\\' else "_" for c in nombre
+    ).strip()
+    return limpio[:200] or "comprobante"
+
+
 @router.get("/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(
     ticket_id: UUID,
@@ -831,7 +1549,7 @@ async def get_ticket(
     if not ticket:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found"
+            detail="El ticket no existe"
         )
     return ticket
 
@@ -848,12 +1566,36 @@ async def update_ticket(
     if not ticket:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found"
+            detail="El ticket no existe"
         )
 
     update_data = ticket_in.model_dump(exclude_unset=True)
+    # `items` se aparta antes del bucle: sus elementos son `LineaTicketUpdate`, y
+    # un `model_dump` los deja como diccionarios, que es justo lo que espera la
+    # columna JSON. Setearlo como objeto y dejar que lo caste el driver seria
+    # escribir `[{'LineaTicketUpdate': ...}]`.
+    lineas = update_data.pop("items", None)
+    # Si la fecha viene en el cuerpo y es distinta de la que estaba, la escribio
+    # una persona mirando el papel, y deja de ser provisional. Es el mismo
+    # criterio que `review_ticket`: la procedencia de la fecha cambia cuando una
+    # persona la escribe, no cuando el valor resulta "parecido".
+    fecha_corregida = (
+        "expense_date" in update_data
+        and update_data["expense_date"] is not None
+        and update_data["expense_date"] != ticket.expense_date
+    )
     for field, value in update_data.items():
         setattr(ticket, field, value)
+    if fecha_corregida:
+        ticket.fecha_provisional = False
+
+    if lineas is not None:
+        # El `JSONConDecimal` de la columna convierte los importes a texto al
+        # guardar; `_sin_decimal` es ese mismo paso y se hace aqui para que el
+        # objeto que se devuelve en la respuesta sea el mismo que quedo guardado.
+        # Sin esto, la respuesta y la fila discreparían en el formato del importe.
+        lineas = [{k: str(v) if isinstance(v, Decimal) else v for k, v in l.items()} for l in lineas]
+        ticket.items = lineas
 
     # Un ticket en cola se revalida con los datos nuevos. Si ahora ya cuadran,
     # sale de la cola: dejarlo pending cuando ya no necesita nada es como se
@@ -868,6 +1610,17 @@ async def update_ticket(
             tax_amount=ticket.tax_amount,
             expense_date=ticket.expense_date,
             provider_tax_id=ticket.provider_tax_id,
+            # El subtotal se pasa porque la correccion puede acabarlo de traer, y
+            # sin el `subtotal + IVA == total` no se comprueba. Medido: con el
+            # total corregido a 234.00 y el subtotal en 97.56, la correccion pasaba
+            # a APROBADO sin que nadie notara que la aritmetica no cuadraba.
+            subtotal=ticket.subtotal,
+            # El IEPS tambien se pasa, y por la misma razon: es lo que hace que
+            # un ticket con IVA e IEPS pueda aprobarse. Sin esta linea, una
+            # persona tendria que haber puesto un `tax_amount` que NO es el IVA
+            # para que la cuenta cuadrara, y entonces el contador recibiria un
+            # IVA inventado. Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+            ieps_amount=ticket.ieps_amount,
         )
         if not decision.validation.ok:
             ticket.extraction_status = ExtractionStatus.REQUIERE_REVISION.value
@@ -881,7 +1634,41 @@ async def update_ticket(
             ticket.validation_errors = None
 
     await db.commit()
+
+    # La compra se (re)intenta SOLO si el ticket quedo con lineas.
+    #
+    # Va despues del commit del ticket y no antes, por una razon que es de este
+    # endpoint y no de `registrar_compra`: si la compra fallara, el ticket
+    # corregido tiene que estar guardado igual. Perder la correccion de una
+    # persona por un problema de inventario es peor que tener un gasto sin compra
+    # asociada, que ademas se ve en la cola de inventario.
+    #
+    # Y va porque `items` acaba de cambiar y con el: antes, un ticket de OCR con
+    # `items=NULL` no podia tener compra, porque no habia forma de cargar las
+    # lineas. Ahora si, y esta llamada es la que abre el inventario por foto.
+    #
+    # Idempotente por `compras.ticket_id` UNIQUE: una segunda correccion devuelve
+    # la compra existente en vez de reventar con IntegrityError.
+    if lineas is not None and lineas:
+        compra = await registrar_compra(db, ticket)
+        if compra is not None:
+            logger.info(
+                "Ticket %s abrio la compra %s en %s al corregirlo a mano.",
+                ticket.id, compra.id, compra.estado,
+            )
+
+    await db.commit()
     await db.refresh(ticket)
+    
+    # Registrar auditoría de creación de ticket
+    await registrar_auditoria(
+        accion='update_ticket',
+        modulo='tickets',
+        registro_afectado=str(ticket.id),
+        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+    )
+    
     return ticket
 
 
@@ -896,7 +1683,7 @@ async def delete_ticket(
     if not ticket:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found"
+            detail="El ticket no existe"
         )
     
     await db.delete(ticket)

@@ -5,6 +5,7 @@ import {
 } from '../services/api';
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import { confidenceLabel, sourceLabel, nombreProvisorLegible } from '../utils/extraction';
+import { VerDocumento } from '../components/TicketDocumento';
 import {
   veredictoMeta, accionSegunVeredicto, exactitudConIntervalo, porcentaje,
   etiquetaCampo, CAMPOS_MUESTRABLES, SPOT_CHECK_META, VEREDICTO_META,
@@ -140,7 +141,7 @@ export function SpotCheck() {
         {loading ? (
           <Loading message="Cargando muestra..." />
         ) : !cola || cola.tickets.length === 0 ? (
-          <Card className="p-8">
+          <Card>
             <EmptyState
               message={error
                 ? 'No se pudo leer la muestra. Revisa el mensaje arriba.'
@@ -178,7 +179,7 @@ export function PanelEvidencia({ reporte }: { reporte: ReporteExactitud }) {
   const [detalle, setDetalle] = useState(false);
 
   return (
-    <Card className="p-5">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -196,7 +197,9 @@ export function PanelEvidencia({ reporte }: { reporte: ReporteExactitud }) {
       <div className="mt-4">
         <button
           onClick={() => setDetalle(d => !d)}
-          className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+          // Mismo criterio que el boton de "Abrir cola": el texto es pequeno
+          // pero el area tiene que ser de 44. Medido en 20px sin esto.
+          className="text-sm text-blue-600 hover:text-blue-800 font-medium py-3 -my-3"
         >
           {detalle ? 'Ocultar el desglose por vía de lectura' : 'Ver el desglose por vía de lectura'}
         </button>
@@ -286,7 +289,7 @@ export function ResumenMuestra({
 }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Sin revisar</p>
         <p className={`text-3xl font-bold mt-1 ${pendientes > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
           {pendientes}
@@ -303,18 +306,18 @@ export function ResumenMuestra({
         )}
       </Card>
 
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Ya revisados</p>
         <p className="text-3xl font-bold mt-1 text-gray-900">{revisados}</p>
         <p className="text-xs text-gray-500 mt-1">Quedan registrados para siempre</p>
       </Card>
 
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Coincidieron</p>
         <p className="text-3xl font-bold mt-1 text-green-600">{aciertos}</p>
       </Card>
 
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">No coincidieron</p>
         <p className={`text-3xl font-bold mt-1 ${incorrectos > 0 ? 'text-red-600' : 'text-gray-400'}`}>
           {incorrectos}
@@ -371,7 +374,7 @@ export function TarjetaMuestra({
     setCampos(v => v.includes(c) ? v.filter(x => x !== c) : [...v, c]);
 
   return (
-    <Card className="p-4">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -399,6 +402,16 @@ export function TarjetaMuestra({
 
           <TablaLoLeido ticket={t} />
 
+          {/* El papel va antes de "lo que leyó el sistema". La instruccion de
+              esta pantalla es "contrasta cada fila contra el documento
+              original", y el orden importa: leer primero lo que dijo el sistema
+              y despues el papel hace que se verifique lo que ya se leyo, que es
+              confirmar la propia lectura y no contrastarla. El `raw_text` y el
+              archivo son dos vistas del mismo documento y se necesitan las
+              dos: el texto es lo que el sistema extrajo, el archivo es de donde
+              salio. */}
+          <VerDocumento ticket={t} />
+
           {t.raw_text && (
             <div className="mt-2">
               <button
@@ -424,10 +437,14 @@ export function TarjetaMuestra({
             Registrar aquí no cambia el ticket. Si algo se leyó mal, se corrige en la cola de revisión.
           </p>
 
-          {!t.raw_text && (
+          {/* Solo cuando NO hay documento. Con el archivo disponible, decir
+              "sin él no hay contra qué contrastar" seria una alarma falsa: si
+              esta arriba, si se puede contrastar, y la condicion real es que
+              exista `raw_text` Y no exista el archivo. */}
+          {!t.raw_text && !t.tiene_documento && (
             <p className="mt-2 text-xs text-amber-700">
-              Este comprobante no guardó texto. Sin él no hay contra qué contrastar la lectura:
-              se necesita el archivo original.
+              Este comprobante no guardó texto ni el archivo original. Sin ninguno de los dos no
+              hay contra qué contrastar la lectura: un veredicto aquí no mide la exactitud.
             </p>
           )}
 

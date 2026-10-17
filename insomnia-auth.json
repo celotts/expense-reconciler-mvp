@@ -1,0 +1,112 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-10-02T00:00:00.000Z",
+  "__export_version": "2026-10-02",
+  "resources": [
+    {
+      "_id": "wrk_auth_pend",
+      "parentId": null,
+      "modified": 1759440000000,
+      "created": 1759440000000,
+      "name": "Expense Reconciler MVP — Auth",
+      "description": "Login y /me. Sin esto no hay token, y sin token las 29 requests de la coleccion devuelven 401.",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_auth",
+      "parentId": "wrk_auth_pend",
+      "modified": 1759440000000,
+      "created": 1759440000000,
+      "name": "Base Environment",
+      "description": "email y password se llenan a mano y NO se versionan con valores. La contrasena vive en este environment local, no en el repo.",
+      "data": {
+        "base_url": "http://localhost:8000/api/v1",
+        "email": "",
+        "password": "",
+        "token": "",
+        "expires_at": ""
+      },
+      "scope": "environment",
+      "_type": "environment"
+    },
+    {
+      "_id": "fld_auth",
+      "parentId": "wrk_auth_pend",
+      "modified": 1759440000000,
+      "created": 1759440000000,
+      "name": "Auth",
+      "environment": {},
+      "environmentPropertyOrder": null,
+      "metaSortKey": -1759440000000,
+      "environmentType": "kv",
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_login",
+      "parentId": "fld_auth",
+      "modified": 1759440000000,
+      "created": 1759440000000,
+      "name": "Login",
+      "description": "POST /auth/login — auth.py:87. OJO: es POST. Mandarlo como GET da 405 {\"detail\": \"Method Not Allowed\"}, y el 405 sale ANTES de la autenticacion, asi que no dice nada del token.\n\nEs la unica ruta de la API que no pide Authorization. Trae un post-request script que guarda el access_token en {{ _.token }} del environment de la coleccion: despues de correrlo una vez, las 29 requests del otro archivo ya funcionan.\n\nNo hay autorregistro. La cuenta la crea scripts/crear_usuario.py.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/auth/login",
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"{{ _.email }}\",\n  \"password\": \"{{ _.password }}\"\n}"
+      },
+      "preRequestScript": "",
+      "postRequestScript": "const cuerpo = JSON.parse(responseBody);\n\nif (!cuerpo.access_token) {\n  console.log('No hubo token. Status ' + response.code + ': ' + responseBody);\n  return;\n}\n\n// El environment de la coleccion, no el del folder: asi lo lee tambien la\n// otra coleccion cuando muevas las requests alla.\nconst env = insomnia.environments.get('workspace');\nenv.token = cuerpo.access_token;\nenv.expires_at = new Date(Date.now() + cuerpo.expires_in * 1000).toISOString();\ninsomnia.environments.set('workspace', env);\n\nconsole.log('Token guardado en {{ _.token }}. Expira en ' + cuerpo.expires_in + ' s (' + env.expires_at + ').');",
+      "metaSortKey": -1759440000000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_me",
+      "parentId": "fld_auth",
+      "modified": 1759440000000,
+      "created": 1759440000000,
+      "name": "Me",
+      "description": "GET /auth/me — auth.py:149. Sirve de prueba de que el token sirve: sin token o con token vencido responde 401.",
+      "method": "GET",
+      "url": "{{ _.base_url }}/auth/me",
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.token }}",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {},
+      "preRequestScript": "",
+      "postRequestScript": "",
+      "metaSortKey": -1759439999000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    }
+  ]
+}

@@ -29,6 +29,7 @@ prueba y nadie sabe cuales son.
 
 from __future__ import annotations
 
+import os
 import asyncio
 import sys
 from datetime import date
@@ -45,7 +46,20 @@ from app.models.ticket import TicketModel
 from app.services.accuracy_service import en_muestra
 from app.services.confidence_gate import compute_source_hash
 
-DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/expense_db"
+def _fatal(mensaje: str) -> str:
+    """Sale con un mensaje, en vez de un KeyError sin pista."""
+    print(f"ERROR: {mensaje}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+# El DSN se lee del entorno, no se escribe aqui. Este archivo estuvo versionado
+# en un repositorio publico con la password escrita en esta linea, y eso permitia
+# a cualquiera entrar a la base de datos. Rotar la password no borra el archivo
+# viejo del historial: ademas de rotarla, la password deja de estar en el codigo.
+#     export POSTGRES_PASSWORD=...      (o ponla en .env.local)
+DSN = "postgresql+asyncpg://postgres:{}@localhost:5434/expense_db".format(
+    os.environ.get("POSTGRES_PASSWORD") or _fatal("POSTGRES_PASSWORD no esta definida.")
+)
 
 # Marcador de lo que es de este script. Sin el, un ticket de prueba se
 # confunde con uno real, y `tax_id` es UNIQUE: la segunda corrida falla.

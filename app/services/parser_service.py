@@ -5,15 +5,30 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
+from app.services.parser_lineas import VerificacionDeItems, verificar_items
 
 # Mexican RFC: 3-4 letters (persona fisica/moral), 6 digits (YYMMDD), 3 alnum
 # (homoclave). The letter group is LAZY so a 3-letter RFC like WAL910101XXX
 # matches as a whole instead of swallowing 4 letters and shifting the groups.
+#
+# El patron exige la forma COMPLETA de un RFC mexicano antes de hacer match: 3
+# o 4 letras, 6 digitos (anio y mes de constitucion) y 3 de homoclave, en tres
+# grupos que se rearman. Con grupos fijos y `\b` en los dos extremos, un
+# candidato incompleto no hace match y `None` es la respuesta correcta.
+#
+# El `\b` del principio no es cosmetico: sin el, el final de una palabra mas
+# larga se engancha y `FACTURARFC: ...` encontraria el RFC igual.
+RFC_CANDIDATO_RE = re.compile(
+    r"\b([A-Z&Ñ]{3,4})\s?-?\s?(\d{6})\s?-?\s?([A-Z0-9]{3})\b",
+    re.IGNORECASE,
+)
+# los tickets. El patron del candidato va dentro de un grupo que NO captura, y
+# los tres grupos del RFC quedan libres para poder rearmarlos.
 RFC_LABEL_RE = re.compile(
-    r"(?:rfc|nit|tax\s*id)\s*[:]?\s*([A-Z&Ñ]{3,4}?\d{6}[A-Z0-9]{3})\b",
+    r"(?:rfc|nit|tax\s*id)\s*[:]?\s*(?:" + RFC_CANDIDATO_RE.pattern + r")",
     re.IGNORECASE,
 )
 
@@ -37,11 +52,621 @@ ISSUER_LABEL_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Fecha sin etiqueta
+# ---------------------------------------------------------------------------
+#
+# Los tres patrones de arriba exigen la palabra "fecha" pegada al valor. Es la
+# forma de un PDF de texto y casi no es la de un papel: en un ticket de
+# autocomercio el momento de la transaccion va pegado al FOLIO y no a una
+# etiqueta. Medido en las tres fotos de la carpeta, con el texto que devolvio
+# Tesseract:
+#
+#     #0436110 28/09/26 09:52 POS #01 TDA #452
+#
+# Ninguno de los tres patrones la encuentra: no hay "fecha" delante. La fecha se
+# perdia con RFC, total e IVA correctamente leidos, y el ticket iba a la cola
+# con `date_missing` habiendole leido todo lo demas. Corregido en
+# `parser_service.py`.
+#
+# POR QUE EXIGE UNA MARCA DEL COMPROBANTE Y NO CUALQUIER FECHA
+#
+# Porque "una fecha suelta en el documento" no es una fecha: es la primera que
+# aparezca. En la MISMA foto, doce lineas antes de la del folio:
+#
+#     TUS PUNTOS VENCEN: 31/10/2026
+#
+# que es el vencimiento de unos puntos, no el dia del gasto. Sin el filtro esa
+# linea ganaba, el comprobante de una compra de septiembre aparecia fechado el
+# 31 de octubre, y el cierre mensual lo contaba en otro mes: un dato equivocado
+# que pasa TODOS los checks, porque `date_in_future` y `date_too_old` no tienen
+# nada que objectar a una fecha de futuro creible.
+#
+# El criterio es que la fecha este en la misma linea que el identificador del
+# comprobante (folio, nota, ticket, caja, el numero precedido de "#"). Es donde
+# el papel imprime el momento de la transaccion, y casi nunca donde pone otra
+# cosa. El filtro es estrecho a proposito: una fecha sin marca se deja sin leer
+# y el ticket va a la cola con su motivo, que es el resultado correcto cuando no
+# se sabe cual es.
+#
+# El punto NO es separador aqui, a proposito: "1.028" y "51.50" son importes y
+# el punto tambien hace de separador de miles.
+MARCA_DEL_COMPROBANTE_RE = re.compile(
+    r"(?:\b(?:folio|nota|ticket|comprobante|caja|operacion|transaccion|corte)\b"
+    # `fecha` NO esta aqui, y hay que decirlo porque parece que deberia.
+    #
+    # Se probo meterla (una linea que dice "Fecha:" ES la fecha, argumento
+    # bastante bueno) y resulto ser CODIGO MUERTO: `_fecha_del_comprobante` solo
+    # corre cuando el bucle principal no encontro ninguna, y una linea
+    # `Fecha: 08/10/2026` ya la agarra el patron etiquetado de mas arriba. Una
+    # defensa que nunca decide nada es decorativa: se lee como una garantia y no
+    # esta protegiendo nada. Lo que SI faltaba, y si es real, es la hora.
+    r"|#\d"
+    # "No" suelta matchearia media frase en espanol ("NO HAY CAMBIO"), asi que
+    # exige el numero del comprobante detras: "No: 000000000000".
+    r"|\bno\.?:?\s*\d)",
+    re.IGNORECASE,
+)
+
+# Palabras que convierten la fecha de al lado en el VENCIMIENTO de algo: un
+# cupon, una garantia, una promccion. No es el dia del gasto.
+VENCIMIENTO_RE = re.compile(
+    r"\b(?:vence|vencen|vencimiento|expira|expiracion|caduca|caducidad|validez|vigencia|limite)\w*",
+    re.IGNORECASE,
+)
+
+# El ano son DOS o CUATRO digitos, nunca tres. Y el "nunca tres" no es teoria:
+#
+# MEDIDO, sobre una foto real (IMG_4398, linea 16):
+#
+#     o 02 Fecha: 08/10/202¢ iH tap i
+#
+# El OCR comio el "6" de "2026" y dejo "202" + un centavo. Con `\d{2,4}` el
+# ano leido era de TRES digitos, `_a_fecha` lo aceptaba y devolvia
+# `date(202, 10, 8)` — que se imprime `0202-10-08` y es una fecha CONCRETA y
+# FALSA. El gate la marca con `date_too_old`, pero eso es defenderse tarde: lo
+# que sale del parser hacia la cola es un ano que el papel nunca tuvo.
+#
+# Con `\d{2}(?:\d{2})?` el mismo texto NO matchea: "202¢" deja "20" pegado a un
+# "2", que el `(?!\d)` rechaza. Y no se pierde ninguna fecha real, porque un ano
+# de tres digitos no existe en ningun comprobante.
+FECHA_SIN_ETIQUETA_RE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2}(?:\d{2})?)(?!\d)")
+
+# Una hora pegada en la misma linea: `06/10/2026 11:30:21`.
+#
+# MEDIDO: en la foto de Soriana la fecha de la compra esta en la linea 2 y NO
+# tiene ninguna marca del comprobante al lado, asi que se descartaba. Con la hora
+# pegada no hay ambiguedad: un vencimiento de cupon se imprime como "VENCE EL
+# 31/10/2026", sin hora, porque es un plazo y no un momento. La hora es lo que
+# convierte "una fecha suelta" en "el momento de esta transaccion".
+#
+# Se exige `HH:MM` con dos digitos en la hora, porque sin los dos puntos un
+# "mes" de dos digitos pegado al ano (`10/2026 11:30`) se podria leer como
+# dia 10, mes 2026.
+HORA_EN_LA_LINEA_RE = re.compile(r"\b[0-2]\d:[0-5]\d(?::[0-5]\d)?\b")
+
+
+# Una linea que habla de un AHORRO o un DESCUENTO no es el total, aunque traiga
+# la palabra "total".
+#
+# POR QUE, CON EL PAPEL REAL
+#
+# El ticket de DSW (`IMG_4253 2.HEIC`) imprime, textual:
+#
+#     Usted ahorra $119.97 de $399.90
+#     SUBTOTAL 279.33
+#     Usted ahorra en Total: $119.97
+#
+# El total real es **279.93**. El sistema leia **119.97**, que es el precio ya
+# descontado, y de ahi venia el `subtotal_plus_tax_mismatch` que mandaba el ticket
+# a revision. Medido: `FRENTE-Y-DIGITALIZACION.md` y `known-issues.md` §21.
+#
+# O sea que la linea de ahorro no solo daba un numero equivocado: ademas
+# provocaba un check FALSO, y el gate —que hizo bien en parar— se estaba parando
+# por una razon que no era la real. Un gate que se para por cualquier cosa es un
+# gate que nadie revisa cuando se para por la buena.
+#
+# POR QUE NO ES "SI CONTIENE AHORRO, SE IGNORA LA LINEA"
+#
+# Porque en la misma foto el papel imprime `AHORRASTE $8.00` en una linea que si
+# importa... no. Aqui esta el matiz: la lista filtra la linea COMPLETA, y eso es lo
+# correcto para estos casos, porque un numero de ahorro nunca es un importe que el
+# sistema pueda afirmar. Lo que NO se hace es descartar la linea para el PROVEEDOR
+# ni para la FECHA: el filtro es del bucle de importes, no delparser entero.
+#
+# Y el mismo filtro ya existe, con otro nombre, en `parser_lineas.ROTULOS_FINALES`,
+# que incluye `ahorro` y `descuento` para el mismo motivo: que un numero de
+# descuento no es un producto. Aqui se repite la idea porque son dos rutas
+# distintas con dos listas propias, y una lista compartida entre las dos seria un
+# acoplamiento entre el encabezado y las lineas que no existe para nada mas.
+#
+# "AHORRO" CON "TOTAL" Y AL REVÉS
+# ------------------------------
+#
+# El patron busca la palabra en cualquier parte de la linea, no al principio: el
+# caso medido es `Usted ahorra en Total: $119.97`, donde "ahorra" va PRIMERO y
+# "Total" en medio. Un `^\s*ahorro` no lo habria cazado.
+AHORRO_EN_LINEA_RE = re.compile(
+    r"\b(ahorr[oa]s?te|ahorro|ahorra|ahorc?en|descuento|rebaja|"
+    r"precio\s+final|ya\s+descontado|con\s+descuento)\b",
+    re.IGNORECASE,
+)
+
+
+def _importe_tras_la_etiqueta(linea: str, a_decimal) -> Decimal | None:
+    """El primer importe que aparece despues de la palabra "total" en la linea.
+
+    Por que hace falta, con el texto real que la motivo:
+
+        Total hN $ 51.50
+        O/CREDITO TOTAL (* ENTRE HtvENTA Y STETE $ 97.56 SU Cahbio $ 0 .00
+
+    El patron de siempre exige el importe pegado a la etiqueta. En un ticket
+    impreso casi siempre lo esta, y por eso funcionaba; con el texto que arma
+    EasyOCR —cajas ordenadas por posicion, sin lineas— hay palabras de por medio
+    y el importe correcto se queda sin leer. El numero esta a la vista en los dos
+    casos: lo que faltaba era la regla.
+
+    "PRIMER" importe, y no el ultimo: una linea de total trae mas numeros (el
+    cambio, los puntos acumulados, el IVA incluido) y el que corresponde a la
+    etiqueta es el primero. Tomar el ultimo seria leer el cambio como total, que
+    es un error de una magnitud distinta.
+
+    `(?<![\\d.,])` y `(?![\\d.,])` evitan agarrar un fragmento de un codigo: sin
+    ellos, "P.TOTAL 403" en "COL. 403" se leeria como 403.
+
+    SOLO se acepta un importe CON separador decimal, y esa es la parte que
+    importa. En un comprobante mexicano el importe se imprime con centavos
+    siempre: `51.50`, `97.56`, `1,100.50`. Un entero suelto despues de "total" es
+    mucho mas probable que un trozo partido que el total entero. Medido en la
+    foto de Oxxo, donde las dos cosas conviven:
+
+        Pago Electronico: S1.50 ... IVA INCLUIDO: Total: s 51 .š0 5 0.00
+        Total hN $ 51.50
+
+    La primera linea tiene el importe partido y la segunda lo tiene entero. Sin
+    el filtro, la primera gana por ir antes y el total queda en `51` — la mitad
+    del importe real, que es peor que no leer nada. Con el filtro, la primera no
+    aporta nada y la segunda entra.
+
+    El caso de un ticket que IMPRIMA el total sin centavos ("TOTAL 500") deja de
+    leerse por esta linea, y sigue entrando por la regla de la linea siguiente.
+    Se pierde un caso raro a cambio de no inventar la mitad de un importe.
+
+    `a_decimal` se recibe como argumento y no se usa el del modulo porque el
+    parser de importes vive dentro de `_parse_receipt_text` (con la convencion
+    mexicana de separadores) y no hay uno equivalente arriba: `_a_decimal` es
+    para CSV, que usa coma decimal, y aqui seria la lectura equivocada.
+    """
+    etiqueta = re.search(r"(?:^|\s)total\b", linea, re.IGNORECASE)
+    if not etiqueta:
+        return None
+
+    resto = linea[etiqueta.end():]
+    # Se buscan todos los candidatos y se toma el primero que TRAIGA separador
+    # decimal. Ver el docstring: un entero suelto es un trozo partido, no un total.
+    for candidato in re.finditer(r"(?<![\d.,])(\d[\d.,]*\d)(?![\d.,])", resto):
+        if "." not in candidato.group(1) and "," not in candidato.group(1):
+            continue
+        try:
+            return a_decimal(candidato.group(1))
+        except (InvalidOperation, ValueError):
+            continue
+    return None
+
+
+def _fuerza_de_un_importe(bruto: str) -> int:
+    """Que tan de completo es el importe que la etiqueta declara: 2 o 1.
+
+    2 si el numero trae separador decimal (`193.65`, `51,50`, `1,100.00`).
+    1 si es un entero suelto (`5`, `51`).
+
+    ## POR QUE EL IMPORTE DECIDE Y NO LA POSICION
+
+    MEDIDO el 2026-10-15 sobre `IMG_4398.heic`, que esta en la base con esta
+    forma exacta. El OCR devuelve estas tres lineas, y las tres dicen "total":
+
+        Total $ 193.65 =                        <- la etiqueta CON su importe
+        oe Nenta total 5 © 19S Be               <- ruido de caja del OCR
+        Total despues del ahorro $ 193 65       <- filtrada por AHORRO_EN_LINEA_RE
+
+    Antes el bucle ganaba **la ultima coincidencia**, y por eso el ticket se
+    guardaba con `total 5.00` cuando el papel decia `193.65`. MEDIDO con el
+    mismo texto y el ruido **antes** de la linea buena: `193.65`. O sea que el
+    total no fallaba por no entender la etiqueta `Total $` —que la leia bien—
+    sino porque una linea de basura la pisaba despues.
+
+    Y el filtro de ahorro, que existe por el caso medido de DSW
+    (`Usted ahorra en Total: $119.97`), tapaba la tercera linea, que tambien
+    traia el importe correcto. Entre las dos cosas, la lectura buena se perdia
+    dos veces.
+
+    ## POR QUE "TRAE CENTAVOS" Y NO "ES EL ULTIMO"
+
+    Porque un entero suelto despues de "total" es, en un comprobante mexicano,
+    mucho mas probable que un **trozo partido** que el total entero: el OCR
+    parte `51 .50` en dos, y el caso de DSW es un precio ya descontado. Es el
+    mismo criterio, con el mismo por que y la misma perdida asumida, que
+    `_importe_tras_la_etiqueta` ya documenta; aqui se aplica a la COMPETENCIA
+    entre lineas, no a la lectura de una sola.
+
+    Y el caso que NO se cubre, dicho aqui para no vender cobertura que no hay:
+    un ticket que IMPRIMA el total sin centavos ("TOTAL 500") se lee igual,
+    porque no compite contra nada mas fuerte. Lo que se pierde es el caso raro
+    de un total entero legitimo junto a una linea de ruido **con** centavos, que
+    hoy se resuelve a favor del ruido: es el precio de no dejar que un numero
+    partido pise a uno completo.
+    """
+    return 2 if ("." in bruto or "," in bruto) else 1
+
+
+def _importe_de_bruto(bruto: str, a_decimal) -> tuple[Decimal, int] | None:
+    """`(importe, fuerza)` de un numero recien capturado, o `None` si no es un numero.
+
+    `a_decimal` se recibe como argumento por el mismo motivo que en
+    `_importe_tras_la_etiqueta`: el parser de importes vive dentro de
+    `_parse_receipt_text`, con la convencion mexicana de separadores.
+    """
+    try:
+        return a_decimal(bruto), _fuerza_de_un_importe(bruto)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _total_tras_la_etiqueta(
+    linea: str, siguiente_no_vacia: str | None, a_decimal
+) -> tuple[Decimal, int] | None:
+    """El total de una linea cuya etiqueta `Total` no trae el importe pegado.
+
+    Son las dos formas en que el papel separa la etiqueta de su numero, y se
+    prueban en este orden porque en un ticket impreso la misma linea gana
+    siempre a la siguiente.
+
+    (a) La MISMA linea, con tokens de por medio. El patron principal exige el
+        importe inmediatamente despues de la etiqueta; con el texto de EasyOCR
+        eso no se cumple, porque las palabras llegan en el orden de las cajas.
+        Medido en las dos fotos donde el total si esta bien leido:
+
+            Total hN $ 51.50                   <- "hN" es "M.N." mal leido
+            O/CREDITO TOTAL (* ENTRE HtvENTA $ 97.56
+
+        "PRIMER" importe despues de la etiqueta, a proposito: en una linea de
+        total hay mas numeros (el cambio, los puntos, el IVA) y el que va con la
+        etiqueta es el primero. Tomar el ultimo seria tomar el cambio.
+
+        Esa ruta solo devuelve importes CON separador decimal —es su filtro,
+        documentado en `_importe_tras_la_etiqueta`—, asi que su fuerza es
+        siempre la maxima y no hace falta volver a medirla.
+
+    (b) Lineas DISTINTAS: la columna de al lado. Es el caso mas comun en papel:
+        la etiqueta termina la linea y el importe esta en la fila siguiente.
+
+        El criterio NO es "la linea termina en la etiqueta" sino "no hay ningun
+        digito despues de la etiqueta". Los tickets imprimen "TOTAL M.N. $" y
+        "TOTAL A PAGAR", y "M.N." (moneda nacional) queda entre la etiqueta y el
+        fin de linea: un patron que exigiera el fin de linea no los cubiria.
+    """
+    en_la_misma = _importe_tras_la_etiqueta(linea, a_decimal)
+    if en_la_misma is not None:
+        return en_la_misma, 2
+
+    etiqueta = re.search(r"(?:^|\s)total\b(.*)$", linea, re.IGNORECASE)
+    if etiqueta and not re.search(r"\d", etiqueta.group(1)):
+        if siguiente_no_vacia is not None:
+            importe = re.match(r"\s*[$€]?\s*(\d[\d.,]*)\s*$", siguiente_no_vacia)
+            if importe:
+                return _importe_de_bruto(importe.group(1), a_decimal)
+    return None
+
+
+def _es_linea_de_subtotal(linea: str) -> bool:
+    """¿La linea declara un SUBTOTAL, y no un total?
+
+    ## POR QUE NO BASTA CON `"subtotal" in linea.lower()`
+
+    MEDIDO con el test `test_acepta_subtotal_con_guion`, que existe desde antes
+    de este trabajo:
+
+        FERRETERIA DEL SUR
+        Sub-Total: 500.00
+        IVA: 80.00
+        Total: 580.00
+
+    El guardia de abajo comparaba contra `"subtotal"`, y en `Sub-Total` hay un
+    guion en medio: la palabra no aparece y la linea **no se excluia**. El
+    patron principal de total, en cambio, si la aceptaba, porque su borde es
+    `(?:^|[^\\w])` y el guion no es un caracter de palabra.
+
+    O sea que el `SUBTOTAL` entraba como candidato a total y el total de verdad
+    competia con el. No se notaba porque el desempate era "gana la ultima
+    coincidencia" y el total real va despues. Ese desempate se cambio (ver
+    `_fuerza_de_un_importe` y el bloque del total) y el defecto quedo a la
+    vista con `total 500.00` en vez de `580.00`.
+
+    Un guardia que deja pasar la mitad de las formas que se supone que filtra
+    no es un guardia: se separa el guion, el espacio y el guion bajo porque las
+    tres formas se imprimen en papel.
+    """
+    return "subtotal" in re.sub(r"[\s\-_]", "", linea.lower())
+
+
+def _a_fecha(dia: str, mes: str, anio: str) -> date | None:
+    """Une dia/mes/anio en una fecha, o `None` si no existe.
+
+    A mano y no con `pd.to_datetime` a proposito: `dayfirst=True` resuelve la
+    ambiguedad con una heuristica de `dateutil` que ademas AVISA en vez de
+    fallar, y un aviso en medio de un escaneo de 400 archivos es un aviso que
+    nadie lee. `date()` lanza `ValueError` en "2026-13-01" y en "2026-02-30",
+    que es exactamente la respuestas que se quiere: no existe, no se inventa.
+    """
+    try:
+        anio_num = int(anio)
+        if anio_num < 100:
+            # El corte en 68 es el de POSIX: 69-99 son 1969-1999 y 00-68 son
+            # 2000-2068. Un ticket de 1969 no existe en este producto y uno de
+            # 2069 tampoco, asi que el error de esa lectura cae en el gate
+            # (`date_in_future`, `date_too_old`) y no aqui.
+            anio_num = 2000 + anio_num if anio_num <= 68 else 1900 + anio_num
+        return date(anio_num, int(mes), int(dia))
+    except ValueError:
+        return None
+
+
+def _fecha_del_comprobante(lines: list[str]) -> date | None:
+    """La fecha que va pegada al identificador del comprobante, o `None`.
+
+    Una sola pasada y una sola regla: la fecha tiene que estar en la misma linea
+    que el folio, la nota, el "#" o el "No:" del comprobante.
+
+    Se probo la version mas generosa, que aceptaba cualquier fecha de cuatro
+    digitos sin marca, y fallo con la foto real: en el ticket de la ferreteria el
+    OCR leyo `o: 000000000000) 01-10-2028` (el papel dice 2026; el 6 se leyo 8)
+    y la regla generica tomo esa fecha. Con la estrecha, esa linea no se acepta
+    porque no dice "No:" sino "o:", y el ticket va a la cola con `date_missing`.
+
+    OJO con lo que esta regla NO hace, porque es tentador atribuirle mas de lo
+    que hace. Si el OCR lee "No:" completo, la fecha SI se toma, aunque el ano
+    sea un 8 donde el papel tiene un 6: el parser no puede saberlo. Lo que
+    detiene ese caso es el check `date_in_future` del gate, que ya existe. Esta
+    regla no es una defensa contra los anos mal leidos; es una defensa contra
+    que la fecha del documento sea la de otra cosa.
+
+    Un anio de dos digitos sin marca ("28/09") NO se acepta nunca: a dos digitos
+    "28/09" es un importe o un codigo tan facilmente como una fecha.
+
+    ## LA SEGUNDA MARCA: UNA HORA AL LADO (medido, y no es una conjetura)
+
+    MEDIDO, sobre una foto real (IMG_4397, linea 2):
+
+        06/10/2026 11:30:21 211.36 36 30 ás
+
+    Ahi la fecha NO tiene ninguna marca al lado —ni "folio", ni "No:"— y se
+    descartaba. Y sin embargo es la fecha de la compra, ahi misma, con la hora de
+    la caja pegada.
+
+    **Una fecha con hora pegada es una marca por si misma.** El veto que esta
+    regla evita es el vencimiento de un cupon o una garantia, y esos se imprimen
+    como "VENCE EL 31/10/2026": con la palabra, que `VENCIMIENTO_RE` ya filtra.
+    Un vencimiento no lleva hora de caja al lado, porque no es un momento, es un
+    plazo.
+
+    Asi que la hora no relaja la regla: la distingue de la unica cosa contra la
+    que existia, que es una fecha que NO es de este documento.
+    """
+    for linea in lines:
+        if VENCIMIENTO_RE.search(linea):
+            continue
+
+        # Rama nueva: fecha con hora en la misma linea, sin marca que hacer falta.
+        # Se prueba antes que la del identificador porque es mas estrecha y por
+        # tanto mas segura: si hay "No: 0001 06/10/2026 11:30", la rama de abajo
+        # tambien la aceptaria.
+        if HORA_EN_LA_LINEA_RE.search(linea):
+            encontrado = FECHA_SIN_ETIQUETA_RE.search(linea)
+            if encontrado is not None:
+                leida = _a_fecha(*encontrado.groups())
+                if leida is not None:
+                    return leida
+
+        if not MARCA_DEL_COMPROBANTE_RE.search(linea):
+            continue
+
+        encontrado = FECHA_SIN_ETIQUETA_RE.search(linea)
+        if encontrado is None:
+            continue
+
+        leida = _a_fecha(*encontrado.groups())
+        if leida is not None:
+            return leida
+
+    return None
+
+
 class BankTransactionRow(BaseModel):
     transaction_date: date
     amount: Decimal
     description: str
     reference: str | None = None
+
+
+# Un importe solo puede llevar digitos, un signo y separadores. Se acepta tambien
+# el simbolo de la moneda porque algunos exportadores lo meten en la celda
+# ("$1,234.56"), y quitarlo es mejor que rechazar la fila: el importe se puede
+# leer sin problema, lo unico que sobra es la marca.
+_MONEDA = "€$£¥"
+_NO_NUMERO = re.compile(r"[^0-9.,+-]")
+
+
+def _grupos_de_miles(entero: str, sep: str) -> str | None:
+    """El entero sin sus separadores de miles, o `None` si no encaja.
+
+    Encaja cuando, al partir por `sep`, el primer grupo mide de una a tres
+    digitos y TODOS los demas miden exactamente tres. Esa es la unica prueba
+    fiable: "1,234" son mil doscientos, y "1,23" no lo son. El tamano total del
+    numero no ayuda, porque "89.000" y "89.00" ocupan lo mismo en pantalla y
+    significan cosas distintas.
+    """
+    if sep not in entero:
+        return entero
+    grupos = entero.split(sep)
+    if not grupos[0] or not 1 <= len(grupos[0]) <= 3:
+        return None
+    if not all(len(g) == 3 for g in grupos[1:]):
+        return None
+    return "".join(grupos)
+
+
+def _como_decimal(texto: str, sep: str) -> str | None:
+    """Lee `texto` tomando `sep` como decimal. `None` si no cuadra."""
+    entero, _, frac = texto.rpartition(sep)
+    if not entero or not frac or not frac.isdigit():
+        return None
+    entero_limpio = _grupos_de_miles(entero, "." if sep == "," else ",")
+    if entero_limpio is None or not entero_limpio.isdigit():
+        return None
+    return f"{entero_limpio}.{frac}"
+
+
+def _a_decimal(valor: object, decimal_separator: str, thousands_separator: str) -> Decimal:
+    """Convierte el importe de un CSV a `Decimal`.
+
+    Se hace a mano y no delegando en pandas porque los separadores que usan
+    muchos bancos son los INVERSOS de los que pandas asume por omision, y
+    delegar salia mal de dos maneras: rechazar filas que si se podian leer y,
+    peor, guardar un importe cien veces mayor sin avisar. Ver la nota en
+    `parse_bank_csv`.
+
+    **El orden de los intentos es lo que hace que esto funcione.** "1,234.56" es
+    ambiguo: con convencion mexicana (coma decimal) no es un numero valido, y con
+    convencion anglosajona son mil doscientos con cincuenta y seis. Se prueba en
+    este orden, que da la misma respuesta en los dos casos:
+
+      1. El separador DECLARADO como decimal, con uno o dos digitos detras.
+      2. El otro, como decimal, con uno o dos digitos detras.
+      3. El separador DECLARADO como miles, si los grupos miden tres.
+      4. El otro, como miles.
+      5. El declarado como decimal con mas de dos digitos: "0.0001" es un
+         importe legitimo y rechazarlo seria peor que aceptarlo.
+
+    El declarado va primero para que un archivo que SI sigue la convencion que
+    pidio el usuario no se lea con la contraria. Y el paso 3 va antes que el 5
+    porque "1,234" con coma declarada son mil doscientos treinta y cuatro, no uno
+    con doscientos treinta y cuatro milimas: tres digitos exactos es grupo de
+    miles.
+
+    `Decimal` y no `float` por la razon de siempre: 0.1 + 0.2 tiene que dar 0.3
+    en una conciliacion. Con punto flotante, el total de mil tickets acaba en un
+    peso de diferencia que nadie sabe de donde salio.
+    """
+    if valor is None:
+        raise ValueError("importe vacio")
+
+    crudo = str(valor).strip()
+    if not crudo:
+        raise ValueError("importe vacio")
+
+    # Se quita lo que no aporta al numero: "$", "MXN", espacios internos.
+    limpio = _NO_NUMERO.sub("", crudo.replace(_MONEDA, ""))
+
+    if not limpio or limpio in {"+", "-", ".", ","}:
+        raise ValueError(f"importe no numerico: {crudo!r}")
+
+    negativo = limpio.startswith("-")
+    if limpio[0] in "+-":
+        limpio = limpio[1:]
+
+    otro = "," if decimal_separator == "." else "."
+    # (separador, True) = leerlo como miles; (separador, False) = como decimal.
+    intentos = [
+        (decimal_separator, False),
+        (otro, False),
+        (decimal_separator, True),
+        (otro, True),
+    ]
+
+    largo: str | None = None
+    resultado: str | None = None
+
+    for sep, es_miles in intentos:
+        if es_miles:
+            if sep not in limpio:
+                continue
+            entero = _grupos_de_miles(limpio, sep)
+            if entero is not None and entero.isdigit():
+                return Decimal(entero) * (-1 if negativo else 1)
+            continue
+
+        leido = _como_decimal(limpio, sep)
+        if leido is None:
+            continue
+        if len(leido.split(".")[1]) <= 2:
+            resultado = leido
+            break
+        # Un decimal largo solo entra si al final no sirvio ninguna otra.
+        largo = leido
+
+    if resultado is None and limpio.isdigit():
+        resultado = limpio
+    if resultado is None:
+        resultado = largo
+
+    if resultado is None:
+        raise ValueError(f"importe no numerico: {crudo!r}")
+
+    try:
+        numero = Decimal(resultado)
+    except InvalidOperation as exc:
+        raise ValueError(f"importe no numerico: {crudo!r}") from exc
+
+    return -numero if negativo else numero
+
+
+# Cuanto `raw_text` se guarda antes de recortar.
+#
+# No es un capricho de tamano. `raw_text` va a la columna `tickets.raw_text` tal
+# cual, sin tope en la base, y un PDF de Conditions Generales de 200 paginas
+# deja varios MB en una fila. Medido: un archivo de 3 MB de texto entraba
+# completo. Eso no se rompe en la lectura, se rompe en el dia que se listan 100
+# tickets para la cola de revision y la consulta se arrastra cada uno con su
+# documento entero.
+#
+# Se recorta cabeza Y cola, no solo la cabeza, por una razon concreta: en un
+# comprobante los datos que se revisan estan en los dos extremos. El proveedor
+# esta arriba, y el total, el IVA y la fecha de emision casi siempre estan
+# ABAJO, en el bloque de sumas. Un recorte por cabeza guardaria el nombre del
+# comercio y tiraria las cifras, que es justo lo que el revisor necesita
+# contrastar contra el papel.
+RAW_TEXT_MAX_CHARS = 20_000
+_RAW_TEXT_POR_LATIL = 12_000
+
+
+def recortar_raw_text(texto: str) -> str:
+    """Deja el texto en un tamano guardable, sin perder los dos extremos.
+
+    El recorte se marca en el propio texto, y no se marca nada cuando no hubo
+    recorte. Dos razones:
+
+    - Un recorte silencioso hace que el campo parezca completo. El revisor
+      busca "TOTAL 1,100.00" en el `raw_text`, no lo encuentra, y anota que el
+      total no aparece, cuando lo que paso es que se quedo fuera de la ventana.
+    - Marcarlo solo cuando recorta es lo que hace que este texto sea buscable:
+      `raw_text LIKE '%truncado%'` cuenta los documentos de los que no se guardo
+      todo, sin agregar otra columna.
+
+    El texto ya recortado no lleva marca. Volver a recortar un texto que ya
+    esta dentro del tope no debe ensuciarlo con un aviso de algo que no paso.
+    """
+    if len(texto) <= RAW_TEXT_MAX_CHARS:
+        return texto
+
+    cola = RAW_TEXT_MAX_CHARS - _RAW_TEXT_POR_LATIL
+    se_omitieron = len(texto) - RAW_TEXT_MAX_CHARS
+    return (
+        texto[:_RAW_TEXT_POR_LATIL]
+        + f"\n[... {se_omitieron} caracteres omitidos: "
+          f"raw_text se guarda con tope de {RAW_TEXT_MAX_CHARS} ...]\n"
+        + texto[-cola:]
+    )
 
 
 class TicketExtractionResult(BaseModel):
@@ -63,24 +688,158 @@ class TicketExtractionResult(BaseModel):
     # Subtotal del documento, si el documento lo trae. Permite verificar
     # subtotal + IVA == total en el gate, que es el check mas barato que hay.
     subtotal: Decimal | None = None
+    # El IEPS del comprobante, en pesos, SEPARADO del IVA. El gate lo necesita
+    # para que `subtotal + IVA + IEPS == total` cuadre en un comprobante de
+    # supermercado, que es donde el IVA solo nunca alcanza.
+    #
+    # `None` y no `Decimal("0.00")`: `0.00` es "el papel dice que el IEPS es
+    # cero" y `None` es "no hay IEPS aqui o no se leyo". El gate usa la
+    # diferencia: con `None` prueba `subtotal + IVA == total`, que es el caso de
+    # siempre, y solo recurre a la suma con IEPS cuando hay un numero que sumar.
+    #
+    # Esta clase NO estaba en `app/schemas/ticket.py`, que es donde uno lo busca
+    # por el nombre. Por eso el campo llego dos veces a `TicketResponse` y aqui
+    # ninguna: el error se manifesto como `AttributeError` en el escaner, tres
+    # capas mas abajo. Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+    ieps_amount: Decimal | None = None
+    # Las lineas del comprobante, crudas, tal como las devuelve el lector.
+    #
+    # NULL y no `[]`, y la diferencia es de significado: NULL = el lector no
+    # produjo lineas (la ruta OCR no las extrae, solo el LLM). `[]` = produjo
+    # lineas y no eran ninguna. Con las dos en `[]` no se puede distinguir "este
+    # comprobante no tiene detalle" de "no lo sabemos", y la segunda es la que
+    # obliga a mirar el papel.
+    #
+    # No se normaliza aqui a proposito: `inventario_service.interpretar_items` es
+    # el unico que sabe que hacer con una cantidad en texto o ausente, y duplicar
+    # esa logica en el parser daria dos respuestas distintas a "de que forma
+    # vienen las lineas". Ver db/migrations/0010_inventario.sql.
+    items: list[dict] | None = None
+    # Si las lineas suman lo que el ticket DECLARA. `None` cuando no hay con que
+    # comprobarlo, y `None` es un valor de primera clase aqui: no es lo mismo
+    # "no se pudo comprobar" que "se comprobo y no cuadra".
+    #
+    # Es un campo mas y no un `@computed_field` porque aqui NO se puede derivar
+    # solo: hace falta `subtotal` y `total`, que se rellenan mas abajo en este
+    # mismo parseo. El modelo `VerificacionDeItems` de `parser_lineas` es el que
+    # deriva sus cuatro campos internos; este solo lo transporta.
+    #
+    # Lo llena `_parse_receipt_text` DESPUES de tener subtotal y total, que es
+    # el orden unico en que se puede. Ver `parser_lineas.verificar_items`.
+    verificacion_items: VerificacionDeItems | None = None
+    # QUE MODELO RESPONDIO, y de que proveedor. `None` en la ruta de reglas, que
+    # no usa ningun modelo.
+    #
+    # `confidence_source` dice QUE CLASE de lector fue (`llm`, `ocr`, `pdf_text`,
+    # `manual`); esto dice CUAL. La distincion no es academica: dentro de `llm`
+    # conviven motores con tasas de error distintas, asi que sin el nombre no se
+    # puede medir si cambiar de modelo sirvio de algo. Es el mismo argumento que
+    # hizo falta para `ResultadoOCR.motor`.
+    model_name: str | None = None
+    model_provider: str | None = None
     # De donde salio lo que hay en estos campos. Sin esto, todo se guardaba
     # como `llm`, incluso un parseo de regex, y la columna miente sobre de
     # donde salio el dato. Sin esa verdad no se puede medir la exactitud de la
     # IA: se estaria promediando la IA con un regex que casi nunca falla.
     confidence_source: ConfidenceSource = ConfidenceSource.LLM
 
+    @field_validator("raw_text")
+    @classmethod
+    def _topa_raw_text(cls, v: str) -> str:
+        """El tope vive aqui y no en quien arma el resultado.
+
+        Es el mismo argumento que el de `app/core/subida.py`: un control puesto
+        en cada lugar que arma el texto se puede olvidar, y el que se olvide no
+        falla, guarda el documento entero y nadie se entera hasta que listar 100
+        tickets para la cola se arrastra. En el validador no hay forma de
+        saltarselo: todo `TicketExtractionResult` que exista paso por aqui, lo
+        arme el parser de reglas o el modelo.
+        """
+        return recortar_raw_text(v)
+
+
+def _detectar_separador(file_content: bytes) -> str | None:
+    """El separador real de las primeras filas, o `None` si no se puede saber.
+
+    Se lee una muestra en TEXTO y no con `pd.read_csv` porque el problema es
+    justo el del separador: leer con `,` un archivo de `;` devuelve una sola
+    columna, y de ahi no hay forma de distinguir "no hay separador" de "hay uno
+    que no es el que asumimos".
+
+    `csv.Sniffer` se le pasa sobre varias lineas porque con una sola se confunde:
+    un importe con coma decimal parece un CSV de dos columnas.
+    """
+    import csv
+
+    muestra = file_content[:4096]
+    try:
+        texto = muestra.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            texto = muestra.decode("latin-1")
+        except UnicodeDecodeError:
+            return None
+
+    if not texto.strip():
+        return None
+
+    try:
+        return csv.Sniffer().sniff(texto, delimiters=",;\t|").delimiter
+    except csv.Error:
+        # Sin `delimiters`, Sniffer acepta cualquier cosa y puede devolver un
+        # caracter que no separa columnas. Se reintenta acotando, y si tampoco,
+        # se devuelve `None` para que el llamador conserve la coma por omision.
+        try:
+            return csv.Sniffer().sniff(texto).delimiter
+        except csv.Error:
+            return None
+
+
+def _formato_de_que_funciona(
+    df: pd.DataFrame, columna: str, formatos: list[str]
+) -> str | None:
+    """El primer formato que convierte TODAS las filas, o `None`.
+
+    "Todas" es la condicion. Aceptar un formato que funciona en el 90% de las
+    filas deja un archivo a medias: unas filas con fecha y otras sin, y el error
+    sale despues como "fila invalida" sin decir que la fecha es el problema.
+
+    Se mira una muestra de las filas porque un extracto de banco puede tener
+    decenas de miles y aqui solo importa la forma, no el volumen.
+    """
+    if columna not in df.columns:
+        return None
+
+    valores = df[columna].dropna().astype(str).str.strip()
+    valores = valores[valores != ""].head(50)
+    if len(valores) == 0:
+        return None
+
+    for formato in formatos:
+        try:
+            convertidas = pd.to_datetime(valores, format=formato, errors="raise")
+            if convertidas.notna().all():
+                return formato
+        except (ValueError, TypeError):
+            continue
+    return None
+
 
 def parse_bank_csv(
     file_content: bytes,
-    date_column: str = "fecha",
-    amount_column: str = "importe",
-    description_column: str = "concepto",
-    reference_column: str = "referencia",
-    date_format: str = "%d/%m/%Y",
+    # Vacio = "detectalo en el archivo". Ver el comentario de los defaults vacios
+    # en `app/api/bank_transactions.py`. El default historico era un nombre fijo
+    # ("fecha"), y eso hacia imposible distinguir "el cliente lo pide" de "es el
+    # default", con lo que ninguna deteccion podia activarse.
+    date_column: str = "",
+    amount_column: str = "",
+    description_column: str = "",
+    reference_column: str = "",
+    date_format: str = "",
     decimal_separator: str = ",",
     thousands_separator: str = ".",
     encoding: str = "utf-8",
-    separator: str = ",",
+    separator: str = "",
 ) -> list[BankTransactionRow]:
     """
     Parse a CSV file containing bank transactions.
@@ -100,28 +859,207 @@ def parse_bank_csv(
     Returns:
         List of BankTransactionRow objects
     """
+    # Allowlist de codificaciones. Python acepta docenas de codecs; algunos
+    # (utf-7, zlib_codec, bz2_codec, rot_13, etc.) pueden abusarse:
+    # - utf-7 convierte +ADw-script+AD4- en <script> -> XSS si se renderiza sin escape.
+    # - zlib_codec/bz2_codec descomprimen en memoria -> bomba de descompresion.
+    # - raw_unicode_escape, unicode_escape interpretan escapes -> confusion.
+    # El CSV bancario viene de exportadores contables: utf-8, latin-1, cp1252
+    # cubren el 99% de los casos reales. El resto se rechaza con mensaje claro.
+    ENCODINGS_PERMITIDOS = {"utf-8", "latin-1", "cp1252", "iso-8859-1"}
+    if encoding.lower() not in ENCODINGS_PERMITIDOS:
+        raise ValueError(
+            f"Codificacion no permitida: {encoding}. Use utf-8, latin-1 o cp1252."
+        )
+
+    # `dtype=str` y SIN `thousands`/`decimal`: la conversion del importe se hace
+    # abajo, a mano, con los separadores que pidio el usuario.
+    #
+    # Delegarlo en pandas no funciona, y falla de dos maneras distintas segun
+    # cual de los dos argumentos este invertido:
+    #
+    #   - Con `decimal=","` y un importe CON separador de miles ("1,234.56"),
+    #     pandas infiere la columna como texto, no la convierte, y aqui arrive
+    #     como la cadena "1,234.56". `Decimal("1,234.56")` es invalido y la
+    #     fila se rechaza con "fila invalida", sin decir cual.
+    #   - Con `decimal=","` y un importe SIN miles ("890.00"), pandas aplica el
+    #     `.` como separador de miles y guarda 89000.00: cien veces el importe
+    #     real, sin error ni aviso.
+    #
+    # El segundo es el que importa. Un banco que reporta 890.00 y una conciliacion
+    # que guarda 89,000.00 no producen un 400: producen una conciliacion
+    # "correcta" con todos los tickets en discrepancia y ningun indicio de por
+    # que. Leer como texto y convertir aqui hace que el separador que pidio el
+    # usuario sea el unico que cuenta, y que la aritmetica sea la de `Decimal`.
+    # --- 1. Separador, ANTES de leer ---
+    # Un `separator` vacio significa "el cliente no lo especifico, detectalo". Y
+    # tiene que ser ANTES de este `read_csv`: leer con `,` un archivo de `;`
+    # devuelve una sola columna, y de ahi no hay forma de distinguir "no hay
+    # separador" de "hay uno que no es el que asumimos". Sniffear el texto crudo
+    # es lo unico que funciona.
+    #
+    # MEDIDO el 2026-10-12: `Fecha;Descripcion;Importe` daba 400 "Missing required
+    # columns: {'importe','fecha','concepto'}" — las tres, cuando las tres
+    # estaban a la vista separadas por punto y coma. El mensaje era el de "faltan
+    # columnas" porque en verdad habia UNA columna de nombre gigantic.
+    if not separator and file_content:
+        separator = _detectar_separador(file_content) or ","
+
     df = pd.read_csv(
         io.BytesIO(file_content),
         encoding=encoding,
-        thousands=thousands_separator,
-        decimal=decimal_separator,
-        sep=separator
+        sep=separator,
+        dtype=str,
+        keep_default_na=False,
+        na_values=[""],
     )
-    
+
     df.columns = df.columns.str.strip().str.lower()
-    
+
+    # ## DETECTAR EL SEPARADOR Y EL FORMATO DE FECHA, EN VEZ DE EXIGIRLOS
+    #
+    # MEDIDO el 2026-10-12 con CSVs reales de banco mexicano:
+    #
+    #   fecha,importe,concepto / 2026-10-05,-250.00   -> 400 "fila invalida"
+    #   fecha,importe,concepto / 05/10/2026,-250.00    -> 200 OK
+    #   fecha;importe;concepto                          -> 400 "Missing required columns"
+    #   Fecha,Descripcion,Importe                      -> 400 "Missing required columns"
+    #
+    # Tres fallos distintos y la misma causa: se exigia un archivo EXACTO — coma,
+    # fecha dd/mm/aaaa, encabezados en ingles sin acentos, punto decimal— cuando
+    # un banco electronico en Mexico exporta cualquiera de las cuatro variantes y
+    # las cuatro son el mismo archivo. Lo que falla es la forma de la fila, no el
+    # contenido.
+    #
+    # Se resuelve en dos pasos y cada uno es independiente:
+    #
+    #   1. SEPARADOR: `csv.Sniffer` mira las primeras lineas reales. Antes se
+    #      asumia `,` fijo, y un archivo con `;` se leia como UNA sola columna:
+    #      por eso el error era "faltan columnas" y no "separador equivocado",
+    #      que es lo que de verdad habia pasado.
+    #
+    #   2. FECHA: se prueban los formatos en orden de especificidad y se usa el
+    #      primero que convierte TODAS las filas. Antes `date_format` era fijo
+    #      (`%d/%m/%Y`), y un ISO —que es lo que exporta cualquier sistema
+    #      moderno— se rechazaba.
+    #
+    # Lo que NO hace: adivinar una columna que no existe. Si el archivo no trae
+    # un importe reconocible, se sigue diciendo que falta. Detectar el separador
+    # y el formato de la fecha es leer el archivo; inventar de donde sale el
+    # dinero es no.
+
+    # ## SINONIMOS DE ENCABEZADO
+    #
+    # MEDIDO el 2026-10-12: con el mensaje mejorado ("Columnas encontradas:
+    # descripcion, fecha, importe") el error era CLARO pero el archivo seguia sin
+    # leerse, porque el llamador pedia `concepto` y el banco se la llamaba
+    # `descripcion`. Decir "faltan estas, estas hay" sin resolver el nombre es
+    # medio arreglo: el usuario ya sabe el problema pero no tiene forma de
+    # resolverlo desde la pantalla.
+    #
+    # Se resuelve solo cuando el sinonimo es UNIVOCO. Un archivo con `descripcion`
+    # Y `concepto` no se elige por el usuario: seria adivinar cual quiere decir,
+    # y adivinar cual de dos columnas es la correcta es justo la clase de error
+    # que este producto no se permite. En ese caso se sigue pidiendo el nombre
+    # exacto.
+    #
+    # Los nombres vienen en español e ingles porque un banco mexicano exporta en
+    # los dos: el mismo HSBC que pone `Fecha` pone `Descripcion`.
+    SINONIMOS: dict[str, tuple[str, ...]] = {
+        "fecha": ("fecha", "date", "fecha_operacion", "fecha_oper", "f_operation_date"),
+        "importe": ("importe", "amount", "monto", "importe_mxn", "deposito_retiro"),
+        "concepto": (
+            "concepto", "descripcion", "description", "detalle", "concepto_operacion",
+        ),
+        "referencia": ("referencia", "reference", "ref", "folio", "id"),
+    }
+
+    def _resolver(pedido: str, default: str) -> str:
+        """El nombre real de la columna, o el pedido si no se puede saber.
+
+        Un `pedido` VACIO significa "el cliente no especifico nada, busca tu". Es
+        distinto de un pedido con un nombre equivocado: en el primer caso se
+        recorre la lista de sinonimos, y en el segundo se respeta lo que dijo
+        quien lo mando, porque sabe de que columna habla.
+
+        Y si no se encuentra ningun sinonimo se devuelve `default` —"fecha",
+        "importe"— para que el mensaje de error siga nombrando la columna que se
+        buscaba. Devolver "" daria "faltan columnas: , ," que no le dice nada a
+        nadie.
+        """
+        if pedido:
+            # El cliente especifico algo: se usa tal cual, sin adivinar. Que
+            # exista o no en el archivo lo decide el chequeo de `missing` de mas
+            # abajo, que es donde ese error se reporta bien.
+            return pedido
+        for alias in SINONIMOS.get(default, ()):
+            if alias in df.columns:
+                return alias
+        return default
+
+    date_column = _resolver(date_column, "fecha")
+    amount_column = _resolver(amount_column, "importe")
+    description_column = _resolver(description_column, "concepto")
+    reference_column = _resolver(reference_column, "referencia")
+
     required_columns = {date_column, amount_column, description_column}
     missing = required_columns - set(df.columns)
     if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-    
+        # Mensaje con lo que SI hay, no solo con lo que falta: un banco que
+        # exporta `Monto` en vez de `importe` no se arregla con un mensaje que
+        # no dice como se llama la columna. Y se listan las candidatas que se
+        # reconocieron, que es la accion concreta.
+        disponibles = ", ".join(sorted(df.columns))
+        raise ValueError(
+            f"Faltan columnas requeridas: {', '.join(sorted(missing))}. "
+            f"Columnas encontradas: {disponibles}. "
+            "Se puede indicar el nombre exacto con date_column, amount_column y "
+            "description_column."
+        )
+
+    # --- 2. Formato de fecha ---
+    # Se resuelve sobre el contenido REAL del archivo, no sobre una constante.
+    # Un archivo que trae `2026-10-05` y otro que trae `05/10/2026` son los
+    # mismos movimientos y no pueden usar el mismo formato fijo.
+    formatos_a_probar = (
+        # El cliente especifico un formato: se respeta, porque sabe del papel que
+        # esta hablando.
+        [date_format]
+        if date_format
+        # Si no especifico ninguno, se prueban en orden de especificidad. El
+        # orden NO es arbitrario: `%d/%m/%Y` va primero porque es como imprimen
+        # los extractos mexicanos, y va antes que `%m/%d/%Y` porque un banco de
+        # Mexico no usa el orden americano en un extracto que va a un contador en
+        # Mexico. Cuando dos formatos explican las mismas cifras —`01/02/2026` es
+        # ambiguo— gana el del pais.
+        else ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%d.%m.%Y"]
+    )
+    fecha_resuelta = _formato_de_que_funciona(df, date_column, formatos_a_probar)
+
     transactions = []
     for _, row in df.iterrows():
         try:
-            transaction_date = pd.to_datetime(row[date_column], format=date_format).date()
-            # pandas already handles decimal/thousands separators when reading
-            # row[amount_column] is already a float, so convert directly
-            amount = Decimal(str(row[amount_column]))
+            if fecha_resuelta is None and date_format:
+                # El cliente especifico un formato y no funciono con NINGUNA de
+                # las filas. Se respeta su formato y se falla.
+                #
+                # Y se falla, en vez de dejar que pandas infiera, porque el
+                # cliente que especifico el formato sabe del papel que esta
+                # hablando: si dice "%d/%m/%Y" y el archivo trae un ISO, o esta
+                # equivocado el formato o equivocado el archivo, y son dos
+                # problemas distintos. Adivinar uno produce una fecha creible
+                # en la columna equivocada, que es peor que no tener fecha.
+                raise ValueError(f"el formato {date_format!r} no corresponde a los datos")
+
+            if fecha_resuelta is None:
+                # Auto-detectado y ninguna de las muestrasSirvio. Se deja que
+                # pandas infiera: si tampoco puede, la excepcion sube al `except`
+                # de abajo y se reporta como fila invalida, que es lo que el
+                # cliente espera de un archivo ilegible.
+                transaction_date = pd.to_datetime(row[date_column]).date()
+            else:
+                transaction_date = pd.to_datetime(row[date_column], format=fecha_resuelta).date()
+            amount = _a_decimal(row[amount_column], decimal_separator, thousands_separator)
             description = str(row[description_column]).strip()
             reference = str(row[reference_column]).strip() if reference_column in df.columns and pd.notna(row[reference_column]) else None
             
@@ -131,8 +1069,13 @@ def parse_bank_csv(
                 description=description,
                 reference=reference
             ))
-        except Exception as e:
-            raise ValueError(f"Error parsing row: {row.to_dict()}. Error: {e!s}")
+        except Exception:
+            # No se refleja el contenido de la fila ni el error interno: el
+            # cliente recibe un mensaje generico y los detalles quedan en el
+            # log del servidor. Si se refleja la fila, un CSV malicioso con
+            # datos largos en cada columna puede hacer que el mensaje de error
+            # sea enorme y filtrar informacion de otras filas.
+            raise ValueError("Error en el formato del CSV: fila invalida")
     
     return transactions
 
@@ -236,17 +1179,192 @@ def render_pdf_pages(
         documento.close()
 
 
-    return TicketExtractionResult(
-        provider_name=UNKNOWN_PROVIDER,
-        provider_tax_id=None,
-        total_amount=Decimal("0.00"),
-        tax_amount=Decimal("0.00"),
-        # Sin OCR todavia. La fecha se queda en None en vez de ponerse la de
-        # hoy: un ticket sin leer no puede afirmar que se gasto hoy.
-        expense_date=None,
-        category=None,
-        raw_text="[Image OCR not implemented]"
-    )
+# Antes de este punto de la historia habia aqui un `return` con un
+# `TicketExtractionResult` de relleno y `raw_text="[Image OCR not implemented]"`,
+# inalcanzable por quedar despues del `finally`. Se borro por dos razones, y las
+# dos son sobre leer el codigo:
+#
+# - Decia que la imagen no se podia leer, cuando la verdad es que las paginas
+#   renderizadas salen aqui y quien las mira es la cascada de `capture.py`. Un
+#   comentario que afirma lo contrario del comportamiento es peor que nada.
+# - Era la clase de codigo que hace que un bug pase desapercibido. La excepcion
+#   de `render_pdf_pages` se traga en `capture._vision_pdf` y se convierte en un
+#   motivo de cola; ese `return` era la version written de lo mismo, pero sin
+#   llegar a loguearse nunca.
+#
+# Si alguna vez vuelve a hacer falta un resultado vacio, el lugar es
+# `app.services.capture._ilegible`, que si construye uno, y lo marca con el
+# motivo real.
+
+
+def _veces_que_imprime(
+    lines: list[str], valor: Decimal, a_decimal, *, incluir_ahorro: bool = False
+) -> int:
+    """Cuantas veces el documento IMPRIME ese importe, en cualquier linea.
+
+    No se cuenta el texto: se cuentan los importes que se leen. Comparar el
+    numero como cadena daria 1 en vez de 2 cuando el papel escribe `1,100.00` y
+    el OCR lo devuelve como `1100.00`, y una regla que depende de una decision
+    que el parser todavia no ha tomado no puede apoyarse en como se escribio.
+
+    `incluir_ahorro` existe porque **las dos preguntas necesitan filtros
+    distintos, y usar el mismo las hacia las dos falsas**:
+
+    - Para SOSTENER un total, una linea de ahorro no cuenta: `$119.97` impreso
+      dos veces no es un importe que se pueda afirmar.
+    - Para EXPLICAR una diferencia, esa misma linea es justo la prueba: si
+      `subtotal - total = 119.97` y el papel imprime "Usted ahorra $119.97", la
+      diferencia esta explicada y el total es el correcto.
+
+    Con el filtro en los dos, el cupon de descuento parecia un error de lectura,
+    porque la unica linea que lo explicaba era la que se estaba filtrando.
+    """
+    veces = 0
+    for linea in lines:
+        if not incluir_ahorro and AHORRO_EN_LINEA_RE.search(linea):
+            continue
+        for bruto in re.findall(r"[$€]?\s*\d[\d.,]*\d|\d", linea):
+            try:
+                if a_decimal(bruto.strip(" $€")) == valor:
+                    veces += 1
+            except (InvalidOperation, ValueError):
+                continue
+    return veces
+
+
+def _total_mas_corroborado(
+    lines: list[str],
+    total: Decimal,
+    subtotal: Decimal | None,
+    vio_impuesto: bool,
+    a_decimal,
+) -> Decimal:
+    """El total que el documento SOSTIENE, cuando los dos importes se contradicen.
+
+    ## EL CASO MEDIDO, Y POR QUE NO ES "SI NO CUADRA, TOMA EL SUBTOTAL"
+
+    MEDIDO el 2026-10-16 sobre `IMG_4409.heic`, con el papel a la vista:
+
+        papel:  PANTALON GAB 279.93 / SUBTOTAL 279.93 / TOTAL 279.93
+        OCR:    PANTALON SAB 279.93 / SUBTOTAL 279.93 / TOTAL. 219.93
+
+    El OCR leyo bien **dos de las tres** y se comio un glifo en la tercera
+    (`7` -> `1`). El sistema se fio de la linea que dice `TOTAL`, guardo
+    `219.93`, y esa lectura contradicha obligo a pagar **100 s de modelo** para
+    volver al numero que el propio OCR ya habia leido dos veces.
+
+    O sea que el documento **ya decia la respuesta** y nadie lo escucho.
+
+    ## POR QUE PIDE QUE NO HAYA IMPUESTO
+
+    Sin linea de impuesto, el papel dice que `subtotal == total`, por definicion.
+    Si los dos importes difieren, uno de los dos esta mal leido: es una
+    contradiccion que el propio documento declara, y la unica lectura que
+    contradice es la que esta mal.
+
+    **Con linea de impuesto la regla no se aplica, y ese `if` es lo que la
+    salva.** Con IVA, `subtotal != total` es lo NORMAL y tomar el subtotal
+    perderia el impuesto: en el ticket de Aurrera (`217.27 + 8.14 + 8.59 =
+    234.00`) el sistema habria guardado `217.27` como total y habria borrado el
+    IVA del archivo que ve el contador. Una regla que corrige hacia el numero
+    mas bajo no esta midiendo, esta suponiendo.
+
+    ## POR QUE EXIGE CORROBORACION Y NO SOLO QUE DIFIERAN
+
+    Porque "difieren y no hay impuesto" tambien es un cupon de descuento
+    (`SUBTOTAL 279.93`, `TOTAL 159.96`), y ahi el total es el que esta bien.
+
+    Y aqui esta el segundo error que esta regla cometio en su primera version,
+    que el test de contraste caczo antes de que llegara a produccion: contar
+    impresiones **no alcanza**, porque en el cupon el subtotal tambien sale dos
+    veces (linea de partida y `SUBTOTAL`) y el total una, exactamente igual que
+    en DSW. Los dos casos tienen la misma forma.
+
+    Lo que los separa es **la diferencia**. En el cupon, `279.93 - 159.96 =
+    119.97`, y `119.97` es justo lo que el papel imprime como ahorro: la
+    diferencia esta **explicada**. En DSW la diferencia es `60.00`, y `60.00` no
+    aparece en ninguna parte del papel: **nadie la explica**.
+
+    O sea que la regla es una sola frase: **una diferencia que el papel explica
+    no es un error de lectura, y una que el papel no explica, sobre una linea
+    que dice `TOTAL`, si lo es.**
+
+    ## EL LIMITE QUE SE SABE Y NO SE OCULTA
+
+    Si el cupon se imprime solo como porcentaje (`-30%`) y el papel **no**
+    escribe la diferencia en pesos, entonces la diferencia queda sin explicar y
+    la regla la tomaria por un error de lectura. Solo pasa cuando ademas la
+    linea de partida repite el importe ANTES del descuento, que es lo que hace
+    que el subtotal salga dos veces. Es un caso medido como posible y no medido
+    como real, y por eso el comportamiento esta fijado en un test en vez de
+    dejarse a la buena de uno.
+    """
+    if vio_impuesto or subtotal is None or total <= 0 or subtotal <= 0:
+        return total
+    if total == subtotal:
+        return total
+    # Si el papel imprime la DIFERENCIA, el papel la explico: es un descuento, un
+    # recargo o un ajuste, y el total que dice es el que se cobro.
+    diferencia = abs(total - subtotal)
+    if diferencia > 0 and _veces_que_imprime(
+        lines, diferencia, a_decimal, incluir_ahorro=True
+    ) > 0:
+        return total
+    # El papel tiene que SOSTENER al otro: dos impresiones o mas, y el que
+    # pierde exactamente una. Empate, o ninguno con dos, -> no se decide nada.
+    n_total = _veces_que_imprime(lines, total, a_decimal)
+    n_sub = _veces_que_imprime(lines, subtotal, a_decimal)
+    if n_sub >= 2 and n_total == 1:
+        return subtotal
+    return total
+
+
+def _impuesto_incoherente(resultado: TicketExtractionResult) -> TicketExtractionResult:
+    """Un total igual al subtotal NO lleva impuesto encima. El impuesto es cero.
+
+    ## MEDIDO el 2026-10-16: EL MODELO SE INVENTA EL IVA
+
+    `qwen2.5vl:3b` leyo bien el total de los dos tickets que se le pasaron y
+    **fabrico un impuesto que el papel no imprime**:
+
+    | ticket | total | subtotal | IVA devuelto | IVA real |
+    |---|---|---|---|---|
+    | `IMG_4398` | 193.65 | 193.65 | **19.36** | ninguno |
+    | `IMG_4409` | 279.93 | 279.93 | **27.93** | ninguno |
+
+    Un ticket sin desglose no tiene IVA, y el sistema lo metia en revision con
+    `subtotal_plus_tax_mismatch(leido=193.65,esperado=213.01)`: un check
+    FALSO, por un numero que nadie leyo. Peor: `IMG_4398` estaba
+    `AUTO_APROBADO` y el modelo lo dejo en `REQUIERE_REVISION`. O sea que
+    arreglar el total se pago con romper otro ticket.
+
+    ## POR QUE SE RESUELVE HACIA CERO Y NO HACIA "CORREGIR EL SUBTOTAL"
+
+    Porque el total es el unico numero que no se negocia, y las otras dos
+    lecturas son las que se contradicen entre si. Un papel que imprime la
+    MISMA cifra como subtotal y como total esta diciendo que no sumo nada
+    encima: la unica salida que conserva los dos numeros que el documento
+    acepta.
+
+    Y el riesgo del otro lado -"y si el que esta mal es el subtotal?"- se paga
+    en el desglose, no en el monto: el total sigue siendo el que se concilia
+    contra el banco. Un IVA inventado, en cambio, sale en el Excel con el
+    encabezado `IVA` y es un dato falso en un archivo de impuestos.
+
+    Se corrige SOLO cuando la contradiccion es aritmetica y total (`total ==
+    subtotal` y `tax > 0`). Cualquier otro caso lo deja como esta, para que lo
+    vea el gate.
+    """
+    subtotal = resultado.subtotal
+    total = resultado.total_amount
+    impuesto = resultado.tax_amount
+    if subtotal is None or total is None or impuesto is None:
+        return resultado
+    if impuesto <= 0 or total <= 0 or subtotal <= 0:
+        return resultado
+    if total != subtotal:
+        return resultado
+    return resultado.model_copy(update={"tax_amount": Decimal("0.00")})
 
 
 def _parse_receipt_text(text: str) -> TicketExtractionResult:
@@ -258,6 +1376,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     
     provider_name = UNKNOWN_PROVIDER
     total_amount = Decimal("0.00")
+    # Que tan completo es el importe que gano. El total no se decide por la
+    # POSICION de su linea sino por esto: una lectura con centavos no se deja
+    # pisar por una que solo trae un entero suelto. Ver
+    # `_fuerza_de_un_importe` y el caso medido de `IMG_4398`.
+    fuerza_total = 0
     tax_amount = Decimal("0.00")
     # Se queda en None si el documento no trae fecha. Poner la de hoy seria
     # fabricar un dato: el ticket parece fechado hoy y el cierre mensual lo
@@ -269,6 +1392,10 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     # Subtotal del documento, si aparece. El gate lo usa para verificar
     # `subtotal + IVA == total`, que no necesita comparar contra nada externo.
     subtotal: Decimal | None = None
+    # Si el PAPEL imprimio una linea de impuesto. Es un hecho del documento, no
+    # una opinion: lo consume `_total_mas_corroborado`. Ver ahi el por que de
+    # que haga falta saberlo.
+    vio_impuesto = False
     
     import re
 
@@ -348,7 +1475,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     for line in lines[:15]:
         rfc_match = RFC_LABEL_RE.search(line)
         if rfc_match and provider_tax_id is None:
-            provider_tax_id = rfc_match.group(1)
+            # Se rearman los TRES grupos, no se toma el grupo 1. El patron exige
+            # la forma completa (letras + 6 digitos + homoclave) para que un
+            # numero mal leido no entre, y el valor normalizado son los tres
+            # grupos pegados, sin los guiones que algunos tickets traen.
+            provider_tax_id = "".join(rfc_match.groups())
 
         if provider_name != UNKNOWN_PROVIDER:
             continue
@@ -363,7 +1494,16 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             provider_name = line
 
     # Second pass: extract amounts and dates
-    for line in lines:
+    #
+    # `siguiente_no_vacia` es la primera linea con contenido que sigue a la
+    # actual, y se usa para los importes que el ticket imprime en la columna de
+    # al lado de la etiqueta en vez de pegados a ella. Ver la nota del bloque de
+    # "total" mas abajo.
+    for indice, line in enumerate(lines):
+        siguiente_no_vacia = next(
+            (siguiente for siguiente in lines[indice + 1:] if siguiente.strip()),
+            None,
+        )
         # Subtotal. Antes no se extraia y el campo quedaba en None siempre.
         #
         # Sin esto, `subtotal_plus_tax_mismatch` - el check determinista mas
@@ -374,10 +1514,30 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # verificacion, y por eso sus tickets no tenian como se comprobar que
         # estaban bien.
         #
-        # El patron exige whitespace o inicio de linea antes de "subtotal", asi
-        # que "SUBTOTAL" no se confunde con el "TOTAL" de la linea siguiente.
+        # EL BORDE ES CUALQUIER COSA QUE NO SEA UNA LETRA, y no solo whitespace.
+        # Antes exigia `(?:^|\s)`, y con el texto real del OCR eso falla en las
+        # fotos de autocomercio, que empiezan la linea con un caracter de ruido
+        # de la caja de la maquina. Medido sobre los 7 tickets reales:
+        #
+        #     “SUBTOTAL 108.31        <- Bodega Aurrera, comilla tipografica
+        #     «SUBTOTAL 217.27        <- angle bracket
+        #     ; SUBTOTAL 964.00       <- este si entraba
+        #
+        # En los dos primeros el importe ESTABA a la vista y no se leia, y el
+        # ticket iba a la cola con `subtotal` en `None`: la exactitud medida del
+        # subtotal era **20%** (1 de 5). Con el borde relajado sube a **40%**
+        # (2 de 5), y el que se recupera es el de Aurrera: `None` -> `108.31`.
+        #
+        # POR QUE NO SE RELAJA A CUALQUIER CARACTER
+        #
+        # Porque `(?:^|[^\w])` dejaria entrar "xSUBTOTAL", y el requisito original
+        # —que "SUBTOTAL" no se confunda con el "TOTAL" de la linea siguiente— sigue
+        # valiendo. Lo que cambia es que el caracter anterior puede ser punctuation
+        # (`"`, `“`, `«`, `;`, `|`, `=`) y no solo un espacio. `\w` es lo que
+        # excluye una letra o un digito pegados, que es el caso que hay que seguir
+        # rechazando.
         subtotal_match = re.search(
-            r"(?:^|\s)sub[\s-]?total[\s:]*[$€]?\s*([\d.,]+)",
+            r"(?:^|[^\w])sub[\s-]?total[\s:]*[$€]?\s*([\d.,]+)",
             line, re.IGNORECASE,
         )
         if subtotal_match:
@@ -386,30 +1546,140 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             except (InvalidOperation, ValueError):
                 pass
 
-        # Total - look for "TOTAL:" specifically (not SUBTOTAL)
-        total_match = re.search(r"(?:^|\s)total[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
-        if total_match and "subtotal" not in line.lower():
-            try:
-                total_amount = parse_mexican_number(total_match.group(1))
-            except (InvalidOperation, ValueError):
-                pass
+        # Una linea de AHORRO no aporta el total, aunque traiga la palabra.
+        # Ver `AHORRO_EN_LINEA_RE`: el caso medido es `Usted ahorra en Total:
+        # $119.97`, que hacia que DSW leyera el precio ya descontado como si fuera
+        # lo que se pagó.
+        #
+        # Se salta la linea COMPLETA (subtotal, total y el fallback de la linea
+        # siguiente) y no solo el `total_match`. Un `continue` en vez de un `if`
+        # anidado, porque el filtro es del renglon entero: una linea que es un
+        # ahorro no tiene ni total ni subtotal, y preguntarle por los dos
+        # separadamente es dejar que el mismo numero entre por la otra puerta.
+        #
+        # Y el filtro va DESPUES de `siguiente_no_vacia` porque ese valor no
+        # depende de la linea: se calcula antes y lo consume el bloque del total.
+        #
+        # El que NO se filtra por esto es el proveedor: la primera pasada del
+        # parser (arriba) corre sobre `lines` enteras y este filtro es de aqui
+        # para abajo. Un comercio puede llamarse "AHORRO EXPRESS" y perder su
+        # nombre por un filtro pensado para los importes.
+        if AHORRO_EN_LINEA_RE.search(line):
+            continue
+
+# Total - look for "TOTAL:" specifically (not SUBTOTAL)
+        #
+        # EL QUE GANA ES EL MAS FUERTE, NO EL ULTIMO.
+        #
+        # MEDIDO el 2026-10-15 en `IMG_4398.heic`, que esta en la base con esta
+        # forma exacta. El texto del OCR trae tres lineas que dicen "total":
+        #
+        #     Total $ 193.65 =                    <- la etiqueta CON su importe
+        #     oe Nenta total 5 (c) 19S Be         <- ruido de caja del OCR
+        #     Total despues del ahorro $ 193 65   <- filtrada por el ahorro
+        #
+        # Con "gana la ultima" el ticket se guardaba con `total 5.00` cuando el
+        # papel decia `193.65`. Con el ruido **antes** de la linea buena, el
+        # mismo texto daba `193.65`: o sea que la etiqueta `Total $` SI se leia
+        # bien y lo que la perdia era el criterio de desempate.
+        #
+        # Y la regla NO es "gana la primera" ni "gana la ultima": es "la que
+        # declara un importe COMPLETO no se deja pisar por una que declara un
+        # entero suelto". Ver `_fuerza_de_un_importe`, que es donde estan el
+        # criterio y el por que.
+        #
+        # Entre dos candidatos de la MISMA fuerza gana el ULTIMO, que es lo que
+        # hacia este parser desde siempre. No es una decision nueva: es la que se
+        # conserva a proposito, porque cambiar las dos variables a la vez
+        # (fuerza y desempate) haria imposible atribuir el efecto de ninguna.
+        # En un ticket el total va al final, despues del subtotal y del IVA.
+        total_match = re.search(r"(?:^|[^\w])total[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
+        if not _es_linea_de_subtotal(line):
+            candidato = (
+                _importe_de_bruto(total_match.group(1), parse_mexican_number)
+                if total_match
+                else None
+            )
+            if candidato is None:
+                candidato = _total_tras_la_etiqueta(
+                    line, siguiente_no_vacia, parse_mexican_number
+                )
+            if candidato is not None and candidato[1] >= fuerza_total:
+                total_amount, fuerza_total = candidato
 
         # IVA - word-anchored so product names containing "iva"/"tax" don't match
         tax_match = re.search(r"\b(?:iva|tax|impuesto)\b(?:\s*\(\d+(?:[.,]\d+)?\s*%\))?[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
         if tax_match:
             try:
                 tax_amount = parse_mexican_number(tax_match.group(1))
+                vio_impuesto = True
             except (InvalidOperation, ValueError):
                 pass
 
         # Date - prefer "Fecha Expedicion" or "Fecha:" patterns
-        date_match = re.search(r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line, re.IGNORECASE)
-        if date_match:
+        #
+        # Orden: primero el que empieza por el anio, despues el dia/mes/anio.
+        #
+        # No es un orden arbitrario y los dos patrones no se pisan. El de
+        # dia/mes/anio (`\d{1,2}`) no puede morder "2025/03/15": tendria que
+        # tomar "20" y luego esperar una barra donde hay un "2", y el
+        # retroceso a un solo digito tampoco cuadra. Y el de anio/mes/dia
+        # (`\d{4}`) no puede morder "15/03/2025" porque no hay cuatro digitos
+        # seguidos al inicio. Se pueden probar en cualquier orden, y se prueba
+        # el mas especifico primero para que quede claro cual de los dos
+        # respondio.
+        #
+        # El patron `\d{4}[/-]` existia solo con guiones (ISO). Los tickets de
+        # autocomercio en Mexico imprimen la fecha como "2025/03/15", con
+        # barras, y eso no caia en ninguno de los dos: la fecha se perdia y el
+        # ticket iba a la cola con `date_missing` habiendole leido bien todo lo
+        # demas. Un comprobante con RFC, subtotal, IVA y total, y sin fecha, es
+        # un comprobante que el gate no puede cerrar y una persona tiene que
+        # teclear la fecha a mano.
+        anio_primero = re.search(
+            r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{4}[/-]\d{1,2}[/-]\d{1,2})(?!\d)",
+            line,
+            re.IGNORECASE,
+        )
+        if anio_primero:
             try:
-                expense_date = pd.to_datetime(date_match.group(1), dayfirst=True).date()
+                expense_date = pd.to_datetime(anio_primero.group(1)).date()
             except (ValueError, TypeError):
                 pass
-        else:
+
+        if expense_date is None:
+            date_match = re.search(
+                r"(?:fecha\s*(?:expedicion|emision)?)[\s:]*(\d{1,2}[/-]\d{1,2}[/-]\d{2}(?:\d{2})?)(?!\d)",
+                line,
+                re.IGNORECASE,
+            )
+            # `_a_fecha` y no `pd.to_datetime(..., dayfirst=True)`, y no por
+            # estetica: `dayfirst` resuelve la ambiguedad 03/04/2026 con una
+            # HEURISTICA de `dateutil` que ademas AVISA en vez de fallar. En un
+            # escaneo de 400 comprobantes eso son 400 avisos que nadie lee, y el
+            # dia que se apague el aviso la fecha cambia sola. Es el mismo motivo
+            # que el docstring de `_a_fecha`.
+            #
+            # Y el ano son DOS o CUATRO digitos, nunca tres. MEDIDO, sobre una
+            # foto real (IMG_4398):
+            #
+            #     o 02 Fecha: 08/10/202¢ iH tap i
+            #
+            # El OCR se comio el "6" de "2026". Con `\d{2,4}` el ano leido eran
+            # TRES digitos y el parser devolvia `date(202, 10, 8)`, que se
+            # imprime `0202-10-08`: una fecha CONCRETA y FALSA, con la forma de
+            # un dato leido. El gate la marca `date_too_old`, pero eso es
+            # defenderse tarde -- lo que sale hacia la cola es un ano que el
+            # papel nunca tuvo. Con `\d{2}(?:\d{2})?` el mismo texto no
+            # matchea, y no se pierde ninguna fecha real porque un ano de tres
+            # digitos no existe en ningun comprobante.
+            if date_match:
+                partes = re.split(r"[/-]", date_match.group(1))
+                leida = _a_fecha(*partes)
+                if leida is not None:
+                    expense_date = leida
+
+        if expense_date is None:
             # ISO format: alone, with a time component, or followed by anything.
             # `(?!\d)` instead of `\b` because "15T10:20" has no word boundary
             # between the date and the time ("5" and "T" are both word chars).
@@ -423,20 +1693,83 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # RFC - emitter (first one found wins)
         rfc_match = RFC_LABEL_RE.search(line)
         if rfc_match and provider_tax_id is None:
-            provider_tax_id = rfc_match.group(1)
-    
+            # Se rearman los TRES grupos, no se toma el grupo 1. El patron exige
+            # la forma completa (letras + 6 digitos + homoclave) para que un
+            # numero mal leido no entre, y el valor normalizado son los tres
+            # grupos pegados, sin los guiones que algunos tickets traen.
+            provider_tax_id = "".join(rfc_match.groups())
+
+    # Fecha pegada al identificador del comprobante, cuando no hay ninguna con
+    # etiqueta. Va DESPUES del bucle y no dentro, por una razon que se sintio al
+    # escribirlo: dentro, la primera linea con una fecha gana, y en un ticket la
+    # primera fecha no es la del gasto. Fuera, se comparan todas y se elige.
+    # Ver `_fecha_del_comprobante`.
+    if expense_date is None:
+        expense_date = _fecha_del_comprobante(lines)
+
     # Fallback: if no total found, try generic total match
+    #
+    # EL FILTRO DE AHORRO TAMBIEN AQUI, y es la mitad del arreglo. El `continue`
+    # de arriba saca la linea de ahorro del bucle principal, pero este fallback
+    # reescanea `lines` COMPLETAS desde el final, y si no vuelve a filtrar entra
+    # por esta puerta: con el filtro solo en el bucle, DSW seguia leyendo 119.97
+    # y el arreglo no hacia nada. Medido.
+    #
+    # Se repite el `search` en vez de calcular la lista una vez porque son dos
+    # bucles en lugares distintos del codigo y unirlos "por limpieza" seria tocar
+    # el bucle principal para arreglar el fallback. Si el filtro cambia, hay que
+    # cambiarlo en los dos: por eso el nombre del patron y el motivo estan ahi
+    # arriba y no repartidos en las dos llamadas.
+    #
+    # Y AQUI TAMBIEN GANA EL MAS FUERTE, con el MISMO criterio. Antes esta puerta
+    # se llevaba la PRIMERA coincidencia que encontraba Barriendo el texto al
+    # reves —o sea, la ULTIMA linea del documento—, y es el mismo defecto que el
+    # del bucle principal: una linea de ruido escrita despues gana por estar
+    # despues. Se recorre igual (al reves) y no se rompe en el primer acierto: se
+    # sigue buscando por si hay algo mas fuerte. Entre iguales se queda con la
+    # primera que aparece en este recorrido, que es el comportamiento anterior.
     if total_amount == Decimal("0.00"):
+        mejor: tuple[Decimal, int] | None = None
         for line in reversed(lines):
+            if AHORRO_EN_LINEA_RE.search(line):
+                continue
             total_match = re.search(r"(?:^|\s)(?:total|importe)[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
-            if total_match:
-                try:
-                    total_amount = parse_mexican_number(total_match.group(1))
-                    break
-                except (InvalidOperation, ValueError):
-                    pass
+            if not total_match:
+                continue
+            candidato = _importe_de_bruto(total_match.group(1), parse_mexican_number)
+            if candidato is not None and (mejor is None or candidato[1] >= mejor[1]):
+                mejor = candidato
+        if mejor is not None:
+            total_amount, fuerza_total = mejor
+
+    # ## EL TOTAL QUE EL DOCUMENTO SOSTIENE
+    #
+    # Va DESPUES del bucle y del fallback, y antes de armar el resultado, porque
+    # necesita los tres: el total que gano, el subtotal, y si el papel imprimio
+    # alguna linea de impuesto. Ver `_total_mas_corroborado`: es lo que hace que
+    # `IMG_4409` salga en 279.93 sin gastar 100 s de modelo.
+    total_amount = _total_mas_corroborado(
+        lines, total_amount, subtotal, vio_impuesto, parse_mexican_number
+    )
     
-    return TicketExtractionResult(
+    # Las lineas de este parseo. `None` y no `[]`, y NO por pereza: esta funcion
+    # recibe TEXTO PLANO, y `parser_lineas.leer_lineas` necesita GEOMETRIA —las
+    # cajas `x0`/`x1` de `image_to_data`— para saber que el ultimo numero de
+    # una linea es su importe. Sin coordenada no hay forma de distinguir
+    # `COCA COLA 1.5L 35.00` de `COCA COLA 1.5L`, y adivinarlo seria inventar el
+    # detalle de partidas de un ticket que no lo tiene.
+    #
+    # El `None` dice exactamente eso: "este lector no produce lineas". Quien las
+    # tiene es el LLM (`ai_extractor.ExtractedInvoice.items`) y el OCR con
+    # geometria (`capture.py` -> `leer_lineas`). Por eso `verificacion_items` sale
+    # con `veredicto=NADA` en esta ruta, y eso es correcto, no una falta.
+    items = None
+
+    # El IVA se corrige AL FINAL y sobre el resultado armado, para que la regla
+    # no tenga que volver a saber de donde salio cada numero. Y entra por la
+    # misma puerta que la del modelo, asi que las dos lecturas quedan sujetas al
+    # mismo criterio y no solo las reglas. Ver `_impuesto_incoherente`.
+    return _impuesto_incoherente(TicketExtractionResult(
         provider_name=provider_name,
         provider_tax_id=provider_tax_id,
         total_amount=total_amount,
@@ -447,4 +1780,28 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # Sin esto, el gate nunca recibe el subtotal de la ruta de reglas y el
         # check `subtotal_plus_tax_mismatch` no puede activarse nunca.
         subtotal=subtotal,
-    )
+        # El check de que las LINEAS suman lo que declara el encabezado.
+        #
+        # Va aqui y no dentro del gate porque necesita `subtotal` y `total`, y
+        # los dos se resuelven a lo largo de este parseo: se calcula al final,
+        # con los numeros ya en la mano. Ponerlo antes daria `subtotal_declarado
+        # = None` siempre, y un `None` aqui significa "no se pudo comprobar", que
+        # es distinto de "comprobado y no cuadra" — y esa distincion es la que
+        # hace que la voz de la gente se apague ante los avisos.
+        #
+        # La ruta por reglas no extrae lineas, asi que aqui esto sale SIEMPRE
+        # con `items=[]` y `veredicto=NADA`. Solo el LLM trae el detalle de
+        # partidas, y ahi `verificar_items` si hace su trabajo.
+        #
+        # OJO con lo que este comentario afirmaba antes del 2026-10-10: decia que
+        # el campo "se llena de verdad cuando... el OCR aporta geometria
+        # (`parser_lineas.leer_lineas`)". **Eso era falso**: `leer_lineas` no
+        # tenia un solo caller en `app/`, y sus tres unicas referencias aqui
+        # eran comentarios. El camino de geometria se borro junto con sus
+        # mutaciones, que protegian una rama que el producto no ejecutaba. Ver
+        # el docstring de `app/services/parser_lineas.py`.
+        #
+        # Si algun dia se quiere volver, el cable es
+        # `ocr.ResultadoOCR.cajas -> leer_lineas`, y hay que escribirlo.
+        verificacion_items=verificar_items(items, subtotal=subtotal, total=total_amount),
+    ))

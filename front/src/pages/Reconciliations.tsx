@@ -1,13 +1,47 @@
-import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate } from '../services/api';
+import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate, type Reconciliation } from '../services/api';
 import { companiesApi } from '../services/api';
 import { useState, useEffect } from 'react';
-import { 
-  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState 
+import {
+  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState
 } from '../components/ui';
 
+/**
+ * Un importe, o un guion si no hay dato.
+ *
+ * ESTE ES EL ARREGLO DE FONDO, mas que las columnas. Antes cada celda hacia
+ * `Number(x).toLocaleString()` sobre un campo que no existia, y `Number(undefined)`
+ * es `NaN`: por eso se veia `$NaN` en vez de "no hay dato". UnHelpers asi no
+ * puede decir "$NaN", porque el unico camino que produce un guion es `null`.
+ *
+ * La regla que sigue es la de R7 y la del informe de cierre: **un dato que no se
+ * conoce se dice con guion y jamas con cero**. `null` es "no disponible"; `$0.00`
+ * seria "se midio y dio cero", que es una afirmacion que nadie hizo.
+ */
+function dinero(valor: string | number | null | undefined): string {
+  if (valor === null || valor === undefined || valor === '') return '—';
+  const n = Number(valor);
+  return Number.isNaN(n) ? '—' : `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// La fecha de esta pantalla NO es decorativa: es la que cruza el gasto con el
+// movimiento del banco, y la que el revisor mira para decidir si concilian.
+// MEDIDO el 2026-10-12: `new Date('2026-10-01')` es medianoche UTC y Mexico es
+// UTC-6, asi que un gasto del 1 de octubre se mostraba como 30 de septiembre
+// —al lado de un movimiento que si es del 1— y la fila parecia no cuadrar cuando
+// el problema era la pantalla. Se delega en `utils/format.ts`, que parte el texto
+// en vez de pasar la cadena por `Date`.
+import { fecha } from '../utils/format';
+
 export function Reconciliations() {
-  const [reconciliations, setReconciliations] = useState<any[]>([]);
-  const [companies, setCompanies] = useState<any[]>([]);
+  // ## POR QUE ESTOS DOS ESTADOS YA NO SON `any[]`
+  //
+  // MEDIDO el 2026-10-10: eran `useState<any[]>`, y el `any` borro la
+  // comprobacion de tipos que habria detectado que las columnas leian campos
+  // que la API no manda. Resultado: `tsc` en verde y la pantalla llena de
+  // `$NaN`. Un `any` en un estado que viene de la red no es atajo, es borrar el
+  // unico sitio donde se podia ver el error antes de que llegara a un humano.
+  const [reconciliations, setReconciliations] = useState<Reconciliation[]>([]);
+  const [companies, setCompanies] = useState<{ id: string; name: string; tax_id: string }[]>([]);
   const [mappings, setMappings] = useState<AccountingMapping[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +93,20 @@ export function Reconciliations() {
     companiesApi.list().then(setCompanies).catch(() => {});
   }, [selectedCompany]);
 
+  // ## POR QUE EL RESULTADO SE MUESTRA DENTRO DEL MODAL Y NO DETRAS
+  //
+  // MEDIDO el 2026-10-12: al pulsar "Ejecutar" el motor corria, devolvia 200, las
+  // cifras se actualizaban en la pagina... y el modal SE QUEDABA ABIERTO con el
+  // mismo formulario de siempre. El `runResult` se pintaba en una tarjeta de la
+  // pagina, DEBAJO del modal, asi que el usuario veia el formulario otra vez y
+  // ningun aviso de que algo habia pasado. Sin la fila de resultado a la vista,
+  // el unico sintoma de que la conciliacion corrio es que las cifras de atras
+  // cambiaron, y solo si se cierra el modal.
+  //
+  // Por eso el boton de Ejecutar se cambia por el resultado cuando ya hay
+  // resultado: el modal pasa de "configurar" a "esto es lo que salio". Cerrar y
+  // volver a abrir vuelve al formulario, porque `runResult` se limpia al cerrar
+  // (ver el `onClose` del modal mas abajo).
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -157,14 +205,14 @@ export function Reconciliations() {
         </div>
       </div>
 
-      <Card className="p-4">
+      <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
             <select
               value={selectedCompany}
               onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Seleccionar empresa...</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
@@ -207,17 +255,63 @@ export function Reconciliations() {
             ) : (
               <Table
                 columns={[
-                  { key: 'match_status', header: 'Estatus', render: (r: any) => (
+                  { key: 'match_status', header: 'Estatus', render: (r: Reconciliation) => (
                     <Badge variant={matchBadges[r.match_status] || 'default'}>{r.match_status}</Badge>
                   )},
-                  { key: 'ticket_provider', header: 'Proveedor (Ticket)', render: (r: any) => <span className="font-medium">{r.ticket_provider}</span> },
-                  { key: 'ticket_amount', header: 'Monto Ticket', render: (r: any) => <span className="font-medium">${Number(r.ticket_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-                  { key: 'ticket_date', header: 'Fecha Ticket', render: (r: any) => new Date(r.ticket_date).toLocaleDateString('es-MX') },
-                  { key: 'bank_description', header: 'Desc. Banco', render: (r: any) => <span className="max-w-xs truncate block">{r.bank_description}</span> },
-                  { key: 'bank_amount', header: 'Monto Banco', render: (r: any) => <span className={`font-medium ${Number(r.bank_amount) >= 0 ? 'text-green-700' : 'text-red-700'}`}>${Number(r.bank_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-                  { key: 'bank_date', header: 'Fecha Banco', render: (r: any) => new Date(r.bank_date).toLocaleDateString('es-MX') },
-                  { key: 'amount_diff', header: 'Diff Monto', render: (r: any) => <span className={Number(r.amount_diff) === 0 ? 'text-green-700' : 'text-red-700'}>${Number(r.amount_diff).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-                  { key: 'date_diff_days', header: 'Diff Días', render: (r: any) => <span>{r.date_diff_days}</span> },
+                  // ## POR QUE ESTAS COLUMNAS LEEN DE ABAJO Y NO DE ARRIBA
+                  //
+                  // MEDIDO el 2026-10-10: estas nueve columnas leian campos
+                  // PLANOS (`r.ticket_amount`, `r.bank_amount`, `r.date_diff_days`)
+                  // contra una respuesta que los trae ANIDADOS en `ticket` y
+                  // `bank_transaction`. Cinco celdas salian `$NaN` y
+                  // `Invalid Date` en pantalla.
+                  //
+                  // Y no lo cazaba `tsc` porque el estado era `useState<any[]>`:
+                  // el `any` borraba justamente la comprobacion que lo habria
+                  // detectado. Por eso el tipo es `Reconciliation` y no `any`, y
+                  // por eso un campo mal escrito ahora se ve al compilar.
+                  { key: 'ticket_provider', header: 'Proveedor (Ticket)', render: (r: Reconciliation) => (
+                    // `truncate` y no solo `max-w-xs`: con el OCR de una foto el
+                    // proveedor sale largo y Media texto lo partia en tres lineas,
+                    // lo que estiraba la fila y empujaba las dos ultimas columnas
+                    // fuera de la vista. Un nombre que no cabe entero se recorta
+                    // con puntos y el tooltip lo deja legible.
+                    <span className="block max-w-[12rem] truncate font-medium" title={r.ticket?.provider_name ?? ''}>
+                      {r.ticket?.provider_name ?? '—'}
+                    </span>
+                  )},
+                  { key: 'ticket_amount', header: 'Monto Ticket', render: (r: Reconciliation) => (
+                    <span className="font-medium">{dinero(r.ticket?.total_amount)}</span>
+                  )},
+                  { key: 'ticket_date', header: 'Fecha Ticket', render: (r: Reconciliation) => (
+                    <span>{fecha(r.ticket?.expense_date)}</span>
+                  )},
+                  { key: 'bank_description', header: 'Desc. Banco', render: (r: Reconciliation) => (
+                    <span className="block max-w-[14rem] truncate" title={r.bank_transaction?.description ?? ''}>
+                      {r.bank_transaction?.description ?? '—'}
+                    </span>
+                  )},
+                  { key: 'bank_amount', header: 'Monto Banco', render: (r: Reconciliation) => (
+                    <span className={Number(r.bank_transaction?.amount) >= 0 ? 'text-green-700' : 'text-red-700'}>
+                      {dinero(r.bank_transaction?.amount)}
+                    </span>
+                  )},
+                  { key: 'bank_date', header: 'Fecha Banco', render: (r: Reconciliation) => (
+                    <span>{fecha(r.bank_transaction?.transaction_date)}</span>
+                  )},
+                  // `null` aqui es "no se pudo comprobar", y se dice con guion:
+                  // un `$0.00` afirmaría que se midió y dio cero, que es lo que
+                  // R7 prohíbe. Mismo trato que `exactitud` en el informe de cierre.
+                  { key: 'amount_diff', header: 'Diff Monto', render: (r: Reconciliation) => (
+                    r.amount_diff == null
+                      ? <span className="text-gray-400">—</span>
+                      : <span className={Number(r.amount_diff) === 0 ? 'text-green-700' : 'text-red-700'}>{dinero(r.amount_diff)}</span>
+                  )},
+                  { key: 'date_diff_days', header: 'Diff Días', render: (r: Reconciliation) => (
+                    r.date_diff_days == null
+                      ? <span className="text-gray-400">—</span>
+                      : <span>{r.date_diff_days}</span>
+                  )},
                 ]}
                 data={reconciliations}
                 keyField="id"
@@ -252,7 +346,7 @@ export function Reconciliations() {
                     <div key={m.id} className="p-3 bg-gray-50 rounded-lg flex items-center justify-between">
                       <div>
                         <p className="font-medium">{m.software_name}</p>
-                        <p className="text-sm text-gray-500">Creada: {new Date(m.created_at).toLocaleDateString('es-MX')}</p>
+                        <p className="text-sm text-gray-500">Creada: {fecha(m.created_at)}</p>
                       </div>
                     </div>
                   ))}
@@ -263,14 +357,70 @@ export function Reconciliations() {
         </>
       ) : (
         <Card>
-          <EmptyState 
-            message="Selecciona una empresa para acceder a la conciliación y exportaciones"
-            icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>}
-          />
+          {companies.length === 0 ? (
+            <EmptyState 
+              message="No hay empresas registradas. Crea una para empezar a conciliar."
+              icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" /></svg>}
+            />
+          ) : (
+            <EmptyState 
+              message="Selecciona una empresa para acceder a la conciliación y exportaciones"
+              icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>}
+            />
+          )}
         </Card>
       )}
 
-      <Modal isOpen={showRunModal} onClose={() => { setShowRunModal(false); setRunResult(null); }} title="Ejecutar Conciliación Automática">
+      {/* El modal tiene DOS estados, y el segundo es el que faltaba. Antes de correr
+          el motor es un formulario; despues, el resultado. Y el resultado va
+          AQUI DENTRO, no en la tarjeta de la pagina: MEDIDO el 2026-10-12, el
+          `runResult` se renderizaba en el cuerpo, que queda detras de este
+          overlay `z-50`. El usuario pulsaba "Ejecutar", el motor corria, y lo
+          unico que veia era el mismo formulario otra vez.
+
+          El titulo cambia con el estado porque el titulo es lo primero que se
+          lee: si dice "Ejecutar" cuando ya se ejecuto, el usuario pulses otra
+          vez. */}
+      <Modal
+        isOpen={showRunModal}
+        onClose={() => { setShowRunModal(false); setRunResult(null); }}
+        title={runResult ? 'Resultado de la conciliación' : 'Ejecutar Conciliación Automática'}
+      >
+        {runResult ? (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              El motor comparó {runResult.total_tickets} tickets contra{' '}
+              {runResult.total_bank_transactions} movimientos bancarios.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div><p className="text-sm text-gray-500">PERFECT</p><p className="text-2xl font-bold text-green-700">{runResult.perfect_matches}</p></div>
+              <div><p className="text-sm text-gray-500">MANUAL</p><p className="text-2xl font-bold text-yellow-700">{runResult.manual_review}</p></div>
+              <div><p className="text-sm text-gray-500">DISCREPANCY</p><p className="text-2xl font-bold text-red-700">{runResult.discrepancies}</p></div>
+              <div><p className="text-sm text-gray-500">Sin cruzar</p><p className="text-2xl font-bold">{runResult.unmatched_tickets}</p></div>
+            </div>
+            {runResult.discrepancies > 0 && (
+              <p className="text-sm text-amber-800">
+                Hay {runResult.discrepancies} {runResult.discrepancies === 1 ? 'discrepancia' : 'discrepancias'}: hay un movimiento en la fecha correcta con otro monto, y eso lo tiene que ver una persona.
+              </p>
+            )}
+            {runResult.perfect_matches + runResult.manual_review === 0 && runResult.unmatched_tickets > 0 && (
+              <p className="text-sm text-gray-600">
+                No se cruzó nada. Si no hay movimientos bancarios importados, el motor no tiene contra qué comparar.
+              </p>
+            )}
+            <div className="flex justify-end gap-3 pt-4 border-t">
+              <Button variant="secondary" type="button" onClick={() => { setShowRunModal(false); setRunResult(null); }}>
+                Cerrar
+              </Button>
+              <Button
+                type="button"
+                onClick={() => { setRunResult(null); }}
+              >
+                Ejecutar otra vez
+              </Button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleRun} className="space-y-4">
           <p className="text-sm text-gray-600">El motor comparará tickets vs movimientos bancarios por monto y fecha.</p>
           <div className="grid grid-cols-2 gap-4">
@@ -286,6 +436,7 @@ export function Reconciliations() {
             <Button type="submit" disabled={runLoading}>{runLoading ? 'Conciliando...' : 'Ejecutar'}</Button>
           </div>
         </form>
+        )}
       </Modal>
 
       <Modal isOpen={showExportModal} onClose={() => { setShowExportModal(false); setExportLoading(false); }} title={`Exportar ${exportFormat.toUpperCase()}`}>
@@ -300,6 +451,34 @@ export function Reconciliations() {
           </div>
           {exportFormat === 'generic' && (
             <Input label="Columnas (separadas por coma)" value={exportParams.columns} onChange={e => setExportParams({...exportParams, columns: e.target.value})} placeholder="Fecha,Proveedor,Total,Estatus Conciliacion" />
+          )}
+          {exportFormat === 'contpaqi' && (
+            /* Esto no es un aviso decorativo: es la diferencia entre un archivo
+             * utilizable y uno que el contador no puede subir. Sin plantilla, las
+             * ocho columnas que CONTPAQI necesita (TipoComprobante, Serie, Folio,
+             * Moneda, TipoCambio, MetodoPago, UsoCFDI, Cuenta) salen VACIAS.
+             *
+             * Antes salian con literales fijos del backend — Moneda="MXN",
+             * TipoCambio="1.0000" — que un contador decia al verlos y leia como
+             * "el sistema lo determino". Para un comprobante en USD eso es falso,
+             * y sin marca de error. Ahora la celda vacia dice "no lo se", que es
+             * verdad y se corrige a mano. El archivo no se importa igual sin
+             * plantilla, y por eso se dice ANTES de descargar y no despues. */
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-sm text-amber-900">
+                <strong>Sin plantilla, el archivo sale incompleto.</strong> Las columnas de
+                tipo de comprobante, serie, folio, moneda, tipo de cambio, metodo de pago, uso
+                CFDI y cuenta van vacias: el sistema no las inventa, porque un valor inventado
+                en una celda se ve igual que uno real.
+              </p>
+              <button
+                type="button"
+                onClick={() => { setShowExportModal(false); setExportLoading(false); setShowMappingModal(true); }}
+                className="mt-2 text-sm text-amber-900 underline"
+              >
+                Crear una plantilla de mapeo
+              </button>
+            </div>
           )}
           <div className="flex justify-end gap-3 pt-4 border-t">
             <Button variant="secondary" type="button" onClick={() => { setShowExportModal(false); setExportLoading(false); }}>Cancelar</Button>

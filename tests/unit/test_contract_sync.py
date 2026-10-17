@@ -384,6 +384,67 @@ class TestLosCamposDelTicketCoinciden:
             f"  El frontend espera y el backend no emite: {sorted(front - back)}"
         )
 
+    def test_la_pantalla_muestra_el_documento_original(self):
+        """Las dos pantallas que revisan un documento tienen que abrirlo.
+
+        La cola de revision dice "corrige contra el documento original" y el
+        muestreo dice "contrasta cada fila contra el documento original". Las dos
+        instrucciones eran mentira hasta que el documento se empezo a guardar:
+        el sistema lo leia y lo tiraba, y lo unico que se podia ver era el texto
+        que el modelo habia transcrito. Contrastar la transcripcion del modelo
+        contra si misma no verifica nada.
+
+        Se comprueban las dos pantallas porque el fallo es por omision: si una
+        tiene el enlace y la otra no, la que no lo tiene sigue funcionando
+        (el `raw_text` sigue ahi), y nadie se da cuenta de que esa pantalla
+        # Fallo grave y silencioso: la pantalla sigue "funcionando" con el
+        # `raw_text`, asi que nadie se da cuenta de que esa pantalla revisa a
+        # ciegas.
+        """
+        cola = _leer(RAIZ / "front" / "src" / "pages" / "ReviewQueue.tsx")
+        muestreo = _leer(RAIZ / "front" / "src" / "pages" / "SpotCheck.tsx")
+        componente = _leer(
+            RAIZ / "front" / "src" / "components" / "TicketDocumento.tsx"
+        )
+
+        for nombre, texto in (("la cola de revision", cola), ("el muestreo", muestreo)):
+            assert "VerDocumento" in texto, (
+                f"{nombre} no muestra el comprobante original. Sin el, se revisa "
+                f"contra el `raw_text`, que es lo que el sistema transcribio: "
+                f"contrastar eso contra si mismo no verifica la lectura."
+            )
+
+        # El enlace tiene que salir del token, no de un `src` pelado. Un
+        # `<img src={documento_url}>` contra un endpoint que exige cabecera
+        # `Authorization` se ve como un recuadro vacio, sin error, y el revisor
+        # concluye que el documento no existe.
+        assert "ticketsApi.documento" in componente, (
+            "el comprobante tiene que descargarse con el token; un `src` a la "
+            "URL de la API se ve vacio porque no manda la cabecera de "
+            "autorizacion, y eso no se distingue de un documento que no esta"
+        )
+
+    def test_el_frontend_declara_los_campos_del_documento(self):
+        """El contrato del documento tiene que existir en los dos lados.
+
+        No por simetria con el test de arriba, sino por lo que pasa si falta: el
+        backend emite `tiene_documento` y el frontend no lo declara, la pantalla
+        no puede distinguir un ticket de captura manual de uno al que se le perdio
+        el archivo, y quien revisa decide sin ver el papel. El muestreo sigue
+        dando numeros y nadie se entera de que se estan midiendo a ciegas.
+
+        Se comprueban los tres y no solo el booleano: la URL sin el booleano no
+        alcanza para decidir si pintar el enlace, y el tamano sin la URL no deja
+        avisar cuanto pesa antes de descargarlo.
+        """
+        front = self._campos_del_frontend()
+        for campo in ("tiene_documento", "documento_url", "documento_tamano"):
+            assert campo in front, (
+                f"`{campo}` lo emite el backend y el frontend no lo declara. "
+                f"Sin el, la cola de revision y el muestreo no pueden mostrar el "
+                f"comprobante original, y el veredicto se decide sin verlo."
+            )
+
     def test_lo_que_el_backend_puede_dejar_nulo_tambien_se_declara_nulo(self):
         """Un `T | None` del backend que el frontend tipa sin `| null` miente.
 
@@ -408,4 +469,80 @@ class TestLosCamposDelTicketCoinciden:
             f"{mentirosos}. O se marca `| null` en api.ts, o el backend deja de "
             "poder devolverlo; lo que no puede ser es que los dos digan cosas "
             "distintas."
+        )
+
+
+class TestElComprobanteOriginalLlegaAGuardado:
+    """El frontend no puede crear tickets sin guardar el papel.
+
+    El flujo de subida era: POST /tickets/extract (preview, no persiste nada) y
+    despues POST /tickets/, que es captura MANUAL. El `File` se soltaba en el
+    paso 1, asi que por la UI ningun ticket tenia comprobante original.
+
+    No daba error: la pantalla se veia igual. Lo unico que se perdia eran los
+    bytes, y el muestreo de exactitud comparaba la transcripcion del modelo
+    contra si misma, sin ningun original contra el cual contrastar.
+    """
+
+    def _tickets_ts(self) -> str:
+        return _leer(RAIZ / "front" / "src" / "pages" / "Tickets.tsx")
+
+    def test_la_pantalla_conserva_el_archivo_que_extrajo(self):
+        fuente = self._tickets_ts()
+        assert re.search(r"useState<File\s*\|\s*null>", fuente), (
+            "La pantalla debe conservar el File para poder adjuntarlo despues. "
+            "Sin ese estado, el comprobante original se pierde entre la "
+            "extraccion y el guardado."
+        )
+
+    def test_la_extraccion_guarda_el_archivo_en_ese_estado(self):
+        fuente = self._tickets_ts()
+        bloque = re.search(r"const handleExtract[\s\S]*?\n  \};", fuente)
+        assert bloque, "No se encontro handleExtract en Tickets.tsx"
+        assert re.search(r"setPendingFile\(\s*file\s*\)", bloque.group(0)), (
+            "handleExtract recibe el File y no lo guarda. El endpoint de preview "
+            "no persiste nada, asi que ese File es la unica copia que queda."
+        )
+
+    def test_el_guardado_adjunta_el_comprobante(self):
+        bloque = re.search(r"const handleSubmit[\s\S]*?\n  \};", self._tickets_ts())
+        assert bloque, "No se encontro handleSubmit en Tickets.tsx"
+        assert "subirDocumento" in bloque.group(0), (
+            "handleSubmit crea el ticket pero no adjunta el comprobante. El "
+            "ticket queda sin original y el muestreo de exactitud pierde su "
+            "contraste."
+        )
+
+    def test_el_fallo_del_comprobante_no_deshace_el_ticket(self):
+        """Perder el archivo es recuperable; perder el gasto, no.
+
+        El backend guarda la fila y los bytes con un SAVEPOINT separado, justo
+        para que un archivo que no se pudo guardar no se lleve el ticket. El
+        frontend tiene que comportarse igual: si subirDocumento falla, el ticket
+        ya existe y hay que decirlo, no tragarselo.
+        """
+        bloque = re.search(r"const handleSubmit[\s\S]*?\n  \};", self._tickets_ts())
+        assert bloque, "No se encontro handleSubmit en Tickets.tsx"
+        cuerpo = bloque.group(0)
+        assert re.search(
+            r"try\s*\{[\s\S]*?subirDocumento[\s\S]*?\}\s*catch", cuerpo
+        ), (
+            "subirDocumento necesita su propio try/except dentro de handleSubmit. "
+            "Si su error sube al catch general, el usuario pierde el ticket ya "
+            "creado porque el archivo no se pudo subir."
+        )
+        assert cuerpo.index("subirDocumento") < cuerpo.index("setShowModal(false)"), (
+            "El comprobante se adjunta antes de cerrar el modal."
+        )
+
+    def test_el_preview_no_crea_ningun_ticket(self):
+        """El preview no guarda nada. Por eso el File tiene que sobrevivir."""
+        api = _leer(RAIZ / "front" / "src" / "services" / "api.ts")
+        extract = re.search(r"extract:[\s\S]*?\n  \},", api)
+        assert extract, "No se encontro ticketsApi.extract"
+        cuerpo = extract.group(0)
+        assert "/tickets/extract" in cuerpo
+        assert "/tickets/'" not in cuerpo, (
+            "ticketsApi.extract deberia pegar solo a /tickets/extract. Si ademas "
+            "crea, el preview deja de ser un preview."
         )

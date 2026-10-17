@@ -34,7 +34,26 @@ venv.bak/
 
 # IDE
 .idea/
-.vscode/
+
+# .vscode/ se versiona, pero SOLO con dos archivos. No con la carpeta entera.
+#
+# Razon: un settings.json versionado se vuelve de confianza por estar ahi, y en
+# VS Code un archivo de settings puede ejecutar codigo sin que el usuario lo
+# note. "terminal.integrated.profiles" redefine la terminal, "python.analysis
+# .extraPaths" cambia de donde se resuelve un modulo, "http.proxy" desvía el
+# trafico y "security.workspace.trust.enabled: false" desactiva la pregunta de
+# confianza del workspace. Son ajustes, no scripts, y por eso no los delata un
+# review de codigo.
+#
+# Por eso el resto sigue ignorado: anadir un launch.json o un extensions.json
+# tiene que ser un acto deliberado, no algo que llega con un "git add .".
+#
+# `tests/unit/test_vscode_settings.py` falla si aparece cualquiera de esas claves
+# en los dos archivos que si se versionan.
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+
 *.swp
 *.swo
 *~
@@ -75,6 +94,15 @@ front/build/
 front/.vite/
 front/*.local
 
+# El .gitignore global de este equipo ignora package-lock.json, pero el lockfile
+# SI es parte del proyecto: front/Dockerfile y front/Dockerfile.prod instalan
+# con `npm ci`, y `npm ci` sin lockfile aborta con EUSAGE ("can only install
+# with an existing package-lock.json"). Sin esto el build del front funciona en
+# la maquina donde alguien lo tiene en disco y falla en cualquier clone limpio.
+# Las reglas del repo ganan sobre las del global, asi que esto no es decorativo:
+# se comprobo quitando el archivo.
+!front/package-lock.json
+
 # Docker
 .docker/
 
@@ -92,9 +120,19 @@ test-files/*.pdf
 .ipynb_checkpoints
 
 # Environment files
+#
+# Estos NUNCA se versionan. `.env.dev` contiene el SECRET_KEY y el password de
+# la base de datos de esta maquina. El commit 9226f67 los saco del historico, pero
+# eso no protege el archivo que esta en el disco ahora.
+#
+# La plantilla SI se versiona, y por eso el `!` despues: sin el, el patron
+# `.env*` tambien se la lleva.
 .env
 .env.local
 .env.*.local
+.env.dev
+.env.*.dev
+!.env.example
 
 # IDE specific
 *.sublime-project

@@ -40,6 +40,53 @@ OPEN_STATUSES = (
 )
 
 
+class EstadoAutorizacion(str, Enum):
+    """Si una persona autorizo el gasto. Y NO es lo mismo que haberlo leido bien.
+
+    ## POR QUE NO VA EN `ExtractionStatus`
+
+    `ExtractionStatus` responde **"como se leyo el papel"**. `AUTO_APROBADO`
+    significa que el automatismo se responsabiliza de la lectura, y eso no es que
+    alguien haya autorizado el gasto: no lo miro nadie. Meter la autorizacion ahi
+    seria afirmar que un gasto que leyo solo una maquina quedo autorizado por
+    alguien, y sobre todo haria que el cierre de mes no pudiera distinguir las dos
+    cosas, que es justo lo que el cierre tiene que poder decir.
+
+    Son tres maquinas de estado ya, y por eso este archivo las mantiene juntas y
+    separadas:
+
+    | enum | pregunta |
+    |---|---|
+    | `ExtractionStatus` | como se leyo el papel |
+    | `MatchStatus` | si cuadra con el banco |
+    | `EstadoAutorizacion` | si una persona lo autorizo |
+
+    ## POR QUE `RECHAZADA` EXIGE MOTIVO
+
+    Porque "no" sin razon no es un dato: es una queja. Un rechazo sin motivo no se
+    puede aprender ni corregir, y la constraint de la base
+    (`ck_tickets_autorizacion_firmada`) lo prohibe igual que el codigo, para que
+    un `UPDATE` a mano tampoco lo salte.
+    """
+
+    PENDIENTE = "PENDIENTE"
+    APROBADA = "APROBADA"
+    RECHAZADA = "RECHAZADA"
+
+    @property
+    def abierta(self) -> bool:
+        """Estados que todavia necesitan que alguien decida."""
+        return self is EstadoAutorizacion.PENDIENTE
+
+
+# Los que bloquean el cierre de un mes: un gasto autorizado y uno rechazado ya
+# tienen una decision; uno pendiente no la tiene.
+ESTADOS_DE_AUTORIZACION_DECIDIDOS = (
+    EstadoAutorizacion.APROBADA,
+    EstadoAutorizacion.RECHAZADA,
+)
+
+
 class ConfidenceSource(str, Enum):
     """De donde salio el dato, para auditar que tan confiable es."""
 
@@ -48,6 +95,53 @@ class ConfidenceSource(str, Enum):
     RULES = "rules"          # parser deterministico por regex
     LLM_VALIDATED = "llm_validated"  # LLM que ademas paso validacion de consistencia
     PDF_TEXT = "pdf_text"    # texto extraido de PDF digital (sin IA)
+    OCR = "ocr"              # OCR local sobre la foto, y reglas sobre su texto
+
+    # OCR es un valor aparte y no una variante de `LLM` por una razon concreta:
+    # el reporte de exactitud agrupa por `confidence_source`. Si una foto leida
+    # por OCR se guardara como `llm`, su acierto se sumaria al del modelo y la
+    # cuenta "que tan bien lee el modelo" incluiria lecturas que el modelo no
+    # hizo. Un numero de exactitud que mezcla dos lectores distintos no
+    # describe a ninguno de los dos, y es exactamente el fallo que este enum
+    # existe para que no se pueda cometer por descuido.
+    #
+    # El riesgo real es que el dia que se conecte EasyOCR y PaddleOCR, cada uno
+    # con su tasa de error, el mismo valor "ocr" los promedie y el resultado no
+    # signifique nada. Si aparece un segundo motor, se agrega el valor
+    # (`ocr_tesseract`, `ocr_easyocr`) y no se reetiqueta el existente: cambiar
+    # el significado de una cadena ya persistida hace que los historiales
+    # antiguos se lean con el criterio de hoy.
+
+
+class ScanStatus(str, Enum):
+    """Estado de un archivo dentro de la carpeta escaneada.
+
+    Es el estado del ARCHIVO, no el del ticket. No son la misma maquina y no se
+    derivan una de la otra: un archivo puede estar `PROCESADO` y su ticket en
+    `REQUIERE_REVISION`, porque el archivo se leyo bien y lo que habia en el
+    papel no daba para cerrarlo. Confundir los dos fue el error de diseño de la
+    primera version de esta tabla, y hacia que un reintento de OCR pareciera
+    estar fallando cuando lo que estaba pendiente era la revision de una
+    persona.
+
+    Los estados:
+    PENDIENTE     -> visto en la carpeta, todavia sin leer
+    PROCESADO     -> leido; hay ticket ligado (nuevo o actualizado)
+    DUPLICADO     -> mismos bytes que un archivo ya procesado; no se relee
+    ERROR         -> se intento y no se pudo; `attempts` y `last_error` lo dicen
+    NO_SOPORTADO  -> el formato no es del dominio (no es PDF ni imagen)
+    """
+
+    PENDIENTE = "PENDIENTE"
+    PROCESADO = "PROCESADO"
+    DUPLICADO = "DUPLICADO"
+    ERROR = "ERROR"
+    NO_SOPORTADO = "NO_SOPORTADO"
+
+    @property
+    def is_open(self) -> bool:
+        """Estados en los que un reintento tiene sentido."""
+        return self in (ScanStatus.PENDIENTE, ScanStatus.ERROR)
 
 
 class SourceType(str, Enum):
@@ -160,3 +254,138 @@ class SpotCheckStatus(str, Enum):
 # muestra grande es AFIRMAR un numero, y para eso el reporte dice cuantos
 # faltan en vez de dejar que se reporte un porcentaje sin respaldo.
 SPOT_CHECK_RATE = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Compra: de la factura digitalizada a la entrada al inventario
+# ---------------------------------------------------------------------------
+#
+# NO CONFUNDIR CON `ExtractionStatus` (arriba). Son dos maquinas de estado
+# distintas y estan en tablas distintas, por una razon concreta:
+#
+# `ExtractionStatus` responde "como se leyo el papel". `EstadoCompra` responde
+# "el inventario ya conto esto". Un ticket puede estar AUTO_APROBADO —el
+# sistema se responsabiliza de la lectura— y aun asi su compra estar en
+# EN_REVISION, porque que la lectura sea buena no dice nada sobre si las LINEAS
+# son las correctas. El gate evalua los campos del encabezado y nunca miro una
+# linea de producto. Fusionarlos seria afirmar que una lectura buena del total
+# es una lectura buena del contenido, que es justo el salto que este proyecto
+# no puede sostener (AGENTS.md, "Gate de confianza").
+#
+# La transicion que importa es EN_REVISION -> PROCESADO: es la unica que suma
+# stock, y la unica que hace una persona.
+
+
+class ProductoOrigen(str, Enum):
+    """Quien puso el producto en el catalogo.
+
+    No es decorativo: decide si el producto merece fe. `MANUAL` lo creo una
+    persona, mirando el producto. `OCR` salio de una linea de comprobante leida
+    a las 11 de la noche.
+
+    La lista tiene que coincidir con la constraint `ck_productos_origen` de
+    db/migrations/0011_productos_origen.sql, por el mismo motivo que
+    `SpotCheckStatus` con la suya.
+    """
+
+    MANUAL = "MANUAL"
+    OCR = "OCR"
+
+
+class EstadoCompra(str, Enum):
+    """Donde esta la orden de compra en su camino al inventario.
+
+    La lista tiene que coincidir con la constraint `ck_compras_estado` de
+    db/migrations/0010_inventario.sql, por el mismo motivo que
+    `SpotCheckStatus` con la suya: si divergen, se escribe un estado nuevo en
+    Python y la base lo rechaza al registrarlo, en produccion.
+    """
+
+    PROCESAR = "PROCESAR"        # se esta digitalizando y extrayendo
+    EN_REVISION = "EN_REVISION"  # extraida; esperando que alguien la autorice
+    PROCESADO = "PROCESADO"      # autorizada; YA sumo stock
+    RECHAZADO = "RECHAZADO"      # descartada por una persona; NO suma stock
+
+    @property
+    def mueve_stock(self) -> bool:
+        """Si estar en este estado significa que el inventario ya sumo.
+
+        MEDIDO el 2026-10-10: esta propiedad **no la usa nadie en `app/`**. Este
+        docstring afirmaba que la hacen `confirmar_compra` y el archivado, y que
+        evita "cinco comparaciones repetidas". Ninguna de las dos cosas es cierta:
+        ambas comparan `estado is PROCESADO` directamente. Vive con un solo test.
+
+        Se deja, y no por descuido: es la expresion del invariante ("solo
+        PROCESADO mueve stock") en un solo lugar, y duplicarla en el codigo que
+        hoy la compara a mano es peor que tener la propiedad sin usar. Si se
+        conecta de verdad, este comentario se borra en el mismo commit.
+
+        `RECHAZADO` y `PROCESAR` no mueven. `RECHAZADO` es el estado nuevo de
+        `POST /inventario/compras/{id}/rechazar`, y existe para que "esta compra
+        no es una compra" sea un dato guardable y no una compra olvidada en la
+        cola. Ver `db/migrations/0013_compras_rechazable.sql`.
+        """
+        return self is EstadoCompra.PROCESADO
+
+
+class TipoMovimiento(str, Enum):
+    """El signo del movimiento en el kardex.
+
+    `cantidad` SIEMPRE positiva. El signo lo da el tipo, no el numero, para que
+    una resta nunca se confunda con "no hay cantidad" y para que el kardex se
+    pueda sumar con un simple SUM sin depender del signo almacenado.
+
+    ENTRADA suma stock (compra). SALIDA lo resta (venta). AJUSTE es la correccion
+    manual cuando el conteo fisico y el sistema no coinciden.
+
+    EL SIGNO DE `AJUSTE` NO ESTA DEFINIDO, Y POR ESO NO SE ESCRIBE DIRECTO
+    ---------------------------------------------------------------------
+
+    `AJUSTE` es la correccion cuando el conteo fisico y el sistema no coinciden, y
+    eso pasa en las DOS direcciones: se conto de mas, o se conto de menos. Un
+    solo valor de enum no puede decir cual de las dos es, y `cantidad` es positiva
+    por `ck_movimientos_cantidad_positiva`, asi que el signo no puede viajar en el
+    numero.
+
+    Se resuelve en `inventario_service.registrar_ajuste`: un AJUSTE se escribe
+    como el tipo que SI tiene signo (`ENTRADA` si se conto de menos, `SALIDA` si
+    de mas) y con `referencia_tipo = 'AJUSTE'`, que es lo que dice que la fila es
+    una correccion y no una compra.
+
+    Por que no se agrega un tipo `AJUSTE_SALIDA`: porque entonces el signo
+    estaria en el tipo Y en el nombre del tipo, y "suma" y "resta" dejarian de
+    ser la pregunta de una sola palabra. Ver `TipoMovimiento.suma_stock`.
+
+    El enum conserva `AJUSTE` porque es el nombre de `referencia_tipo`, que si es
+    una categorizacion real: de donde viene la fila, no que le hace al stock.
+    """
+
+    ENTRADA = "ENTRADA"
+    SALIDA = "SALIDA"
+    AJUSTE = "AJUSTE"
+
+    @property
+    def suma_stock(self) -> bool:
+        """Si este tipo mueve el stock hacia arriba.
+
+        MEDIDO el 2026-10-10, y corrige lo que este docstring afirmaba:
+        **`stock_de()` NO consulta esta propiedad.** Replica el filtro en SQL
+        (`tipo IN (...)`). La defensa viva del signo es el trigger de Postgres
+        y el `CASE WHEN tipo = 'SALIDA'`, y se verifican con
+        `scripts/verify_postgres_inventario.py`.
+
+        Esta propiedad queda como la lectura en Python de la misma regla, con un
+        solo test. Lo que NO se puede decir es que sea "la unica fuente de verdad":
+        hay dos, y estan en SQL. Si alguna vez divergen, el sintoma es un 409 sin
+        explicacion: la base rechaza un movimiento que la API acepto.
+
+        Y antes de que existiera esta propiedad, NO coincidian. Medido sobre el
+        DDL de `db/init.sql`: el trigger hacia `IF tipo = 'ENTRADA' THEN suma
+        ELSE resta`, o sea que trata `AJUSTE` como resta, mientras que `stock_de`
+        lo suma con `tipo IN ('ENTRADA', 'AJUSTE')`. Era inerte porque la unica
+        via que escribia movimientos era `confirmar_compra`, y esa solo produce
+        `ENTRADA`. Se volvio vivo con `POST /inventario/movimientos`.
+
+        Verificado contra Postgres real en `scripts/verify_postgres_inventario.py`.
+        """
+        return self is not TipoMovimiento.SALIDA

@@ -62,10 +62,16 @@ class TestBankCSVParser:
         assert transactions[1].amount == Decimal("-89.90")
 
     def test_parse_csv_missing_required_columns_raises(self):
+        # El mensaje cambio de ingles a espanol Y ahora lista las columnas que si
+        # hay. MEDIDO el 2026-10-12: un CSV de punto y coma.reportaba "Missing
+        # required columns: {importe,fecha,concepto}" cuando las tres estaban a
+        # la vista. El mensaje describia la consecuencia de leer mal el separador,
+        # no la causa, y mandaba a buscar un problema de nombres donde no habia
+        # ninguno. Ver `tests/unit/test_csv_detecta_forma.py`.
         csv_content = b"""fecha,otro_campo
 15/01/2025,valor
 """
-        with pytest.raises(ValueError, match="Missing required columns"):
+        with pytest.raises(ValueError, match="Faltan columnas requeridas"):
             parse_bank_csv(
                 csv_content,
                 date_column="fecha",
@@ -73,11 +79,37 @@ class TestBankCSVParser:
                 description_column="concepto"
             )
 
+    def test_el_error_lista_las_columnas_que_si_hay(self):
+        """Un mensaje de "faltan columnas" sin decir cuales hay es medio arreglo.
+
+        El usuario ya sabe que algo falta, pero no tiene forma de resolverlo si
+        no sabe como se llaman las columnas del archivo. Este test falla si se
+        vuelve al mensaje seco de antes.
+        """
+        csv_content = b"""fecha,otro_campo
+15/01/2025,valor
+"""
+        with pytest.raises(ValueError) as exc:
+            parse_bank_csv(
+                csv_content,
+                date_column="fecha",
+                amount_column="importe",
+                description_column="concepto"
+            )
+        mensaje = str(exc.value)
+        assert "otro_campo" in mensaje, f"no lista las columnas que hay: {mensaje}"
+        assert "fecha" in mensaje
+
     def test_parse_csv_invalid_date_format_raises(self):
+        # Cuando el cliente FUERZA un formato que no corresponde a los datos, se
+        # respeta su formato y el archivo se rechaza. MEDIDO el 2026-10-12: sin
+        # formato explicito el backend ahora DETECTA el que sea (ISO incluido), y
+        # este caso —"yo se que mi papel usa dd/mm y aqui hay un ISO"— tiene que
+        # seguir fallando, porque ahi el cliente si sabe del papel que habla.
         csv_content = b"""fecha,importe,concepto
 2025-01-15,-125.50,PAGO
 """
-        with pytest.raises(ValueError, match="Error parsing row"):
+        with pytest.raises(ValueError, match="Error en el formato del CSV"):
             parse_bank_csv(
                 csv_content,
                 date_column="fecha",
@@ -85,6 +117,25 @@ class TestBankCSVParser:
                 description_column="concepto",
                 date_format="%d/%m/%Y"
             )
+
+    def test_iso_se_detecta_sin_formato_explicito(self):
+        """La contraparte del de arriba: sin formato, un ISO SI se lee.
+
+        Este es el fallo que se reporto desde el principio. Un banco que exporta
+        `2025-01-15` daba 400 con el `date_format` fijo de `%d/%m/%Y`, y no habia
+        forma de que el usuario dijera "es ISO" porque el front no mandaba nada:
+        el valor venia por omision. Ahora se omite y se detecta.
+        """
+        csv_content = b"""fecha,importe,concepto
+2025-01-15,-125.50,PAGO
+"""
+        transactions = parse_bank_csv(
+            csv_content,
+            date_column="fecha",
+            amount_column="importe",
+            description_column="concepto",
+        )
+        assert transactions[0].transaction_date.isoformat() == "2025-01-15"
 
     def test_parse_csv_empty_file_returns_empty_list(self):
         csv_content = b"""fecha,importe,concepto
@@ -96,6 +147,142 @@ class TestBankCSVParser:
             description_column="concepto"
         )
         assert transactions == []
+
+
+class TestElImporteNoSeCorrompe:
+    """El importe que entra es el importe que se guarda.
+
+    Estos tests existen por un bug que era peor que un fallo: no daba error, se
+    guardaba el numero equivocado. Delegar la conversion de la columna en los
+    argumentos `thousands`/`decimal` de `read_csv` funciona solo cuando coinciden
+    con lo que pandas asume por omision, y los bancos usan las dos convenciones.
+    Con la mexicana (coma decimal, punto de miles) un importe de 890.00 se
+    guardaba como 89000.00: cien veces mas caro, sin un 400, sin un aviso, y
+    con una conciliacion que parecia correcta porque todos los tickets aparecian
+    en discrepancia y no habia forma de saber por que.
+    """
+
+    def test_importe_con_punto_no_se_toma_como_miles(self):
+        """El caso que corrompia importes. Sin miles, el punto es decimal."""
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,890.00,GASOLINA,REF1
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert txs[0].amount == Decimal("890.00")
+
+    def test_importe_con_miles_se_lee_como_importe(self):
+        """Con miles declarados, el grupo se quita en vez de_DECIMALIZARSE."""
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,"1,234.56",MATERIAL,REF1
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert txs[0].amount == Decimal("1234.56")
+
+    def test_importe_mexicano_con_puntos_de_miles(self):
+        csv_content = b"""fecha;importe;concepto
+20/09/2026;1.234,56;MATERIAL
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+            separator=";",
+        )
+        assert txs[0].amount == Decimal("1234.56")
+
+    def test_importe_con_simbolo_de_moneda(self):
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,"$1,234.56",MATERIAL,REF1
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert txs[0].amount == Decimal("1234.56")
+
+    def test_solo_miles_sin_decimal(self):
+        """Tres digitos exactos son grupo de miles, no tres decimales."""
+        csv_content = b"""fecha;importe;concepto
+20/09/2026;1,234;RENTA
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+            separator=";",
+        )
+        assert txs[0].amount == Decimal("1234")
+
+    def test_importe_con_menos_de_dos_digitos_es_decimal(self):
+        csv_content = b"""fecha;importe;concepto
+20/09/2026;1,23;IMPUESTO
+"""
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+            separator=";",
+        )
+        assert txs[0].amount == Decimal("1.23")
+
+    def test_importe_no_numerico_rechaza_la_fila(self):
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,N/D,PAGO,REF1
+"""
+        with pytest.raises(ValueError, match="Error en el formato del CSV"):
+            parse_bank_csv(
+                csv_content,
+                date_format="%d/%m/%Y",
+                decimal_separator=",",
+                thousands_separator=".",
+            )
+
+    def test_importe_vacio_rechaza_la_fila(self):
+        csv_content = b"""fecha,importe,concepto,referencia
+20/09/2026,,PAGO,REF1
+"""
+        with pytest.raises(ValueError, match="Error en el formato del CSV"):
+            parse_bank_csv(
+                csv_content,
+                date_format="%d/%m/%Y",
+                decimal_separator=",",
+                thousands_separator=".",
+            )
+
+    def test_la_suma_de_los_importes_no_deriva(self):
+        """La razon de usar `Decimal`: cien tickets de 0.10 deben sumar 10.00.
+
+        Con `float`, esta asercion falla. Con `Decimal` pasa, y es la que
+        protege la conciliacion: si el total de la columna de importes tiene un
+        peso de diferencia, todos los tickets de ese lote caen en discrepancia.
+        """
+        filas = "\n".join(
+            f"20/09/2026,0.10,PAGO {i},R{i}" for i in range(100)
+        )
+        csv_content = f"fecha,importe,concepto,referencia\n{filas}\n".encode()
+        txs = parse_bank_csv(
+            csv_content,
+            date_format="%d/%m/%Y",
+            decimal_separator=",",
+            thousands_separator=".",
+        )
+        assert len(txs) == 100
+        assert sum(t.amount for t in txs) == Decimal("10.00")
 
 
 class TestTicketExtraction:
@@ -271,6 +458,276 @@ TOTAL: $89.50
         """
         text = "TIENDA\nTOTAL: $100.00\n"
         assert _parse_receipt_text(text).expense_date is None
+
+
+# Texto con la FORMA que devolvio Tesseract sobre la foto real `IMG_4220.jpeg`,
+# recortado a las lineas que deciden la fecha. La fecha real es 28/09/26 y la
+# dice el papel en la linea del folio.
+#
+# POR QUE ESTE TEXTO NO ES EL REAL
+#
+# Es la misma forma con nombres inventados, y esa es la decision correcta: el
+# caso que dio origen a la regla es la FORMA de la linea ("una fecha de
+# vencimiento mas arriba, una fecha junto al folio mas abajo"), no el comercio
+# concreto. Poner el texto real metia en el repositorio el nombre, el domicilio
+# y el numero de folio de una tienda de verdad, que es exactamente lo que este
+# proyecto no hace con los comprobantes: `scripts/medir_precision_ocr.py` por
+# eso exige que la verdad rotulada viva FUERA del repo. Un test fixture no es
+# una excepcion a esa regla.
+#
+# Lo que si se conserva del texto real, porque es lo que prueba el caso: la
+# palabra "VENCEN" mas arriba (para que la fecha de vencimiento no gane), el
+# folio con "#" delante de la fecha, el anio de dos digitos, y el ruido del OCR
+# ("TOTAL AN" en vez de "TOTAL:", que es como se lee el papel).
+TEXTO_OCR_CON_FECHA_EN_EL_FOLIO = """CARNICERIA EJEMPLO SA DE CV
+AV. FICTICIO NO. 100 COL. CENTRO CP 00000
+TUS PUNTOS VENCEN: 31/10/2026
+#0000000 28/09/26 09:52 POS #01 TDA 0000
+TOTAL AN $97.56
+"""
+
+
+class TestLaFechaQueVaPegadaAlFolio:
+    """La fecha sin etiqueta, en la linea del identificador del comprobante."""
+
+    def test_la_fecha_del_folio_se_lee(self):
+        """La regresion que motivo la regla.
+
+        El texto OCR de la foto real trae "#0436110 28/09/26 09:52" y ningun
+        patron con etiqueta la encuentra: no hay "fecha" delante. Antes de esta
+        regla el ticket iba a la cola con `date_missing` habiendole leido bien
+        el proveedor, el total y el IVA.
+        """
+        resultado = _parse_receipt_text(TEXTO_OCR_CON_FECHA_EN_EL_FOLIO)
+        assert resultado.expense_date == date(2026, 9, 28)
+
+    def test_un_anio_de_dos_digitos_se_agrupa_en_el_siglo_que_toca(self):
+        """`28/09/26` es 2026, no 1926.
+
+        El corte en 68 es el de POSIX. Un comprobante de 1926 no existe en este
+        producto, y aceptarlo mandaria el gasto a un periodo que el gate marca
+        como `date_too_old`: mejor que la regla lo rechace con un motivo claro.
+        """
+        texto = "TIENDA\nFOLIO 5521 28/09/26 09:52\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 9, 28)
+
+    def test_el_vencimiento_no_gana_aunque_venga_primero(self):
+        """`TUS PUNTOS VENCEN: 31/10/2026` es el vencimiento de unos puntos.
+
+        Es la unica fecha de la foto antes de la del folio, asi que una regla
+        de "primera fecha que encuentres" mete el comprobante de una compra de
+        septiembre en el mes de octubre. Y `date_in_future` no lo frena: una
+        fecha de octubre es un futuro creible para un ticket de septiembre.
+        """
+        resultado = _parse_receipt_text(TEXTO_OCR_CON_FECHA_EN_EL_FOLIO)
+        assert resultado.expense_date != date(2026, 10, 31)
+
+    def test_la_etiqueta_manda_sobre_la_fecha_del_folio(self):
+        """Una fecha con la palabra "fecha" delante gana, este o mas abajo.
+
+        La regla del folio es un RESPALDO, no una preferencia: si el documento
+        dice "FECHA:", lo que dice el documento es la fecha.
+        """
+        texto = "TIENDA\nFECHA: 15/01/2025\nFOLIO 5521 28/09/26 09:52\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2025, 1, 15)
+
+    def test_la_linea_sin_marca_no_se_acepta(self):
+        """Sin folio, nota ni "#", la fecha no se toca.
+
+        Este es el caso MEDIDO de la foto `IMG_4222.jpeg`: el OCR leyo
+        `o: 000000000000) 01-10-2028`, con la "N" de "No:" perdida y el 6 del
+        ano leido como 8. Sin marca de comprobante la fecha no se lee, el ticket
+        va a la cola con `date_missing`, y no queda un gasto fechado en 2028.
+        """
+        texto = "TIENDA EJEMPLO\no: 000000000000) 01-10-2028 1Ój5T:19\nTOTAL: $48.00\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_ano_imposible_llega_al_gate_como_date_in_future(self):
+        """Con la marca leida bien, la fecha se acepta y el gate la detiene.
+
+        El caso de al lado del anterior, y delimita donde acaba esta regla.
+        Cuando el OCR lee "No:" completo, la fecha SI se toma: el parser no
+        puede saber que el 8 del ano era un 6. Lo que detiene el gasto dentro
+        de dos anos no es esta regla, es el check `date_in_future` del gate, que
+        ya existe (`confidence_gate.py:146`). Por eso el test de este caso
+        comprueba el veredicto del gate y no solo el del parser.
+        """
+        from app.core.enums import ExtractionStatus
+        from app.services.confidence_gate import gate_ticket
+
+        resultado = _parse_receipt_text(
+            "TIENDA EJEMPLO\nNo: 000000000000 01-10-2028\nTOTAL: $48.00\n"
+        )
+        assert resultado.expense_date == date(2028, 10, 1)
+
+        veredicto = gate_ticket(
+            provider_name=resultado.provider_name,
+            total_amount=resultado.total_amount,
+            tax_amount=resultado.tax_amount,
+            expense_date=resultado.expense_date,
+            provider_tax_id=resultado.provider_tax_id,
+            subtotal=resultado.subtotal,
+            confidence=resultado.confidence,
+            source=resultado.confidence_source,
+        )
+        assert any(
+            fallo.startswith("date_in_future") for fallo in veredicto.validation.failures
+        ), veredicto.validation.failures
+        assert veredicto.status is not ExtractionStatus.AUTO_APROBADO
+
+    def test_un_importe_no_se_toma_como_fecha(self):
+        """`1.028 HILANESA DE PECHU 94.90` es un codigo de producto.
+
+        El punto no es separador de fecha a proposito: en un ticket mexicano el
+        punto separa miles y decimales, y "51.50" es un importe.
+        """
+        texto = "TIENDA\nFOLIO 452\n1.028 HILANESA DE PECHU 94.90\nTOTAL: $97.56\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_una_fecha_que_no_existe_se_descarta(self):
+        """`31/02/2026` no es una fecha, y no se "corrige" a marzo.
+
+        A proposito se usa `date()` y no `pd.to_datetime`: la libreria resuelve
+        el fuera de rango con un aviso y un valor inventado en vez de fallar, y
+        un comprobante del 31 de febrero es un dato que no se sabe.
+        """
+        texto = "TIENDA\nFOLIO 5521 31/02/2026\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_importe_en_la_misma_linea_no_confunde_la_fecha(self):
+        """La linea del folio tambien trae importes; la fecha es la primera.
+
+        `FOLIO 5521 28/09/26 09:52` tiene un numero de cuatro digitos antes de
+        la fecha y una hora detras. El dia tiene que salir del primer grupo que
+        sigue a una barra, no de "5521".
+        """
+        texto = "TIENDA\nFOLIO 5521 28/09/26 09:52 POS #01\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 9, 28)
+
+
+class TestLasDosMarcasQueFaltabanEnLaCabecera:
+    """Dos formas de fecha que el papel SI imprime y la regla no aceptaba.
+
+    Los dos textos de abajo son OCR REAL, copiados de fotos que el usuario
+    fotografio. No son casos inventados para que la regla nueva parezca buena:
+    son las dos lineas que hacian que la fecha de la compra se perdiera con el
+    total bien leido al lado.
+
+    Y aqui va lo que hace este archivo incómodo: **las dos correcciones no
+    mueven la medicion.** En `scripts/medir_precision_ocr.py` sobre las 7 fotos
+    rotuladas dan EXACTAMENTE el mismo numero antes y despues (A/B con el mismo
+    texto OCR, porque el OCR no es determinista entre corridas y dos corridas
+    compararian dos motores y no dos parsers). No mueven porque en esas 7 fotos
+    la fecha sencillamente NO esta en el texto que devolvio el OCR, y ahi ningun
+    parser la puede recuperar.
+
+    Entonces por que estan: porque hay fotos donde la fecha SI esta y se
+    descartaba. En esas, la correccion es la diferencia entre fechar el gasto en
+    su mes y mandarlo a la cola con `date_missing`. Un parser que devuelve `None`
+    donde el papel si tiene la fecha no es "conservador": es una fecha perdida.
+    """
+
+    def test_una_linea_que_dice_Fecha_es_la_fecha_del_comprobante(self):
+        """MEDIDO, foto IMG_4398, linea 16 tal cual la devolvio el OCR:
+
+            o 02 Fecha: 08/10/202¢ iH tap i
+
+        La linea dice LITERALMENTE "Fecha:" y la fecha se descartaba, porque
+        "fecha" no estaba entre las palabras que hacen de una linea la del
+        comprobante. Una linea que dice "Fecha:" no necesita permiso de nadie.
+        """
+        texto = "TIENDA EJEMPLO\no 02 Fecha: 08/10/2026 iH tap i\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 10, 8)
+
+    def test_la_hora_al_lado_es_marca_suficiente(self):
+        """MEDIDO, foto IMG_4397, linea 2 tal cual:
+
+            06/10/2026 11:30:21 211.36 36 30 ás
+
+        Ni "folio" ni "No:" ni nada: solo la fecha y la hora de la caja pegada.
+        Una fecha con hora es un MOMENTO, y lo unico contra lo que existe esta
+        regla --el vencimiento de un cupon-- es un PLAZO, que se imprime sin
+        hora. La hora no relaja la regla: la separa de lo que la regla existe
+        para impedir.
+        """
+        texto = "EL SOL 76113\n06/10/2026 11:30:21 211.36 36 30\nTOTAL | 65.00\n"
+        assert _parse_receipt_text(texto).expense_date == date(2026, 10, 6)
+
+    def test_un_vencimiento_no_gana_aunque_le_pongan_hora(self):
+        """La defensa que la hora NO puede tumbar.
+
+        Si alguien "relaja" la regla para que la fecha de la cabecera entre y
+        con ella se cuela un vencimiento, la compra de septiembre aparece
+        fechada el 31 de octubre y el cierre mensual la cuenta en otro mes: un
+        dato equivocado que pasa TODOS los checks. Este test es el que muere.
+        """
+        texto = (
+            "TIENDA EJEMPLO\n"
+            "TUS PUNTOS VENCEN: 31/10/2026 23:59\n"
+            "06/10/2026 11:30:21\n"
+            "TOTAL: $10.00\n"
+        )
+        assert _parse_receipt_text(texto).expense_date == date(2026, 10, 6)
+
+    def test_una_fecha_sin_marca_y_sin_hora_sigue_nada(self):
+        """La regla sigue siendo ESTRECHA. Este es el que frena el sobreuso.
+
+        Quitar `MARCA_DEL_COMPROBANTE_RE` y `HORA_EN_LA_LINEA_RE` para "leer mas
+        fechas" hace que esto devuelva una fecha, y con ella vuelve el defecto
+        documentado de la regla original: la fecha de cualquier linea se
+        convierte en la fecha del gasto.
+        """
+        texto = "TIENDA\nDescuento aplicado 15/10/2026\nTOTAL: $10.00\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_ano_de_tres_digitos_no_es_un_ano(self):
+        """MEDIDO, foto IMG_4398: el OCR comio el 6 y dejo `202¢`.
+
+        Con `\d{2,4}` el ano leido eran TRES digitos, `_a_fecha` lo aceptaba y
+        devolvia `date(202, 10, 8)` -- que se imprime `0202-10-08` y es una
+        fecha CONCRETA y FALSA. El gate la marca `date_too_old`, pero eso es
+        defenderse tarde: lo que sale hacia la cola es un ano que el papel
+        nunca tuvo. Aqui lo correcto es no leer nada.
+        """
+        texto = "TIENDA EJEMPLO\no 02 Fecha: 08/10/202¢ iH tap i\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_un_ano_de_tres_digitos_tampoco_pasa_por_la_ruta_sin_etiqueta(self):
+        """La MISMA regla en la otra ruta, y hace falta porque si no no se prueba.
+
+        `08/10/202¢` con `\d{2,4}` da tres digitos; pero con la correccion de la
+        ruta etiquetada, esa linea ya ni siquiera llega aqui. Si solo se midiera
+        el caso etiquetado, este `\d{2}` -> `\d{2,4}` de `FECHA_SIN_ETIQUETA_RE`
+        podria volver sin que ningun test se entere. Es la razon de que la regla
+        se escriba en los dos sitios y se mida en los dos.
+        """
+        texto = "TIENDA EJEMPLO\nFOLIO 5521 08/10/202¢\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date is None
+
+    def test_la_ruta_etiquetada_no_invierte_dia_y_mes(self):
+        """`Fecha: 01/13/2026` — MEDIDO: las dos rutas NO devuelven lo mismo.
+
+            entrada     _a_fecha      pd.to_datetime(dayfirst=True)
+            01/13/2026   None          2026-01-13     <-- dia y mes cambiados
+
+        `pd.to_datetime` ve que "13" no puede ser un mes, decide que la fecha
+        viene en formato americano y la da vuelta, sin avisar. Devuelve una
+        fecha con forma de dato leido y es un dia distinto del que pone el
+        papel.
+
+        Aqui se elige `None`, y el coste es real y hay que decirlo: un ticket que
+        de verdad imprima `01/13/2026` en formato MM/DD se va a la cola con
+        `date_missing` y una persona lo teclea. Es el mismo canje que ya hace la
+        ruta sin etiqueta, y es el que corresponde a este proyecto: entre
+        adivinar una fecha e ir a revision, se va a revision.
+
+        Lo que NO se acepta es la via silenciosa. Un intercambio de dia y mes sin
+        aviso pasa todos los checks del gate —una fecha creible no es una fecha
+        futura ni una vieja— y el error solo aparece al compararlo con el banco,
+        semanas despues.
+        """
+        texto = "TIENDA EJEMPLO\nFecha: 01/13/2026\nTOTAL: $193.65\n"
+        assert _parse_receipt_text(texto).expense_date is None
 
 
 class TestAmountExtraction:
@@ -457,3 +914,131 @@ class TestExtraccionDeSubtotal:
 
         assert ok.failures == []
         assert any(f.startswith("subtotal_plus_tax_mismatch") for f in mal.failures)
+
+
+class TestElTotalLoDeclaraLaEtiquetaTotal:
+    """El total se perdia aunque la etiqueta `Total` estuviera bien leida.
+
+    MEDIDO el 2026-10-15 sobre `IMG_4398.heic`, que esta en la base con esta
+    forma exacta. El OCR devuelve tres lineas que dicen "total":
+
+        Total $ 193.65 =                    <- la etiqueta CON su importe
+        oe Nenta total 5 (c) 19S Be         <- ruido de caja del OCR
+        Total despues del ahorro $ 193 65   <- filtrada por AHORRO_EN_LINEA_RE
+
+    El parser leia `5.00` y el papel decia `193.65`. Y no era que no supiera
+    leer `Total $`: con el ruido **antes** de la linea buena, el mismo texto
+    daba `193.65`. Lo que fallaba era el desempate - "gana la ultima
+    coincidencia" -, que deja que una linea de basura escrita despues pise al
+    importe que la etiqueta declara.
+
+    Por eso la regla no es "la primera" ni "la ultima": es que **un importe con
+    centavos no se deja pisar por un entero suelto**. El entero suelto es, en un
+    comprobante mexicano, mucho mas probable que un trozo partido (`51 .50`) o
+    un codigo que el OCR entrecorto (`19S` -> `19`).
+    """
+
+    # El texto tal como salio del OCR, con el ruido DESPUES de la linea buena.
+    RUIDO_DESPUES = (
+        "PANADERIA LA ESPERANZA\n"
+        "Total $ 193.65 =\n"
+        "oe Nenta total 5 (c) 19S Be\n"
+        "Total despues del ahorro $ 193 65\n"
+    )
+
+    def test_el_ruido_de_despues_no_pisa_el_total_de_la_etiqueta(self):
+        assert _parse_receipt_text(self.RUIDO_DESPUES).total_amount == Decimal("193.65")
+
+    def test_el_mismo_ruido_antes_no_cambia_nada(self):
+        """El caso del diagnostico: no es que la etiqueta no se lea, es el desempate.
+
+        Sin esta prueba, un arreglo que hiciera funcionar el caso anterior
+        rompiendo este otro seria igual de invisible que el defecto: los dos
+        textos dan el mismo numero y no se sabe cual de los dos fallo.
+        """
+        texto = (
+            "PANADERIA LA ESPERANZA\n"
+            "oe Nenta total 5 (c) 19S Be\n"
+            "Total $ 193.65 =\n"
+            "Total despues del ahorro $ 193 65\n"
+        )
+        assert _parse_receipt_text(texto).total_amount == Decimal("193.65")
+
+    @pytest.mark.parametrize("linea,esperado", [
+        ("Total $ 193.65", Decimal("193.65")),
+        ("Total $193.65", Decimal("193.65")),
+        ("TOTAL $ 193.65", Decimal("193.65")),
+        ("Total$: 193.65", Decimal("193.65")),
+        ("Total $ 1,100.50", Decimal("1100.50")),
+        ("Total $ 51,50", Decimal("51.50")),
+        ("Total $ 193.65 MXN", Decimal("193.65")),
+        ("Total $ 193.65 =", Decimal("193.65")),
+    ])
+    def test_las_formas_de_Total_con_simbolo_se_leen(self, linea, esperado):
+        """La premisa del arreglo: `Total $` es la forma que trae el importe."""
+        texto = f"GRUPO COMERCIAL DSW S.A. DE C.V.\n{linea}\n"
+        assert _parse_receipt_text(texto).total_amount == esperado
+
+    def test_un_total_con_centavos_no_se_deja_pisar_por_uno_entero(self):
+        """La regla, escrita sin el ruido de OCR de por medio."""
+        texto = (
+            "ABARROTES DEL BARRIO\n"
+            "TOTAL 234.00\n"
+            "TOTAL ARTICULOS 5\n"
+        )
+        assert _parse_receipt_text(texto).total_amount == Decimal("234.00")
+
+    def test_un_total_entero_sin_competencia_se_lee_igual(self):
+        """La regla no es "solo leo los que traen centavos".
+
+        Un ticket que imprime `TOTAL 500` se leia antes y se lee ahora. Lo que
+        cambio es que ya no puede perder contra un entero de otra linea.
+        """
+        texto = "ABARROTES DEL BARRIO\nARTICULO CANT TOTAL\nTOTAL 500\n"
+        assert _parse_receipt_text(texto).total_amount == Decimal("500")
+
+    def test_entre_dos_de_la_misma_fuerza_gana_el_ultimo(self):
+        """El desempate NO cambio: aqui se conserva el de siempre.
+
+        Se fija a proposito. Cambiar la fuerza y el desempate en el mismo commit
+        haria imposible atribuir el efecto de ninguno de los dos, que es
+        exactamente el error que hace este arreglo: la regla nueva tiene que ser
+        la unica variable.
+        """
+        texto = (
+            "ABARROTES DEL BARRIO\n"
+            "TOTAL 234.00\n"
+            "TOTAL 234.50\n"
+        )
+        assert _parse_receipt_text(texto).total_amount == Decimal("234.50")
+
+
+class TestElSubtotalConGuionNoEsUnTotal:
+    """Un guardia que deja pasar la mitad de las formas no es un guardia.
+
+    MEDIDO: el guardia comparaba contra la palabra `"subtotal"` y en `Sub-Total`
+    hay un guion en medio, asi que la linea NO se excluia. El patron de total si
+    la aceptaba (su borde es `(?:^|[^\\w])` y el guion no es caracter de palabra),
+    de modo que el subtotal entraba como candidato y competia con el total real.
+
+    No se notaba porque el desempate era "gana la ultima coincidencia" y el total
+    real va despues. Al cambiar el desempate por la fuerza del importe, quedo a
+    la vista: `Sub-Total: 500.00` + `Total: 580.00` devolvia 500.00.
+
+    Las tres formas que se imprimen en papel, y las tres ahora se excluyen.
+    """
+
+    @pytest.mark.parametrize("subtotal", [
+        "Sub-Total: 500.00",
+        "Sub Total: 500.00",
+        "Sub_Total: 500.00",
+        "SUBTOTAL: 500.00",
+    ])
+    def test_el_subtotal_no_gana_contra_el_total(self, subtotal):
+        texto = f"FERRETERIA DEL SUR\n{subtotal}\nIVA: 80.00\nTotal: 580.00\n"
+        assert _parse_receipt_text(texto).total_amount == Decimal("580.00")
+
+    def test_un_documento_solo_con_subtotal_no_declara_total(self):
+        """El filtro no debe inventar un total donde el papel no lo imprimio."""
+        texto = "FERRETERIA DEL SUR\nSub-Total: 500.00\nIVA: 80.00\n"
+        assert _parse_receipt_text(texto).total_amount == Decimal("0.00")

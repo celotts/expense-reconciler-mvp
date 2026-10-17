@@ -264,7 +264,7 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports: ["8000:8000"]
     volumes: [".:/app"]
-    env_file: .env.dev
+    env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:secret@postgres:5432/app_db
     depends_on:

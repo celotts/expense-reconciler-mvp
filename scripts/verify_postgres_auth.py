@@ -22,6 +22,7 @@ con un token de verdad y comprueba que el token abre lo que tiene que abrir.
     PYTHONPATH=. DATABASE_URL=... python3 scripts/verify_postgres_auth.py
 """
 
+import os
 import asyncio
 import sys
 import uuid
@@ -42,7 +43,20 @@ from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
 from app.models.user import UserModel
 
-DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/expense_db"
+def _fatal(mensaje: str) -> str:
+    """Sale con un mensaje, en vez de un KeyError sin pista."""
+    print(f"ERROR: {mensaje}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+# El DSN se lee del entorno, no se escribe aqui. Este archivo estuvo versionado
+# en un repositorio publico con la password escrita en esta linea, y eso permitia
+# a cualquiera entrar a la base de datos. Rotar la password no borra el archivo
+# viejo del historial: ademas de rotarla, la password deja de estar en el codigo.
+#     export POSTGRES_PASSWORD=...      (o ponla en .env.local)
+DSN = "postgresql+asyncpg://postgres:{}@localhost:5434/expense_db".format(
+    os.environ.get("POSTGRES_PASSWORD") or _fatal("POSTGRES_PASSWORD no esta definida.")
+)
 
 fallos: list[str] = []
 _correo_de_la_corrida: str | None = None

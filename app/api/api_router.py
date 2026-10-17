@@ -1,12 +1,17 @@
-from fastapi import APIRouter
-
 from fastapi import APIRouter, Depends
 
 from app.api.auth import router as auth_router
+from app.api.auditoria import router as auditoria_router
 from app.api.bank_transactions import router as bank_transactions_router
+from app.api.categorias import router as categorias_router
 from app.api.companies import router as companies_router
+from app.api.dashboard import router as dashboard_router
+from app.api.inventario import router as inventario_router
 from app.api.reconciliations import router as reconciliations_router
+from app.api.reports import router as reports_router
+from app.api.scans import router as scan_router
 from app.api.tickets import router as tickets_router
+from app.api.usuarios import router as usuarios_router
 from app.core.deps import get_current_user
 
 api_router = APIRouter()
@@ -18,11 +23,37 @@ api_router = APIRouter()
 # "dice que soy yo" no dependa de que el router entero este protegido.
 # ---------------------------------------------------------------------------
 api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
+api_router.include_router(
+    auditoria_router,
+    prefix="/auditoria",
+    tags=["Auditoria"],
+    dependencies=[Depends(get_current_user)],
+)
 
 # A partir de aqui, TODO lo demas pide token. Se pone a nivel de router, no
 # endpoint por endpoint: escrito a mano serian 35 oportunidades de que el
 # endpoint 36 quede abierto y no se note en la revision, porque la ausencia se
 # ve igual que la presencia. Y un endpoint nuevo nace protegido.
+# El prefijo NO se repite aqui: `dashboard.py` ya lo declara en su propio
+# APIRouter. Ponerlo en los dos lados produce `/dashboard/dashboard/`, que es
+# un 404 silencioso: el router del backend responde bien, el cliente pide otra
+# cosa, y el error aparece como "el dashboard no carga" en vez de "la ruta
+# esta mal". La unica forma de que no vuelva es no tener el prefijo en dos
+# sitios, y los demas routers ya lo hacen asi.
+api_router.include_router(
+    dashboard_router,
+    tags=["Dashboard"],
+    dependencies=[Depends(get_current_user)],
+)
+# `categorias.py` ya declara su prefijo en su propio APIRouter, igual que
+# `dashboard.py`. Ponerlo tambien aqui produce `/categorias/categorias`, que es
+# un 404 silencioso: el cliente pide `/categorias` y el servidor responde en
+# otra ruta, y el desplegable de la pantalla de Tickets queda vacio sin error.
+api_router.include_router(
+    categorias_router,
+    tags=["Categorias"],
+    dependencies=[Depends(get_current_user)],
+)
 api_router.include_router(
     companies_router,
     prefix="/companies",
@@ -35,6 +66,17 @@ api_router.include_router(
     tags=["Tickets"],
     dependencies=[Depends(get_current_user)],
 )
+# El escaner de carpeta. Mismo criterio que los demas: token obligatorio a nivel
+# de router. Que lea el disco no lo hace mas peligroso de lo que ya es el resto
+# de la API, y que necesite token no lo hace mas seguro si se le puede pedir
+# una carpeta por parametro: por eso no hay ningun campo de carpeta en su
+# schema, y la ruta sale de `TICKETS_INPUT_DIR`.
+api_router.include_router(
+    scan_router,
+    prefix="/scan",
+    tags=["Scan"],
+    dependencies=[Depends(get_current_user)],
+)
 api_router.include_router(
     bank_transactions_router,
     prefix="/bank-transactions",
@@ -45,5 +87,44 @@ api_router.include_router(
     reconciliations_router,
     prefix="/reconciliations",
     tags=["Reconciliations"],
+    dependencies=[Depends(get_current_user)],
+)
+# Inventario. El token obligatorio por el mismo motivo que el resto.
+#
+# El prefijo va aqui y NO en el APIRouter del router, a diferencia de
+# `dashboard.py` y `categorias.py`, que ya lo declaran en su propio lado. La
+# regla es la misma en los dos casos y esta escrita arriba: el prefijo se
+# declara en UN solo sitio. Este router declara el suyo aqui porque no tiene
+# razon para hardcodear "/inventario" dentro del modulo que lo implementa.
+api_router.include_router(
+    inventario_router,
+    prefix="/inventario",
+    tags=["Inventario"],
+    dependencies=[Depends(get_current_user)],
+)
+# Cuentas. Token a nivel de router, como todos los demas.
+#
+# Los endpoints que dan de baja o rotan una contrasena piden ADEMAS la contrasena
+# del actor (`UsuarioVerificado`, o sea el header `X-Contrasena-Actual`), y no se
+# pone aqui como dependencia de router porque los de lectura no la necesitan y
+# ponerla aqui obligaria a escribirla para mirar una lista. Ver la nota larga de
+# `app/core/deps.py`.
+api_router.include_router(
+    usuarios_router,
+    prefix="/usuarios",
+    tags=["Usuarios"],
+    dependencies=[Depends(get_current_user)],
+)
+# El informe de cierre mensual. Token a nivel de router, como todos los demas.
+#
+# Es la ruta que hace que el producto entregue un DOCUMENTO y no solo datos, asi
+# que no se le abrevia nada: quien firma el informe es el contador, y su nombre
+# sale del token (`UsuarioActual`), nunca de un campo del cuerpo. Aceptarlo en el
+# body seria permitir que un informe salga firmado por quien no lo reviso, que es
+# exactamente lo que R5 y la regla 23 de `AGENTS.md` prohiben.
+api_router.include_router(
+    reports_router,
+    prefix="/reports",
+    tags=["Reports"],
     dependencies=[Depends(get_current_user)],
 )

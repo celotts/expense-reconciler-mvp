@@ -1,0 +1,2098 @@
+# Known Issues — Backlog verificado
+
+Defectos y trampas **confirmados leyendo el código**, con referencia `archivo:línea`.
+Este no es un wishlist: cada punto se verificó. Cuando arregles uno, bórralo de aquí
+y deja el commit hash en el changelog.
+
+Severidad:
+- 🔴 **Bug activo** — algo está roto hoy para el usuario
+- 🟠 **Trampa** — funciona pero te va a morder al tocarlo
+- 🟡 **Deuda** — gap conocido, no urgente
+
+---
+
+## 🔴 Bugs activos
+
+### 0.e. El PDF del informe imprimía `None` como si fuera un dato — ✅ CORREGIDO (y la mutación lo cazó)
+
+**Nació durante la construcción de la Fase 1 y no lo cazó ningún test hasta que la
+mutación sobrevivió.** Es el argumento de por qué el script de mutaciones existe.
+
+**Síntoma:** el informe salía con la fila
+
+```
+Motivo    El periodo NO se puede declarar cerrado: None.
+```
+
+en un documento que alguien firma y entrega a su cliente.
+
+**Causa medida — dos, y las dos son la misma:** `puede_cerrarse` era un **campo**
+(`bool = False`) del schema, separado de `pendientes`. Con cero pendientes,
+`pendientes.motivo` es `None` y `puede_cerrarse` es… lo que el constructor puso.
+El PDF imprimía la fila con `f"{motivo}"` sin mirar si el motivo existía:
+
+```python
+if not reporte.puede_cerrarse:            # el campo, no los pendientes
+    fila("Motivo", f"...: {reporte.pendientes.motivo}.")   # → "None"
+```
+
+**Por qué un campo aparte era el error, y no el `f`.** Se podría haber arreglado
+poniendo `if reporte.pendientes.motivo:` y ya. Se arregló **así y además** dejando
+`puede_cerrarse` como `@computed_field` derivado de `pendientes.hay_pendientes`:
+dos cubos con la misma verdad son dos que se pueden desincronizar, y ese era todo el
+defecto. Un campo derivado no puede mentir sobre sus propias entradas.
+
+**El `f"{motivo}"` sin condición también se corrigió**, por R6: un dato ausente
+impreso como texto *es* un dato inventado, y en PDF nadie distingue la palabra `None`
+de un valor.
+
+**Lo que costó encontrarlo:** `TestR3LosEstadosDelPeriodo` comprobaba los cuatro
+estados del periodo, y los cuatro eran correctos con `pendientes.motivo = None` —
+porque `NO_CIERRA` es el estado *correcto* cuando no hay periodo cerrable. El test
+afirmaba sobre el estado y no sobre el **texto**, que es lo que el contador lee.
+
+> **La mutación `el PDF imprime el motivo aunque no exista` sobrevivió a la primera
+> corrida del verificador.** Sobrevivió porque la clase de tests que la caza
+> (`TestElDocumentoNoSeInventaDatos`) **no existía todavía**: se escribió después, al
+> preguntar qué estaba mirando el test de R3. Y la primera vez que se escribió, la
+> mutación **volvió a sobrevivir** —porque no la añadí a la lista de `objetivos` del
+> script.
+>
+> Eso es la segunda mitad de la lección y no es menos importante: **la lista de
+> objetivos de un script de mutaciones es código que se queda viejo en silencio.**
+> Añadir un test no hace que el script lo sepa.
+
+### 0.h. El PDF imprime «sin clasificar» en TODAS las categorías — 🔴 **ABIERTO**
+
+**MEDIDO al escribir `front/src/pages/Cierre.tsx`**, leyendo el JSON que devuelve la
+API viva y comparándolo con lo que el PDF dibuja.
+
+`reporte_cierre.py:720-721` pinta:
+
+```python
+nombre = cat.get("categoria") or "sin clasificar"
+```
+
+y `analitica.por_categoria` (`analitica.py:324-335`) devuelve estas claves:
+
+```python
+{"clave", "etiqueta", "monto", "tickets", "porcentaje", "variable", "sin_clasificar"}
+```
+
+**No hay clave `categoria`.** El `or "sin clasificar"` se come el `None` y el PDF sale
+con todas las categorías del periodo bajo un mismo rótulo, aunque `sin_clasificar`
+venga en `false` para cada una. La clave que sí lo distingue no se está usando.
+
+El arreglo es una línea —`cat.get("etiqueta") or "sin clasificar"`— y hay que añadirle
+el test que hoy no existe: un informe con dos categorías clasificadas tiene que salir
+con dos rótulos distintos.
+
+> **El front ya lee la clave correcta (`etiqueta`), así que hoy el preview y el PDF
+> discrepan**: el preview muestra «Alimentación» y el PDF «sin clasificar». Es
+> justamente el fallo que el objeto compartido y R4 existían para evitar, y aparece
+> por el lado del PDF, no del front.
+
+### 0.f. El frente del informe ya existe — ✅ CORREGIDO (y el verificador cazó tres tests que no cazaban)
+
+`front/src/pages/Cierre.tsx`, con la ruta en el sidebar, el enlace desde `Dashboard.tsx`,
+el selector de periodo y la descarga del PDF. **22 comprobaciones** en
+`front/scripts/verificar_cierre_en_pantalla.tsx`, con **6 mutaciones verificadas a mano**.
+
+#### EL PUNTO QUE NO ES NEGOCIABLE, Y CÓMO SE CUMPLE
+
+El preview y el PDF salen del **mismo objeto**: la pantalla no suma, no calcula
+porcentajes y no decide veredictos. Todo lo que se ve sale del JSON de
+`GET /reports/cierre-mensual`, formateado por `utils/format.ts`, y los colores del
+veredicto se reusan de `utils/spotcheck.ts` (`veredictoMeta`). La traducción vive
+en `utils/cierre.ts`, que **no calcula nada del informe**.
+
+Verificado mirando el PDF y el preview en el navegador: el mismo aviso, el mismo
+`$0.00`, la misma fecha de referencia, y **ninguno de los dos dice `0%`** donde el
+backend devolvió `null`.
+
+#### LO QUE ESTE TRABAJO ENCONTRÓ DE VERDAD
+
+**El PDF lee una clave que no existe.** `reporte_cierre.py:720` imprime
+`cat.get("categoria")`, pero `analitica.por_categoria` devuelve `clave`/`etiqueta`
+(`analitica.py:324-335`). Como `categoria` no está, el `or "sin clasificar"` deja
+**todas las categorías del PDF como "sin clasificar"**. 🟠 **ABIERTO, es lo siguiente**:
+el front lee `etiqueta`, que es la que sí viene.
+
+> No lo introdujo este trabajo, pero se hizo visible: el front se escribió contra el
+> JSON real de la API y no contra el código del PDF, y por eso se nota.
+
+#### LOS TRES TESTS QUE NO CAZABAN, Y POR QUÉ
+
+La primera versión del verificador comprobaba `lineaExactitud(r).titulo.includes('Exactitud')`:
+miraba **el objeto que devuelve la función**, no lo que se pinta. Con la defensa quitada
+daba **verde**. Tres de cuatro mutaciones pasaron sin que nadie las notara:
+
+| Mutación | Por qué pasaba |
+|---|---|
+| `Exactitud: 0.0%` cuando `exactitud === null` | el objeto seguía teniendo "Exactitud" en el título |
+| comparativo no concluyente pintado como concluyente | el test miraba el `tono` del objeto, no el texto |
+| `periodoActual()` con `toISOString()` | el defecto solo aparece cerca de medianoche; el test corría a otra hora |
+
+**Tres maneras de que un test de pantalla no sirva, y las tres corregidas aquí:**
+
+1. **Mirar el retorno en vez del HTML.** Se renderiza la página entera con
+   `renderToStaticMarkup` y se busca el texto. Por eso `Cierre` acepta
+   `informeInicial`: `renderToStaticMarkup` no corre `useEffect`, así que sin ese
+   parámetro la pantalla se queda en el spinner y no pinta ni una sección.
+2. **Un caso que no se ejecuta es un caso sin test.** `exactitud === null` (objeto
+   entero ausente) es distinto de `exactitud` presente con sus `exactitud` en `null`,
+   y solo el segundo estaba cubierto. La rama que R7 protege **no se ejecutaba nunca**.
+3. **Un defecto que depende de la hora no lo caza un test que compara "hoy" contra
+   "hoy".** `periodoActual(fecha?)` acepta la fecha por eso: el test pasa el día 1 a
+   las 20:30 hora local, que en UTC ya es el día 2. Falla siempre, no un día al mes.
+
+Es el mismo error que el de `test_up_usa_wait` (leía los comentarios del `Makefile` en
+vez de la receta): **un test que no ejecuta el código que protege pasa igual que uno
+que sí lo ejecuta**.
+
+### 0.g. No hay forma de MARCAR un periodo como cerrado — 🟠 **ABIERTO, por diseño por ahora**
+
+`cierres_periodo` existe y el informe lo lee (`cerrado`, `cerrado_por`,
+`estado_periodo`), pero **no hay endpoint que escriba la fila**. El informe dice si el
+periodo *puede* cerrarse; cerrarlo sigue sin ser una operación.
+
+Es el criterio D1 de la Fase 4 y es correcto que no exista todavía: cerrar es una
+decisión, y la decisión la firma una persona. Lo que hay que evitar es que se lea como
+un olvido — por eso está aquí.
+
+### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — 🔴 **ABIERTO, preexistente**
+**No lo introdujo el inventario.** Verificado con `git stash`: en `HEAD`, sin los modelos nuevos,
+`db.delete(empresa)` con **un solo ticket** ya falla. Encontrado de paso porque el E2E del
+inventario necesitaba limpiar su empresa de prueba.
+
+**Síntoma:** `DELETE /api/v1/companies/{id}` responde `500` con
+`NotNullViolationError: null value in column "company_id" of relation "tickets"`.
+
+**Causa medida (con `echo=True` sobre el engine):**
+
+```sql
+UPDATE tickets SET company_id=$1::UUID WHERE tickets.id = $2::UUID     -- $1 = NULL
+```
+
+La FK declara `ON DELETE CASCADE`, y la cascada de Postgres sí está en el DDL. Pero la **cascada
+por omisión de SQLAlchemy en un uno-a-muchos es `save-update, merge`, que NO borra**: desasocia,
+y desasociar es un `UPDATE` que pone la FK en `NULL`. La columna es `NOT NULL`, así que el UPDATE
+revienta **antes** de que la cascada de la base llegue a correr.
+
+**Por qué `passive_deletes=True` en el muchos-a-uno NO lo arregla.** Se probó y no funciona, y es
+el primer intento razonable, así que conviene saber por qué: `passive_deletes` gobierna la
+relación **uno-a-muchos** (`CompanyModel.tickets`), no la **muchos-a-uno** (`TicketModel.company`).
+Un `backref="tickets"` declarado desde el hijo crea la relación del padre **sin heredar
+`passive_deletes`**. Ponerlo en `TicketModel.company` no tiene efecto — verificado, sigue fallando.
+
+**Lo que sí lo arregla** es declarar la relación en `company.py`:
+
+```python
+tickets = relationship("TicketModel", back_populates="company", passive_deletes=True)
+```
+
+y cambiar `backref` por `back_populates` en el hijo. **No se ha aplicado**, porque toca cinco
+modelos que hoy funcionan y es un cambio fuera de lo que pidió la feature de inventario. Manda
+alguien que lo mida.
+
+**Amplificado por el inventario:** las cuatro tablas nuevas (`productos`, `compras`,
+`compra_items`, `movimientos_inventario`) son hijas de `companies`, así que ahora hay más tablas
+en la misma situación. El `DELETE` por SQL directo **sí funciona** —deja que la cascada de
+`postgres` corra—, y `scripts/probar_inventario_e2e.py` limpia por SQL por eso, con el motivo
+escrito en el propio script.
+
+---
+
+### 0.b. El inventario no tiene entrada de ventas, y eso es una asimetría real — 🟠 **ABIERTO por decisión**
+
+El diseño implementa **solo la mitad de la regla de negocio**: la compra suma stock. `TipoMovimiento`
+ya trae `SALIDA` y la constraint `referencia_tipo` ya acepta `'VENTA'`, **pero no hay endpoint ni
+forma de registrar una venta.** No es un olvido: la compra viene de un papel y la venta viene de
+otro sitio, y esa otra fuente de datos no está definida.
+
+**Consecuencia concreta y medible:** con solo entradas, `stock_de()` es monótono creciente y el
+inventario no puede cuadrar con un conteo físico — grows sin techo. El día que se cargue la salida,
+el estado actual ya tiene lo necesario (`SALIDA` en el enum, el trigger que impide bajar de cero,
+el índice `ix_movimientos_producto` para la suma), pero **falta la entrada**.
+
+---
+
+### 0.d. La ruta de escaneados es un path del contenedor si nadie la fija — ✅ CORREGIDO (y pasó)
+`TICKETS_SCAN_OUTPUT_DIR` tiene que estar en el `environment:` de `docker-compose.yml`. Sin eso
+resuelve "una carpeta hermana de `TICKETS_INPUT_DIR`" y acierta en `/Tickets_Scan`, que es un
+directorio **del contenedor** y no el segundo montaje. Los comprobantes se mueven ahí y
+desaparecen de la máquina.
+
+**Medido, no supuesto:** 8 comprobantes se movieron a `/Tickets_Scan` y `~/Documents/Tickets/Tickets_Scan`
+quedó vacío. Los archivos seguían existiendo y se devolvieron a la entrada con `mv`, sin pérdida de
+bytes.
+
+Es la misma trampa que `TICKETS_INPUT_DIR`, y por el mismo motivo: la ruta del host no existe
+dentro del contenedor. El arreglo está en `docker-compose.yml`, junto al de `TICKETS_INPUT_DIR`, y
+documentado en `.env.example`.
+
+**Y el mismo defaults que no funcionaba fuera de Docker:** la omision ahora es *vacía* = "hermano
+de la carpeta de entrada", no `/tickets_scan`. Con un default de contenedor, `uvicorn` directo y los
+tests intentan `mkdir` en `/` y macOS responde "Read-only file system" (medido: 24 tests caídos).
+
+---
+
+### 0.c. El OCR no extrae líneas: el inventario por foto no tiene entrada — 🔴 **ABIERTO, es el techo**
+
+La línea se pierde en `ocr.py` / `parser_service.py`: no hay código que arme `items` desde el
+texto de Tesseract. Solo el LLM produce `items` (`ai_extractor.ExtractedInvoice.items`), y de los
+3 comprobantes escaneados en la base, **2 se leyeron con `read_by = ocr`**.
+
+Consecuencia: un comprobante leído por OCR entra al gasto con su total, y **no abre compra**. Es
+el caso normal y no un error —`registrar_compra` devuelve `None` con un `logger.info`—, pero
+significa que **la mayor parte de las fotos no genera líneas de inventario.**
+
+**Por qué no se arregla aquí:** es el mismo techo de §21 (33.3% de exactitud), y las líneas son un
+problema peor que los totales porque son más números por documento y se multiplican. Arreglarlo
+exige un segundo motor de OCR o resolver antes el problema de fondo; agregar un regex de líneas
+sobre texto de Tesseract al 33% produciría cantidades plausibles y equivocadas, que es peor que
+no producir nada.
+
+**Lo que sí funciona hoy:** PDF con texto (va al LLM, trae líneas) y la compra de esos sí llega a
+`EN_REVISION`.
+
+---
+
+### 26. `Decimal` en `tickets.items` = ticket perdido en silencio — ✅ CORREGIDO
+**Medido, no supuesto.** Un `ticket_mercado_simple.pdf` con 4 líneas de detalle volvió del escaneo
+como `accion=ERROR`, `datos=null`, y sin ticket en la base.
+
+**La causa.** `ai_extractor.py:346-348` convierte a `Decimal` `quantity`, `unit_price`, `total`,
+`tax_rate` y `tax_amount` de cada línea —que es lo correcto para dinero—. Pero `tickets.items` es
+una columna `JSON`, y `Decimal` no existe en JSON:
+
+```
+TypeError: Object of type Decimal is not JSON serializable
+[SQL: INSERT INTO tickets (... items ...) VALUES (...)]
+```
+
+`procesar_archivo` lo capturaba, hacía un `rollback` y devolvía `ERROR`. El comprobante se perdía y
+lo único que quedaba era `scan_files.last_error`, que además se iba con el rollback: la fila del
+archivo ni siquiera se creaba, así que tampoco había forma de reintentar desde el registro.
+
+**Por qué el test verde no lo veía — y esto es lo importante.** Solo falla cuando el lector
+produce líneas. Un comprobante sin detalle viene con `items=[]`, que serializa bien. El camino del
+LLM se podía dar por bueno entero —tests incluidos— mientras no se le pasara una factura con
+partidas, que es exactamente el caso de uso del inventario. El fallo no era raro: era invisible
+hasta que llegó un caso de uso de verdad.
+
+**El arreglo** es `JSONConDecimal` en `app/core/json_decimal.py`: un `TypeDecorator` sobre la
+columna que serializa `Decimal` como **texto**, recursivo, porque las líneas son `list[dict]` y el
+`Decimal` vive dos niveles dentro —un recorrido de un solo nivel deja el bug entero, más estrecho y
+más difícil de ver.
+
+**Texto y no `float`, a propósito.** `float` "por compatibilidad" se comería centavos en la capa
+que decide si una compra cuadra con su total: `0.1 + 0.2` en binario no es `0.3`. Con texto,
+`"12.50"` vuelve a `Decimal("12.50")` sin haber pasado por binario, y `interpretar_items` ya
+aceptaba strings porque el modelo devuelve `"3"` y `"12.50"` con frecuencia —este fix no le agrega
+un caso, lo completa.
+
+No se definió un `json_encoder` global a propósito: habría cambiado el comportamiento de todas las
+columnas JSON de la app sin que nadie lo pidiera, y el bug reaparecería en cualquier sitio nuevo sin
+que nadie lo estuviera mirando.
+
+**Dos tests que mueren si se quita el arreglo** (`tests/unit/test_scan_datos_json.py`): el INSERT con
+líneas, y el round-trip por `interpretar_items` que comprueba que `85.00 + 70.00` sigue dando
+`155.00` exacto.
+
+---
+
+### 28. Las fotos no se veían en la UI: dos bugs que making falta uno al otro — ✅ CORREGIDO
+**Medido.** 7 de 9 documentos guardados tenían `content_type=NULL` y se servían como
+`application/octet-stream`. El navegador **descarga** eso en vez de pintarlo: la foto existía, se
+podía bajar, y el revisor veía un recuadro vacío — la misma pantalla que muestra un ticket sin
+comprobante, que es justo la confusión que este endpoint existe para evitar.
+
+**Por qué no lo vio nadie antes.** Los 2 documentos que sí tenían tipo habían entrado por una subida
+HTTP. El escáner —el otro camino, y el que produce los tickets de foto— no declara nada, así que sus
+documentos nacieron con la columna en `NULL`. El camino de la API se veía bien y el del escáner no.
+
+**Bug 2, en el front:** `TicketDocumento.tsx` ponía `<object type="application/pdf">` para **todos**
+los documentos. Un JPEG declarado como PDF no se pinta ni con el `Content-Type` correcto. Los dos
+bugs juntos son lo que producía el recuadro vacío.
+
+**El arreglo va al SERVIR, no al guardar, y no por gusto.** `ticket_documents` es append-only por
+trigger, así que backfillear la columna exige un `UPDATE` que Postgres rechaza:
+
+```
+ERROR:  ticket_documents es append-only: un documento no se actualiza, se agrega una version nueva
+```
+
+Un backfill habría pedido un `ALTER` o apagar el trigger — saltarse la regla de que el papel no se
+altera— y escribir sobre una columna que es un hecho del papel. El tipo que se **sirve** es una
+decisión de ahora, no un atributo de lo que se subió en marzo.
+
+**Lo que decide esto es que también arregla las fotos viejas.** Un backfill habría dejado las 7
+sirviendo como descarga para siempre, con el bug visible solo en las nuevas. Así se esconden estos
+fallos, y por eso el test lee una fila **ya guardada** y le pone la columna en `NULL` a mano.
+
+**El nombre del archivo tampoco decide — con el caso que lo prueba.** `IMG_4253 2.HEIC` está
+guardado y por sus bytes es un **JPEG**: la cámara del teléfono lo nominó así. Keyear por extensión
+lo habría servido como HEIC. La foto es la misma; lo que falla es la etiqueta.
+
+**La lista cerrada sigue mandando.** `media_type_real()` dice **qué es**; el allowlist de
+`content_type_servible()` decide **si se puede pintar**. Un HEIC deduce `image/heic`, cae fuera de
+`CONTENT_TYPES_SERVIBLES` y sale como octet-stream, que es lo correcto porque ningún navegador de
+escritorio lo pinta. Separar las dos mitades es lo que deja la lista cerrada siendo la única que
+manda.
+
+En el front, el tipo sale del `Blob` y una imagen va en `<img>`: `<object>` vuelve a pedir el
+recurso **sin `Authorization`** y sale 401.
+
+**Verificado en la API viva**, sobre los documentos que ya estaban en la base y sin tocar ninguno:
+el PDF sigue saliendo `application/pdf`, las 7 fotos salen `image/jpeg` (incluida la del `.HEIC`),
+y todas con `Content-Disposition: inline`. `tsc` y `vite build` en verde.
+
+**Lo que NO se comprobó: el render en un navegador.** El `Content-Type` correcto y el `<img>` correcto
+son la condición necesaria, no la suficiente. Nadie abrió la pantalla de revisión con una foto
+mirándola —el navegador no estaba conectado en esta sesión—, así que la prueba de que la imagen se
+**pinta** sigue pendiente de una mirada. Lo que sí está probado es que el backend entrega el tipo
+bien y que el front ya no declara PDF a un JPEG.
+
+---
+
+### 27. `POST /scan` no devolvía los datos del ticket — ✅ CORREGIDO
+`detalles[]` traía `relative_path`, `accion`, `confidence` y `status`, pero **no los datos del
+comprobante**. Quien quisiera el JSON tenía que pedir un `GET /tickets/{id}` por cada archivo de la
+corrida y pegar los campos a mano.
+
+Ahora cada elemento trae `datos`, con los datos **y el veredicto juntos**, resuelto en una sola
+consulta después del bucle (`_resolver_datos_de_tickets`). Tres decisiones que no son de estilo:
+
+- Los datos salen de la **fila de `tickets`**, no de la lectura cruda. Si el gate mandó la lectura
+  a revisión, `extraction_status` aparece al lado de los números. Un JSON con los datos sin el
+  veredicto deja a quien lo consume creyendo que el sistema respondió por ellos.
+- `datos` se resuelve al final y no dentro de `procesar_archivo`, que tiene trece salidas y cuyo
+  ticket a veces todavía no existe (DUPLICADO apunta al de otro, OMITIDO por `company_id` no creó
+  ninguno, ACTUALIZADO pudo encontrarlo borrado).
+- `datos=null` sin ticket, **no** un objeto de campos vacíos: un objeto lleno de `None` parece una
+  lectura que no encontró nada, y es otra cosa distinta.
+
+`raw_text` sigue fuera a propósito: hasta 20 000 caracteres por ticket, y es evidencia, no un dato.
+
+---
+
+### 1. `GET /reconciliations/mappings` devolvía 422, no 200 — ✅ CORREGIDO
+**Orden inverso de rutas.** `GET /{reconciliation_id}` se declaraba **antes** de `GET /mappings`.
+Starlette resuelve en orden de declaración y gana el primer match, así que `/mappings`
+llegaba al handler con un placeholder `UUID`, la palabra `"mappings"` no parseaba, y
+la respuesta era 422 en vez de la lista de mapeos.
+
+**Alcance real (medido, no supuesto):** solo affecta a rutas literales de **un solo
+segmento**. `/export/excel`, `/export/contpaqi`, `/export/generic` y `/mappings/{id}`
+funcionaban bien: son dos o más segmentos, y un placeholder de un segmento no compite
+con ellos. Solo `GET /mappings` colisionaba. `POST /mappings` tampoco se veía afectado.
+
+Peor: **un test verde lo tapaba.** `test_reconciliations_api.py:421` afirmaba
+`len(list_resp.json()) == 1`, y el `{"detail": [...]}` de un 422 también cumple `len == 1`.
+
+**Arreglo:** `GET /{reconciliation_id}` movido al final del router, con un comentario que
+explica el porqué. El test ahora exige `status_code == 200` explícito antes de mirar el
+cuerpo, y comprueba que el id de la lista sea el esperado. Verificado con mutación: al
+revertir el orden, el test muere con `/mappings devolvio 422`.
+
+### 2. El frontend nunca guardaba el comprobante original — ✅ CORREGIDO
+La UI hacía `POST /tickets/extract` (**solo preview**, no persiste) y luego `POST /tickets/`,
+que es captura **manual** (`tickets.py:110` fuerza `source_type=MANUAL`, `confidence=None`,
+sin documento). El `File` se soltaba en el paso 1.
+
+Consecuencia: por la UI los bytes originales **nunca llegaban a `ticket_documents`**. No
+daba ningún error visible — la pantalla se veía igual — y el muestreo de exactitud
+(`accuracy_service`) comparaba la transcripción del modelo contra sí misma, sin original
+contra el cual contrastar.
+
+**Arreglo:** `Tickets.tsx` retiene el `File` en `pendingFile` y, tras crear el ticket,
+lo adjunta con `subirDocumento`. Se conserva el paso de revisión: el usuario confirma y
+corrige lo que leyó la IA antes de que exista como registro contable. El fallo de la
+subida **no** deshace el ticket (el backend usa un SAVEPOINT para justo eso) y se avisa
+en ámbar, no en rojo: el ticket sí se guardó.
+
+**Verificado end-to-end contra el stackdocker:** reproducido el bug (0 documentos), y
+verificado el fix (`PUT` 200, 2594 bytes, y la descarga vuelve **idéntica** al original).
+
+**Nota:** el ticket creado por esta vía sigue siendo `MANUAL` con `confidence=NULL`, así
+que **no entra al muestreo del 5%**. Guardar el documento no es lo mismo que pasar por
+el confidence gate. Ver el punto 14.
+
+**Tests:** `tests/unit/test_contract_sync.py::TestElComprobanteOriginalLlegaAGuardado`
+(5 tests). Verificado por mutación: quitar el `subirDocumento` los hace fallar.
+
+### 29. `subtotal + IVA == total` rechazaba comprobantes correctos (arreglado)
+
+**Qué pasaba.** El gate comprobaba que `subtotal + IVA == total`, con una tolerancia de un
+centimo. Eso asume que un comprobante tiene **una** tasa de impuesto, y en México es falso.
+
+Medido sobre el ticket real de esta máquina (`FC3CB9F8-5AB1-4546-B9A9-016C69A158C5`):
+
+```
+SUBTOTAL       217.27
+IVA 16.0%        8.14
+IEPS 8.0%        8.59
+TOTAL          234.00        217.27 + 8.14 = 225.41   <- faltan 8.59
+```
+
+El comprobante era **correcto** y el gate lo mandaba a revisión. Con la tolerancia de un
+centimo, no había forma de pasarlo aunque los tres números se leyeran perfecto.
+
+**Por qué es peor que un check flojo.** `subtotal_plus_tax_mismatch` dejó de significar
+"leíste mal" y pasó a significar "el modelo no tiene un campo para lo que dice el papel". Con
+esa señal corrupta, el resto de los checks dejan de ser creíbles: si el único check aritmético
+avisa por un motivo que no es un error de lectura, ¿cuál de los otros sí lo es?
+
+**El error de fondo: el IVA no es una tasa del subtotal.** En ese ticket el IVA es 8.14 sobre
+217.27, o sea **3.7%**, no 16%. Solo una parte de las partidas está a 16% y el resto a 0%: el
+papel lo marca con una letra al final de cada línea (`T`, `C`, `A`). El IEPS de 8.59 es **4.0%**
+del subtotal, tampoco 8%.
+
+**El camino que se probó y se descartó.** Un heurístico: "si `subtotal + IVA` no da el total,
+busca una tasa fiscal conocida que explique la diferencia". Se descartó porque es falso — la
+diferencia no es una tasa del subtotal sino la **suma de impuestos de líneas con tasas
+distintas**. En la práctica marcaba como "un impuesto raro" a cualquier total mal leído que se
+desviara alrededor del 4%, que es justo el caso que tiene que seguir fallando: la foto de DSW,
+donde el OCR leyó el precio ya descontado (`119.97` en vez de `279.93`).
+
+Un clasificador que hace pasar errores de lectura es peor que no clasificar.
+
+**Arreglo.** El dato exacto: `tickets.ieps_amount` y `compra_items.iva_linea` /
+`ieps_linea` (migración `0012`). El gate prueba `subtotal + IVA + IEPS == total` cuando hay
+IEPS, y sigue exigiendo que cuadre — no se relajó nada.
+
+**Lo que salió en el camino, y es lo importante:**
+
+1. **`tax_amount` es el IVA, y el prompt pedía "total de impuestos".** `export_service` manda
+   `tax_amount` bajo el encabezado **"IVA"** del archivo que ve el contador. Un comprobante con
+   IVA 8.14 e IEPS 8.59 llegaba al contador como **IVA 16.73**, sin marca de error. No era un
+   dato inventado como `TipoCambio: 1.0000`: era un dato real con la etiqueta equivocada, que
+   es peor porque no se ve.
+2. **El `Subtotal` del Excel era `total - IVA`.** Con IEPS daba 225.86 en vez de 217.27, y la
+   cuenta del archivo **cuadraba** (225.86 + 8.14 = 234.00), así que el error quedaba
+   invisible. Ahora sale `tickets.subtotal`, y si no hay subtotal leído se deriva solo cuando
+   se sabe que no hay IEPS; con IEPS sin subtotal la celda queda vacía.
+3. **`TicketReviewRequest` no aceptaba `subtotal` ni `ieps_amount`.** Aprobar desde la cola de
+   revisión era imposible para un ticket con IVA+IEPS, con un `422` que no decía qué número
+   faltaba.
+
+**Por qué el campo costó tres intentos.** `TicketExtractionResult` **no está en
+`app/schemas/ticket.py`**: está en `parser_service.py:427`. El campo se agregó dos veces a
+`TicketResponse` y ninguna a la clase que el escaner consume, y el error apareció como
+`AttributeError` en `scan_service`, tres capas más abajo. Un test por capa habría pasado en
+los tres casos — que es exactamente lo que ya había pasado con `items` y con el `Decimal` de
+`items`.
+
+**Verificado por mutación** (`tests/integration/test_ieps_extremo_a_extremo.py`, 6 tests):
+
+| Mutación | Resultado |
+|---|---|
+| `capture` no copia el `ieps_amount` | mueren 4 de 6 |
+| `ticket_persistence` no lo guarda en la fila | mueren 2 de 6 |
+| `review_ticket` no lo relee al aprobar | muere el de aprobar |
+
+**Lo que NO se arregló, y sigue pendiente:** tu ticket real tiene `IVA 0.00` — el OCR no leyó
+mal el IVA, lo leyó **como cero**. El descuadro son 16.73 (IVA 8.14 + IEPS 8.59), así que el
+campo `ieps_amount` solo no lo resuelve: necesita corrección humana mirando el papel.
+
+---
+
+---
+
+## 🟠 Trampas
+
+### 3. `app/modules/expenses/` — muerto **y** roto. — ✅ BORRADO (no lo montes)
+
+**Se borró entero.** No era una decisión de limpieza: era código que no tenía a nadie detrás y
+que, si se montaba, abría una puerta. Lo que tenía, medido:
+
+- Su router **no estaba** en `api_router.py` → los 6 endpoints no existían.
+- `crud.py:136` referenciaba `SourceType.AUTO`, que **no existe** en el enum.
+- `pipeline.py:224-229` usaba `select`/`and_` sin importar.
+- `batch_upload` (`router.py:41-45`) aceptaba un `folder_path: str` **del cliente** y hacía
+  `Path(folder_path).glob()` → lectura arbitraria de directorios del servidor. Ninguno de sus
+  6 endpoints pedía `get_current_user`.
+
+**Lo que costaba dejarlo quieto:** 1 110 líneas y **14 errores de tipo** que nadie iba a
+arreglar, porque no había a quién le importar. Un `mypy` del repo los reportaba todos y
+nadie los leía, que es exactamente cómo se normaliza un linter que no sirve para nada.
+
+**Lo que reemplaza su salida por el miedo correcto:** el camino de lectura por PDF con visión
+y OCR ya está cubierto, con tests y con mutaciones que mueren si algo se quita
+(`capture.py`, `verify_capture_mutations.py`). Ese camino —OCR por páginas del PDF, `vision`
+como último escalón, y el respaldo del comprobante guardado con su hash— era el que
+`pipeline.py` intentaba resolver y que hoy resuelve `capture.py`, que es el que está
+montado. Si alguien necesita esa lectura, no hay que resucitar `pipeline.py`: hay que llamar
+a `capture_ticket`.
+
+Lo que queda de esta entrada es la regla: **un módulo muerto no se arregla, se borra o se
+dice que existe.** Un módulo que parece arreglado invita a montarlo, y montarlo abre la
+lectura arbitraria de directorios.
+
+### 4. Sin multi-tenancy: cualquier usuario autenticado toca cualquier empresa
+`get_current_user` no recibe `company_id` ni hay scoping por empresa. Con un token válido,
+`GET /tickets?company_id=<ajena>` lee y `PATCH`/`DELETE` escriben empresas ajenas.
+Es aceptable para "una máquina, un contador"; **no** lo es si esto se vuelve multiusuario.
+Decisión de producto pendiente, pero documéntala antes de que alguien la descubra tarde.
+
+### 5. El export CONTPAQI inventa datos
+`export_service.py:310-327` manda literales fijos: `Serie=""`, `Folio=""`, `Moneda="MXN"`,
+`TipoCambio="1.0000"`, `MetodoPago="PUE"`, `TipoComprobante="I"`, `UsoCFDI="G03"`.
+Y **12 campos que sí se extraen se tiran** (`invoice_number`, `invoice_series`, `currency`,
+`exchange_rate`, `payment_method`, `items`, + `provider_address`, `receiver_*`, `due_date`,
+`tax_breakdown`, `payment_terms`). Un comprobante en USD sale con tipo de cambio 1.0000,
+**sin marca de error**. Para un contador, un tipo de cambio falso es peor que un campo vacío.
+
+### 6. HEIC no soportado — ✅ CORREGIDO (el front sigue sin aceptarlo)
+`pillow-heif` ya está en `requirements.txt` y el opener registrado en
+`ai_extractor.py`, así que la foto de un iPhone entra y se decodifica. La wheel trae
+la librería nativa: no hace falta `apt-get`, y verificado en aarch64.
+
+Lo grave no era que no funcionara, sino **cómo fallaba**: el decode estaba en un
+`except: pass` (`ai_extractor.py:140-151`), así que los bytes crudos de un HEIC iban
+a `base64` **declarados `image/jpeg`** a un modelo que no los descodifica. Basura
+que podía volver con apariencia de lectura.
+
+Ahora `_a_jpeg()` devuelve `None` y sale `IMAGEN_ILEGIBLE`, que está en
+`FALLOS_DEL_MODELO` (`capture.py:81`): el ticket va a la cola **con el motivo real**
+en vez de con un `Unknown Provider` de pantalla. Sigue faltando que el front acepte
+`.heic` en su `accept`.
+
+### 7. PDF cifrado se pierde como "ilegible"
+`pdfplumber` y `pypdfium2` fallan sin contraseña → `capture.py:381` devuelve
+"PDF ilegible y no renderizable", **sin decir que el problema es la contraseña**. El usuario
+no sabe qué hacer. `raw_text` y `validation_errors` tampoco lo mencionan.
+
+### 8. Un archivo por subida; sin carga masiva
+Los 3 endpoints de archivo declaran `file: UploadFile` **en singular** (`tickets.py:120,136,1031`).
+Los `SourceType.BULK` / `DIRECTORY` / `CAMERA` del enum no tienen endpoint. La idempotencia
+por hash ya está lista, pero nada la llama en lote.
+
+### 9. `init.sql` y los modelos divergen (el test verde no lo ve) — 🟡 PARCIALMENTE CERRADO
+
+**La clase de fallo está cerrada; las dos divergencias historicas siguen.**
+
+- `bank_transactions.company_id`: nullable en `init.sql:126`, `NOT NULL` en
+  `models/bank_transaction.py:24`. **Sigue abierta.** Exige una migración.
+- `users.email`: el modelo pide `unique+index` sobre la columna cruda
+  (`models/user.py:26`); prod usa índice **funcional** `lower(email)` (`init.sql:32`).
+  **Sigue abierta**, y es correcta: el índice funcional es el que vale, porque el
+  login normaliza a minúsculas antes de buscar.
+
+**Lo que se encontró y se cerró:** `tickets.ieps_amount`, `compra_items.iva_linea`
+y `compra_items.ieps_linea` **no estaban en `init.sql`**, aunque los modelos las
+declaran y `ticket_persistence.py:114` escribe `ieps_amount` en cada INSERT. Una
+base creada desde cero —la única forma de que corra `init.sql`— reventaba con
+`column "ieps_amount" of relation "tickets" does not exist`, o sea un 500 por
+comprobante y el ticket perdido. Las tres son de la migración `0012`, replicadas
+ahora. Verificado comparando los 13 modelos contra el DDL.
+
+**Y ya no puede volver a pasar en silencio**, con `tests/unit/test_init_sql_espeja_los_modelos.py`
+(20 tests): recorre las columnas de cada modelo y comprueba que el DDL las
+**declare**. No verifica tipos ni nullability —para eso están los
+`verify_postgres_*.py`— sino existencia, que es lo que se rompió.
+
+**Los tests NO lo veían, y por eso el defecto era invisible:** la suite construye
+el esquema desde los modelos (`conftest.py`), nunca desde `db/init.sql`. Ese
+archivo solo corre una vez, con el volumen vacío. Los dos archivos pueden estar
+"bien" por separado y el test sigue verde.
+
+> **Y el test que lo cubre tuvo dos bugs antes de valer.** Ambos están escritos en
+> el propio archivo, porque son la parte que nadie adivina:
+> 1. Buscaba el nombre de la columna en el archivo entero. Los **comentarios** de
+>    `init.sql` mencionan `ieps_amount` larguísimo, así que daba verde con las
+>    columnas borradas. Se grepa sobre texto, no sobre comportamiento.
+> 2. Al quitar los comentarios, quitaba los cuerpos `$$...$$` **antes** que los
+>    comentarios, y hay un `$4,093.80` dentro de un comentario que desalineaba el
+>    emparejamiento: el archivo se encogía de 48 KB a 5 KB y `CREATE TABLE
+>    compra_items` desaparecía. 12 tests en rojo con el DDL íntegro.
+> 3. Y aun así daba verde: un `COMMENT ON COLUMN tickets.ieps_amount IS` dos
+>    líneas más abajo **menciona** la columna sin **crearla**.
+>
+> Tres versiones del test, y la tercera es la que sirve. Un test que no sabe
+> distinguir "esta columna no existe" de "no sé dónde está" es peor que ninguno:
+> alguien lee "todo en verde" y concluye que el DDL está bien.
+
+### 10. `REVIEW_CONFIDENCE = 0.60` no hace nada
+`confidence_gate.py:198-203`: las dos ramas (`>= 0.60` y el `else`) producen
+`REQUIERE_REVISION`; solo cambia la etiqueta (`confidence_medium` vs `confidence_low`).
+Si alguien lo sube esperando un cambio de comportamiento, no lo habrá. Cosmético hoy,
+confuso mañana.
+
+### 11. `text` no existe en el enum `SourceType`
+`file_type=text` funciona en la cascada (`capture.py:292`) pero al persistir cae al fallback
+y se guarda como `source_type="image"` (`tests/integration/test_capture_pipeline.py:102-116`).
+
+### 34. El parser leía el precio ya descontado como total — ✅ CORREGIDO
+
+**Medido con `scripts/medir_precision_ocr.py` sobre los 5 comprobantes rotulados a
+mano, corriendo el OCR de verdad:**
+
+| Campo | antes | después |
+|---|---|---|
+| **`total_amount`** | 60% (3 de 5) | **80%** (4 de 5) |
+| **`subtotal`** | 20% (1 de 5) | **60%** (3 de 5) |
+| `tax_amount` | 60% | 60% (sin cambio) |
+
+> **Y un hallazgo de método que importa más que los números: el OCR NO es
+> determinista entre corridas.** La misma foto de DSW dio `SUBTOTAL 279.33` en la
+> corrida cuyo `raw_text` quedó guardado en `tickets`, y `SUBTOTAL 279.93` en una
+> corrida nueva. Medir el parser sobre el `raw_text` guardado mezcla el estado del
+> código con el de una lectura vieja, y produce cifras que **no reproducen**: por
+> eso la primera medición de este arreglo dio "60%, sin cambio" y la correcta da
+> 80%.
+>
+> **Mide siempre con el script, que relee las fotos.** Es el mismo error que medir
+> el parser contra su propia salida.
+
+#### El defecto 1: la línea de ahorro se leía como el total
+
+El papel de DSW (`IMG_4253 2.HEIC`) imprime, textual:
+
+```
+Usted ahorra $119.97 de $399.90
+SUBTOTAL 279.93
+Usted ahorra en Total: $119.97
+```
+
+El total real es **279.93**. El sistema leía **119.97**, que es el precio ya
+descontado, y de ahí salía un `subtotal_plus_tax_mismatch` sobre dos números que
+no eran los del comprobante: **el gate se paraba por una razón que no era la
+real**. Hizo bien en parar; paró por lo equivocado.
+
+Sin el filtro, ese texto da `total 119.97`. Con el filtro, da **`279.93`** — el
+valor correcto del papel, y el que lo sube al 80%.
+
+**El filtro está en DOS sitios y en el primero no bastaba.** El `continue` en el
+bucle principal quita la línea de ahorro de ahí, pero el **fallback del final
+reescanea `lines` completas** buscando `total|importe`. Con el filtro solo en el
+bucle, DSW seguía leyendo `119.97` por esa puerta y el arreglo no hacía nada.
+Medido: fue exactamente lo que pasó en la primera implementación, y por eso hay
+un test que prueba **solo** el fallback, sin el bucle alrededor.
+
+#### El defecto 2: `SUBTOTAL` con puntuación pegada
+
+La etiqueta exigía `^` o whitespace antes, y el OCR pone ruido de caja delante:
+
+```
+“SUBTOTAL 108.31     <- Bodega Aurrera, comilla tipográfica   NO SE LEÍA
+«SUBTOTAL 217.27     <- angle bracket                          NO SE LEÍA
+; SUBTOTAL 964.00    <- este sí entraba
+```
+
+En los dos primeros el importe **estaba a la vista**. Es el arreglo que sube el
+subtotal de 20% a 60%: el de Aurrera pasa de `None` a `108.31`, que es el valor
+correcto del papel.
+
+El borde pasó de `(?:^|\s)` a `(?:^|[^\w])`. **No se relaja más**: con
+`r"sub..."` a secas, `XSUBTOTAL 108.31` entra como subtotal, que es inventar un
+número. Esa mutación está en `verify_capture_mutations.py` y en el test.
+
+#### Lo que estos arreglos NO arreglan, y conviene no prometer
+
+- **`provider_name` sigue en 0%.** El nombre real del emisor está al **final** del
+  texto, junto al RFC, y el parser toma las primeras 15 líneas —donde el OCR pone
+  ruido de caja (`Pog ae — TAPA`, `AAA AI`, `GRUPO COMERCIAL DS!`)—. Es la pieza
+  de mayor ganancia pendiente y **no es un arreglo de una línea**: cambia el campo
+  que el gate exige para aprobar, así que necesita su propia medición.
+- **Mercastar sigue en `0.00`.** El OCR funde la etiqueta (`ARTIC ATOTAL: 5000` en
+  vez de `ARTIC. TOTAL: 48.00`) y §21 documenta por qué relajar ese patrón **no
+  se adoptó**: leería `5000`, que es 100× el importe real, en una fila que
+  parecería buena.
+- **El IVA nunca se lee** (`FINA`, `TVA`, `TEPS` en vez de `IVA`) y **el RFC
+  tampoco** (el OCR pierde las tres letras del RFC del emisor, §21). No hay
+  arreglo de parser para ninguna de las dos.
+
+Verificado con `tests/unit/test_parser_ahorro_y_bordes.py` (20 tests, 4 mutaciones
+comprobadas a mano: filtro fuera del bucle · filtro fuera del fallback · borde
+vuelto a whitespace · borde relajado a cualquier carácter) y con
+`verify_capture_mutations.py`, que subió de 26 a 28 mutaciones.
+
+### 37. Los tres pasos del gasto eran tres pantallas sueltas sin orden — ✅ CORREGIDO
+
+**El hueco:** digitalizar, registrar y conciliar son tres trabajos que van en
+orden, y en el menú lateral no había ninguna pista de cuál seguía. Quien
+digitaliza 40 comprobantes y cierra la laptop vuelve con 40 tickets `PENDIENTE` y
+ninguna señal de que el próximo paso es **revisarlos**, no volver a escanear.
+
+`front/src/components/FlujoGuiado.tsx`, en el dashboard.
+
+#### Los tres pasos, y por qué el orden no es decorativo
+
+| Paso | Pantalla | Qué muestra |
+|---|---|---|
+| 1. Digitalizar | `/scan` | comprobantes leídos |
+| 2. Registrar | `/review` | pendientes de confirmar, y cuántos ya están afirmados |
+| 3. Conciliar | `/reconciliations` | sin cruzar, y cuántos cruzados |
+
+El paso 3 puede estar bloqueado con el paso 2 incompleto, y **eso es correcto**:
+un ticket `PENDIENTE` no se concilia ni se exporta (`SETTLED_STATUSES`).
+
+#### Los números salen del dashboard, no de una llamada nueva
+
+`DashboardResponse` ya traía `por_estado`, `cola_revision` y
+`por_estado_conciliacion`. **No se agregó ningún endpoint**: dos consultas que
+cuentan lo mismo son dos verdades, y este proyecto no las sostiene.
+
+#### EL BUG QUE SOLO SE VIO MIRANDO LA PANTALLA
+
+La primera versión pintaba **✓ verde en "Conciliar"** con 0 cruzados y 7
+comprobantes sin confirmar. Dos cosas lo causaban:
+
+**1. El orden de la condición.** Era:
+
+```ts
+if (!registradas && paso.pendientes > 0) return 'bloqueado';
+return paso.pendientes === 0 ? 'hecho' : 'en_curso';
+```
+
+Con `pendientes === 0` la primera línea no disparaba y la segunda devolvía
+`hecho`. El contador propio del paso no puede decidir si el paso **está hecho**:
+lo que decide es si hay **algo sin confirmar antes**. Corregido a bloquear
+primero:
+
+```ts
+if (!registradas) return 'bloqueado';
+return paso.pendientes === 0 ? 'hecho' : 'en_curso';
+```
+
+**2. El test de texto no lo veía.** Buscaba la palomita en
+`html.slice(html.indexOf('Conciliar'))` — y **en el HTML la palomita va antes de
+la palabra**, así que el recorte empezaba después y el test era verde con la
+pantalla mintiendo. El criterio correcto es contar sobre todo el HTML: con algo
+sin confirmar hay **exactamente una** palomita, no tres.
+
+> **Un test que busca una cadena a partir de otra puede estar midiendo el
+> recorte y no el componente.** Cuando el orden del markup importa, contar sobre
+> todo es lo que se necesita. Esto es lo mismo que ya pasó con el panel de
+> progreso (§31): el texto que sale hay que mirarlo, y mirarlo en la pantalla
+> encuentra cosas que el string no.
+
+**3. La numeración duplicada.** El `<ol>` pintaba sus propios "1. 2. 3." al
+margen y el badge de cada paso repetía el número: se leían seis pasos. `list-none`
+lo arregla. **Solo se notó en la captura** — en el texto plano los números se
+mezclan y no se distingue uno de otro.
+
+#### Verificación
+
+`front/scripts/verificar_flujo_guiado.tsx`: **26 comprobaciones** sobre el render
+con los datos reales de la máquina, más el cálculo de estado aislado (sin React,
+para que un fallo diga si fue la comparación o el render). Mutación verificada:
+reintroducir la condición vieja **mata 2 tests** (la palomita y el estado).
+
+Y verificado **mirando la pantalla renderizada**: los tres pasos en tres columnas,
+`Digitalizar` en verde con ✓, `Registrar` en azul con 6 por confirmar, `Conciliar`
+en gris **sin palomita**, y la nota que explica que la cola no es un error.
+
+### 36. No había forma de dejar la base limpia para volver a probar el escaneo — ✅ CORREGIDO
+
+**El hueco era real y está documentado en el propio código:** `ScanRequest.simular`
+decía *"para no dejar rastro hay que apuntar a otra empresa de prueba, o borrar
+después"* — y **"borrar después" no existía como herramienta**. La primera limpieza
+de la base de este trabajo se hizo a mano con `psql`.
+
+`POST /api/v1/scan/reset`, con `app/services/scan_reset.py`.
+
+#### Los cuatro cerrojos, y por qué están en ese orden
+
+| # | Cerrojo | Qué pasa sin él |
+|---|---|---|
+| 1 | `TICKETS_SCAN_RESET_HABILITADO`, **apagado por omisión** → **404** | Cualquier despliegue del código tiene un endpoint que borra la base |
+| 2 | `UsuarioVerificado` (token + `X-Contrasena-Actual`) → **401** | Un token robado borra el histórico contable |
+| 3 | La frase `BORRAR_YA` exacta → **422** | Un `true` de más borra |
+| 4 | Trabajo humano presente → **409** | Se borra la corrección de alguien que miró un papel |
+
+El **4** es el que protege lo irrepetible: un ticket con `reviewed_at` o una compra
+`PROCESADO` bloquean el borrado. Todo lo demás —una lectura automática— se puede
+volver a hacer; eso no.
+
+#### EL ORDEN DE LOS CERROJOS NO ES EL DEL CÓDIGO, Y POR ESO EL FLAG ES UNA DEPENDENCIA
+
+La primera versión tenía el flag como `if not settings...: raise 404` al principio
+del handler, y el test lo cazó: **con el flag apagado devolvía 401**, no 404.
+
+FastAPI evalúa las **dependencias antes** que el cuerpo del handler, así que
+`UsuarioVerificado` ya había comprobado token y contraseña cuando se llegaba al
+primer `if`. El `if` del cuerpo era el **tercer** cerrojo en ejecutarse, aunque en el
+código estuviera el primero.
+
+Eso no es cosmético: **un 401 confirma que la ruta existe**, y para un endpoint que
+borra la base, confirmar que hay una puerta de borrado es parte del daño. Por eso
+el flag va en `_reset_permitido`, que encadena flag → contraseña dentro de una
+misma dependencia, donde FastAPI **sí** garantiza el orden.
+
+Poner el parámetro del flag primero **no** lo arregla: FastAPI no garantiza el
+orden entre un `Annotated` y un `Depends` suelto. Eso se comprobó.
+
+#### El orden de los `DELETE` depende de un trigger, y está medido
+
+`tickets` va antes que `ticket_documents` porque este es **append-only por
+trigger** (`0009_documento_inmutable.sql`): el trigger rechaza borrar el documento
+*mientras su ticket exista*.
+
+Medido contra Postgres real, no inferido del DDL:
+
+- **Orden malo** (papel primero): `ERROR: ticket_documents es append-only: no se
+  borra un documento mientras su ticket exista. Ticket 38a1c061-...` — y
+  `ROLLBACK`, con los 7 tickets intactos. **Pasó de verdad** en la primera limpieza.
+- **Orden bueno** (ticket primero, papel en cascada): borra los 7.
+
+También se aisló el mecanismo con una tabla de dos niveles y el mismo trigger: el
+orden malo da `append-only`, el bueno deja 0 filas.
+
+**Y el trigger tiene que seguir en pie después.** Un endpoint que lo deshabilitara
+haría que su borrado pasara y habría quitado la regla 18 sin que nada lo notara.
+
+> **Este orden NO se puede probar en `unit`, y es importante saber por qué.**
+> SQLite no tiene triggers y `conftest.py` construye el esquema desde los modelos,
+> así que sobre SQLite el trigger no existe y el orden invertido pasaría sin error.
+> Un test en `unit` probaría que Python ejecuta dos `DELETE` en secuencia —que es
+> lo que hace cualquier código—. Se intentó el test de integración con las
+> migraciones aplicadas, y es un avispero que hoy no justifica: las migraciones
+> asumen columnas que `create_all` no crea, y asyncpg tokeniza los `\` de
+> continuación de línea antes de quitar los comentarios. La evidencia del orden está
+> arriba, medida contra la base viva.
+
+#### Verificación
+
+`tests/unit/test_scan_reset.py`: **29 tests, 5 mutaciones comprobadas a mano** — el
+flag se ignora · la frase ya no importa · el cerrojo del trabajo humano desaparece ·
+se borran también `users` y `companies` · el preview también borra. Las cinco
+mueren.
+
+La mayoría son pruebas **negativas** a propósito: un endpoint destructivo se
+verifica por lo que *no* deja pasar.
+
+### 35. `verify_capture_mutations.py` contaba el subtotal como no verificado — ✅ CORREGIDO
+
+El script mutaba `r"(?:^|\s)sub[\s-]?total..."`, y al cambiar el borde a
+`r"(?:^|[^\w])sub[\s-]?total..."` el patrón se quedó obsoleto. **El script lo
+reporta y sale con 1**, pero es el aviso que `AGENTS.md` describe: *"si refactorizas
+código que estos scripts mutan, actualiza la ruta. Si no, el script cuenta la
+defensa como no verificada, y lo hace en silencio."*
+
+Reapuntado, y de paso se **añadieron dos mutaciones** que el arreglo de abajo
+dejó sin cubrir: el borde del `total` (que cambió en el mismo commit por el mismo
+motivo) y el filtro de ahorro. Sin ellas, esos dos arreglos estaban verificados
+solo por tests unitarios y el script los contaba como cubiertos.
+
+Queda **1 patrón obsoleto, preexistente**: *"un documento ilegible se pierde en
+vez de ir a la cola"*. Comprobado con `git stash -u`: revienta igual sin los
+cambios de este trabajo.
+
+### 31. El feed del escaneo no pintaba los datos del ticket — ✅ CORREGIDO
+
+**Medido, sobre los 7 tickets reales de la base.** El feed en vivo
+(`GET /scan/runs/{id}` → `procesados[]`) llevaba **cinco campos**: ruta, importe,
+estado, motor y acción. El panel mostraba:
+
+```
+[revisar]  IMG_4222.jpeg                                   $0.00
+```
+
+**Y eso no distingue dos situaciones que piden acciones opuestas:**
+
+| Lo que se veía | Lo que pasó | Qué hay que hacer |
+|---|---|---|
+| `$0.00` + `total_not_positive` | el sistema **no supo leer** el papel | volver a la foto |
+| `$119.97` + `subtotal_plus_tax_mismatch` | el sistema **sí leyó**, pero el gate vio que no cuadra | comparar dos números |
+
+Con solo el total, las dos se veían como `$X, pendiente`. El operador no sabía cuál
+era, y por lo tanto no sabía qué hacer. No faltaba un dato bonito: faltaba el
+dato que convierte una fila en una tarea.
+
+**Lo que se agregó al feed**, leído de la **fila** de `tickets` y no de la
+lectura cruda — la misma distinción que separa `ScanItemResponse.datos`: si el
+gate mandó la lectura a revisión, aquí se ven los números **que produjo la
+lectura** junto al veredicto que los rechazó:
+
+`proveedor` · `rfc` · `fecha` · `subtotal` · `iva` · `ieps` · `lineas` (conteo) ·
+`validation_errors`
+
+**Las líneas NO se copian, solo se cuentan.** `MAX_PROCESADOS` es 60 y un ticket
+de supermercado trae 28 partidas: copiar `items` entero son 1 700 objetos en
+memoria para pintar un número. Quien quiera las líneas las pide en el ticket.
+
+**`lineas: null` y no `0` cuando no hay.** La ruta OCR nunca trae detalle de
+partidas —`tickets.items` queda a `NULL` y `registrar_compra` devuelve `None` sin
+error, que es el caso normal—, y `0` afirmaría que el papel no trae partidas.
+Con OCR al 60% eso sería una afirmación falsa.
+
+**Por qué no es una segunda verdad que se desincroniza.** Son los mismos campos de
+la misma fila que ya se leían para pintar `monto` y `extraction_status`. No hay una
+segunda lectura ni un segundo criterio; lo que cambió es que ahora se copian todos
+en vez de dos. Si se desincroniza, se desincroniza en los campos que ya lo hacían.
+
+**El `date` casi revienta la respuesta, y donde falla no se ve.** `a_dict()`
+serializa con `json.dumps`, y un `date` crudo lanza `TypeError` ahí — en el
+**serializado**, que es donde parece un fallo de red y no del feed. `_json_safe`
+lo cubre junto con los `Decimal`.
+
+Verificado con `tests/unit/test_feed_del_ticket.py` (13 tests, 5 mutaciones
+comprobadas a mano: el caller deja de pasar el encabezado · el registro deja de
+guardarlo · `_json_safe` deja de tratar `date` · `MAX_PROCESADOS` se relaja a
+`100000` · se conservan los primeros en vez de los últimos) y con
+`front/scripts/verificar_panel_progreso.tsx`, que renderiza el panel con el feed
+real y comprueba el **texto que sale** — incluido que no haya `undefined`,
+`NaN`, `null` ni `[object Object]`, que `tsc` no ve.
+
+### 32. El panel muestra los motivos del gate traducidos, y el código a la vista
+
+Los códigos (`total_not_positive`, `subtotal_plus_tax_mismatch`) van **en inglés y
+sin traducir**, y la explicación va en español al lado. La razón es de búsqueda:
+esos códigos son los que aparecen en `validation_errors`, en los logs y en la base.
+Traducirlos los haría imposibles de buscar, y un motivo que no se puede buscar
+es un motivo que hay que volver a aprender a mano cada vez que el gate crece.
+
+**Un código sin entrada en el glosario se muestra tal cual**, no se esconde. Es
+mejor ver `algo_nuevo_del_gate` que no ver nada y creer que no hubo error: un
+switch silencioso es un switch que miente cuando el backend crece.
+
+### 33. `npm run verify` falla en `verify_login` — 🟠 **ABIERTO, preexistente**
+
+`verify_login.ts` tiene una etapa `contraLaApiReal()` que hace un login real contra
+`http://localhost:8000`, y **falla siempre**:
+
+```
+El verificador revento:
+Error: Correo o contraseña incorrectos
+    at entrar (/tmp/verify-front/verify_login.js)
+```
+
+Comprobado con `git stash`: **revienta igual sin los cambios del feed**, o sea que
+no lo introdujo este trabajo. Dos cosas están mal y las dos son el mismo error de
+suposición:
+
+1. **El script necesita credenciales válidas** y no las pide ni las lee de
+   `VITE_*`. Con `POST /auth/login` exigiendo scrypt y token, "un login real" solo
+   puede ser con una cuenta de verdad.
+2. **No es un `npm test`.** Es un script que pegarle a una API local, y por eso
+   `npm run verify` no sirve como puerta en CI. Las etapas unitarias (las que no
+   tocan la red) sí valen y sí pasan.
+
+Mientras siga así, `npm run verify` no es una señal verde/roja fiable del front. Lo
+que sí lo es: `npm run build` (que corre `tsc`) y `verificar_panel_progreso.tsx`
+aislado. Arreglarlo es una pieza aparte: o el script recibe un email y una contraseña
+por variables de entorno y documenta que hace falta una cuenta de prueba, o la
+etapa de red se mueve a un test de integración con su propio token.
+
+### 18. El escáner de carpeta: lo que todavía no está resuelto
+`feature/tickets-ocr-api` añadió el escáner y el registro por archivo. Estos cuatro puntos
+son deuda real, no pendientes teoricos:
+
+- **El lock de escaneo es de proceso, no de base.** `scan_service.py` usa un
+  `asyncio.Lock`: dos escaneos en el mismo proceso se serializan, dos en procesos
+  distintos no, y compiten por el `UNIQUE` de `relative_path`. El proyecto corre un
+  solo contenedor, así que hoy no importa; con dos workers hay que poner
+  `INSERT ... ON CONFLICT DO NOTHING` con reintento, o un advisory lock de Postgres.
+- **`ScanStatus` no tiene un valor "desactualizado".** Un archivo `PROCESADO` cuyo
+  contenido cambió y cuyo ticket tiene correcciones humanas queda `PROCESADO` con el
+  aviso en `last_error`, y `GET /scan/stats` lo cuenta aparte. Es un parche: un
+  cuarto estado sería más honesto y merece su propia migración.
+- **Los symlinks se saltan sin aviso.** Un comprobante enlazado desde otra carpeta no
+  se procesa y no aparece ni como `ERROR` ni como `NO_SOPORTADO`. Es la decisión
+  conservadora (un symlink es la forma más corta de leer fuera de la carpeta), pero
+  el operador no ve por qué su archivo no apareció. Registrar cada symlink
+  saltado ensuciaría el registro en macOS, donde Finder los crea por todas partes.
+- **El tope por corrida no tiene prueba de integración.** La lógica es un `break`
+  con un contador y el campo `omitidos_por_tope` está en la respuesta, pero no hay
+  un test que ponga 3 archivos, el tope en 2 y compruebe que queda 1.
+
+### 19. `easyocr` estaba soportado pero **nunca funcionó** — PARCIALMENTE CORREGIDO
+
+La rama de easyocr **existía pero no podía ejecutarse.** `ocr.py:_leer_easyocr` pasaba una
+imagen de Pillow a `readtext`, y EasyOCR solo acepta ruta, bytes o array de numpy:
+
+```
+ValueError: Invalid input type. Supporting format = string(file path or url), bytes, numpy array
+```
+
+Reproducido contra EasyOCR instalado en el contenedor. O sea: la afirmación "easyocr está
+soportado" era una verdad a medias, y por eso el endpoint `GET /scan/ocr` reportaba
+"no disponible" sin que nadie notara que además estaba roto.
+
+**Corregido en dos partes:** la conversión a numpy y el paso por `_preparar` (que aplica
+`exif_transpose`, escala y autocontraste). Lo del EXIF no es cosmético: una foto de iPhone
+llega rotada 90 grados, y EasyOCR no la endereza solo. Sin eso se comparaban dos motores
+con entradas distintas y el resultado no habría dicho nada sobre el motor.
+
+**Lo que sigue pendiente, y es lo importante:**
+
+- **`easyocr` no está en `requirements.txt`.** Instalado a mano dentro del contenedor, no
+  persiste: `docker compose up --build` lo borra, y en otra máquina nunca estuvo. El
+  `pip` del volumen tampoco ayuda, porque el volumen es `.:/app` (código) y no
+  `site-packages`. El único hogar permanente de una dependencia es `requirements.txt`.
+- **No cabe en el contenedor con la memoria configurada.** Medido:
+
+  | | RAM |
+  |---|---|
+  | Cargar el lector de EasyOCR | **1235 MiB** |
+  | Tras una lectura | **1615 MiB** |
+  | El API ya usando | ~460 MiB |
+  | `mem_limit` de `expense-api` | **1709 MiB** |
+
+  1615 + 460 > 1709: el proceso lo mata el OOM killer. **No es un problema de disco ni de
+  dinero, es `mem_limit` en `docker-compose.yml`.** El equipo tiene 18 GB y Docker tiene 8
+  asignados, de los que en reposo se usan ~520 MB. Hay aire de sobra: la solución es subir
+  el límite o dar más RAM a la VM de Docker, no comprar nada.
+- **La confianza de EasyOCR no está normalizada.** EasyOCR devuelve la confianza por línea
+  en `[0, 1]` pero hay versiones que la devuelven en `[0, 100]`, y el código la usa tal
+  cual, así que `confianza_media` podría valer `87.0`. **No afecta al gate** (esa
+  confianza la calcula `confianza_por_campos_ocr` a partir de la evidencia), así que el
+  daño es acotado a un campo informativo. Normalizar por el máximo observado.
+
+La medición de si dos motores juntos valen la pena está en `scripts/medir_dos_motores.py`
+y su resultado en §21.
+
+### 20. `TICKETS_INPUT_DIR` por omisión es una ruta de una máquina concreta
+`config.py` usa `/Users/carloslott/Documents/Tickets/Tickets_app`, que es lo que pide el
+enunciado. En cualquier otra máquina, en el contenedor o en la de otra persona hay que
+cambiar la variable, y la app no falla: **crea la carpeta**. En un servidor eso
+significaría crear `/Users/carloslott/...` como root. `GET /api/v1/scan/config` expone
+la ruta efectiva para poder confirmarlo sin correr un escaneo, y `docker-compose.yml`
+la sobrescribe a `/tickets` porque el `.env.dev` del host no aplica dentro del
+contenedor. Es aceptable para "una máquina, un contador" y no para un despliegue real.
+
+---
+
+## 🔴 Seguridad
+
+> Lo que sigue se verificó contra el código y contra el contenedor corriendo. Los
+> archivos `.env` **no** están en el historial de git de este repo (`git log -S` sobre la
+> contraseña y la clave no devuelve nada), así que lo pendiente ahí es higiene local, no
+> exposición: sí hay que rotar por el repo público que menciona §15, y el `.gitignore`
+> actual ya evita que vuelva a pasar.
+
+### 21. El OCR cambia cifras y el gate no lo detecta — **el peor defecto medido**
+
+**Medido con `scripts/medir_precision_ocr.py` sobre las tres fotos reales de
+`~/Documents/Tickets/Tickets_app`, rotuladas a mano mirando el papel:**
+
+| Archivo | El papel | El sistema leyó | Veredicto |
+|---|---|---|---|
+| `1C2C52A2…jpeg` (Oxxo) | **51.50** | **31.50** | fallo |
+| `IMG_4220.jpeg` | 97.56 | 97.56 | acierto |
+| `IMG_4222.jpeg` | 48.00 | 0.00 | fallo |
+
+**Exactitud del total: 33.3%.** El objetivo pedido es 98.5%. Con tres comprobantes esto
+no es una medida, es una anécdota (el script lo avisa), pero el orden de magnitud
+no es un detalle: falta un factor de tres, no un punto.
+
+| Campo | Exactitud |
+|---|---|
+| `tax_amount` | 100.0% |
+| `provider_name` | 33.3% |
+| `expense_date` | 33.3% |
+| `total_amount` | 33.3% |
+| `provider_tax_id` | 0.0% |
+| `subtotal` | 0.0% |
+
+**Y lo que frena el daño hoy: nada, dentro del ticket.** El total `31.50` equivocado pasa
+`total_not_positive`, porque es positivo. Lo único que lo detiene es que al ticket le falte
+RFC, subtotal y fecha, y por regla 4 no auto-aprueba. El daño está contenido por la
+conservadurismo del gate, no por una defensa sobre la cifra.
+
+#### El caso, al detalle
+
+El recorte donde Tesseract coloca `31.50` **dice 51.50** (verificado mirando el recorte), con
+**confianza 93**. Es un 5 leído como 3 y la confianza del motor no dice nada.
+
+#### Lo que se probó y NO funciona, con la medición
+
+Cuatro caminos, los cuatro descartados con datos y no con opinión. **No los vuelvas a
+intentar sin una razón nueva:**
+
+1. **No es resolución.** `_preparar` reduce a 2000 px de ancho; la foto es de 3840. A
+   resolución nativa el total se sigue leyendo `31.50` (confianza 93). Subir la resolución no
+   cambia el resultado.
+2. **No es preprocesado.** Unsharp, SHARPEN, mediana y umbrales globales **no lo arreglan:
+   lo desplazan**. Medido sobre el recorte, aciertos de `51.50` sobre 4 modos de
+   segmentación: sin tratar 4/4 · unsharp r2 2/4 · mediana 3 2/4 · **umbral 110 0/4, que lee
+   `51.80`** · unsharp r4 4/4 · umbral 165 4/4. Cualquier ajuste que "arregle" esta foto
+   rompe otra; es elegir el parámetro que da el número que ya sabes. Un filtro de whitelist de
+   dígitos empeora: `551.50`, `01.50`.
+3. **No es un voto entre lecturas.** `_leer_tesseract` ya hace 12 lecturas (4 rotaciones ×
+   3 PSM) y descarta todas menos una. Medido: **11 de las 12 no encuentran total, y la única
+   que lo encuentra es la equivocada.** No hay contradicción que detectar: hay una lectura
+   afortunada. Una regla de "mayoría" no tiene nada que votar.
+4. **No es un re-OCR del recorte.** El recorte ceñido a los dígitos lee `31.50`; includída la
+   etiqueta lee `51.50`; con un recorte genérico (todo el ancho de la banda) lee un **tercer**
+   valor, `21.50`. Que el recorte a mano dé el correcto es casualidad de ajuste, no una
+   técnica: la caja se eligió después de ver la imagen.
+
+**Lo que sí se descubrió de paso:** el contexto de maquetación desambigua el glifo. Con
+`TOTAL M.N. $` a la vista Tesseract lee `51.50`; con los dígitos solos, `31.50`. Es un
+mecanismo real y explicable (el LSTM usa los tokens vecinos), pero no se puede explotar sin
+saber de antemano dónde está el total, y saberlo requiere haberlo leído.
+
+#### Lo que sí funciona, y es lo que queda
+
+**Nadie afirma nada de las fotos.** Con la regla 4 vigente, ningún ticket de OCR auto-aprueba:
+entra a la cola con `REQUIERE_REVISION` y una persona confirma el importe contra el papel. La
+precisión de lo que el sistema **afirma** sobre fotos es 100% por construcción, porque no
+afirma nada. Eso es defendible; lo que no es defendible es que nadie pueda **medir** si la
+cosa mejora, y ese era el agujero real:
+
+> **El reporte de exactitud no puede medir el OCR.** El muestreo del 5% entra solo sobre
+> tickets `AUTO_APROBADO` (`ticket_persistence.py`), y un ticket de OCR nunca llega ahí.
+> Medido en la base de este proyecto: las dos filas con `confidence_source='ocr'` tienen
+> `spot_check_status = NULL`. `GET /api/v1/tickets/accuracy` agrupa por origen, así que su
+> fila `ocr` siempre dirá "sin evidencia". **El número que se necesita no existe todavía.**
+
+Por eso se agregó `scripts/medir_precision_ocr.py`: mide la ruta real de OCR contra una verdad
+rotulada a mano, por fuera del ciclo de vida del ticket, y es lo único hoy que puede decir si
+un cambio en el OCR ayudó o empeoró.
+
+**Los comprobantes personales NO van al repositorio.** El archivo `verdad.json` vive en la
+carpeta de las fotos (`--init` lo escribe ahí). El repo lleva el script y
+`scripts/verdad_ejemplo.json`, con datos inventados.
+
+#### Camino que sí queda, y cuesta
+
+La evidencia dice que un lector único e inestable no da 98.5% en cifras. Lo que puede darlo:
+
+- **Un segundo motor que vote.** EasyOCR ya está soportado en el código
+  (`ocr.py:_leer_easyocr`, `obtener_motor("easyocr")`) y **no está instalado** porque arrastra
+  torch (~2 GB). La inestabilidad de un lector es justamente lo que un segundo lector
+  detecta. Con dos motores, el total se afirma solo si **ambos** coinciden; si no, a la cola.
+  Contra: AGENTS.md prohíbe arrastrar torch al arranque y el presupuesto de RAM es de 7.7 GB
+  con 7.2 GB ya comprometidos.
+- **Más fotos rotuladas.** Con 3 no se mide nada. Con 30 se empieza a ver una tendencia; para
+  afirmar 98.5% con intervalo de confianza hacen falta cientos. Es trabajo de captura, no de
+  código, y es lo que decide si el resto vale la pena.
+
+#### Dos reglas del parser que NO se adoptaron, y el caso que las refuta
+
+- **El RFC sin etiqueta.** El ticket de Oxxo trae `(CCO-860523-1N4)` en el encabezado sin la
+  palabra "RFC", y `RFC_CANDIDATO_RE` lo matchearía. **No se adoptó** porque en
+  `IMG_4220.jpeg` el mismo patrón captura un RFC con etiqueta `R.F.C`, que es de la
+  **empresa que factura** (una tercera), no del comercio que emitió el ticket. Sin
+  etiqueta no hay forma de distinguirlos, y un RFC ajeno cuenta como evidencia en el gate.
+  RFC ausente es mejor que RFC equivocado.
+- **La etiqueta pegada: `ARTIC. TOTAL:` → `ATOTAL:`.** El OCR funde la etiqueta, el parser no
+  la reconoce y el total queda en 0. Relajar el patrón haría leer `5000` (que es `48,00` con
+  el punto perdido) como el total: 100× de error en una fila que parecería buena.
+
+### 21.quater. El OCR no registraba el decodificador de HEIC — ✅ CORREGIDO
+
+`app/services/ocr.py` **nunca importaba `app/core/heif.py`**, así que el soporte de HEIC no
+era una propiedad del OCR: era un efecto secundario de que `scan_service`, `capture` y
+`api/tickets` importen `ai_extractor` **antes** de que corra el OCR. Eso es orden de
+imports, y no es una garantía.
+
+**Reproducido con el archivo real** (`CremeriaHermanosCoronel.heic`), cargando `ocr.py`
+por ruta sin que nada importara `ai_extractor` antes:
+
+```
+app.core.heif cargado?  False
+PIL abre la HEIC?       NO -> UnidentifiedImageError
+_preparar devolvio:     bytes  (los crudos, por el except)
+```
+
+Y lo que viene después es el fallo caro, porque **no parece de HEIC**: `pytesseract`
+recibe algo que no es imagen y lanza `TypeError: Unsupported image object`. El operador ve
+un error de OCR y busca en el OCR.
+
+**Por qué pesa más de lo que parece:** una foto de iPhone es media propuesta de valor del
+producto — `archivo_real.py` reconoce la firma `ftyp` de HEIC precisamente para no
+dejar fuera al primer usuario con un ticket de teléfono — y este es el único camino que las
+lee.
+
+Lo interesante es que **el diagnóstico ya estaba escrito** en el docstring de
+`app/core/heif.py`, con el modo de fallo exacto y la explicación de por qué centralizar el
+registro no bastaba. Lo que faltaba era la línea en `ocr.py`. Un docstring que describe un
+bug sin señalar dónde está el `import` es documentación, no defensa.
+
+**La defensa, y por qué mira el código y no el comportamiento:** la primera versión del
+test cargaba el módulo por ruta y miraba `sys.modules`, y **hacía skip en la suite
+completa** — porque `conftest.py` importa `app.main`, que importa `ai_extractor`, que
+registra HEIC. O sea que la foto abría de todas formas y el test, aun ejecutándose, no
+medía lo que dice. Ahora recorre el **AST** de `ocr.py` y exige la sentencia de import; el
+AST y no una búsqueda de cadena porque el docstring del propio test menciona
+`app.core.heif` y una búsqueda por palabra pasaría con el import borrado. Muerto por
+`verify_ocr_mutations.py`.
+
+### 21.ter. `_linea_vertical` tenía un filtro comentado y no implementado — ✅ CORREGIDO
+
+`app/services/parser_lineas.py:_linea_vertical` tenía el comentario
+
+> `# Una linea sin ningun numero no aporta nada al inventario.`
+
+seguido de un `)` — **la condición que el comentario describía no estaba**. El `return`
+tenía dos ramas (`not texto`, `ROTULOS_FINALES.match(texto)`) y tres líneas de comentario
+que describían una tercera.
+
+Medido antes de corregirlo:
+
+```python
+_linea_vertical({"palabras": [{"texto": "GRACIAS POR SU COMPRA"}]})  # -> False
+```
+
+Es decir, el rótulo de un ticket entraba a `leer_lineas` como **línea de producto**. Y no
+es inocuo por una razón concreta: una línea **sin** números no genera ningún número que
+`_elegir_por_aritmetica` pueda rechazar, así que la aritmética —que es lo que protege de
+una línea mala— no tiene nada que detener ahí. Depende de que el filtro de arriba la coja.
+
+Ahora usa `re.search(r"\d", texto)` y **no** `re.match`: en un ticket el número va al
+**final** de la línea (`COCA COLA 1.5L 35.00`) y el texto al principio, así que anclar al
+principio habría descartado todas las líneas de producto. Esa es la trampa del arreglo, y
+está en `test_no_descarta_la_linea_que_si_tiene_numero`.
+
+**El comentario no era la prueba, y por eso conviene decirlo:** un comentario que describe
+código ausente no es documentación, es una afirmación que el código contradice. La
+diferencia con los casos anteriores de este archivo es que aquí el comentario **parecía**
+correcto — describe algo que debería ser cierto — y por eso nadie lo revisó.
+
+### 21.bis. La binarización adaptativa entra SIN medir — 🟠 abierta la medición
+
+Lo que se hizo: se agregó umbral adaptativo gaussiano (`ADAPTIVE_THRESH_GAUSSIAN_C`) a
+`app/services/ocr.py:_binarizar`, con OpenCV como dependencia **opcional**. Lo que
+**no** se hizo: medir si mejora la exactitud.
+
+**Por qué no choca con §21.** §21 descartó unsharp, mediana y **umbrales globales**
+(110 y 165), que son otra pregunta: un umbral global pregunta «¿este píxel es más claro
+que 165?», y el adaptativo pregunta «¿es más claro que la media de **su** ventana?». La
+segunda es la pregunta correcta para una foto con una sombra cruzando el papel, y es
+exactamente lo que un filtro global no puede responder. La medición de §21 no la cubre,
+así que no la contradice — pero tampoco la respalda.
+
+**Y por qué entra así, y no como reemplazo.** `_leer_tesseract` ya puntúa cada lectura
+con evidencia del documento (`_puntuar`: total + RFC + aritmética) y se queda con la
+mejor. La binarización entra como **una lectura más de esa competencia**: gana solo si el
+papel sale mejor leído, y si no gana, el resultado es byte a byte el de antes. La garantía
+que se puede afirmar hoy es pequeña y cierta —**no puede empeorar**— y no la grande y
+desconocida. Es lo que permite ponerla antes de tener la medición.
+
+Lo que se midió, con una imagen sintética (no es una foto real, así que no cuenta como
+exactitud; cuenta como que el mecanismo hace lo que dice):
+
+| Preprocesado | Lectura de una foto con sombra y tinta degradada |
+|---|---|
+| sin binarizar | **nada** — 0 palabras |
+| umbral **global** 165 (lo que §21 descartó) | 8 líneas, **pero los dígitos cambian**: `1.23456` sale `1.23458`, `1.23468`, `1.23468Z`, `1.23468G` |
+| umbral **adaptativo** gaussiano | 8 líneas, dígitos **estables**: `1.23456` en las 8 |
+
+Eso es exactamente el modo de fallo que §21 describe — «no arregla, **desplaza**» — y en
+esta imagen el adaptativo no lo tiene.
+
+## EL A/B CON LAS FOTOS REALES: EMPATE — 🟢 cerrado, sin ganancia
+
+Medido el **2026-10-09** con `scripts/medir_precision_ocr.py`, forzando
+`ocr._binarizar = lambda imagen: None` para una corrida y dejándolo actuar para la otra.
+Las 5 fotos que hoy se pueden medir (`~/Documents/Tickets/verdad/verdad.json`):
+
+| | `total_amount` |
+|---|---|
+| **sin** binarización | **60.0%** (3 de 5) |
+| **con** binarización | **60.0%** (3 de 5) |
+
+**Empate exacto, en los mismos tres comprobantes y los mismos dos fallos.** Los dos fallos
+son del mismo tipo y ninguno lo arregla la etapa: el parser leyó un **número suelto** en
+vez del total — `97.56 → 2.00` y `48.00 → 1.00`. Eso **no** es ruido de imagen: es el
+regex del total agarrando el número equivocado de una línea que sí se leyó bien.
+
+**Conclusión honesta:** la garantía que se diseñó (no puede empeorar) se cumplió al pie
+de la letra. La expectativa que se prometió (sube el total) **no se cumplió: la ganancia
+es cero**. La etapa se queda porque no cuesta nada y está verificada, no porque sirva; y
+queda escrito aquí para que nadie la recomiende después por un beneficio inexistente.
+
+Y el caso de §21 —`51.50` leído como `31.50` con confianza 93— es un **glifo ambiguo**, y
+un umbral adaptativo no arregla glifos. No hay preprocesado que lo haga: hay que resolverlo
+con la aritmética o con un segundo motor.
+
+### Lo que sí apareció al medir, y es más grave que esta etapa
+
+**El 80% que AGENTS.md afirmaba no es reproducible.** Dos de las fotos sobre las que se
+midió (`1C2C52A2-….jpeg` e `IMG_4220.jpeg`) ya no están en la carpeta. Con las 5 que sí
+están, el total da **60%**. La cifra estaba escrita sin la condición que la sostiene, y
+eso es lo que hace que una métrica envejezca mal: no avisa cuando deja de ser cierta.
+Corregido en `AGENTS.md` con la fecha de la medición y la lista de lo que falta.
+
+Lo que sí tiene defensa verificada (`scripts/verify_ocr_mutations.py`, 15 mutaciones,
+todas mueren): el zoom es condicional (x2 solo bajo 1200 px) y con tope (nunca sobre
+2000), `--oem 3` se dice explícito, y sin el paquete de OpenCV **el número de lecturas
+es el de antes: 12**.
+
+El detalle del `is_finite` que se quitó está en `AGENTS.md`, sección `LineaDeTicket`.
+Se escribió un `field_validator` que rechazara `NaN` e infinito, y resultó **inalcanzable**:
+Pydantic v2 ya los rechaza al construir el campo (`finite_number`), antes de correr
+cualquier validador. Un validador que nunca se ejecuta nunca puede morir con él.
+
+### 22. scrypt estaba por debajo del mínimo de OWASP — ✅ CORREGIDO
+`app/core/security.py` usaba `N=2**14` con `p=1`, y el comentario afirmaba que era "el mínimo
+recomendado por OWASP". **No lo era**: la Password Storage Cheat Sheet lista cuatro
+combinaciones, y `N=2**14` solo aparece **con p=5**. Con p=1 eran 16 MiB y 27 ms por hash, 8
+veces menos memoria que `N=2**17`.
+
+Ahora usa `N=2**17, r=8, p=1`: 128 MiB y ~230 ms. Los hashes con N=2\*\*14 que ya estaban en
+la tabla `users` **siguen validando**, porque el formato lleva sus propios parámetros
+(`scrypt-v1$n$r$p$...`) y `_VERSION_HASH` no subió. Subir la versión sin migrar habría dejado
+fuera a todos los usuarios con un `return False` silencioso.
+
+`maxmem` pasó de una constante hardcodeada (132 MiB) a `_maxmem_para(n, r)`: con la constante,
+un hash con N alto lanzaba `ValueError` en una máquina con menos memoria — un 500 en el login —
+y al subir N sin subir el techo, **todos** los logins se rompían a la vez.
+`verify_auth_mutations.py` cubre las cuatro (42 mutaciones, todas mueren).
+
+> Lo que **no** se cambió: `ACCESS_TOKEN_EXPIRE_MINUTES=480` y la ausencia de refresh tokens.
+> Son decisiones documentadas de diseño para "una máquina, un contador", no defectos. Lo que sí
+> conviene saber es que **no hay revocación**: un token robado es válido 8 horas, y desactivar
+> la cuenta lo invalida (regla 9) pero no invalida tokens ya emitidos para otras rutas que no
+> reconsultan. Ver `deps.py`.
+
+### 23. `CORS_ORIGINS=["*"]` con credenciales = cualquier sitio web lee la API — ✅ CORREGIDO
+La app se sirve con `allow_credentials=True`. Con `allow_origins=["*"]`, `is_allowed_origin` de
+Starlette devuelve `True` para **cualquier** `Origin` y, como hay credenciales, la respuesta
+**refleja** el origen pedido en vez de mandar `*`:
+
+```
+Access-Control-Allow-Origin: https://sitio-que-no-es-nuestro.example
+Access-Control-Allow-Credentials: true
+```
+
+Cualquier página abierta en el mismo navegador lee tickets, empresas y extracto bancario con
+la sesión que ya está abierta. Sin contraseña, sin token, y sin aparecer en el log.
+
+`config.py:_revisa_el_cors` ahora **aborta el arranque**. `tests/integration/test_cors.py`
+pregunta al servidor, porque el middleware es de Starlette y leer el `main.py` no prueba nada.
+
+> Un detalle que hace el ataque más grave de lo que parece: el token vive en `localStorage` y
+> viaja en `Authorization: Bearer`, así que un `fetch` desde el origen ajeno puede reusarlo.
+> Con una cookie `HttpOnly` el daño sería de lectura.
+
+### 24. Los puertos se publicaban en `0.0.0.0` — ✅ CORREGIDO
+`"8000:8000"`, `"5434:5432"` y `"11434:11434"` sin prefijo publican en **todas** las interfaces:
+la API sin TLS y **la base de datos con su contraseña** alcanzables desde la red del café. Ahora
+los cuatro van a `127.0.0.1`. El de Ollama es `11435` porque hay un Ollama nativo en 11434.
+
+### 25. Cuatro archivos `.env` y el mismo secreto en varios — ✅ CORREGIDO
+`.env` (600) · `.env.dev` (**644**) · `.env.local` (**644**) · `.env.example` (versionado).
+
+- **La contraseña de la base estaba en `.env.dev`**, dentro de `DATABASE_URL`, con permisos de
+  lectura para el grupo. Docker la sobrescribe con la de `POSTGRES_PASSWORD`, así que la de
+  `.env.dev` no se usaba: era un segundo lugar donde vive el mismo secreto. Quitada.
+- **`.env.dev` y `.env.local` en 644.** Con una sesión abierta en la máquina, cualquier otro
+  usuario las lee. Ahora en 600.
+- **`config.py` leía solo `.env.dev`** mientras `docker-compose` leía los dos. La
+  `SECRET_KEY` de `.env.local` solo valía dentro de Docker: `uvicorn` en local firmaba con
+  otra, y el síntoma era "la sesión se cae, pero solo cuando depuro". Ahora los dos leen los
+  dos en el mismo orden.
+- **Los comentarios mentían.** Los dos archivos decían que la clave "mide EXACTAMENTE 32
+  caracteres" (mide 64) y que `.env.dev` "SÍ está versionado en git" (está en `.gitignore`).
+  Un comentario que afirma lo contrario de lo que se hace se lee más rápido que el código.
+
+**Pendiente, y es lo único de esta sección que no se puede arreglar en el código: rotar
+`SECRET_KEY` y `POSTGRES_PASSWORD`.** Los archivos están fuera de git, pero §15 dice que el
+repo estuvo público, y una clave que estuvo expuesta sirve hasta que se rota, no hasta que se
+borra del archivo.
+
+---
+
+## 🟡 Deuda / data quality
+
+### 26. El trigger de stock negativo contaba con el signo equivocado — ✅ CORREGIDO
+Medido leyendo el DDL, y **inerte hasta que se escribieron ventas y ajustes**. Era el
+defecto mas caro de los que quedaban en pie, porque la defensa contra el stock negativo
+**no defendia** y nadie lo notaba.
+
+Las dos mitades, medidas:
+
+```
+                  stock_de()        trg_movimientos_no_negativo
+ENTRADA 10            +10                 +10
+SALIDA  4              -4                  -4
+AJUSTE  5              +5                  -5      <-- el trigger resta
+SUM de filas previas:                    sin signo: con ENTRADA 10 y SALIDA 4 decia 14
+                                        en vez de 6
+```
+
+Consecuencias, ambas reales:
+
+1. Un `AJUSTE` de "se conto de menos" se rechazaba con *"dejaria el stock en -5
+   (negativo)"* en una base donde la API ya lo habia aceptado con 201.
+2. Con `ENTRADA 10` y `SALIDA 4` quedan 6. Una `SALIDA` de 7 mas deja **-1** y el
+   trigger la dejaba pasar, porque su `SUM` sin signo creia que habia 14. La defensa
+   contra el stock negativo no bloqueaba el caso para el que existe.
+
+**Por que nadie lo noto.** La unica via que escribia en `movimientos_inventario` era
+`confirmar_compra`, y esa **solo produce `ENTRADA`**: el `ELSE` del trigger no se
+ejecutaba nunca y ningun test de ataque alcanzaba la rama. Es el mismo modo de fallo
+que §9 y §21: una defensa en su sitio y no probada, y lo que la sostenia es que nadie
+llego al camino.
+
+Arreglado en `db/migrations/0013_compras_rechazables.sql`: el signo sale de una sola
+pregunta (`tipo = 'SALIDA'`), que es la misma que hace `TipoMovimiento.suma_stock` en
+Python. El `SUM` de filas previas ahora aplica el signo.
+
+**Y la defensa nueva se rompio a proposito para comprobar que muerde.** Se revirtio la
+migracion al bug y el script debe salir con 1. La primera version de la comprobacion
+**daba verde con el bug puesto**, y el motivo esta escrito en
+`verify_postgres_inventario.py::_un_ajuste_suma_no_resta`: usaba `tipo='ENTRADA'` con
+`referencia_tipo='AJUSTE'`, que con el trigger viejo sumaba igual. La comprobacion
+tiene que insertar `tipo='AJUSTE'` de verdad, que es el valor que la constraint acepta
+y que un `psql` puede escribir aunque la API no lo haga nunca.
+
+Comprobado contra Postgres real (`make up` y el script dentro del contenedor):
+
+```
+un AJUSTE suma (el signo del trigger)              ok
+el stock descuenta las SALIDAS (el signo del SUM)  ok
+la salida que no alcanza sigue bloqueada           ok
+```
+
+### 27. Funciones documentadas sin endpoint — ✅ CORREGIDO
+La `cola` de productos (`GET /inventario/productos?solo_sin_verificar=true`) existia,
+`AGENTS.md` le atribuia la tarea de *"revisar, renombrar o fusionar"*, y **no habia
+ningun `PATCH` que la vaciara**. `TipoMovimiento.AJUSTE` estaba en el enum, `stock_de`
+lo sumaba, y no habia ninguna via para escribirlo: tres valores de tipo, uno
+producible.
+
+Lo mismo con `EstadoCompra`, que solo avanzaba: una compra rechazada se "rechazaba" no
+haciendo nada, porque `registrar_compra` la volvia a crear (y `compras.ticket_id` es
+UNIQUE, asi que borrarla tampoco servia: el reescaneo la resucitaba).
+
+Anadido en `0013`: `GET`/`PATCH /inventario/productos/{id}`, `POST
+/inventario/movimientos`, `POST /inventario/compras/{id}/rechazar` y `/reabrir`,
+`PATCH /reconciliations/{id}`, `PATCH`/`DELETE /reconciliations/mappings/{id}` y
+`GET`/`GET`/`PATCH`/`POST /usuarios`.
+
+Tres decisiones que no son obvias y estan en el codigo:
+
+- **`AJUSTE` no tiene signo, y no se le da.** Se escribe como `ENTRADA` o `SALIDA`
+  con `referencia_tipo='AJUSTE'`. Un unico valor de enum no puede decir "se conto de
+  mas" de "se conto de menos", y `cantidad` es positiva por constraint.
+- **Una `ENTRADA` sin `es_ajuste` se rechaza con 409.** Si existiera un camino que
+  suma stock sin compra, `compras.ticket_id` UNIQUE dejaria de ser la garantia de que
+  el inventario solo refleja compras de verdad.
+- **No hay `DELETE` de producto.** `movimientos_inventario.producto_id` tiene
+  `ON DELETE CASCADE`: borrar el producto borra su historial y `stock_de` deja de poder
+  responder por el. Se da de baja con `activo=false`.
+
+### 28. No hay roles, y ahora hay endpoints que tocan otras cuentas — 🟡 ABIERTO
+`PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` son los primeros endpoints
+del proyecto que **comprometen a otro usuario**. Sin `is_admin` ni scoping, **cualquier
+cuenta autenticada puede dar de baja a cualquier otra**, y eso no estaba disponible
+antes de anadirlos.
+
+Lo que si se hizo, y es lo unico que se puede sin inventar un modelo de roles:
+
+- **Token Y contrasena** (`X-Contrasena-Actual`, `deps.get_current_user_verificado`).
+  Un token robado no basta: es justo lo que el atacante de un token robado no tiene.
+- **La ultima cuenta activa no se puede dar de baja** (409). Sin eso, un sistema con
+  una sola cuenta se queda sin puerta de entrada y la unica recuperacion es entrar a
+  Postgres a mano.
+- **Cambiar la contrasena pide dos cosas distintas**: el header es la contrasena de
+  *quien llama*, y `contrasena_actual` del cuerpo es la de *la cuenta que se cambia*.
+  Con una sola, un atacante con un token robado rotaria la clave de cualquiera y el
+  dueno ya no podria recuperarla.
+- **El alta sigue en `scripts/crear_usuario.py`.** No hay `POST /usuarios`: un endpoint
+  de alta autenticado es autorregistro con un paso mas.
+
+Lo que **no** se hizo, y sigue siendo el problema de fondo: decidir *quien puede tocar
+a quien*. Eso necesita columnas de rol, y anadir una comprobacion de rol sin el modelo
+seria fingir que hay control de acceso donde solo hay autenticacion — y un control
+aparente es peor que ninguno, porque deja de revisarse. Mientras tanto, el producto
+sigue siendo de "una maquina, un contador".
+
+### 29. `verify_postgres_inventario.py` no se podia aplicar a una base ya creada
+`asyncpg` no acepta varias sentencias en una sentencia preparada
+(`cannot insert multiple commands into a prepared statement`), y el script hacia
+`conn.execute(texto_del_archivo_entero)`.
+
+Era **inerte**: `_aplicar_migracion` solo ejecutaba `0010` si `movimientos_inventario`
+no existia, y en una base creada con `db/init.sql` —que es lo normal— nunca hacia
+falta. El fallo estaba en el camino que nadie tomaba, igual que §26.
+
+Corregido con un partidor de sentencias que respeta bloques `$$` (el cuerpo de los
+triggers es plpgsql y tiene `;` dentro), comillas simples y comentarios `--`. Los
+comentarios importan de verdad: el SQL de estas migraciones cita codigo en prosa y hay
+cuatro lineas con un apostrofo que abrian una cadena sin cerrar.
+
+### 30. `PATCH /reconciliations/{id}` no decia quien habia corregido el veredicto
+Anadido junto con el endpoint, y por el mismo motivo que §26: `match_status` decide que
+se exporta (`MATCHED_STATUSES`), asi que un `PERFECT` que produjo el motor y uno que
+aprobo una persona son la misma fila en la base.
+
+Es el mismo motivo por el que existe `confidence_source` en `tickets` y por el que
+`compras.confirmada_por` es obligatorio para `PROCESADO`: **"lo automatico lo hizo" y
+"lo hizo una persona" no se suman**. Sin la columna, una conciliacion corregida a mano
+salia a CONTPAQI indistinguible de una que el motor aprobo sola.
+
+`revisado_por` sale del token y `revisado_at` lo pone el router: aceptar el autor en
+el body seria firmarlo por otro.
+
+### 12. `VendorNormalizer` nunca se ejecuta
+Solo lo referencia el `pipeline.py` muerto. "Oxxo", "OXXO" y "OXXO EXPRESS" son **tres
+proveedores** distintos en el dashboard. El normalizador (`ai_client.py:246-350`) está escrito
+y listo; solo falta llamarlo desde la ruta viva.
+
+### 13. ~~`analitica.py` / `hallazgos.py` no están expuestos~~ — ✅ La premisa estaba mal
+Son **servicios**, no routers. Que no aparezcan en `api_router.py` es lo correcto: se invocan
+desde `app/api/dashboard.py:52` y `dashboard.py:368`, y ese router sí está montado. Alimentan el
+landing del dashboard y el front los pinta (`Dashboard.tsx:585-604`).
+
+Lo que sí conviene verificar es lo contrario: que un módulo de `services/` tenga a alguien que lo
+llame. `VendorNormalizer` (§12) es el contraejemplo — instanciado en `ai_client.py:355` y con un
+único caller en el `pipeline.py` muerto.
+
+### 14. Por la UI, ningún ticket pasa por el confidence gate — ✅ CORREGIDO
+**Este punto se cerró.** La UI ofrece los dos caminos, y se elige con un botón explícito:
+
+| | "Aceptar y verificar con IA" | "Revisar y corregir" |
+|---|---|---|
+| Endpoint | `extract-and-create` | `POST /tickets/` + `subirDocumento` |
+| Revisión humana antes de guardar | no (se guarda directo) | sí |
+| Comprobante original | sí | sí |
+| `confidence` + `confidence_source` | los del gate | NULL / MANUAL |
+| Entra al muestreo | sí, si sale `AUTO_APROBADO` | no |
+
+Implementación: `Tickets.tsx:363-390` (`aceptarLecturaDeIA`) y `Tickets.tsx:400-406`
+(`editarAntesDeGuardar`). Si `extract-and-create` falla, se degrada a la vía manual con el
+formulario ya lleno: un ticket guardado con su comprobante vale más que una lectura perfecta que
+se perdió.
+
+**Por qué se elige por clic y no comparando el formulario contra la extracción:** un diff de
+strings se rompe por cosas que no son corrección — `"4094.80"` contra `"4094.8"`, una fecha con
+otro formato, un RFC con espacios. Y el usuario tiene que saber que está eligiendo, porque los
+dos caminos terminan en tickets con significado distinto.
+
+**La limitación que sí queda, y es real:** es una intención declarada, no un hecho verificado.
+Si el usuario pulsa "Revisar y corregir" y no cambia nada, el ticket se guarda como `MANUAL` y no
+cuenta para la medición (falso negativo de exactitud). La señal es el clic, no el contenido.
+Arreglarlo exigiría comparar la extracción contra lo guardado **en el backend**, donde se puede
+comparar el `Decimal` ya parseado y no el string que escribió el usuario.
+
+### 16. `.vscode/` ignorado por configuracion global — ✅ CORREGIDO
+El `.gitignore` del repo decia `!.vscode/settings.json` y sus tests de texto daban verde,
+pero `git status` no mostraba el archivo. **La documentacion afirmaba una cosa y git hacia
+otra** — el mismo modo de fallo que el punto 15, y el que este repo viene pagando en
+consecuencia.
+
+Causa: `~/.gitignore_global` (linea 5) tenia `.vscode/`, la CARPETA. Git no baja a un
+directorio excluido, asi que ninguna `!` declarada abajo puede re-incluir un archivo dentro.
+La unica forma de meterlo era `git add -f`, que funciona una vez y el siguiente `git add .`
+lo pierde en silencio.
+
+Arreglo: `.vscode/*` en vez de `.vscode/`. Se conserva la intencion (los repos que no lo
+exentan siguen ignorando todo lo de ahi) y se abre la puerta a que un repo opte por versionar
+archivos concretos.
+
+La parte que importa: **los tests que leian el texto del `.gitignore` no lo habrian detectado
+nunca**, porque afirmaban algo que era cierto sobre el archivo y falso sobre la realidad. Por
+eso `test_git_no_lo_ignora` pregunta a `git check-ignore` en vez de leer el `.gitignore`, y por
+eso la mutacion esta en `scripts/verify_vscode_mutations.py` (no automatizable: tocar el
+`.gitignore` global es de la maquina, no del repo).
+
+### 15. Credenciales expuestas en un repositorio público — ✅ CORREGIDO
+**Qué pasó.** El repo estuvo público con `.env.dev` versionado desde el commit inicial. Ahí
+vivían las dos credenciales del stack:
+
+- `SECRET_KEY`, que firma los tokens HS256. Con ella se puede **firmar un token válido sin
+  pasar por el login**: `leer_token` verifica la firma y `get_current_user` solo exige que el
+  `sub` sea un UUID con formato. La defensa de reconsultar el usuario en la base no ayuda si el
+  token es auténtico — el usuario existe, lo que el atacante controla es *quién dice ser*.
+- La password de Postgres, en `.env.dev`, en `docker-compose.yml:12` y `:78`, en el README y en
+  los 5 `verify_postgres_*.py`, que la tenían hardcodeada en el DSN.
+
+**Por qué no era solo higiene.** `AGENTS.md` §Reglas 5 y 9 son correctas y son las que hacen que
+esto sea un problema: reconsultar el usuario en la base, y no servir el `content_type` que declara
+el cliente. Ambas asumen que la clave que las sostiene es secreta. **Una defensa que depende de
+un secreto público no es una defensa**, por muy bien escrita que esté.
+
+**Qué se hizo.** Rotadas las dos (borrar el archivo no las saca de los 6 commits donde ya
+estaban), `.env.dev` dejó de versionarse, `docker-compose.yml` lee la password de `.env` con
+`${POSTGRES_PASSWORD:?...}` —que además hace que el compose falle con un mensaje en vez de
+levantar un Postgres con password vacía—, los 5 scripts leen el DSN del entorno, y el README
+dejó de publicarla.
+
+**Verificado:** un token firmado con la clave que estaba en GitHub responde `401`; uno legítimo
+responde `200`.
+
+**La lección, que es la parte que importa:** cambiar el archivo no borra el historial. Un secreto
+que estuvo versionado está comprometido aunque lo borres, y la única salida es **rotarlo**.
+Por eso la plantilla (`.env.example`) sí se versiona y el valor real nunca.
+
+### 18. El export CONTPAQI inventaba datos que nadie le dio — ✅ CORREGIDO
+`export_service.py` escribia en todas las filas, sin preguntar: `TipoComprobante="I"`,
+`Moneda="MXN"`, `TipoCambio="1.0000"`, `MetodoPago="PUE"`, `UsoCFDI="G03"`, y
+`Serie`/`Folio`/`Cuenta` vacías. Nada de eso venía de leer el comprobante: eran
+literales en un diccionario.
+
+El problema no es que fueran defaults, es que **un default escrito en una celda deja
+de ser un default y pasa a ser una afirmación**. Un comprobante en USD salía con
+`Moneda=MXN` y `TipoCambio=1.0000`, sin marca de error, y el contador lo subía a
+CONTPAQI creyéndolo. Para un contador, una celda vacía dice "no lo sé" y se corrige
+a mano; una celda con `1.0000` dice "lo sé", y eso no se ve ni se corrige.
+
+Es la regla 11 del contrato —lo que no se pudo calcular se declara, no se rellena—
+aplicada a la exportación.
+
+**El camino para llenarlas sigue igual:** `AccountingMapping`, que es la decisión
+del contador y queda registrada en el mapeo. Lo que se quitó es que el sistema lo
+decidiera por él. Hay un test que lo comprueba (`test_con_mapping_las_columnas_siguen_
+aceptando_valores`), porque quitar el default no puede quitar la capacidad.
+
+**Y el test que ya existía afirmaba el defecto:** `test_transform_to_contpaqi_
+applies_mapping` afirmaba `result[0][13] == "1.0000"` con `mapping=None`. Un test que
+pasa porque el código tiene el bug. Los índices de ese test también iban escritos a
+mano y uno estaba corrido; ahora salen de `CONTPAQI_COLUMNS`.
+
+### 19. La fecha inventada depende de la zona horaria y el test no lo ve
+
+`verify_capture_mutations.py` corre 26 mutaciones sobre la ruta de captura y **una sobrevive**:
+
+```
+- una fecha ausente se reemplaza por la fecha UTC
+```
+
+La mutación cambia `app/api/tickets.py`:
+
+```python
+expense_date=extracted.expense_date or date.today(),    # hora local
+expense_date=extracted.expense_date or utcnow().date(),  # UTC
+```
+
+Las dos expresiones dan la misma fecha durante la mayor parte del día, así que
+`TestFechaInventadaEnLaFila` no puede distinguirlas: **el test pasa por casualidad del
+reloj, no por criterio**. Solo fallaría en las horas pegadas a medianoche, en un huso
+horario al oeste de UTC, o el día que cambie el huso.
+
+No es hipotético lo que se protege. Cuando la lectura no trae fecha, el sistema **fabrica
+una** para que el ticket exista, y esa fecha entra al cierre mensual: es justo el caso que
+`parser_service.py:498` ya marca como prohibido. Fabricar una fecha es una decisión
+deliberada y auditable; fabricarla **en UTC en vez de en hora local** desplaza el
+comprobante al día siguiente —o al anterior— y eso cambia en qué periodo cae el gasto. Un
+ticket de las 23:30 en México se guarda con la fecha de mañana y desaparece de donde el
+contador lo buscó.
+
+**Estado:** verificado, sin corregir. La mutación sobrevive desde antes de este commit; se
+comprobó revirtiendo el cambio de imports de `ai_client.py` y reproduce idéntico.
+
+**Arreglo (cuando se retome):** que el test no dependa del reloj. O bien fijar la zona
+horaria del proceso en el test (`TZ=America/Mexico_City` más `time.tzset()`), o bien
+parchear `date.today` para que devuelva un valor conocido. Un test que depende de la hora
+del día no es un test: pasa o falla según cuándo se corra.
+
+### 17. El cliente elegía la ruta de lectura — ✅ CORREGIDO
+`file_type` llegaba como campo `Form` y se usaba literal para elegir el escalón de
+la cascada (`capture.py:289-297`). Con un token válido, quien llama decidía por dónde
+se leía el documento. Medido con el mismo PDF de las dos formas:
+
+```
+file_type=pdf   ->  pdf_text  ->  0.97  ->  PAPELERIA Y SUMINISTROS  ->  4094.80
+file_type=image ->  llm       ->  None  ->  Unknown Provider        ->  0.00
+```
+
+Las tres consecuencias, en orden de gravedad:
+
+1. **By-pass de la regla 3 de `AGENTS.md`.** "Un PDF con texto no toca el modelo" es
+   la barrera conceptual más importante del sistema y la salta quien llama.
+2. **Contaminación de la medición.** El ticket entra con `confidence_source=llm`, y el
+   reporte de exactitud agrupa por origen (`accuracy_service.py:346-357`). Una lectura
+   que no fue lectura falseando la evidencia del SLO.
+3. **Amplificador de DoS.** Forzar visión sobre 10 MB obliga a renderizar, reescalar e
+   inferir. Con un token válido, es lo más barato que hay para quemar la máquina.
+
+**Arreglo:** `app/core/archivo_real.py` deduce el formato de los bytes con lista cerrada
+de firmas, y el `file_type` del cliente solo se acepta si *coincide*. Es el mismo patrón
+que ya existe dos veces en el repo por el mismo motivo: `ENCODINGS_PERMITIDOS` y
+`content_type_servible()`.
+
+**No es un 4xx, y esa es la parte importante:** el documento es válido, lo que estaba mal
+era la etiqueta. Un contador no puede perder su comprobante porque su cliente mandó
+`image` en vez de `pdf`; se procesa igual con el formato deducido, y el motivo queda en
+el log.
+
+**El otro extremo también se cerró.** Mandar `pdf` con algo que no es un PDF ya no llega
+al modelo: por rules, `render_pdf_pages` falla y sale "ilegible"; por imagen, `_a_jpeg()`
+devuelve `None` y sale `IMAGEN_ILEGIBLE` en vez de reenviar los bytes declarados
+`image/jpeg`.
+
+**Verificado por mutación:** 8 mutaciones, 8 mueren. Tres de ellas sobrevivieron a la
+primera ronda y por qué:
+- Dos tests llamaban a la función en vez de al endpoint. Una defensa bien escrita y no
+  conectada deja todo en verde; por eso los tests de cableado van por HTTP.
+- El test de `source_type` comparaba dos POST del mismo archivo a la misma empresa, y la
+  idempotencia por `(company_id, source_hash)` devolvía el mismo ticket. Comparaba dos
+  veces lo mismo sin mirar nada.
+
+### 38. La fecha del comprobante se descartaba cuando sí estaba — ✅ CORREGIDO, y **sin ganancia medible**
+
+El **2026-10-10**, con las 7 fotos rotuladas de `verdad.json` (las 5 de antes más 2 que
+aparecieron en el respaldo):
+
+**1. `provider_name` está en 0%, pero 3 de 7 no son fallos.**
+
+| foto | verdad | lo que devolvió el parser |
+|---|---|---|
+| `1C2C52A2-….jpeg` | `CADENA COMERCIAL OXXO` | `Cadena Comercial) Uxxo,` |
+| `IMG_4222.jpeg` | `MERCASTAR` | `A ~ NERCASTAR \|` |
+| `IMG_4253 2.HEIC` | `GRUPO COMERCIAL DSW S.A. DE C.V.` | `GRUPO COMERCIAL DS!` |
+
+Son el mismo comercio con el OCR encima. **La comparación del script es de cadena exacta**, y
+una cadena exacta no sobrevive al ruido de un logo. Los otros 4 sí son fallos reales: 2 dan
+el nombre de la sucursal (`CMT QUERETARO REVOLUCION` en vez de `CARNE MART`, que no está en
+el texto) y 2 toman ruido de caja (`AAA AI`, `Pog ae — TAPA`, `Y ARTICULO TOT`).
+
+**El 0% es una cota pesimista, no el estado real.** No se cambió la yardstick: hacerlo
+justamente para que el número suba es la forma limpia de fabricar una expectativa falsa.
+Queda escrito para que nadie recomiende una heurística de proveedor "para subir el 0%", que
+es lo que pasa cuando se lee esta tabla sin el detalle.
+
+**2. `provider_tax_id` en 0% es un límite del motor, no del parser.** Los cinco RFC no están
+en el texto que devolvió el OCR. Ninguna regla los recupera.
+
+**3. `subtotal` en 43% se le pide a papeles que no lo traen.** El ticket de OXXO imprime
+`IVA INCLUIDO: $ 0.00`: el IVA va **dentro** del total. El propio archivo de verdad lo dice.
+Cuatro de los siete fallos de `subtotal` no son fallos del sistema.
+
+**4. Lo que sí se corrigió, y por qué no mueve la cifra.**
+
+Había dos rutas de fecha y las dos botaban fechas que el papel sí traía:
+
+| texto real del OCR | qué pasaba |
+|---|---|
+| `06/10/2026 11:30:21 211.36 36 30` | la fecha de la compra, sin ninguna marca al lado → `date_missing` |
+| `o 02 Fecha: 08/10/202¢ iH tap i` | el OCR comió el `6` de `2026` → `date(202,10,8)` → **`0202-10-08`**, una fecha concreta y falsa |
+
+Lo segundo era lo grave: no era un dato que faltaba, era **un año inventado con forma de
+leído**. Sale del parser hacia la cola de revisión y solo lo marca `date_too_old` después.
+
+Se corrigieron tres cosas: la **hora pegada** cuenta como marca (un vencimiento de cupón es
+un plazo y se imprime sin hora; una fecha con hora es un momento), el **año son 2 o 4
+dígitos nunca 3**, y la ruta etiquetada pasó de `pd.to_datetime(dayfirst=True)` a `_a_fecha`.
+
+**El A/B da CERO.** Sobre las 7 fotos, los seis campos dan **exactamente el mismo número**
+antes y después, con el **mismo texto OCR** en las dos columnas. La razón está escrita en
+el test que acompaña el arreglo: en esas 7 fotos la fecha no está en el texto que devolvió
+el OCR, y ahí ningún parser la recupera. El arreglo no se equivocó; no tenía dónde ganar.
+
+**Eso es lo que hace peligroso medir sin A/B.** El OCR **no es determinista entre corridas**
+(la foto de DSW dio `SUBTOTAL 279.33` en la corrida guardada y `279.93` en una nueva), así
+que dos corridas del script de medición comparan **dos motores y no dos parsers**. Con 7 fotos
+el ruido es del mismo orden que el efecto. Por eso existe `scripts/medir_precision_ocr_ab.py`:
+lee cada foto una vez, cachea el texto y deja evaluar N versiones del parser contra ese
+mismo texto.
+
+**Una defensa que se probó y se quitó por ser código muerto:** añadir `fecha` a
+`MARCA_DEL_COMPROBANTE_RE`. El argumento era bueno —una línea que dice `Fecha:` **es** la
+fecha— pero `_fecha_del_comprobante` solo corre cuando el bucle principal no encontró nada,
+y una línea `Fecha:` ya la agarra el patrón etiquetado de más arriba. Una defensa que nunca
+decide nada se lee como una garantía y no está protegiendo nada. Lo que sí faltaba, y sí
+es real, era la hora.
+
+**Verificado por mutación:** `scripts/verify_fecha_mutations.py`, 8 mutaciones, 8 mueren.
+Dos de ellas sobrevivieron a la primera ronda, y por qué:
+- La del año de 3 dígitos en `FECHA_SIN_ETIQUETA_RE` **no se aplicaba**: la mutación
+  buscaba un texto que ya no estaba en el archivo. Un verificador que no se aplica y sigue
+  contando es peor que uno que no existe, porque el conteo dice 8 y son 6.
+- La de `pd.to_datetime` **sobrevivió**, porque con la regla del año ya puesta el año de 3
+  dígitos nunca llegaba ahí. Buscando el caso donde de verdad difieren apareció el bueno:
+  `Fecha: 01/13/2026` da `2026-01-13` en `pd.to_datetime` — **día y mes cambiados, sin
+  avisar** — y `None` en `_a_fecha`. Se prefirió `None`: entre adivinar una fecha e ir a
+  revisión, se va a revisión. Y un intercambio silencioso pasa todos los checks del gate,
+  porque una fecha creible no es una fecha futura ni una vieja.
+
+**Con 7 fotos esto no es una medición, es una anécdota** — y el propio script lo dice. Para
+afirmar 98.5% hacen falta cientos.
+
+---
+
+### 39. El total se perdía con la etiqueta `Total` bien leída a la vista — ✅ CORREGIDO (1 de 3 → 2 de 3)
+
+> **Cifras medidas con el instrumento de antes**, que se comía una foto sin avisar (punto 40).
+> Repetido con el instrumento arreglado dan las mismas dos de tres, pero el A/B oficial es
+> **33.3% → 66.7%** sobre las tres fotos. Ver el punto 40.
+
+El **2026-10-15**, sobre el texto de OCR que devolvió la corrida de las 18:42 (guardado en
+`/tmp` antes de limpiar la base; el parser anterior y el nuevo sobre **ese mismo texto**):
+
+**El síntoma que reportó quien digitaliza:** los montos no coinciden con el papel.
+
+**No era que el parser no supiera leer `Total $`.** Medido con las seis formas de la etiqueta
+—`Total $ 193.65`, `Total $193.65`, `TOTAL $ 193.65`, `Total$: 193.65`, `Total $ 1,100.50`,
+`Total $ 51,50`—: **las seis se leían bien**, antes y después. El caso que fallaba es otro:
+
+```
+Total $ 193.65 =                    <- la etiqueta CON su importe
+oe Nenta total 5 © 19S Be           <- ruido de caja del OCR
+Total despues del ahorro $ 193 65   <- filtrada por AHORRO_EN_LINEA_RE
+```
+
+Con el ruido **antes** de la línea buena, el mismo texto daba `193.65`. Con el ruido
+**después**, daba **`5.00`**, y el papel dice `193.65`. La etiqueta se leía bien y **una línea de
+basura escrita después la pisaba**, porque el bucle competía por posición y ganaba la última
+coincidencia.
+
+**El arreglo** es un criterio de fuerza, no de posición (`_fuerza_de_un_importe`): un importe
+**con centavos** no se deja pisar por un **entero suelto**. El entero suelto es, en un
+comprobante mexicano, mucho más probable que un trozo partido (`51 .50`) o un código que el OCR
+entrecortó (`19S` → `19`). Es el mismo criterio y el mismo "por qué" que ya tenía
+`_importe_tras_la_etiqueta`; lo nuevo es que también decide **entre líneas**, y no solo dentro
+de una.
+
+**El desempate entre candidatos de la MISMA fuerza NO cambió** (sigue ganando el último, que es
+como funcionaba). Se conserva a propósito: cambiar la fuerza y el desempate en el mismo commit
+haría imposible atribuir el efecto de ninguno de los dos, que es exactamente el error que
+produce un arreglo de este tipo.
+
+**Lo que destapó el arreglo, y que estaba escondido desde antes:** el guardia que excluye el
+subtotal comparaba contra la palabra `"subtotal"`, y en `Sub-Total: 500.00` hay un guion en
+medio, así que **la línea no se excluía**. El patrón de total sí la aceptaba (su borde es
+`(?:^|[^\w])` y el guion no es carácter de palabra), de modo que el subtotal entraba como
+candidato y competía con el total real. No se notaba porque el desempate era "gana la última" y
+el total real va después; con la regla nueva, `Sub-Total: 500.00` + `Total: 580.00` devolvía
+`500.00`. Lo fija `_es_linea_de_subtotal`, que normaliza guion, espacio y guion bajo.
+
+**Medido, con verdad rotulada, sobre el mismo texto OCR (3 fotos):**
+
+| foto | papel | antes | ahora |
+|---|---|---|---|
+| `IMG_4398.heic` | `193.65` | `5` | **`193.65`** |
+| `IMG_4407.heic` | `234.00` | `234` | `234` |
+| `IMG_4409.heic` | `279.93` | `219.93` | `219.93` |
+
+`1/3 → 2/3`. **Con 3 fotos eso es una anécdota, no una medición**, y la que sigue fallando no
+es cosa de este arreglo: en `IMG_4409` el texto del OCR solo trae `TOTAL` a secas y la línea de
+ahorro, así que el parser no tiene de dónde sacarlo y el número que se guardó es **el del modelo
+de visión** (`219.93`), que es el defecto ya documentado de §"la lectura que se guarda".
+
+**Verificado por mutación:** tres mutaciones nuevas en `scripts/verify_capture_mutations.py`, las
+tres mueren — y la primera muere en el test del caso medido, con `Decimal('5')` contra
+`Decimal('193.65')`, que es la forma más legible de ver el defecto.
+
+**Lo que este arreglo NO arregla:** el total absurdo de `IMG_4415` (`750047801456`, el del "techo
+del total") sigue saliendo igual, porque es un problema de lo que el OCR leyó, no de qué línea
+gana.
+
+---
+
+### 40. La medición se comía fotos sin avisar, y por eso el §39 no se podía citar — ✅ CORREGIDO
+
+MEDIDO el 2026-10-15. La foto que motivó el §39 (`IMG_4398.heic`, la del `total 5.00`)
+**nunca se había medido**, y el script no lo decía.
+
+La causa: la verdad la nombra `IMG_4398.HEIC` y el archivo en disco se llama `IMG_4398.heic`, y
+el filtro era `f.name in verdad` —comparación exacta—. **No es un número malo: es menos datos de
+los que creías**, y la foto perdida era justo la del defecto que se estaba mirando.
+
+Dos arreglos, en `scripts/medir_precision_ocr.py` (y el A/B usa la **misma** función, no una
+copia):
+
+1. El nombre se compara en minúsculas, y `selecciona_fotos()` devuelve **también** las rotuladas
+   que no tienen foto, para que se impriman.
+2. **La caché del A/B ahora corre el OCR solo de las fotos que faltan.** Antes `if CACHE.exists():
+   return cache` + `evaluar` recorriendo las claves de la caché = **una foto nueva jamás se
+   midía**. Agregar evidencia a la medición era la única forma de no tenerla, y sin aviso.
+
+Lo que la corrección destapa al correrla de verdad sobre las 8 fotos de la carpeta:
+
+```
+3 foto(s) rotuladas en /tickets
+ATENCION: 7 rotulada(s) NO estan en la carpeta y quedan fuera del A/B:
+  1c2c52a2-….jpeg, aa4d0e8f-….jpg, ee2c6866-….jpg, fc3cb9f8-….jpg,
+  img_4220.jpeg, img_4222.jpeg, img_4253 2.heic
+```
+
+**El A/B del §39 con el instrumento arreglado, texto OCR idéntico en las dos columnas:**
+
+| `total_amount` | antes | después |
+|---|---|---|
+| | **33.3%** (1 de 3) | **66.7%** (2 de 3) |
+
+Con 3 fotos eso es una anécdota, no una medición, y el propio script lo dice. Lo que sí se puede
+afirmar sin adornos es que **el instrumento ahora mide lo que dice que mide**, que era lo que no
+se podía afirmar.
+
+**Verificado por test:** `tests/unit/test_medir_precision_ocr.py`, 8 tests, con el caso real
+(`IMG_4398.HEIC` contra `IMG_4398.heic`). Mutado el filtro a comparación exacta, mueren 4.
+
+---
+
+### 43. Los modelos se instalaban a mano, y el aviso que lo decía no servía — ✅ CORREGIDO
+
+**MEDIDO el 2026-10-15.** El `ollama pull` que el propio front pedía era un paso manual que se
+olvida en cada máquina nueva. Peor: la causa de que faltara era invisible, porque `/scan/ia` para
+Ollama tenía el cálculo de `faltan` cortocircuitado con un `pass` y su `else` —el único que lo
+hacía— era código muerto. Con **cero** modelos instalados reportaba `faltan: []` y
+`disponible: true`.
+
+Ahora hay un servicio `modelos` que baja lo que declara la `.env` al hacer `make up`, y la API
+depende de él con `service_completed_successfully`.
+
+**Los tres bugs que costó, porque los tres se ven igual desde fuera:**
+
+1. **Sin `networks`, no resuelve `ollama`.** Compose mete un servicio sin `networks` en la red
+   **por defecto** del proyecto, que no es `expense_network`. El script se quedaba esperando y
+   decía *"Ollama no respondio"*, que es falso: responde, es que no estaba en su red.
+2. **Los modelos por `${OLLAMA_MODEL}` en vez de `env_file`.** Descargó `moondream` mientras la
+   app usaba `qwen2.5:3b`. Compose resuelve `${VAR}` **primero del shell y después de la `.env`**,
+   y en esta máquina el shell tiene `OLLAMA_MODEL=moondream` exportado. Dos servicios leyendo la
+   "misma" variable con reglas de precedencia distintas, y el que no gana es invisible.
+3. **`set -e` + `&&` rompió el "ya está".** `[ -z "$x" ] && continue` dentro de un `while` en una
+   tubería: cada `&&` que evalúa a falso devuelve 1 y `set -e` sale del subshell en la primera
+   línea, antes de comparar nada. La segunda versión tenía la lógica al revés. **Las dos se veían
+   igual: `make up` bajaba 3.2 GB en cada corrida.** Parecía un fallo del `ollama pull` y era de la
+   pregunta.
+
+> **El detalle que hace esto fácil de repetir:** los tres producen el mismo síntoma —"no hay
+> modelo" o "vuelve a bajarlo"— y ninguno de los tres estaba donde el síntoma apuntaba.
+
+**Cambio de modelo, con lo que se afirma y lo que no:** `OLLAMA_MODEL` pasa de `moondream` a
+`qwen2.5:3b`. `moondream` está documentado en la propia `.env` como *"no lee comprobantes"*, y es
+un modelo de ~1.8B para **describir** imágenes; aquí hace falta **extraer campos**. **No se afirma
+que `qwen2.5:3b` lea mejor un PDF**: no hay ningún PDF rotulado, así que no se puede medir. Para
+volver: `OLLAMA_MODEL=moondream`.
+
+**El aviso del front, que además mentía:** decía *"Mientras falte, esos comprobantes caen a la
+lectura por reglas o se quedan en la cola"*, y con el modelo de visión instalado eso era **falso**:
+lo que faltaba era el de **texto**, que no toca las fotos. `EstadoDeIa` distingue los dos casos.
+
+**Verificado:** `tests/unit/test_instalar_modelos.py`, 10 tests, con un `ollama` falso en el PATH
+—sin red y sin 3 GB. Las tres mutaciones de arriba mueren: quitar la red, volver a la
+interpolación, y la lógica al revés.
+
+**Trampa de arranque, medida el mismo día:** `docker compose restart` **no** relee el `.env`. Las
+variables de `env_file` se meten en el entorno del contenedor **al crearlo**, y `os.environ` gana
+sobre el archivo que la app lee. Tras cambiar `OLLAMA_MODEL`, `restart` dejó la app con el valor
+viejo. Hay que **recrear**: `docker compose up -d --force-recreate <servicio>`.
+
+---
+
+### 44. Un archivo que no se puede leer desaparecía sin dejar rastro — ✅ CORREGIDO
+
+**MEDIDO el 2026-10-16.** Tres fotos en la carpeta, las tres con `[Errno 5] Input/output error` al
+abrirlas (un montaje de archivos de Docker Desktop roto tras un reinicio), y el `POST /scan`
+devolvió **200** con `archivos_vistos: 0`. Sin fila en `scan_files`, sin evento en el registro de
+la corrida, sin número en el resumen y **sin una palabra en la pantalla**. El único rastro era una
+línea de log.
+
+Dos sitios se perdían, y el primero es el que importaba: `listar_archivos()` hacía `lstat()` y, si
+fallaba, `continue` a secas — el archivo **no existía** para el escaner, así que no llegaba ni a
+contarse. El segundo (`read_bytes()` dentro del bucle) al menos sumaba a `con_error`.
+
+**Lo que se cambió:**
+
+- `listar_archivos(con_ilegibles=...)` recoge los que no se pudieron abrir, con nombre y motivo. Es
+  un **parámetro de salida** y no un valor de retorno porque nueve llamadores de la suite y del
+  servicio usan esa función como `list[ArchivoVista]` y solo uno necesita el dato.
+- `ResumenEscaneo.ilegibles`, `ScanResponse.ilegibles` y el `Scan.tsx` lo muestran, con el motivo
+  al lado.
+- **Lista y no número**, porque "3 ilegibles" deja igual de amplio el abanico entre "la carpeta no
+  está montada" (un problema de entorno, se arregla fuera) y "tres papeles dañados" (hay que ir por
+  ellos). Son dos acciones opuestas.
+
+**Por qué no alcanzaba con contar:** `con_error` es para los que se abren y no se entienden,
+`no_soportados` para los que están bien en un formato que no se lee, y `omitidos_por_tope` para los
+que se verán en la pasada siguiente. Un archivo ilegible no es ninguno: **no se volverá a mirar
+nunca**, y de los tres solo `omitidos_por_tope` promete un "vuelve a escanear" que aquí no se
+cumple.
+
+**Verificado:** `tests/unit/test_archivo_ilegible_se_ve.py`, 5 tests. Tres mutaciones mueren:
+el `continue` a secas, el router que deja de pasarlo, y el campo que desaparece del schema.
+
+---
+
+### 41. La IA no estaba disponible y el sistema decía que sí — ✅ CORREGIDO (y con él, el techo de exactitud)
+
+**MEDIDO el 2026-10-15.** El síntoma que reportó quien escanea: los montos no coinciden con el papel y
+no se pasa del 70%. La causa no era el lector. Era que **no había ningún modelo instalado**:
+
+```
+$ ollama list          (vacío)
+$ du -sh /root/.ollama 32K
+```
+
+y el diagnóstico del propio sistema decía:
+
+```json
+{"configurado": {"modelo_texto": "moondream", "modelo_vision": "qwen2.5vl:3b"},
+ "modelos_instalados": [], "faltan": [], "disponible": true}
+```
+
+**Tres defectos encadenados**, y cada uno escondía al siguiente:
+
+**1. `GET /scan/ia` mentía.** Para Ollama, el cálculo de `faltan` estaba cortocircuitado con un
+`pass` y su `else` —el único que hacía el cálculo— era **código muerto**. Y `disponible` usaba
+`instalados is None or not error`, o sea **verdadero con la lista vacía**. El endpoint que existe
+para decir *qué modelo falta* decía que no faltaba ninguno, y `EstadoDeIa` en el front **solo
+aparece si hay algo que arreglar**.
+
+Consecuencia medida: las fotos se leían **solo con Tesseract**, y el techo de exactitud del
+sistema pasaba a ser el del OCR sin que ninguna pantalla lo dijera. El síntoma de un modelo
+ausente es *"el sistema no lee bien los montos"*, que es indistinguible de un OCR malo.
+
+**2. La cascada no consultaba al modelo aunque lo hubiera.** `IMAGENES_VISION_PRIMERO=false` y
+`ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`: si la lectura del OCR parecía plausible, se
+devolvía sin preguntar a nadie. `219.93` parece plausible.
+
+**3. Una foto que se contradecía a sí misma se guardaba.** MEDIDO con `qwen2.5vl:3b` sobre las 3
+fotos rotuladas:
+
+| foto | papel | OCR | visión | desglose del OCR | relee |
+|---|---|---|---|---|---|
+| `IMG_4398` | 193.65 | 193.65 | 193.65 | no | **no** |
+| `IMG_4407` | 234.00 | 234 | 234.0 | no | **no** |
+| `IMG_4409` | 279.93 | **219.93** | 279.93 | **sí, y no suma** | **sí** |
+
+El OCR leyó **bien el subtotal** de la tercera (`279.93`, la verdad) y **mal el total**: el
+documento se desmentía a sí mismo y el sistema tenía la contradicción a la vista. Se guardaba
+`219.93` sin marca de error.
+
+**Lo que quedó:** `_necesita_relectura` (`capture.py`) relee cuando no hay total **o cuando la
+aritmética da `−1`**. El desempate entre lecturas lo hace `_mejor_de`, que ya existía, así que el
+OCR no se tira: releer nunca es "replace".
+
+**Costo medido:** el modelo se consulta **1 de 3** fotos. Las otras dos salen por el camino
+barato (~81 s). Con visión primero serían 3 de 3 y 260 a 490 s **cada una**.
+
+**Lo que NO está resuelto: el 500 intermitente de Ollama.** La llamada a visión devolvió **500 dos
+veces seguidas** sobre `IMG_4409` y a la tercera funcionó y devolvió `279.93`. Sin saber por qué.
+Lo que sí se arregló es poder saberlo: `raise_for_status()` solo lleva la URL, y ahora
+`_ollama_chat_completion` registra el **cuerpo** del error antes de relanzar, porque el 500 de
+Ollama puede ser contexto excedido, memoria, o el modelo que no cabe, y **el cuerpo lo dice y el
+código no**.
+
+> La máquina estaba con **12.6 GB de swap usados** y en un punto se le fueran **todos los
+> contenedores** de Docker (`docker ps -a` vacío, volúmenes intactos). Se levantó con `make up` y
+> los datos estaban enteros. No se descarta que el 500 y la perdida de contenedores tengan la misma causa: presión
+> de memoria. **Queda abierto y medido**, no cerrado.
+
+**Verificado por mutación:** cuatro mutaciones nuevas en `scripts/verify_capture_mutations.py`
+(relectura de la foto contradictoria, releer sin desglose, `faltan` vacío, `disponible` sin modelo,
+y el log del 500) — **36 mutaciones, 36 mueren**.
+
+> **Dos tests de esta regla pasaron por el motivo equivocado antes de probar nada.** El primero
+> corría con `ESCALAR_A_IA_SIN_LINEAS=True` —el default de `config.py`, no lo que dice el `.env`—,
+> y entonces la cascada escalaba siempre y la regla no decidía nada: **quitar la regla no rompía
+> ningún test**. El segundo usaba un proveedor inventado que disparaba `_nombre_parece_basura`, y
+> entonces la lectura se declaraba "no útil" por otro motivo. Un test que pasa por una razón que
+> no es la que dice no prueba lo que dice: parece cobertura.
+
+---
+
+---
+
+## Arreglados en el pasado (no reabrir)
+- **El trigger de stock negativo contaba con el signo equivocado**, y la defensa no
+  bloqueaba la salida que dejaba el inventario en negativo — punto 26.
+- **Funciones documentadas sin endpoint**: la cola de productos no se podia limpiar,
+  `AJUSTE` no se podia escribir y una compra no se podia rechazar — punto 27.
+- `PATCH /reconciliations/{id}` sin decir quien habia corregido el veredicto — punto 30.
+- `verify_postgres_inventario.py` no se podia aplicar a una base ya creada — punto 29.
+- **El cliente elegía la ruta de lectura** (`file_type` sin validar) — punto 17.
+- **HEIC** con nombre de fallo en vez de basura silenciosa — punto 6.
+- **Credenciales en el repo público** — `SECRET_KEY` y password de Postgres en `.env.dev`,
+  `docker-compose.yml`, el README y 5 scripts de verificación, visibles desde el commit inicial.
+  Rotadas, sacadas del código y del historial. Ver §15.
+- La UI ofrece los dos caminos y el automático pasa por el gate — punto 14.
+- `analitica.py` / `hallazgos.py` no estaban muertos: la premisa estaba mal — punto 13.
+- `GET /reconciliations/mappings` devolvía 422 (orden de rutas) — punto 1.
+- El frontend no guardaba el comprobante original — punto 2.
+- Ruta única de captura (antes había varias y una foto podía volverse un ticket falso).
+- Idempotencia por `(company_id, source_hash)`.
+- Comprobante original guardado (0006).
+- Muestreo con veredicto firmado por usuario.
+- Defensa de fórmula XLSX + allowlist de codecs.
+- Auth con scrypt + JWT HS256, rate limit, re-consulta de usuario.

@@ -93,7 +93,12 @@ valor1,valor2
         )
         
         assert response.status_code == 400
-        assert "Missing required columns" in response.json()["detail"]
+        # El mensaje ahora lista las columnas que SI hay, no solo las que faltan.
+        # Ver `tests/unit/test_csv_detecta_forma.py`: el mensaje seco de antes
+        # mandaba a buscar un problema de nombres cuando el problema real era de
+        # separador o de formato.
+        assert "Faltan columnas requeridas" in response.json()["detail"]
+        assert "col1" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_list_bank_transactions(self, async_client: AsyncClient, test_company):

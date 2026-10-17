@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ticketsApi, companiesApi, type Company, type Ticket, type ExtractionStatus } from '../services/api';
+import { ticketsApi, companiesApi, type Company, type Ticket, type ExtractionStatus, type LineaTicketUpdate } from '../services/api';
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import {
   STATUS_ORDEN, explainValidationErrors, confidenceLabel, sourceLabel,
   statusMeta, nombreProvisorLegible,
 } from '../utils/extraction';
+import { VerDocumento } from '../components/TicketDocumento';
+import { ComprobanteAlLado, TextoLeido } from '../components/ComprobanteAlLado';
 
 /**
  * Cola de revision: todo lo que el sistema NO se atrevio a dar por bueno.
@@ -66,8 +68,19 @@ export function ReviewQueue() {
             Documentos que el sistema no se atrevió a aprobar solo.
           </p>
         </div>
-        <div className="flex gap-2">
-          <div className="w-56">
+        {/* Los dos filtros se envuelven y ocupan el ancho completo en movil.
+
+            MEDIDO, no previsto: a 390px el `div` de fuera ya tenia
+            `flex-wrap`, pero el de dentro no. Con dos selectores de ancho fijo
+            (`w-56` + `w-48` = 224 + 192) y 8 de gap, el interno pedia 424px
+            contra los 358 que dejan los `p-4`, y la pagina se salia 50px.
+
+            El detalle que lo hace easy de no ver: `flex-wrap` en el CONTENEDOR
+            exterior no ayuda, porque los hijos que no caben son los nietos del
+            `div` de dentro. Hay que envolver el nivel donde estan uno al lado
+            del otro. */}
+        <div className="flex flex-wrap gap-2">
+          <div className="w-full sm:w-56">
             <Select
               value={companyId}
               onChange={(e) => setCompanyId(e.target.value)}
@@ -77,7 +90,7 @@ export function ReviewQueue() {
               ]}
             />
           </div>
-          <div className="w-48">
+          <div className="w-full sm:w-48">
             <Select
               value={filtro}
               onChange={(e) => setFiltro(e.target.value as ExtractionStatus | '')}
@@ -110,7 +123,7 @@ export function ReviewQueue() {
         {loading ? (
           <Loading message="Cargando cola de revisión..." />
         ) : tickets.length === 0 ? (
-          <Card className="p-8">
+          <Card>
             <EmptyState
               message={error
                 ? 'No se pudo leer la cola. Revisa el mensaje arriba.'
@@ -166,7 +179,7 @@ export function Resumen({
 }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-      <Card className="p-4">
+      <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">En cola</p>
         <p className={`text-3xl font-bold mt-1 ${totalAbiertos > 0 ? 'text-red-600' : 'text-green-600'}`}>
           {totalAbiertos}
@@ -244,7 +257,7 @@ export function TicketEnCola({
   };
 
   return (
-    <Card className="p-4">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -265,12 +278,32 @@ export function TicketEnCola({
           </div>
 
           {editando ? (
-            <EditorTicket
-              ticket={ticket}
-              ocupado={ocupado}
-              onCancelar={onCancelarEdicion}
-              onAprobar={aprobar}
-            />
+            /* El comprobante al lado del formulario, y no debajo.
+             *
+             * Es la disposicion que hace que esta pantalla sea util o sea un
+             * formulario que hay que contrastar a ojo. La pregunta de la cola
+             * es "¿este importe es el del papel?": con el papel en otra columna,
+             * cuesta cero; con el papel debajo de la lista, cuesta alternar,
+             * hacer scroll y volver.
+             *
+             * El orden en movil es papel PRIMERO (`order-first`), y no es
+             * estetica: quien abre la cola en el celu lee el comprobante antes
+             * de tocar un solo campo.
+             */
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-3">
+              <div className="order-1 lg:order-2">
+                <EditorTicket
+                  ticket={ticket}
+                  ocupado={ocupado}
+                  onCancelar={onCancelarEdicion}
+                  onAprobar={aprobar}
+                />
+              </div>
+              <div className="order-2 lg:order-1 lg:border-r lg:border-gray-200 lg:pr-5">
+                <ComprobanteAlLado ticket={ticket} />
+                <TextoLeido texto={ticket.raw_text} />
+              </div>
+            </div>
           ) : (
             <>
               <p className="mt-2 text-lg font-semibold text-gray-900 truncate">
@@ -301,6 +334,8 @@ export function TicketEnCola({
                   de auto-aprobación. Revísalo igual.
                 </p>
               )}
+
+              <VerDocumento ticket={ticket} />
             </>
           )}
 
@@ -311,12 +346,38 @@ export function TicketEnCola({
           )}
         </div>
 
+        {/*
+          `Aprobar` NO se pinta si el ticket ya esta `APROBADO`.
+
+          Por que se oculta en vez de deshabilitarse: un boton gris encima de un
+          ticket verde que dice "Aprobado" es una pregunta sin respuesta. Quien
+          lo ve no sabe si el sistema esta fallando o si hay que hacer algo, y
+          la duda se resuelve probando — que es justo lo que no debe pasar en la
+          fila que sostiene un cierre.
+
+          Y el boton no era inocuo. Aprobar sin corregir volvia a FIRMAR el
+          ticket: `reviewed_at` y `reviewed_by` son la evidencia de quien
+          aprobo que y cuando (ver `app/api/tickets.py`), y un clic de mas los
+          pisaba con la hora del clic. El boton desaparece y el backend
+          tampoco firma cuando no hubo correccion — las dos mitades, porque
+          ocultar el boton no cierra la API.
+
+          Si el ticket se corrige, `Corregir` abre el editor y ahi se vuelve a
+          aprobar: ahi el clic SI significa algo, porque hay datos nuevos.
+
+          `Descartar` SIEMPRE se muestra, incluso en un `APROBADO`: rechazar un
+          ticket que se aprobo por error es una decision legitima y es la unica
+          forma de deshacerla desde aqui. Ocultarlo dejaria un aprobado sin
+          salida.
+        */}
         {!editando && (
           <div className="flex gap-2 shrink-0">
             <Button onClick={onEditar} variant="secondary">Corregir</Button>
-            <Button onClick={() => aprobar()} disabled={ocupado}>
-              Aprobar
-            </Button>
+            {ticket.extraction_status !== 'APROBADO' && (
+              <Button onClick={() => aprobar()} disabled={ocupado}>
+                Aprobar
+              </Button>
+            )}
             <Button onClick={onDescartar} variant="secondary" className="!text-red-700">
               Descartar
             </Button>
@@ -341,6 +402,8 @@ export function EditorTicket({
     total_amount: string;
     tax_amount?: string;
     expense_date: string;
+    subtotal?: string;
+    items?: LineaTicketUpdate[];
   }) => void | Promise<void>;
 }) {
   const [form, setForm] = useState({
@@ -349,13 +412,49 @@ export function EditorTicket({
     total_amount: ticket.total_amount,
     tax_amount: ticket.tax_amount,
     expense_date: ticket.expense_date,
+    subtotal: ticket.subtotal ?? '',
   });
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }));
 
+  // Las lineas viven en su propio estado y NO en `form`, porque son una lista:
+  // meterlas en el objeto del formulario las mezclaria con los campos de texto y
+  // el `set` de arriba (`e.target.value`) no aplicaria.
+  //
+  // Se siembran con las del ticket si las hay. Si `items` es `null` se arranca
+  // con UNA fila vacia, no con cero: un ticket sin lineas es el caso normal de la
+  // ruta OCR, y una tabla vacia no dice "agrega las tuyas" — parece que no hay
+  // nada que capturar.
+  const [lineas, setLineas] = useState<LineaTicketUpdate[]>(
+    ticket.items && ticket.items.length > 0
+      ? ticket.items.map(l => ({
+          description: l.description ?? '',
+          quantity: l.quantity ?? '',
+          unit_price: l.unit_price ?? '',
+          total: l.total ?? '',
+        }))
+      : [{ description: '', quantity: '', unit_price: '', total: '' }]
+  );
+
+  const setLinea = (i: number, k: keyof LineaTicketUpdate) => (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => setLineas(ls => ls.map((l, j) => (j === i ? { ...l, [k]: e.target.value } : l)));
+
+  const agregarLinea = () =>
+    setLineas(ls => [...ls, { description: '', quantity: '', unit_price: '', total: '' }]);
+
+  const quitarLinea = (i: number) => setLineas(ls => ls.filter((_, j) => j !== i));
+
   return (
     <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+      {/* El papel va ANTES que el formulario, no despues. "Corrige contra el
+          documento original" es la instruccion de esta pantalla, y si el
+          documento se abre despues de que alguien ya escribio el total, la
+          correccion se hizo sin mirarlo. Ver el papel es la parte que cuesta;
+          corregir despues es lo rapido. */}
+      <VerDocumento ticket={ticket} />
+
       <p className="text-xs text-gray-600">
         Corrige contra el documento original y pulsa <strong>Aprobar y guardar</strong>. El sistema
         vuelve a validar: si los números siguen sin cuadrar, no deja pasar el ticket.
@@ -365,9 +464,87 @@ export function EditorTicket({
         <Input label="Proveedor" value={form.provider_name} onChange={set('provider_name')} required />
         <Input label="RFC" value={form.provider_tax_id} onChange={set('provider_tax_id')} />
         <Input label="Total" value={form.total_amount} onChange={set('total_amount')} required />
+        {/* El subtotal no estaba, y sin el `subtotal + IVA == total` no se puede
+            comprobar despues de corregir el total. Es el campo que hace falta
+            para que el sistema pueda volver a decirte si los numeros cuadran. */}
+        <Input
+          label="Subtotal"
+          value={form.subtotal}
+          onChange={set('subtotal')}
+          placeholder="opcional"
+        />
         <Input label="IVA" value={form.tax_amount} onChange={set('tax_amount')} />
         <Input label="Fecha" value={form.expense_date} onChange={set('expense_date')} required type="date" />
       </div>
+
+      {/* Las partidas del comprobante.
+          Es la parte que hace que el inventario tenga entrada: sin lineas, la
+          compra no se abre y el stock no se puede contar. Y hay una razon para
+          que sea opcional y no obligatoria: muchos tickets de gasto NO son de
+          inventario (una nota, un casero, una tarifa), y exigir detalle ahi
+          obligaria a inventar lineas para poder guardar el gasto. */}
+      <fieldset className="border-t border-gray-200 pt-3">
+        <legend className="text-xs font-semibold text-gray-700">
+          Partidas del comprobante
+          <span className="font-normal text-gray-500">
+            {' '}(opcional — solo si el comprobante lista artículos)
+          </span>
+        </legend>
+
+        {lineas.length === 0 ? (
+          <p className="text-xs text-gray-500 my-2">
+            Sin partidas. Si el comprobante no lista artículos, déjalo así: el gasto se guarda
+            igual y solo no entra al inventario.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {lineas.map((l, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2 items-end">
+                <div className="col-span-5">
+                  <Input
+                    label="Descripción"
+                    value={l.description ?? ''}
+                    onChange={setLinea(i, 'description')}
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Input label="Cant." value={l.quantity ?? ''} onChange={setLinea(i, 'quantity')} />
+                </div>
+                <div className="col-span-2">
+                  <Input
+                    label="P. unit"
+                    value={l.unit_price ?? ''}
+                    onChange={setLinea(i, 'unit_price')}
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Input label="Importe" value={l.total ?? ''} onChange={setLinea(i, 'total')} />
+                </div>
+                <div className="col-span-1">
+                  <button
+                    type="button"
+                    onClick={() => quitarLinea(i)}
+                    disabled={ocupado}
+                    className="text-xs text-red-600 hover:text-red-800 disabled:opacity-40 py-2"
+                    aria-label={`Quitar la partida ${i + 1}`}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={agregarLinea}
+          disabled={ocupado}
+          className="mt-2 text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
+        >
+          + Agregar partida
+        </button>
+      </fieldset>
 
       <div className="flex gap-2 justify-end">
         <Button onClick={onCancelar} variant="secondary" disabled={ocupado}>Cancelar</Button>
@@ -378,8 +555,22 @@ export function EditorTicket({
             // backend distingue "no hay RFC" de "el RFC esta en blanco".
             provider_tax_id: form.provider_tax_id.trim() || undefined,
             tax_amount: form.tax_amount.trim() || undefined,
+            subtotal: form.subtotal.trim() || undefined,
             total_amount: form.total_amount.trim(),
             expense_date: form.expense_date,
+            // Solo se mandan las lineas que tienen ALGO. La fila vacia que se
+            // siembra para invites a escribir no puede acabar en la base como una
+            // partida sin descripcion: `interpretar_items` la descartaria con
+            // motivo, y el ruido en la cola de productos es peor que no tener la
+            // fila.
+            items: lineas
+              .filter(l => (l.description ?? '').trim() || (l.total ?? '').trim())
+              .map(l => ({
+                description: (l.description ?? '').trim() || undefined,
+                quantity: (l.quantity ?? '').trim() || undefined,
+                unit_price: (l.unit_price ?? '').trim() || undefined,
+                total: (l.total ?? '').trim() || undefined,
+              })),
           })}
           disabled={ocupado}
         >
@@ -422,7 +613,7 @@ export function DialogoDescartar({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <Card className="w-full max-w-md p-6">
+      <Card className="w-full max-w-md">
         <h2 className="text-lg font-bold text-gray-900">Descartar documento</h2>
         <p className="mt-1 text-sm text-gray-600">
           Sale de la cola y no entra a conciliación. No se borra: queda registrado como rechazado.
