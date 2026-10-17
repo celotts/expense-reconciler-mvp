@@ -11,6 +11,7 @@ import {
 } from '../utils/validation';
 import { dinero, fecha } from '../utils/format';
 import { VeredictoTicket } from '../components/VeredictoTicket';
+import { ComprobanteAlLado } from '../components/ComprobanteAlLado';
 
 /** Como se filtra esta pantalla.
  *
@@ -405,6 +406,11 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     abrirFormularioConExtraccion();
   };
 
+  // ¿Este modal tiene un comprobante que mostrar al lado? Solo al editar uno que
+  // ya existe: al crear no hay papel todavia, y abrir el ancho del modal para
+  // dejar una columna vacia seria una mudanza de diseno sin motivo.
+  const conPapel = Boolean(editingTicket?.tiene_documento);
+
   const columns = [
     {
       key: 'seleccion',
@@ -642,9 +648,80 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
         </Card>
       )}
 
-      {/* Modal Crear/Editar Ticket */}
-      <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); }} title={editingTicket ? 'Editar Ticket' : 'Nuevo Ticket'}>
+      {/* Modal Crear/Editar Ticket
+       *
+       * EL COMPROBANTE VA AL LADO, NO COMO ENLACE
+       * ---------------------------------------------
+       * Antes este modal decia "Comprobante adjunto" y ponia un enlace que
+       * abria el archivo en otra pestana. Es la peor de las dos formas: para
+       * corregir un importe hay que cambiar de ventana, y la memoria de una
+       * persona no aguanta 40 de esos viajes por lote.
+       *
+       * `ReviewQueue.tsx` ya lo hace bien con `ComprobanteAlLado`, y se REUSA
+       * ese componente en vez de escribir uno aqui: el `Blob` autenticado, el
+       * `<img>` en vez de `<object>` para PDF, el fallback y el limite de altura
+       * son cosas que ya estan probadas, y duplicarlas es como se rompe.
+       *
+       * EL ANCHO SE ABRE SOLO CUANDO HAY PAPEL. Un modal de "Nuevo Ticket" —no
+       * hay comprobante que ver porque todavia no existe— se queda en
+       * `max-w-2xl`. Ensanchar siempre dejaria una columna vacia al lado de un
+       * formulario normal, que es peor que un modal estrecho.
+       *
+       * Y el papel va a la IZQUIERDA, que es lo que ya hace `ReviewQueue` y lo
+       * que dice el docstring de `ComprobanteAlLado`. Ver la nota de disposicion
+       * dentro del formulario: la razon de que sea ahi y no a la derecha es que
+       * las dos pantallas que revisan un importe tienen que enseñar lo mismo en
+       * el mismo orden.
+       */}
+      <Modal
+        isOpen={showModal}
+        onClose={() => { setShowModal(false); resetForm(); }}
+        title={editingTicket ? 'Editar Ticket' : 'Nuevo Ticket'}
+        className={conPapel ? 'max-w-5xl' : ''}
+      >
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          {/* LA MISMA DISPOSICION QUE `ReviewQueue.tsx`, y esa es la razon de que
+              * sea esta y no la que yo primero escribi.
+              *
+              * El componente `ComprobanteAlLado` dice en su docstring que "en
+              * escritorio son dos columnas: el papel a la izquierda, los campos a
+              * la derecha", y `ReviewQueue` lo cumple: el papel es `lg:order-1`.
+              * Ponerlo a la derecha en este modal hacia que la MISMA tarea —leer
+              * un importe contra el papel— tuviera dos disposiciones distintas en
+              * dos pantallas, y aprender una sola vez es justo lo que hace rapido
+              * un lote de 40.
+              *
+              * En movil el papel va SEGUNDO, que es lo que hace `ReviewQueue`
+              * tambien: en un celu no caben dos columnas y el orden Util es
+              * tocar el campo que ya esta en pantalla.
+              */}
+          <div className={conPapel ? 'grid grid-cols-1 lg:grid-cols-[400px_minmax(0,1fr)] gap-5' : ''}>
+          {/* El comprobante, al lado de los campos que se corrigen.
+              *
+              * `ComprobanteAlLado` ya acota su propia altura a `70vh` con scroll
+              * interno, asi que una foto de ticket —que es alta— no estira el
+              * modal: el modal tambien tiene `max-h-[90vh] overflow-y-auto`, y
+              * los dos scrolls estan donde toca, en el papel y en el formulario.
+              *
+              * `lg:sticky lg:self-start` es lo que hace que el papel NO se vaya
+              * mientras se hace scroll en los campos: sin esto, corregir el ultimo
+              * campo de la lista obliga a volver arriba a ver el papel, que es
+              * el viaje que esta disposicion existe para evitar.
+              */}
+          {conPapel && editingTicket && (
+            <div className="order-2 lg:order-1 lg:sticky lg:top-0 lg:self-start lg:border-r lg:border-gray-200 lg:pr-5">
+              <ComprobanteAlLado ticket={editingTicket} />
+              <a
+                href={`/ticket/${editingTicket.id}/documento`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-block text-xs text-blue-600 underline"
+              >
+                Abrir el comprobante en otra pestaña (para verlo en grande)
+              </a>
+            </div>
+          )}
+          <div className={conPapel ? 'order-1 lg:order-2' : ''}>
           {/* El veredicto de como se leyo este ticket. Solo al editar uno que ya
               existe: al crear, todavia no hay nada que veredicto. */}
           {editingTicket && <VeredictoTicket ticket={editingTicket} />}
@@ -687,20 +764,8 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
               error={formErrors.category} placeholder="Ej: SUPERMERCADO" maxLength={100}
             />
           </div>
-          {/* Mostrar enlace para ver el comprobante original */}
-          {editingTicket && editingTicket.tiene_documento && (
-            <div className="mt-3 p-3 rounded-lg bg-blue-50 border border-blue-200">
-              <p className="text-xs text-blue-800 font-medium mb-1">Comprobante adjunto</p>
-              <a
-                href={`/ticket/${editingTicket.id}/documento`}
-                onClick={() => { window.open(`/ticket/${editingTicket.id}/documento`, "_blank"); return false; }}
-                rel="noopener noreferrer"
-                className="underline text-blue-600"
-              >
-                Ver comprobante original
-              </a>
-            </div>
-          )}
+          </div>
+          </div>
           <div className="flex justify-end gap-3 pt-4 border-t">
             <Button variant="secondary" type="button" onClick={() => { setShowModal(false); resetForm(); }}>Cancelar</Button>
             <Button type="submit" disabled={submitting}>{submitting ? 'Guardando...' : (editingTicket ? 'Actualizar' : 'Crear')}</Button>

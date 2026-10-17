@@ -25,9 +25,17 @@ import type { ScanIaEstado } from '../types/scan';
  * apagada— y en cualquier momento se puede preguntar por que. Ese es el patron
  * que ya usa `GET /scan/ocr`, y el mismo motivo: *poder preguntar* en vez de
  * deducir de un numero que no dice cual de las dos cosas paso.
+ *
+ * ## POR QUE ACEPTA `estadoInicial`
+ *
+ * Porque `renderToStaticMarkup` **no corre `useEffect`**: el verificador
+ * montaria el componente, no habria estado, y todas las comprobaciones darian
+ * verde por no estar mirando nada. Es el mismo problema y la misma solucion que
+ * en `Cierre` con `informeInicial`: el estado entra por props y el `useEffect`
+ * solo lo pisa cuando hay red.
  */
-export function EstadoDeIa() {
-  const [estado, setEstado] = useState<ScanIaEstado | null>(null);
+export function EstadoDeIa({ estadoInicial = null }: { estadoInicial?: ScanIaEstado | null } = {}) {
+  const [estado, setEstado] = useState<ScanIaEstado | null>(estadoInicial);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -66,6 +74,29 @@ export function EstadoDeIa() {
   // Todo en su sitio: no se dice nada.
   if (faltan.length === 0 && !motivo) return null;
 
+  // ## POR QUE HAY QUE DISTINGUIR TEXTO DE VISION
+  //
+  // MEDIDO el 2026-10-15. Faltaba `moondream` —el de TEXTO— y el cartel decia:
+  //
+  //     "Mientras falte, esos comprobantes caen a la lectura por reglas o se
+  //      quedan en la cola."
+  //
+  // Y es **FALSO**: `qwen2.5vl:3b` si estaba instalado y con `IMAGENES_VISION_
+  // PRIMERO` las fotos las lee el modelo. La ausencia del de texto no toca las
+  // fotos: solo impide escalar los PDF con capa de texto cuando las reglas no
+  // bastan.
+  //
+  // Un aviso que dice una cosa que no esta pasando entrena a ignorar el aviso,
+  // y el dia que diga la verdad nadie lo va a leer. Ademas los dos ausentes
+  // piden acciones distintas: sin vision hay que bajar una foto al escaner
+  // entero; sin texto, nada de lo que hace falta para las fotos se entera.
+  const sinVision = configurado.modelo_vision
+    ? faltan.some((m) => m.split(':')[0] === configurado.modelo_vision!.split(':')[0])
+    : false;
+  const sinTexto = configurado.modelo_texto
+    ? faltan.some((m) => m.split(':')[0] === configurado.modelo_texto!.split(':')[0])
+    : false;
+
   return (
     <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-900">
       {motivo && <p className="font-medium">{motivo}</p>}
@@ -73,7 +104,9 @@ export function EstadoDeIa() {
       {faltan.length > 0 && (
         <>
           <p className="font-medium">
-            Configurado pero no instalado: {faltan.join(', ')}
+            Configurado pero no instalado:{' '}
+            {sinVision && sinTexto ? 'el modelo de visión y el de texto' : sinVision ? 'el modelo de visión' : 'el modelo de texto'}
+            {' '}({faltan.join(', ')})
           </p>
           {/* El comando va con el nombre DENTRO. Un `ollama pull` sin argumentos
               es media hora de diagnostica, y el nombre es justo lo que se ha
@@ -81,10 +114,20 @@ export function EstadoDeIa() {
           <p className="mt-1 font-mono text-[11px] text-amber-800">
             {como_instalar.join('   ')}
           </p>
-          <p className="mt-1 text-amber-700">
-            Mientras falte, esos comprobantes caen a la lectura por reglas o se
-            quedan en la cola.
-          </p>
+          {/* Lo que de verdad se ve afectado, y no "esos comprobantes". */}
+          {sinVision && (
+            <p className="mt-1 text-amber-700">
+              <strong>Las fotos no se pueden leer con modelo</strong>: caen al OCR y las
+              reglas, y muchas van a la cola a mano. Es lo que hay que arreglar primero.
+            </p>
+          )}
+          {!sinVision && sinTexto && (
+            <p className="mt-1 text-amber-700">
+              Las fotos <strong>sí</strong> las lee el modelo de visión; esto no las
+              afecta. Lo que falta es el de texto, que se usa para los PDF con capa de
+              texto cuando las reglas no bastan: esos sí se quedan en la cola.
+            </p>
+          )}
         </>
       )}
     </div>

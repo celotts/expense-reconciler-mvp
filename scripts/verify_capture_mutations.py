@@ -306,6 +306,112 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         '            "no soportado"',
         ["tests/unit/test_capture.py::TestUnaSolaRutaDeCaptura"],
     ),
+    (
+        # MEDIDO el 2026-10-15 en `IMG_4398.heic`: con esta comparacion el
+        # ticket se guardaba con `total 5.00` y el papel decia `193.65`. El
+        # detalle que hace la mutacion sneaky: quitar la fuerza NO cambia el
+        # parser para los tickets limpios, solo para los que traen una linea de
+        # ruido DESPUES de la del total, que es como se manifesta en produccion.
+        "el importe con centavos vuelve a dejarse pisar por un entero suelto",
+        "app/services/parser_service.py",
+        "            if candidato is not None and candidato[1] >= fuerza_total:\n"
+        "                total_amount, fuerza_total = candidato",
+        "            if candidato is not None:\n"
+        "                total_amount, fuerza_total = candidato",
+        ["tests/unit/test_parser_service.py::TestElTotalLoDeclaraLaEtiquetaTotal"],
+    ),
+    (
+        # La mitad del arreglo anterior: si la fuerza no distingue, la
+        # comparacion de arriba es ">=" contra una constante y no decide nada.
+        "la fuerza deja de distinguir un importe completo de uno partido",
+        "app/services/parser_service.py",
+        '    return 2 if ("." in bruto or "," in bruto) else 1',
+        "    return 1",
+        [
+            "tests/unit/test_parser_service.py::TestElTotalLoDeclaraLaEtiquetaTotal",
+            "tests/unit/test_parser_service.py::TestAmountExtraction",
+        ],
+    ),
+    (
+        # MEDIDO con el test `test_acepta_subtotal_con_guion`, que es del repo:
+        # `Sub-Total: 500.00` + `Total: 580.00` devolvia 500.00. El guardia viejo
+        # comparaba contra la palabra `"subtotal"` y el guion la escondia.
+        "el subtotal con guion vuelve a entrar como candidato a total",
+        "app/services/parser_service.py",
+        "        if not _es_linea_de_subtotal(line):",
+        '        if "subtotal" not in line.lower():',
+        [
+            "tests/unit/test_parser_service.py::TestElSubtotalConGuionNoEsUnTotal",
+            "tests/unit/test_parser_service.py::TestExtraccionDeSubtotal",
+        ],
+    ),
+    (
+        # MEDIDO el 2026-10-15: `faltan` era SIEMPRE la lista vacia con Ollama
+        # (habia un `pass` y su `else` era codigo muerto), y `disponible` daba
+        # `true` con cero modelos instalados. El endpoint que existe para decir
+        # "que modelo falta" decia que no faltaba ninguno, y las fotos se leian
+        # solo con Tesseract sin que ninguna pantalla lo dijera.
+        "el diagnostico de la IA vuelve a decir que no falta nada",
+        "app/services/ai_client.py",
+        "    faltan: list[str] = []\n"
+        "    if instalados is not None:\n"
+        '        base = {n.split(":")[0] for n in instalados}\n'
+        '        for clave in ("modelo_texto", "modelo_vision"):\n'
+        "            nombre = configurado.get(clave)\n"
+        '            if nombre and str(nombre).split(":")[0] not in base:\n'
+        "                faltan.append(str(nombre))",
+        "    faltan: list[str] = []",
+        ["tests/unit/test_modelo_en_la_pantalla.py::TestElDiagnosticoNoDiceQueTodoEstaBien"],
+    ),
+    (
+        # La segunda mitad del mismo defecto: que disponibilidad se pueda
+        # afirmar cuando lo unico que se sabe es que el proveedor RESPONDIO. Con
+        # 25 modelos instalados y ninguno de los dos configurados, `error` queda
+        # en `None` y `disponible` en `true`.
+        "la IA se declara disponible sin que haya un modelo que conteste",
+        "app/services/ai_client.py",
+        "    if error is None and not hay_alguno:\n"
+        "        error = (\n"
+        '            "ningun modelo configurado esta instalado en el proveedor: "\n'
+        '            + (", ".join(faltan) or "no hay modelos configurados")\n'
+        "        )",
+        "    pass",
+        ["tests/unit/test_modelo_en_la_pantalla.py::TestElDiagnosticoNoDiceQueTodoEstaBien"],
+    ),
+    (
+        # MEDIDO el 2026-10-15: `IMG_4409.heic`, el OCR leyo el subtotal bien
+        # (279.93, la verdad) y el total mal (219.93). Sin esto se guardaba un
+        # numero que la propia lectura del comprobante desmentia.
+        "una foto que se contradice a si misma se devuelve sin releer",
+        "app/services/capture.py",
+        "            if (\n"
+        "                _es_extraccion_util(resultado)\n"
+        "                and not _exige_items(resultado)\n"
+        "                and not _necesita_relectura(resultado)\n"
+        "            ):",
+        "            if _es_extraccion_util(resultado) and not _exige_items(resultado):",
+        ["tests/unit/test_capture.py::TestLaFotoQueSeContradiceSeRelee"],
+    ),
+    (
+        # El otro lado, y es el que hace que la regla NO sea "vision primero":
+        # sin desglose no hay nada que comprobar. Con `<= 0` se escala en cada
+        # ticket de supermercado, que es donde el OCR lee bien el total.
+        "se relee tambien cuando no hay nada que comprobar",
+        "app/services/capture.py",
+        "    return _aritmetica_se_sostiene(resultado) < 0",
+        "    return _aritmetica_se_sostiene(resultado) <= 0",
+        ["tests/unit/test_capture.py::TestLaFotoQueSeContradiceSeRelee"],
+    ),
+    (
+        # MEDIDO el 2026-10-15: la llamada a vision devolvio 500 dos veces y la
+        # app registraba solo la URL. El motivo del proveedor -contexto, memoria,
+        # o modelo que no cabe- se perdia, y con el las tres son el mismo fallo.
+        "un 500 del proveedor se registra sin decir por que",
+        "app/services/ai_client.py",
+        "        if response.status_code >= 400:",
+        "        if False:",
+        ["tests/unit/test_modelo_en_la_pantalla.py::TestUnErrorDelProveedorSeDice"],
+    ),
 ]
 
 

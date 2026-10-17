@@ -662,6 +662,10 @@ async def escanear(
         con_error=resumen.con_error,
         no_soportados=resumen.no_soportados,
         omitidos_por_tope=resumen.omitidos_por_tope,
+        # MEDIDO el 2026-10-16: sin esto, una carpeta que no se puede leer
+        # responde 200 con `archivos_vistos: 0` y no hay forma de saber que hay
+        # archivos ahi que no se pudieron abrir.
+        ilegibles=resumen.ilegibles,
         leidos=resumen.leidos,
         lecturas_por_motor=resumen.lecturas_por_motor,
         archivados=resumen.archivados,

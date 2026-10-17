@@ -206,6 +206,64 @@ def _carga_verdad(carpeta: Path, ruta_verdad: Path | None = None) -> dict[str, d
     return crudo
 
 
+def _entradas_de_verdad(verdad: dict) -> dict[str, dict[str, Any]]:
+    """Las entradas de verdad REALES, en minusculas, sin las claves de ayuda.
+
+    Las que empiezan por `_` (`_COMO_SE_LLENA`, `_CAMPOS`, `_QUIEN_ROTULO`) son
+    documentacion del archivo, no fotos: contarlas como "un archivo mas" hacia
+    que el mensaje de "no hay fotos con etiqueta" dijera un numero que no era el
+    de las fotos.
+    """
+    return {
+        nombre.lower(): valores
+        for nombre, valores in verdad.items()
+        if not nombre.startswith("_") and isinstance(valores, dict)
+    }
+
+
+def selecciona_fotos(carpeta: Path, verdad: dict) -> tuple[list[Path], list[str]]:
+    """Las fotos que se pueden medir, y las de la verdad que NO tienen foto.
+
+    ## POR QUE EL NOMBRE SE COMPARA EN MINUSCULAS
+
+    MEDIDO el 2026-10-15. El archivo de verdad de esta maquina tiene
+    `IMG_4398.HEIC` y el archivo en disco se llama `IMG_4398.heic`. Con
+    `f.name in verdad` — comparacion exacta, que es la que hacia este codigo—
+    **esa foto no se media y no se decia nada**: el filtro la descartaba y el
+    script reportaba el resto con la misma seguridad que si estuviera todo.
+
+    Ese es el peor modo de fallo posible en un instrumento de medir: no es un
+    numero malo, es **menos datos de los que creias** y un porcentaje igual de
+   presentable. La foto que se perdio es justo la del defecto que se estaba
+    midiendo (`total 5.00` donde el papel decia `193.65`).
+
+    La extension ya se comparaba en minusculas (`f.suffix.lower()`), o sea que la
+    mitad del emparejamiento era tolerante y la otra no: por eso el mismo
+    archivo entraba con una forma y salia con la otra.
+
+    ## POR QUE SE DEVUELVEN LAS QUE NO TIENEN FOTO
+
+    Para poder **decirlo**. Un archivo rotulado que no esta en la carpeta es dato
+    que se esta perdiendo sin que nadie lo note (el caso de `IMG_4220.jpeg`, que
+    se rotulo y luego se movio al respaldo). El script lo imprime; el que lo lee
+    decide si le importa, pero no puede decidir por el que no se lo dijeron.
+    """
+    por_minusc = _entradas_de_verdad(verdad)
+    fotos: list[Path] = []
+    encontradas: set[str] = set()
+
+    for f in sorted(carpeta.iterdir()):
+        if not f.is_file() or f.suffix.lower() not in EXTENSIONES:
+            continue
+        clave = f.name.lower()
+        if clave in por_minusc:
+            fotos.append(f)
+            encontradas.add(clave)
+
+    sin_foto = sorted(nombre for nombre in por_minusc if nombre not in encontradas)
+    return fotos, sin_foto
+
+
 def _esqueleto(carpeta: Path) -> str:
     """El archivo de verdad vacio, para llenarlo a mano."""
     if not carpeta.exists():
@@ -291,17 +349,26 @@ def main() -> int:
 
     sys.path.insert(0, str(RAIZ))
     verdad = _carga_verdad(args.carpeta, args.verdad)
-    fotos = sorted(
-        f for f in args.carpeta.iterdir()
-        if f.is_file() and f.suffix.lower() in EXTENSIONES and f.name in verdad
-    )
+    fotos, sin_foto = selecciona_fotos(args.carpeta, verdad)
 
     if not fotos:
         print(
             f"No hay fotos con etiqueta en {args.carpeta}.\n"
-            f"El archivo verdad.json nombra {len(verdad)} archivos; revisa que los nombres coincidan.",
+            f"El archivo verdad.json nombra {len(_entradas_de_verdad(verdad))} "
+            f"archivos; revisa que los nombres coincidan.",
         )
         return 2
+
+    # Se DICE lo que no se va a medir, antes de medir nada. Es la mitad de la
+    # honestidad de la cifra: si el denominador sale mas pequeno de lo que
+    # espera el que lee, es por una razon que esta escrita arriba.
+    if sin_foto:
+        print(
+            f"ATENCION: {len(sin_foto)} archivo(s) rotulados NO estan en "
+            f"{args.carpeta} y quedan fuera de la medicion:\n"
+            + "".join(f"    {nombre}\n" for nombre in sin_foto)
+            + "  Un porcentaje sobre los que si estan no dice nada de estos.\n"
+        )
 
     # Lo que se compara por campo. Los cuatro cubos son distintos a proposito:
     # ver la nota de `compara`.
@@ -311,7 +378,7 @@ def main() -> int:
     print(f"\nMidiendo {len(fotos)} foto(s) con la ruta real de OCR\n" + "=" * 78)
 
     for foto in fotos:
-        esperado = verdad[foto.name]
+        esperado = _entradas_de_verdad(verdad)[foto.name.lower()]
         try:
             leido, obtenido = _corre_una(foto)
         except Exception as exc:  # noqa: BLE001 - aqui se reporta, no se propaga

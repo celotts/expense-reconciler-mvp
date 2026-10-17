@@ -1799,6 +1799,281 @@ afirmar 98.5% hacen falta cientos.
 
 ---
 
+### 39. El total se perdía con la etiqueta `Total` bien leída a la vista — ✅ CORREGIDO (1 de 3 → 2 de 3)
+
+> **Cifras medidas con el instrumento de antes**, que se comía una foto sin avisar (punto 40).
+> Repetido con el instrumento arreglado dan las mismas dos de tres, pero el A/B oficial es
+> **33.3% → 66.7%** sobre las tres fotos. Ver el punto 40.
+
+El **2026-10-15**, sobre el texto de OCR que devolvió la corrida de las 18:42 (guardado en
+`/tmp` antes de limpiar la base; el parser anterior y el nuevo sobre **ese mismo texto**):
+
+**El síntoma que reportó quien digitaliza:** los montos no coinciden con el papel.
+
+**No era que el parser no supiera leer `Total $`.** Medido con las seis formas de la etiqueta
+—`Total $ 193.65`, `Total $193.65`, `TOTAL $ 193.65`, `Total$: 193.65`, `Total $ 1,100.50`,
+`Total $ 51,50`—: **las seis se leían bien**, antes y después. El caso que fallaba es otro:
+
+```
+Total $ 193.65 =                    <- la etiqueta CON su importe
+oe Nenta total 5 © 19S Be           <- ruido de caja del OCR
+Total despues del ahorro $ 193 65   <- filtrada por AHORRO_EN_LINEA_RE
+```
+
+Con el ruido **antes** de la línea buena, el mismo texto daba `193.65`. Con el ruido
+**después**, daba **`5.00`**, y el papel dice `193.65`. La etiqueta se leía bien y **una línea de
+basura escrita después la pisaba**, porque el bucle competía por posición y ganaba la última
+coincidencia.
+
+**El arreglo** es un criterio de fuerza, no de posición (`_fuerza_de_un_importe`): un importe
+**con centavos** no se deja pisar por un **entero suelto**. El entero suelto es, en un
+comprobante mexicano, mucho más probable que un trozo partido (`51 .50`) o un código que el OCR
+entrecortó (`19S` → `19`). Es el mismo criterio y el mismo "por qué" que ya tenía
+`_importe_tras_la_etiqueta`; lo nuevo es que también decide **entre líneas**, y no solo dentro
+de una.
+
+**El desempate entre candidatos de la MISMA fuerza NO cambió** (sigue ganando el último, que es
+como funcionaba). Se conserva a propósito: cambiar la fuerza y el desempate en el mismo commit
+haría imposible atribuir el efecto de ninguno de los dos, que es exactamente el error que
+produce un arreglo de este tipo.
+
+**Lo que destapó el arreglo, y que estaba escondido desde antes:** el guardia que excluye el
+subtotal comparaba contra la palabra `"subtotal"`, y en `Sub-Total: 500.00` hay un guion en
+medio, así que **la línea no se excluía**. El patrón de total sí la aceptaba (su borde es
+`(?:^|[^\w])` y el guion no es carácter de palabra), de modo que el subtotal entraba como
+candidato y competía con el total real. No se notaba porque el desempate era "gana la última" y
+el total real va después; con la regla nueva, `Sub-Total: 500.00` + `Total: 580.00` devolvía
+`500.00`. Lo fija `_es_linea_de_subtotal`, que normaliza guion, espacio y guion bajo.
+
+**Medido, con verdad rotulada, sobre el mismo texto OCR (3 fotos):**
+
+| foto | papel | antes | ahora |
+|---|---|---|---|
+| `IMG_4398.heic` | `193.65` | `5` | **`193.65`** |
+| `IMG_4407.heic` | `234.00` | `234` | `234` |
+| `IMG_4409.heic` | `279.93` | `219.93` | `219.93` |
+
+`1/3 → 2/3`. **Con 3 fotos eso es una anécdota, no una medición**, y la que sigue fallando no
+es cosa de este arreglo: en `IMG_4409` el texto del OCR solo trae `TOTAL` a secas y la línea de
+ahorro, así que el parser no tiene de dónde sacarlo y el número que se guardó es **el del modelo
+de visión** (`219.93`), que es el defecto ya documentado de §"la lectura que se guarda".
+
+**Verificado por mutación:** tres mutaciones nuevas en `scripts/verify_capture_mutations.py`, las
+tres mueren — y la primera muere en el test del caso medido, con `Decimal('5')` contra
+`Decimal('193.65')`, que es la forma más legible de ver el defecto.
+
+**Lo que este arreglo NO arregla:** el total absurdo de `IMG_4415` (`750047801456`, el del "techo
+del total") sigue saliendo igual, porque es un problema de lo que el OCR leyó, no de qué línea
+gana.
+
+---
+
+### 40. La medición se comía fotos sin avisar, y por eso el §39 no se podía citar — ✅ CORREGIDO
+
+MEDIDO el 2026-10-15. La foto que motivó el §39 (`IMG_4398.heic`, la del `total 5.00`)
+**nunca se había medido**, y el script no lo decía.
+
+La causa: la verdad la nombra `IMG_4398.HEIC` y el archivo en disco se llama `IMG_4398.heic`, y
+el filtro era `f.name in verdad` —comparación exacta—. **No es un número malo: es menos datos de
+los que creías**, y la foto perdida era justo la del defecto que se estaba mirando.
+
+Dos arreglos, en `scripts/medir_precision_ocr.py` (y el A/B usa la **misma** función, no una
+copia):
+
+1. El nombre se compara en minúsculas, y `selecciona_fotos()` devuelve **también** las rotuladas
+   que no tienen foto, para que se impriman.
+2. **La caché del A/B ahora corre el OCR solo de las fotos que faltan.** Antes `if CACHE.exists():
+   return cache` + `evaluar` recorriendo las claves de la caché = **una foto nueva jamás se
+   midía**. Agregar evidencia a la medición era la única forma de no tenerla, y sin aviso.
+
+Lo que la corrección destapa al correrla de verdad sobre las 8 fotos de la carpeta:
+
+```
+3 foto(s) rotuladas en /tickets
+ATENCION: 7 rotulada(s) NO estan en la carpeta y quedan fuera del A/B:
+  1c2c52a2-….jpeg, aa4d0e8f-….jpg, ee2c6866-….jpg, fc3cb9f8-….jpg,
+  img_4220.jpeg, img_4222.jpeg, img_4253 2.heic
+```
+
+**El A/B del §39 con el instrumento arreglado, texto OCR idéntico en las dos columnas:**
+
+| `total_amount` | antes | después |
+|---|---|---|
+| | **33.3%** (1 de 3) | **66.7%** (2 de 3) |
+
+Con 3 fotos eso es una anécdota, no una medición, y el propio script lo dice. Lo que sí se puede
+afirmar sin adornos es que **el instrumento ahora mide lo que dice que mide**, que era lo que no
+se podía afirmar.
+
+**Verificado por test:** `tests/unit/test_medir_precision_ocr.py`, 8 tests, con el caso real
+(`IMG_4398.HEIC` contra `IMG_4398.heic`). Mutado el filtro a comparación exacta, mueren 4.
+
+---
+
+### 43. Los modelos se instalaban a mano, y el aviso que lo decía no servía — ✅ CORREGIDO
+
+**MEDIDO el 2026-10-15.** El `ollama pull` que el propio front pedía era un paso manual que se
+olvida en cada máquina nueva. Peor: la causa de que faltara era invisible, porque `/scan/ia` para
+Ollama tenía el cálculo de `faltan` cortocircuitado con un `pass` y su `else` —el único que lo
+hacía— era código muerto. Con **cero** modelos instalados reportaba `faltan: []` y
+`disponible: true`.
+
+Ahora hay un servicio `modelos` que baja lo que declara la `.env` al hacer `make up`, y la API
+depende de él con `service_completed_successfully`.
+
+**Los tres bugs que costó, porque los tres se ven igual desde fuera:**
+
+1. **Sin `networks`, no resuelve `ollama`.** Compose mete un servicio sin `networks` en la red
+   **por defecto** del proyecto, que no es `expense_network`. El script se quedaba esperando y
+   decía *"Ollama no respondio"*, que es falso: responde, es que no estaba en su red.
+2. **Los modelos por `${OLLAMA_MODEL}` en vez de `env_file`.** Descargó `moondream` mientras la
+   app usaba `qwen2.5:3b`. Compose resuelve `${VAR}` **primero del shell y después de la `.env`**,
+   y en esta máquina el shell tiene `OLLAMA_MODEL=moondream` exportado. Dos servicios leyendo la
+   "misma" variable con reglas de precedencia distintas, y el que no gana es invisible.
+3. **`set -e` + `&&` rompió el "ya está".** `[ -z "$x" ] && continue` dentro de un `while` en una
+   tubería: cada `&&` que evalúa a falso devuelve 1 y `set -e` sale del subshell en la primera
+   línea, antes de comparar nada. La segunda versión tenía la lógica al revés. **Las dos se veían
+   igual: `make up` bajaba 3.2 GB en cada corrida.** Parecía un fallo del `ollama pull` y era de la
+   pregunta.
+
+> **El detalle que hace esto fácil de repetir:** los tres producen el mismo síntoma —"no hay
+> modelo" o "vuelve a bajarlo"— y ninguno de los tres estaba donde el síntoma apuntaba.
+
+**Cambio de modelo, con lo que se afirma y lo que no:** `OLLAMA_MODEL` pasa de `moondream` a
+`qwen2.5:3b`. `moondream` está documentado en la propia `.env` como *"no lee comprobantes"*, y es
+un modelo de ~1.8B para **describir** imágenes; aquí hace falta **extraer campos**. **No se afirma
+que `qwen2.5:3b` lea mejor un PDF**: no hay ningún PDF rotulado, así que no se puede medir. Para
+volver: `OLLAMA_MODEL=moondream`.
+
+**El aviso del front, que además mentía:** decía *"Mientras falte, esos comprobantes caen a la
+lectura por reglas o se quedan en la cola"*, y con el modelo de visión instalado eso era **falso**:
+lo que faltaba era el de **texto**, que no toca las fotos. `EstadoDeIa` distingue los dos casos.
+
+**Verificado:** `tests/unit/test_instalar_modelos.py`, 10 tests, con un `ollama` falso en el PATH
+—sin red y sin 3 GB. Las tres mutaciones de arriba mueren: quitar la red, volver a la
+interpolación, y la lógica al revés.
+
+**Trampa de arranque, medida el mismo día:** `docker compose restart` **no** relee el `.env`. Las
+variables de `env_file` se meten en el entorno del contenedor **al crearlo**, y `os.environ` gana
+sobre el archivo que la app lee. Tras cambiar `OLLAMA_MODEL`, `restart` dejó la app con el valor
+viejo. Hay que **recrear**: `docker compose up -d --force-recreate <servicio>`.
+
+---
+
+### 44. Un archivo que no se puede leer desaparecía sin dejar rastro — ✅ CORREGIDO
+
+**MEDIDO el 2026-10-16.** Tres fotos en la carpeta, las tres con `[Errno 5] Input/output error` al
+abrirlas (un montaje de archivos de Docker Desktop roto tras un reinicio), y el `POST /scan`
+devolvió **200** con `archivos_vistos: 0`. Sin fila en `scan_files`, sin evento en el registro de
+la corrida, sin número en el resumen y **sin una palabra en la pantalla**. El único rastro era una
+línea de log.
+
+Dos sitios se perdían, y el primero es el que importaba: `listar_archivos()` hacía `lstat()` y, si
+fallaba, `continue` a secas — el archivo **no existía** para el escaner, así que no llegaba ni a
+contarse. El segundo (`read_bytes()` dentro del bucle) al menos sumaba a `con_error`.
+
+**Lo que se cambió:**
+
+- `listar_archivos(con_ilegibles=...)` recoge los que no se pudieron abrir, con nombre y motivo. Es
+  un **parámetro de salida** y no un valor de retorno porque nueve llamadores de la suite y del
+  servicio usan esa función como `list[ArchivoVista]` y solo uno necesita el dato.
+- `ResumenEscaneo.ilegibles`, `ScanResponse.ilegibles` y el `Scan.tsx` lo muestran, con el motivo
+  al lado.
+- **Lista y no número**, porque "3 ilegibles" deja igual de amplio el abanico entre "la carpeta no
+  está montada" (un problema de entorno, se arregla fuera) y "tres papeles dañados" (hay que ir por
+  ellos). Son dos acciones opuestas.
+
+**Por qué no alcanzaba con contar:** `con_error` es para los que se abren y no se entienden,
+`no_soportados` para los que están bien en un formato que no se lee, y `omitidos_por_tope` para los
+que se verán en la pasada siguiente. Un archivo ilegible no es ninguno: **no se volverá a mirar
+nunca**, y de los tres solo `omitidos_por_tope` promete un "vuelve a escanear" que aquí no se
+cumple.
+
+**Verificado:** `tests/unit/test_archivo_ilegible_se_ve.py`, 5 tests. Tres mutaciones mueren:
+el `continue` a secas, el router que deja de pasarlo, y el campo que desaparece del schema.
+
+---
+
+### 41. La IA no estaba disponible y el sistema decía que sí — ✅ CORREGIDO (y con él, el techo de exactitud)
+
+**MEDIDO el 2026-10-15.** El síntoma que reportó quien escanea: los montos no coinciden con el papel y
+no se pasa del 70%. La causa no era el lector. Era que **no había ningún modelo instalado**:
+
+```
+$ ollama list          (vacío)
+$ du -sh /root/.ollama 32K
+```
+
+y el diagnóstico del propio sistema decía:
+
+```json
+{"configurado": {"modelo_texto": "moondream", "modelo_vision": "qwen2.5vl:3b"},
+ "modelos_instalados": [], "faltan": [], "disponible": true}
+```
+
+**Tres defectos encadenados**, y cada uno escondía al siguiente:
+
+**1. `GET /scan/ia` mentía.** Para Ollama, el cálculo de `faltan` estaba cortocircuitado con un
+`pass` y su `else` —el único que hacía el cálculo— era **código muerto**. Y `disponible` usaba
+`instalados is None or not error`, o sea **verdadero con la lista vacía**. El endpoint que existe
+para decir *qué modelo falta* decía que no faltaba ninguno, y `EstadoDeIa` en el front **solo
+aparece si hay algo que arreglar**.
+
+Consecuencia medida: las fotos se leían **solo con Tesseract**, y el techo de exactitud del
+sistema pasaba a ser el del OCR sin que ninguna pantalla lo dijera. El síntoma de un modelo
+ausente es *"el sistema no lee bien los montos"*, que es indistinguible de un OCR malo.
+
+**2. La cascada no consultaba al modelo aunque lo hubiera.** `IMAGENES_VISION_PRIMERO=false` y
+`ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`: si la lectura del OCR parecía plausible, se
+devolvía sin preguntar a nadie. `219.93` parece plausible.
+
+**3. Una foto que se contradecía a sí misma se guardaba.** MEDIDO con `qwen2.5vl:3b` sobre las 3
+fotos rotuladas:
+
+| foto | papel | OCR | visión | desglose del OCR | relee |
+|---|---|---|---|---|---|
+| `IMG_4398` | 193.65 | 193.65 | 193.65 | no | **no** |
+| `IMG_4407` | 234.00 | 234 | 234.0 | no | **no** |
+| `IMG_4409` | 279.93 | **219.93** | 279.93 | **sí, y no suma** | **sí** |
+
+El OCR leyó **bien el subtotal** de la tercera (`279.93`, la verdad) y **mal el total**: el
+documento se desmentía a sí mismo y el sistema tenía la contradicción a la vista. Se guardaba
+`219.93` sin marca de error.
+
+**Lo que quedó:** `_necesita_relectura` (`capture.py`) relee cuando no hay total **o cuando la
+aritmética da `−1`**. El desempate entre lecturas lo hace `_mejor_de`, que ya existía, así que el
+OCR no se tira: releer nunca es "replace".
+
+**Costo medido:** el modelo se consulta **1 de 3** fotos. Las otras dos salen por el camino
+barato (~81 s). Con visión primero serían 3 de 3 y 260 a 490 s **cada una**.
+
+**Lo que NO está resuelto: el 500 intermitente de Ollama.** La llamada a visión devolvió **500 dos
+veces seguidas** sobre `IMG_4409` y a la tercera funcionó y devolvió `279.93`. Sin saber por qué.
+Lo que sí se arregló es poder saberlo: `raise_for_status()` solo lleva la URL, y ahora
+`_ollama_chat_completion` registra el **cuerpo** del error antes de relanzar, porque el 500 de
+Ollama puede ser contexto excedido, memoria, o el modelo que no cabe, y **el cuerpo lo dice y el
+código no**.
+
+> La máquina estaba con **12.6 GB de swap usados** y en un punto se le fueran **todos los
+> contenedores** de Docker (`docker ps -a` vacío, volúmenes intactos). Se levantó con `make up` y
+> los datos estaban enteros. No se descarta que el 500 y la perdida de contenedores tengan la misma causa: presión
+> de memoria. **Queda abierto y medido**, no cerrado.
+
+**Verificado por mutación:** cuatro mutaciones nuevas en `scripts/verify_capture_mutations.py`
+(relectura de la foto contradictoria, releer sin desglose, `faltan` vacío, `disponible` sin modelo,
+y el log del 500) — **36 mutaciones, 36 mueren**.
+
+> **Dos tests de esta regla pasaron por el motivo equivocado antes de probar nada.** El primero
+> corría con `ESCALAR_A_IA_SIN_LINEAS=True` —el default de `config.py`, no lo que dice el `.env`—,
+> y entonces la cascada escalaba siempre y la regla no decidía nada: **quitar la regla no rompía
+> ningún test**. El segundo usaba un proveedor inventado que disparaba `_nombre_parece_basura`, y
+> entonces la lectura se declaraba "no útil" por otro motivo. Un test que pasa por una razón que
+> no es la que dice no prueba lo que dice: parece cobertura.
+
+---
+
+---
+
 ## Arreglados en el pasado (no reabrir)
 - **El trigger de stock negativo contaba con el signo equivocado**, y la defensa no
   bloqueaba la salida que dejaba el inventario en negativo — punto 26.

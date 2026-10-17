@@ -51,6 +51,7 @@ from app.core.enums import UNKNOWN_PROVIDER, ConfidenceSource
 from app.services.ocr import OCRNoDisponible, ResultadoOCR
 from app.services.parser_service import (
     TicketExtractionResult,
+    _impuesto_incoherente,
     _parse_receipt_text,
     extract_pdf_text,
     render_pdf_pages,
@@ -521,7 +522,7 @@ def invoice_to_result(invoice: ExtractedInvoice) -> TicketExtractionResult:
     if nombre in SENTINELS_SIN_PROVEEDOR or not nombre:
         nombre = UNKNOWN_PROVIDER
 
-    return TicketExtractionResult(
+    resultado = TicketExtractionResult(
         provider_name=nombre,
         # Pasa por `_rfc_en_forma`: lo que devuelve el modelo no se guarda sin
         # comprobar su forma. Ver ahi el caso de una foto real.
@@ -559,6 +560,19 @@ def invoice_to_result(invoice: ExtractedInvoice) -> TicketExtractionResult:
         model_name=invoice.model_name,
         model_provider=invoice.model_provider,
     )
+    # ## POR QUE EL MODELO TAMBIEN PASA POR `_impuesto_incoherente`
+    #
+    # MEDIDO el 2026-10-16: `qwen2.5vl:3b` leyo bien los totales de `IMG_4398` y
+    # `IMG_4409` y **fabrico un IVA** en los dos (19.36 y 27.93) sobre tickets
+    # que no lo traen. Eso produce un `subtotal_plus_tax_mismatch` falso y
+    # empeora el ticket que ya estaba bien.
+    #
+    # Corregirlo SOLO en la ruta de reglas habria sido una defensa que protege
+    # al lector que menos falla: el modelo, que es el que mas lee bien, se
+    # habria quedado con el numero inventado. Las dos lecturas pasan por la
+    # misma regla y por eso dice lo mismo el gate y el export. La regla y el
+    # caso medido estan en `parser_service._impuesto_incoherente`.
+    return _impuesto_incoherente(resultado)
 
 
 def motivo_de_fallo_del_modelo(invoice: ExtractedInvoice) -> str | None:
@@ -1212,7 +1226,7 @@ async def _desde_imagen_con_vision(
     LAS DOS DIFERENCIAS CON EL ORDEN ANTERIOR, y las dos importan:
 
     1. **El OCR no se ejecuta si la vision sirve.** No es que se compare y se
-       elija: es que no se lee. Eso es lo que ahorra los 81 s, porque el
+       elija: es que no se lee. Eso es lo que ahorra su tiempo, porque el
        `_leer_tesseract` hace hasta 16 lecturas por foto y solo un total + RFC +
        aritmetica lo cortan antes.
 
@@ -1251,6 +1265,59 @@ async def _desde_imagen_con_vision(
     return _mejor_de(por_ocr, vision)
 
 
+def _necesita_relectura(resultado: TicketExtractionResult) -> bool:
+    """¿Esta lectura se contradice a si misma, o no trae total? Entonces se relee.
+
+    ## EL CASO MEDIDO, Y POR QUE NO ES "PREGUNTAR SIEMPRE"
+
+    MEDIDO el 2026-10-15 con `qwen2.5vl:3b` sobre las 3 fotos rotuladas de esta
+    maquina, con la verdad de `verdad.json`:
+
+    | archivo   | papel   | OCR    | vision | desglose del OCR | ESCALA |
+    |-----------|---------|--------|--------|------------------|--------|
+    | IMG_4398  | 193.65  | 193.65 | 193.65 | no              | **no** |
+    | IMG_4407  | 234.00  | 234    | 234.0  | no              | **no** |
+    | IMG_4409  | 279.93  | 219.93 | 279.93 | **si, y no suma** | **si** |
+
+    El OCR leyo **bien el subtotal** de la tercera (`279.93`, que es la verdad) y
+    leyo mal el total (`219.93`). O sea que el documento que produjo esa lectura
+    **se contradice a si mismo**, y eso es una senal que el propio sistema puede
+    ver sin pedirle nada a nadie.
+
+    Con vision primero (`IMAGENES_VISION_PRIMERO=true`) las tres se leen bien, y
+    MEDIDO: **215 a 431 s por foto** en esta maquina, contra los **21 s** del OCR
+    (y con `cpus: 6.0`; con 4 eran 567 s). Ver el docstring de `_desde_imagen`.
+    Preguntar siempre es pagar eso en las fotos que el OCR ya leia bien.
+
+    Con esta regla el modelo se consulta **1 de 3**: en la que el OCR se
+    contradice. Las otras dos salen por el camino barato. El resultado es el
+    mismo (3 de 3) y el costo es una tercera parte.
+
+    ## POR QUE "SIN DESGLOSE" NO DISPARA
+
+    `_aritmetica_se_sostiene` devuelve `0` cuando **no hay desglose que
+    comprobar**, y `0` no es "correcto" ni "incorrecto": es "no se puede saber".
+    Escalar con `0` seria escalar en cada ticket de supermercado, porque el OCR
+    nunca lee el subtotal ahi —y ahi es justo donde el total si lee bien.
+    MEDIDO: las dos fotos que no escalan son las dos que no traen desglose y las
+    dos que el OCR lee bien. Confundir "no comprobable" con "incorrecto" es
+    exactamente el error del que ya se aprendio en `_puntaje_de_extraccion`, y
+    aqui tendria un efecto peor: no costaria un punto en el desempate, costaria
+    minutos de CPU por cada ticket.
+
+    ## Y SI NO HAY TOTAL, TAMBIEN
+
+    `total <= 0` no es "dudoso", es **no leido**: sin total no hay gasto. Esa
+    lectura ya caia al escalon del modelo por `_es_extraccion_util`, asi que
+    aqui se pone explicita para que la regla se pueda leer sola.
+    """
+    if resultado.total_amount is None or resultado.total_amount <= 0:
+        return True
+    # `-1` y no `< 0`: `_aritmetica_se_sostiene` tiene tres valores a proposito
+    # (+1 comprobada, -1 contradicha, 0 no comprobable) y `0` no es un fallo.
+    return _aritmetica_se_sostiene(resultado) < 0
+
+
 async def _desde_imagen(
     content: bytes,
     extract_from_image: ExtractFn | None,
@@ -1280,6 +1347,19 @@ async def _desde_imagen(
     Con vision primero, en el caso bueno —que es el mayoritario— el OCR no se
     ejecuta: se ahorran 81 s. Y en el malo sigue estando, porque se consulta
     cuando el modelo no entrega algo utilizable. No se pierde nada.
+
+    ## LOS 81 s ERAN FALSOS. MEDIDO el 2026-10-16: **21 s por foto**
+
+    El numero de arriba estaba copiado de una medicion vieja y nadie lo volvio a
+    repetir. Medido con `_una_lectura` cronometrada, en dos fotos reales
+    (`IMG_4409` e `IMG_4407`): **8 lecturas de 1 a 5 s, 21 s en total**, y el
+    mejor puntaje fue 25 en las dos — el corte temprano nunca entra, porque pide
+    RFC y un ticket de supermercado casi no lo trae.
+
+    Que el numero estuviera mal no era cosmetico. Hacia creer que vision
+    primero costaba 4x el OCR, cuando en la foto medida la vision tardaba **10x**.
+    Un docstring que da un numero sin fecha y sin forma de repetirlo es una
+    trampa: se cita como si fuera actual, y decide. Medir cuesta 21 s.
 
     LO QUE CAMBIA, Y TIENE QUE QUEDAR ESCRITO
 
@@ -1353,7 +1433,16 @@ async def _desde_imagen(
             resultado = _marcar_por_reglas(
                 _parse_receipt_text(texto), ConfidenceSource.OCR
             )
-            if _es_extraccion_util(resultado) and not _exige_items(resultado):
+            # MEDIDO el 2026-10-15: una lectura que se contradice a si misma
+            # (trae desglose y no suma) no se devuelve aunque parezca completa.
+            # El caso es `IMG_4409`: el OCR leyo el subtotal bien (`279.93`, la
+            # verdad) y el total mal (`219.93`), y sin esto el sistema afirmaba
+            # un numero que su propia lectura desmentia. Ver `_necesita_relectura`.
+            if (
+                _es_extraccion_util(resultado)
+                and not _exige_items(resultado)
+                and not _necesita_relectura(resultado)
+            ):
                 return resultado
             # Se guarda para comparar. Sin esto, lo que el modelo devuelva
             # REEMPLAZA a lo que el OCR leyo, sin mirar: medido en los 7

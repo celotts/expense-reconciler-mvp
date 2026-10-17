@@ -2996,6 +2996,67 @@
       "_type": "request"
     },
     {
+      "_id": "req_82",
+      "parentId": "fld_12",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "accion",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "modulo",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "fecha_desde",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "fecha_hasta",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "offset",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/auditoria",
+      "metaSortKey": 82,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
       "_id": "fld_13",
       "parentId": "col_api",
       "modified": 1759353600000,
@@ -3011,7 +3072,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_82",
+      "_id": "req_83",
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3025,7 +3086,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 82,
+      "metaSortKey": 83,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {

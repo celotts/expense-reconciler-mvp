@@ -204,7 +204,7 @@ def _es_ruido(nombre: str) -> bool:
     )
 
 
-def listar_archivos() -> list[ArchivoVista]:
+def listar_archivos(con_ilegibles: list[dict] | None = None) -> list[ArchivoVista]:
     """Los archivos candidatos de la carpeta, ordenados por ruta.
 
     Ordenados, y no en el orden en que los devuelve el sistema de archivos: dos
@@ -218,6 +218,30 @@ def listar_archivos() -> list[ArchivoVista]:
     sin memoria leyendo la misma foto para siempre. `os.walk(followlinks=False)`
     no sigue enlaces a directorios, y el unico enlace que se atraviesa es el de
     un archivo, que se comprueba aparte al resolver.
+
+    ## `con_ilegibles`: POR QUE NO SE SALTAN EN SILENCIO
+
+    MEDIDO el 2026-10-16 en esta maquina. Un `lstat()` que falla hacia que el
+    archivo **no exista** para el escaner: sin `ArchivoVista` no hay entrada en
+    el registro de la corrida, ni fila en `scan_files`, ni evento, ni un numero
+    en el resumen. El `POST /scan` devolvia **200** con `archivos_vistos: 0` y
+    quien escanea no veia nada. El unico rastro era una linea de log:
+
+        no se pudo leer IMG_4398.heic: [Errno 5] Input/output error
+
+    Que ademas salia de un montaje de archivos roto de Docker Desktop, o sea un
+    fallo de entorno, no del comprobante. Un papel que no se puede leer tiene
+    que aparecer **por su nombre y con el motivo**: es lo unico que permite
+    distinguir "la carpeta no esta montada" de "este archivo esta danado" sin
+    pedirle a nadie que abra un log.
+
+    ## POR QUE ES UN PARAMETRO Y NO UN VALOR DE RETORNO
+
+    Porque `listar_archivos()` devuelve `list[ArchivoVista]` en nueve sitios de
+    la suite y en el propio servicio, y cambiar la firma obliga a tocar los diez
+    para algo que solo le interesa a UNO de ellos —el que arma la respuesta.
+    Un parametro de salida que se puede no pasar deja los nueve como estaban y
+    hace explicito que el dato es opcional: quien no lo pide, no lo tiene.
     """
     base = raiz()
     if not base.is_dir():
@@ -249,7 +273,13 @@ def listar_archivos() -> list[ArchivoVista]:
                 # que el operador ni puede ver.
                 info = ruta.lstat()
             except OSError as exc:
+                # No es un `continue` a secas. MEDIDO el 2026-10-16: sin esto el
+                # archivo no aparecia en NADA —ni registro, ni resumen, ni
+                # pantalla— y el `POST /scan` respondia 200 con cero. Ver el
+                # docstring de `con_ilegibles`.
                 logger.warning("no se pudo leer %s: %s", ruta, exc)
+                if con_ilegibles is not None:
+                    con_ilegibles.append({"ruta": relativo_de(ruta), "motivo": str(exc)})
                 continue
 
             # Los enlaces simbolicos a archivos se saltan aqui y no se resuelven
@@ -410,6 +440,17 @@ class ResumenEscaneo:
     con_error: int = 0
     no_soportados: int = 0
     omitidos_por_tope: int = 0
+    # Los que NO se pudieron ni LEER: el sistema de archivos los nombro y al
+    # abrirlos fallo. MEDIDO el 2026-10-16, y es un caso aparte de los tres de
+    # arriba: no es "no soportado" (el archivo esta bien, el formato no), ni
+    # "con error" de lectura (se pudo abrir y no se pudo entender), ni "omitido
+    # por el tope" (se volveria a mirar en la siguiente pasada). Un archivo ilegible
+    # no se volvera a mirar nunca, porque no llega a existir para el escaner.
+    #
+    # Va como lista con nombre y motivo, y no como un numero, porque el numero no
+    # dice que hacer: "3 ilegibles" deja igual de amplio el abanico entre "la
+    # carpeta no esta montada" y "tres papeles dañados en el disco".
+    ilegibles: list[dict] = field(default_factory=list)
     lecturas_por_motor: dict[str, int] = field(default_factory=dict)
     detalles: list[ResumenArchivo] = field(default_factory=list)
 
@@ -1108,8 +1149,20 @@ async def escanear(
         )
 
     async with _CANDADO_DE_ESCANEO:
-        archivos = listar_archivos()
+        ilegibles: list[dict] = []
+        archivos = listar_archivos(con_ilegibles=ilegibles)
         resumen.archivos_vistos = len(archivos)
+        # Van al resumen y no solo al log. MEDIDO el 2026-10-16: el `POST /scan`
+        # respondia 200 con `archivos_vistos: 0` y no habia forma de saber que
+        # habia 3 archivos y no 0, ni de que los 3 estaban ahi y fallaban al
+        # abrirlos.
+        resumen.ilegibles = ilegibles
+        if ilegibles:
+            logger.warning(
+                "%d archivo(s) de la carpeta no se pudieron leer. Van en la "
+                "respuesta como `ilegibles` con su motivo.",
+                len(ilegibles),
+            )
 
         # El registro de la corrida se abre DENTRO del candado, no antes: si se
         # abriera antes, dos escaneos simultaneos anunciarian ambos "en curso" y

@@ -914,3 +914,131 @@ class TestExtraccionDeSubtotal:
 
         assert ok.failures == []
         assert any(f.startswith("subtotal_plus_tax_mismatch") for f in mal.failures)
+
+
+class TestElTotalLoDeclaraLaEtiquetaTotal:
+    """El total se perdia aunque la etiqueta `Total` estuviera bien leida.
+
+    MEDIDO el 2026-10-15 sobre `IMG_4398.heic`, que esta en la base con esta
+    forma exacta. El OCR devuelve tres lineas que dicen "total":
+
+        Total $ 193.65 =                    <- la etiqueta CON su importe
+        oe Nenta total 5 (c) 19S Be         <- ruido de caja del OCR
+        Total despues del ahorro $ 193 65   <- filtrada por AHORRO_EN_LINEA_RE
+
+    El parser leia `5.00` y el papel decia `193.65`. Y no era que no supiera
+    leer `Total $`: con el ruido **antes** de la linea buena, el mismo texto
+    daba `193.65`. Lo que fallaba era el desempate - "gana la ultima
+    coincidencia" -, que deja que una linea de basura escrita despues pise al
+    importe que la etiqueta declara.
+
+    Por eso la regla no es "la primera" ni "la ultima": es que **un importe con
+    centavos no se deja pisar por un entero suelto**. El entero suelto es, en un
+    comprobante mexicano, mucho mas probable que un trozo partido (`51 .50`) o
+    un codigo que el OCR entrecorto (`19S` -> `19`).
+    """
+
+    # El texto tal como salio del OCR, con el ruido DESPUES de la linea buena.
+    RUIDO_DESPUES = (
+        "PANADERIA LA ESPERANZA\n"
+        "Total $ 193.65 =\n"
+        "oe Nenta total 5 (c) 19S Be\n"
+        "Total despues del ahorro $ 193 65\n"
+    )
+
+    def test_el_ruido_de_despues_no_pisa_el_total_de_la_etiqueta(self):
+        assert _parse_receipt_text(self.RUIDO_DESPUES).total_amount == Decimal("193.65")
+
+    def test_el_mismo_ruido_antes_no_cambia_nada(self):
+        """El caso del diagnostico: no es que la etiqueta no se lea, es el desempate.
+
+        Sin esta prueba, un arreglo que hiciera funcionar el caso anterior
+        rompiendo este otro seria igual de invisible que el defecto: los dos
+        textos dan el mismo numero y no se sabe cual de los dos fallo.
+        """
+        texto = (
+            "PANADERIA LA ESPERANZA\n"
+            "oe Nenta total 5 (c) 19S Be\n"
+            "Total $ 193.65 =\n"
+            "Total despues del ahorro $ 193 65\n"
+        )
+        assert _parse_receipt_text(texto).total_amount == Decimal("193.65")
+
+    @pytest.mark.parametrize("linea,esperado", [
+        ("Total $ 193.65", Decimal("193.65")),
+        ("Total $193.65", Decimal("193.65")),
+        ("TOTAL $ 193.65", Decimal("193.65")),
+        ("Total$: 193.65", Decimal("193.65")),
+        ("Total $ 1,100.50", Decimal("1100.50")),
+        ("Total $ 51,50", Decimal("51.50")),
+        ("Total $ 193.65 MXN", Decimal("193.65")),
+        ("Total $ 193.65 =", Decimal("193.65")),
+    ])
+    def test_las_formas_de_Total_con_simbolo_se_leen(self, linea, esperado):
+        """La premisa del arreglo: `Total $` es la forma que trae el importe."""
+        texto = f"GRUPO COMERCIAL DSW S.A. DE C.V.\n{linea}\n"
+        assert _parse_receipt_text(texto).total_amount == esperado
+
+    def test_un_total_con_centavos_no_se_deja_pisar_por_uno_entero(self):
+        """La regla, escrita sin el ruido de OCR de por medio."""
+        texto = (
+            "ABARROTES DEL BARRIO\n"
+            "TOTAL 234.00\n"
+            "TOTAL ARTICULOS 5\n"
+        )
+        assert _parse_receipt_text(texto).total_amount == Decimal("234.00")
+
+    def test_un_total_entero_sin_competencia_se_lee_igual(self):
+        """La regla no es "solo leo los que traen centavos".
+
+        Un ticket que imprime `TOTAL 500` se leia antes y se lee ahora. Lo que
+        cambio es que ya no puede perder contra un entero de otra linea.
+        """
+        texto = "ABARROTES DEL BARRIO\nARTICULO CANT TOTAL\nTOTAL 500\n"
+        assert _parse_receipt_text(texto).total_amount == Decimal("500")
+
+    def test_entre_dos_de_la_misma_fuerza_gana_el_ultimo(self):
+        """El desempate NO cambio: aqui se conserva el de siempre.
+
+        Se fija a proposito. Cambiar la fuerza y el desempate en el mismo commit
+        haria imposible atribuir el efecto de ninguno de los dos, que es
+        exactamente el error que hace este arreglo: la regla nueva tiene que ser
+        la unica variable.
+        """
+        texto = (
+            "ABARROTES DEL BARRIO\n"
+            "TOTAL 234.00\n"
+            "TOTAL 234.50\n"
+        )
+        assert _parse_receipt_text(texto).total_amount == Decimal("234.50")
+
+
+class TestElSubtotalConGuionNoEsUnTotal:
+    """Un guardia que deja pasar la mitad de las formas no es un guardia.
+
+    MEDIDO: el guardia comparaba contra la palabra `"subtotal"` y en `Sub-Total`
+    hay un guion en medio, asi que la linea NO se excluia. El patron de total si
+    la aceptaba (su borde es `(?:^|[^\\w])` y el guion no es caracter de palabra),
+    de modo que el subtotal entraba como candidato y competia con el total real.
+
+    No se notaba porque el desempate era "gana la ultima coincidencia" y el total
+    real va despues. Al cambiar el desempate por la fuerza del importe, quedo a
+    la vista: `Sub-Total: 500.00` + `Total: 580.00` devolvia 500.00.
+
+    Las tres formas que se imprimen en papel, y las tres ahora se excluyen.
+    """
+
+    @pytest.mark.parametrize("subtotal", [
+        "Sub-Total: 500.00",
+        "Sub Total: 500.00",
+        "Sub_Total: 500.00",
+        "SUBTOTAL: 500.00",
+    ])
+    def test_el_subtotal_no_gana_contra_el_total(self, subtotal):
+        texto = f"FERRETERIA DEL SUR\n{subtotal}\nIVA: 80.00\nTotal: 580.00\n"
+        assert _parse_receipt_text(texto).total_amount == Decimal("580.00")
+
+    def test_un_documento_solo_con_subtotal_no_declara_total(self):
+        """El filtro no debe inventar un total donde el papel no lo imprimio."""
+        texto = "FERRETERIA DEL SUR\nSub-Total: 500.00\nIVA: 80.00\n"
+        assert _parse_receipt_text(texto).total_amount == Decimal("0.00")

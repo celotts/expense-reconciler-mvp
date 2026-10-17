@@ -40,6 +40,53 @@ OPEN_STATUSES = (
 )
 
 
+class EstadoAutorizacion(str, Enum):
+    """Si una persona autorizo el gasto. Y NO es lo mismo que haberlo leido bien.
+
+    ## POR QUE NO VA EN `ExtractionStatus`
+
+    `ExtractionStatus` responde **"como se leyo el papel"**. `AUTO_APROBADO`
+    significa que el automatismo se responsabiliza de la lectura, y eso no es que
+    alguien haya autorizado el gasto: no lo miro nadie. Meter la autorizacion ahi
+    seria afirmar que un gasto que leyo solo una maquina quedo autorizado por
+    alguien, y sobre todo haria que el cierre de mes no pudiera distinguir las dos
+    cosas, que es justo lo que el cierre tiene que poder decir.
+
+    Son tres maquinas de estado ya, y por eso este archivo las mantiene juntas y
+    separadas:
+
+    | enum | pregunta |
+    |---|---|
+    | `ExtractionStatus` | como se leyo el papel |
+    | `MatchStatus` | si cuadra con el banco |
+    | `EstadoAutorizacion` | si una persona lo autorizo |
+
+    ## POR QUE `RECHAZADA` EXIGE MOTIVO
+
+    Porque "no" sin razon no es un dato: es una queja. Un rechazo sin motivo no se
+    puede aprender ni corregir, y la constraint de la base
+    (`ck_tickets_autorizacion_firmada`) lo prohibe igual que el codigo, para que
+    un `UPDATE` a mano tampoco lo salte.
+    """
+
+    PENDIENTE = "PENDIENTE"
+    APROBADA = "APROBADA"
+    RECHAZADA = "RECHAZADA"
+
+    @property
+    def abierta(self) -> bool:
+        """Estados que todavia necesitan que alguien decida."""
+        return self is EstadoAutorizacion.PENDIENTE
+
+
+# Los que bloquean el cierre de un mes: un gasto autorizado y uno rechazado ya
+# tienen una decision; uno pendiente no la tiene.
+ESTADOS_DE_AUTORIZACION_DECIDIDOS = (
+    EstadoAutorizacion.APROBADA,
+    EstadoAutorizacion.RECHAZADA,
+)
+
+
 class ConfidenceSource(str, Enum):
     """De donde salio el dato, para auditar que tan confiable es."""
 

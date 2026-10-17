@@ -202,6 +202,41 @@ class TicketModel(Base):
     fecha_provisional = Column(Boolean, nullable=False, default=False)
 
     category = Column(String(100), nullable=True)
+
+    # --- La cuenta de gasto (0018) ---------------------------------------
+    #
+    # `tipo_gasto_id` es la verdad y `category` la etiqueta copiada. No es una
+    # columna mas: `category` es la que leen `analitica.py`,
+    # `reporte_cierre.py` y la exportacion a CONTPAQI, y todas groupan por texto.
+    # Reescribirlas para leer un id seria un cambio grande que no aporta nada, asi
+    # que la tabla manda y el texto se escribe SIEMPRE en la misma operacion que
+    # asigna el id. Hay un test que muere si alguna vez se separan.
+    tipo_gasto_id = Column(
+        UUID(as_uuid=True), ForeignKey("tipos_gasto.id", ondelete="RESTRICT"), nullable=True
+    )
+    tipo_gasto = relationship("TipoGastoModel", back_populates="tickets")
+
+    # --- La autorizacion, QUE NO ES LO MISMO QUE HABER LEIDO BIEN --------
+    #
+    # `ExtractionStatus` responde "como se leyo el papel": `AUTO_APROBADO` dice que
+    # el automatismo se responsabiliza de la lectura, y eso NO es que alguien haya
+    # autorizado el gasto. Son dos preguntas y por eso son columnas distintas.
+    #
+    # El que autoriza sale del token y nunca del cuerpo (regla 23): aceptarlo del
+    # body seria una puerta para autorizar en nombre de otra persona.
+    #
+    # `estado_autorizacion` tiene constraint en la base (`ck_tickets_*`), no solo
+    # en el enum, por el mismo motivo que `ck_compras_confirmacion`: sin ella, un
+    # UPDATE basta para que una autorizacion parezca firmada. Y hay un trigger que
+    # prohibe reescribir las cuatro columnas, para que una autorizacion que se
+    # cambio de verdad conserve el motivo.
+    estado_autorizacion = Column(
+        String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE"
+    )
+    autorizado_por = Column(String(255), nullable=True)
+    autorizado_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    motivo_rechazo = Column(Text, nullable=True)
+
     raw_text = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 

@@ -884,6 +884,134 @@ la agranda e inventa píxeles que no existen.
 guardada sale girada: el ancho y el alto que ve `thumbnail` no son los que ve
 nadie. Sin el transpose, la cota se aplica a la dimensión equivocada.
 
+### 2000 px no cabía: el 500 que se veía como "el modelo no lee" (MEDIDO 2026-10-16)
+
+El usuario escaneó `IMG_4409` y el sistema guardó **219.93** cuando el papel
+imprime **279.93**. Con la verdad del papel a la vista, el camino se ve entero:
+
+```
+papel:      SUBTOTAL 279.93 / TOTAL 279.93 / PANTALON GAB 279.93
+OCR:        SUBTOTAL 279.93 / TOTAL. 219.93 / PANTALON SAB 279.93
+```
+
+**El OCR no se equivocó de número: se comió un glifo.** Leyó `7` como `1` en la
+línea `TOTAL` y las otras dos las leyó bien. El parser hizo lo correcto —se
+fija de la línea que dice `TOTAL`—, así que **aquí no hay bug de parser**, y
+conviene decirlo porque el reflejo es culpar al regex.
+
+Lo que sí pasó es que la cascada hizo lo que debe:
+
+1. `_aritmetica_se_sostiene` = **−1** (trae desglose y no suma) → `_necesita_relectura` **sí** →
+   se escaló a visión.
+2. La llamada a visión **murió**: `500 Internal Server Error` de Ollama a los
+   **2m42s**, con `srv stop: cancel task` en medio de la generación. No fue un
+   error de contexto (eso responde 400 al instante) ni del prompt: la tarea
+   murió **corriendo**.
+3. `_vision_de_imagen` laenvuelve en `_ilegible`, y `_mejor_de(por_ocr, ilegible)`
+   se queda con la lectura que sí respondió: **219.93**.
+
+O sea: **el 500 no perdió el comprobante, perdió la corrección.** El sistema
+degradó como debe y el gate marcó `subtotal_plus_tax_mismatch`, que es
+justo lo que tiene que hacer. Lo que no hay es forma de que se entienda que
+falto el escalón que arregla el número.
+
+**MEDIDO el arreglo: `MAX_LADO_VISION=1400`.** Antes 2000.
+
+| | antes | ahora |
+|---|---|---|
+| tiempo | 2m42s → **500** | **100 s** |
+| total | (nada: se guardaba el OCR) | **279.93** ✓ |
+| comercio | `GRUPO COMERCIAL DSW'S.A.*0E.C3U. o` | `GRUPO COMERCIAL DSW S.A. DE C.V.` ✓ |
+| lineas | 0 | 1 ✓ |
+
+Los tres mejoran a la vez, y el tiempo **baja a menos de la mitad** de lo que
+tardaba el intento que fallaba. La foto son ~4700 tokens de imagen a 2000 px
+contra una ventana de 8192, y con `OLLAMA_KEEP_ALIVE=0` hay que recargar 3 GB
+de pesos en cada llamada: la memoria del encoder de visión es lo que no cabía
+en un host con **86 MB libres y 12.2 GB de swap**.
+
+> **La verdad es que el `MAX_LADO_VISION=2000` de `config.py` sigue siendo el
+> default.** El 1400 vive en el `.env` de esta máquina porque la restricción es
+> de **esta** máquina, no del software. Subirlo sin medir es volver a provocar
+> el 500; bajarlo es lo medido aquí.
+
+### La fecha del papel es el campo más débil, y los dos lectores la fallan distinto
+
+Con la foto de DSW a la vista, `10/01/26` (con `AM` pegado, o sea formato
+estadounidense) es el **1 de octubre de 2026**. Lo que se guardó:
+
+| lector | qué devolvió | qué tan lejos |
+|---|---|---|
+| OCR + reglas | `2026-01-10` | **9 meses** al lado equivocado |
+| visión (`qwen2.5vl:3b`) | `2020-01-26` | año **6 años** antes y mes equivocado |
+
+Dos lectores, dos equivocaciones distintas, y **ninguno de los dos acierta**. El
+motivo es que `10/01/26` es **ambigua por construcción**: las dos lecturas
+(10 de enero / 1 de octubre) son fechas que existen. `FECHA_SIN_ETIQUETA_RE`
+fija `(dia, mes, anio)` y `_a_fecha` las une, sin ninguna señal del documento
+que decida el orden.
+
+Eso importa más que el acierto, porque **la fecha decide el periodo**: un gasto
+de octubre fechado en enero descuadra el cierre de dos meses, y el error no
+sale en ninguna revisión de monto.
+
+### El documento dice la respuesta: dos reglas y el contrato que cambió (2026-10-16)
+
+Arreglar el 500 hizo que la visión ganara, y eso destapó dos cosas que con el
+OCR solo no se veían. Las dos son **el modelo habitantes la aritmética del
+papel**, que es justo lo que este proyecto no permite.
+
+**1. El modelo INVENTA un impuesto en tickets que no lo tienen.** MEDIDO:
+
+| ticket | total | subtotal | **IVA devuelto** | IVA real |
+|---|---|---|---|---|
+| `IMG_4398` | 193.65 | 193.65 | **19.36** | ninguno |
+| `IMG_4409` | 279.93 | 279.93 | **27.93** | ninguno |
+
+Con eso el gate marcaba `subtotal_plus_tax_mismatch(leido=193.65,esperado=
+213.01)`: **un check falso, por un número que nadie leyó**. Y peor: `IMG_4398`
+estaba `AUTO_APROBADO` y el modelo lo dejó en `REQUIERE_REVISION`. O sea que
+arreglar el total se pagó con romper otro ticket.
+
+`parser_service._impuesto_incoherente` lo resuelve: **`total == subtotal`
+significa impuesto cero**, porque un papel que imprime la misma cifra como
+subtotal y como total está diciendo que no sumó nada encima. Se aplica en las
+**dos** rutas (`_parse_receipt_text` y `invoice_to_result`): corregirlo solo en
+el parser habría sido una defensa que protege al lector que menos falla.
+
+**2. El OCR se come un glifo y el papel ya lo decia dos veces.** Con el texto
+real a la vista:
+
+```
+papel:  PANTALON GAB 279.93 / SUBTOTAL 279.93 / TOTAL 279.93
+OCR:    PANTALON SAB 279.93 / SUBTOTAL 279.93 / TOTAL. 219.93
+```
+
+`_total_mas_corroborado` toma el total que **el documento sostiene**, y hay tres
+condiciones, cada una con su contraprue:
+
+| condición | por qué |
+|---|---|
+| el papel **no** imprime impuesto | con IVA, `subtotal != total` es lo normal y tomar el subtotal perdería el impuesto (`217.27 + 8.14 + 8.59 = 234.00`) |
+| la diferencia **no aparece** en el papel | si aparece, el papel la explicó: es un cupón (`279.93 − 159.96 = 119.97`, y `119.97` es el ahorro que imprime) |
+| el otro número sale **≥2 veces** y este **1** | exige una segunda fuente independiente |
+
+> **La versión con "≥2 impresiones" sola ROMPÍA el cupón, y el test de contraste
+> lo cazó antes de producción.** En el cupón el subtotal también sale dos veces
+> (línea de partida y `SUBTOTAL`): los dos casos tienen la misma forma. Lo que
+> los separa es que el papel explica la diferencia. Y al añadir esa condición
+> salió el segundo defecto: el filtro `AHORRO_EN_LINEA_RE` tapaba la línea que
+> **explicaba** el descuento, así que había que contar con dos filtros
+> distintos (`incluir_ahorro`) porque son dos preguntas opuestas.
+
+**El contrato de la relectura cambió, y hay que saberlo.** Antes: *"el OCR se
+contradice → se le pregunta al modelo"*. Ahora: **primero se resuelve con lo que
+el papel demuestra; solo se pregunta cuando el papel no lo explica.** El caso
+de DSW ya no escala (el parser lo resuelve en 0 s en vez de 100 s), y para que
+`_necesita_relectura` no quede como código muerto se le dio el caso que le
+toca: un documento **con** línea de impuesto cuyos números no cuadran, que es
+la única contradicción que el parser no puede tocar sin perder impuestos.
+
 ### La presión de memoria era `keep_alive`, no el modelo
 
 `ai_client.py:218` tenía `"keep_alive": "30m"` **hardcodeado**, sin forma de
@@ -1102,6 +1230,82 @@ Lo que el modelo hace, y cada regla tiene su test:
 > **Un test que mira el archivo entero no prueba el comando.** La primera versión de `test_up_usa_wait` hacía `"--wait" in makefile` y daba **verde con el arreglo quitado**: la palabra estaba en los comentarios de arriba, que sobreviven a la mutación. El test lee ahora la **receta** (`_lineas_de_receta`). MEDIDO: quitando `--wait` de la línea de comando, muere.
 >
 > `test_arranque_por_healthcheck.py` parsea el YAML con `pyyaml` (declarado en `requirements.txt`, no dejado a la transitive de `huggingface_hub`).
+
+> **MEDIDO el 2026-10-15: estas tres defensas funcionaron, y hubo que restaurarlas.** El commit `c2f11b2` ("feat: check and valid scan document") quitó el `to_regclass` del healthcheck de Postgres —dejando solo `pg_isready`— **sin decirlo en el mensaje y sin tocar el comentario de arriba**, que sigue describiendo el `to_regclass` como si estuviera. Con eso los tests se pusieron rojos y **el comentario y el código dejaron de decir lo mismo**, que es exactamente el estado que este archivo prohíbe.
+>
+> Las otras dos no eran defensas rotas sino **tests que dejaron de ver la defensa**:
+> - `make up` creció `$(COMPOSE_FILES)` (multi-entorno) y `test_up_usa_wait` buscaba la cadena `"docker compose up"`, que ya no aparece nunca. La defensa (`--wait`) estaba puesta. El arreglo **no** fue relajar la comprobación a `"--wait" in linea` —eso daría verde con un `--wait` en un comentario— sino quitar `$(...)` de la línea antes de compararla (`_sin_variables`), y se comprobó que sigue muriendo si se quita el `--wait`.
+> - `test_init_sql_espeja_los_modelos` acusaba a `auditoria` de "tabla huerfana" cuando **el modelo existía** (`app/models/auditoria.py`, migración `0017_auditoria.sql`): la lista de tablas del test es una constante escrita a mano y nadie la actualizó. El síntoma era el inverso del que el archivo critica —una tabla si declarada y con el DDL presente, tratada como si no tuviera modelo— y un test que acusa de huérfana lo que tiene modelo hace lo que este archivo critica: **mentir sobre el esquema para que quien lo lea busque un problema que no está**.
+
+### La foto que se contradice a sí misma se relee (MEDIDO 2026-10-15)
+`IMAGENES_VISION_PRIMERO=false` y `ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`
+—los dos por omisión son `True`—, así que una foto la lee **solo Tesseract** si
+su lectura parece plausible. `_necesita_relectura` (`capture.py`) es la regla
+que hace que eso no baste:
+
+```python
+if resultado.total_amount <= 0: return True
+return _aritmetica_se_sostiene(resultado) < 0     # -1, NO 0
+```
+
+MEDIDO con `qwen2.5vl:3b` sobre las 3 fotos rotuladas, misma verdad:
+
+| foto | papel | OCR | visión | desglose del OCR | escala | seg |
+|---|---|---|---|---|---|---|
+| `IMG_4398` | 193.65 | 193.65 | 193.65 | no | **no** | ~81 |
+| `IMG_4407` | 234.00 | 234 | 234.0 | no | **no** | ~81 |
+| `IMG_4409` | 279.93 | **219.93** | 279.93 | **sí, y no suma** | **sí** | 260-490 |
+
+El motivo es concreto: **el OCR leyó bien el subtotal** de la tercera
+(`279.93`, la verdad) **y mal el total** (`219.93`). O sea que el documento se
+desmentía a sí mismo y el sistema tenía la contradicción a la vista. Antes se
+guardaba `219.93` sin marca de error: un número que la propia lectura del
+comprobante rechazaba.
+
+**El `< 0` es `< 0` y no `<= 0` a propósito.** `_aritmetica_se_sostiene` tiene
+tres valores (+1 comprobada, −1 contradicha, **0 no comprobable**) y `0` no es
+"incorrecto": es "no hay desglose que comprobar", que es cada ticket de
+supermercado, donde el OCR nunca lee el subtotal y **sí** lee bien el total.
+Escalar ahí sería pagar 300 s por cada ticket de supermercado — y es
+exactamente el caso que mide el segundo test de la clase
+`TestLaFotoQueSeContradiceSeRelee`.
+
+> **Los tests de esta regla tardaron dos intentos en probar algo.** El primero
+> corría con `ESCALAR_A_IA_SIN_LINEAS=True` (el default de `config.py`, no lo
+> que dice el `.env`), y entonces la cascada escalaba **siempre** y la regla no
+> decidía nada: la mutación de quitarla pasaba. El segundo usaba un proveedor
+> inventado que disparaba `_nombre_parece_basura`, y entonces la lectura se
+> declaraba "no útil" por otro motivo. Ambos tests pasaban **por el motivo
+> equivocado**, que es la forma más caro de tener un test. Ahora los tests
+> fijan el ajuste real del `.env` y usan **el texto OCR medido** de las fotos,
+> y la mutación de quitar la regla muere.
+
+### `GET /scan/ia` decía que todo estaba bien con cero modelos instalados
+MEDIDO el 2026-10-15: `modelos_instalados: []`, `faltan: []`, `disponible: true`.
+Para Ollama el cálculo de `faltan` estaba cortocircuitado con un `pass` y su
+`else` —el único que lo hacía— era **código muerto**. Y `disponible` se
+calculaba con `instalados is None or not error`, o sea verdadero con la lista
+vacía. El endpoint que existe para decir *qué modelo falta* no lo decía, y
+`EstadoDeIa` en el front **solo aparece si hay algo que arreglar**.
+
+Consecuencia: las fotos se leían solo con Tesseract y el techo de exactitud
+pasaba a ser el del OCR **sin que ninguna pantalla lo dijera**. El síntoma era
+"el sistema no lee bien los montos", que es como se lee un modelo ausente.
+
+`disponible` es ahora exactamente `not error`, y eso parece una defensa
+redundante hasta que se muta: `and hay_alguno` **no cambia ningún resultado**,
+porque la rama de arriba ya pone `error` cuando no hay ningún modelo. Una
+defensa que no puede cambiar el veredicto no está defendiendo.
+
+### Un 500 del proveedor se registra sin decir por qué
+`raise_for_status()` lanza una excepción que solo lleva la URL. MEDIDO: la
+llamada a visión devolvió **500 dos veces seguidas** y el log decía
+`Server error '500 Internal Server Error' for url '.../api/chat'`. El 500 de
+Ollama puede ser contexto excedido, memoria, o el modelo que no cabe: **el
+cuerpo lo dice y el código no**. Sin esa pista lo único que se puede hacer es
+repetir a ciegas — y la tercera llamada sí funcionó y devolvió el valor
+correcto, sin que nadie supiera por qué las dos anteriores no. Ahora
+`_ollama_chat_completion` registra el cuerpo antes de relanzar.
 
 ### El informe de cierre ya tiene pantalla: `front/src/pages/Cierre.tsx`
 `GET /reports/cierre-mensual` (JSON, el preview) y `.pdf` salen del **mismo objeto** — el backend no recalcula al maquetar (R4). **La restricción del front es que no Rompa eso: la pantalla no suma, no calcula porcentajes y no decide veredictos.** Todo sale del JSON, formateado por `utils/format.ts`; los colores del veredicto se reusan de `utils/spotcheck.ts` (`veredictoMeta`). Si el front tuviera su propia presentación de la exactitud, el contador vería **dos números distintos en la misma pantalla**.
@@ -1572,6 +1776,79 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   total pasó de 60% a **80%** y el subtotal de 20% a **60%**. No lo reviertas
   "para recuperar el importe" del DSW: el `119.97` era el precio ya descontado y
   el total correcto sale de otra línea del papel. Ver §34.
+
+- **El total lo declara la etiqueta `Total`, y gana la lectura MÁS COMPLETA.**
+  MEDIDO el 2026-10-15 en `IMG_4398.heic`, con el texto del OCR de verdad:
+
+  ```
+  Total $ 193.65 =                    <- la etiqueta CON su importe
+  oe Nenta total 5 © 19S Be           <- ruido de caja del OCR
+  Total despues del ahorro $ 193 65   <- filtrada por AHORRO_EN_LINEA_RE
+  ```
+
+  El sistema guardaba **`total 5.00`** y el papel dice `193.65`. **Y no era que
+  no supiera leer `Total $`**: con el ruido **antes** de la línea buena, el mismo
+  texto daba `193.65`. Las seis formas de la etiqueta (`Total $ 193.65`,
+  `Total $193.65`, `TOTAL $ 193.65`, `Total$: 193.65`, `Total $ 1,100.50`,
+  `Total $ 51,50`) se leen bien; lo que perdía la lectura buena era que
+  competían **por posición** y ganaba la última coincidencia.
+  El criterio ahora es `_fuerza_de_un_importe`: **un importe con centavos no se
+  deja pisar por un entero suelto**, que en un comprobante mexicano es mucho más
+  probable que un trozo partido (`51 .50`) o un código entrecortado (`19S`).
+  **El desempate entre candidatos de la MISMA fuerza NO cambió** (gana el
+  último, como siempre): cambiar las dos variables en el mismo commit haría
+  imposible atribuir el efecto de ninguna.
+  Mutaciones en `verify_capture_mutations.py`, las tres mueren.
+
+- **Los modelos se instalan solos al hacer `make up`, y los tres bugs que costó.**
+  Servicio `modelos` en `docker-compose.yml` + `scripts/instalar_modelos.sh`. La API depende de él con `service_completed_successfully`, no con `service_started`: aquí no vale "empezó", vale "terminó de bajar lo que estaba declarado".
+  1. **Sin `networks`, el servicio no resuelve `ollama`.** Compose mete un servicio sin `networks` en la red **por defecto**, que no es `expense_network`. El síntoma es el peor para diagnosticar: el script dice *"Ollama no respondió"* y la respuesta es que sí responde — lo que no responde es que no está en su red.
+  2. **Los modelos llegan por `env_file`, nunca por `${OLLAMA_MODEL}`.** MEDIDO: con interpolación bajó `moondream` mientras la app usaba `qwen2.5:3b`, porque Compose resuelve `${VAR}` **primero del shell y después de la `.env`**, y en esta máquina el shell tiene `OLLAMA_MODEL=moondream` exportado. Dos servicios leyendo la "misma" variable con reglas distintas, y el que no gana es invisible.
+  3. **`set -e` + `&&` destruyó la comprobación de "ya está".** `[ -z "$x" ] && continue` dentro de un `while` en una tubería: cada `&&` que evalúa a falso devuelve 1, `set -e` sale del subshell en la primera línea. La segunda versión tenía la lógica al revés. **Las dos se veían igual: `make up` bajaba 3.2 GB en cada corrida.** Por eso: `for` en vez de tubería, `if` en vez de `&&`, y el nombre de la función dice qué significa el 0.
+  El script **sale con 0 aunque no pueda descargar**: la app sin modelo escanea igual con OCR, y un `pull` fallido por red no puede dejar sin sistema a alguien que solo quiere escanear.
+  `tests/unit/test_instalar_modelos.py`, 10 tests, con un `ollama` falso en el PATH — sin red y sin 3 GB.
+
+- **`OLLAMA_MODEL=moondream` es el modelo equivocado para este trabajo.** Está en la `.env` desde antes de que existiera la cascada por reglas, y el propio `.env` lo describe: *"moondream (no lee comprobantes)"*. Es un modelo de ~1.8B para **describir** imágenes; lo que hace falta es **extraer campos**. Cambiado a `qwen2.5:3b`, que es el que el proyecto declaraba antes (`AGENTS.md` lo cita) y el hermano de texto del de visión que sí lee comprobantes. **Lo que no se afirma:** que lea mejor un PDF. No hay ningún PDF rotulado todavía, así que no se puede medir; lo que sí se sabe es que `moondream` estaba documentado como inadecuado. Para volver: `OLLAMA_MODEL=moondream`.
+
+- **`docker compose restart` NO relee el `.env`.** MEDIDO: tras cambiar `OLLAMA_MODEL` en el `.env`, `restart` dejó el contenedor con la variable vieja y la app siguió viendo `moondream`. Compose mete `env_file` en el **entorno del contenedor** al crearlo, y `os.environ` gana sobre el archivo que la app lee. **Hay que recrear**: `docker compose up -d --force-recreate <servicio>`. Lo que sí funciona con `restart` son las variables **nuevas**, que no estaban en el entorno del contenedor.
+
+- **Los avisos del front tienen que decir qué se ve afectado, no algo genérico.** MEDIDO: con `qwen2.5vl:3b` instalado y `moondream` (el de **texto**) ausente, el cartel decía *"Mientras falte, esos comprobantes caen a la lectura por reglas o se quedan en la cola"*. Es **falso**: las fotos las leía el modelo de visión. `EstadoDeIa` distingue ahora texto de visión y dice qué pasa en cada caso. Un aviso que dice una cosa que no está pasando entrena a ignorarlo, y el día que diga la verdad nadie lo va a leer.
+
+- **El 504 de `POST /scan` NO es lentitud: es que nginx se rinde antes.**
+  MEDIDO el 2026-10-16. nginx tiene `proxy_read_timeout 300s` en `location /api/` (subido a 1800 s), y con `IMAGENES_VISION_PRIMERO` **una foto tarda 7 a 9 minutos**: los ~2300 tokens que ocupa la imagen al entrar se evaluan **en serie, y eso es CPU**. Con 300 s el POST moría en *todas* las corridas.
+  Lo grave no es el corte: es que **el trabajo sí se hacía**. El front hacía `setError(...)` en el `catch` y apagaba el canal de progreso: decía *"No se pudo escanear"* con los tickets ya guardados. Un error que dice que no pasó algo que sí pasó hace que el operador repita la corrida y **duplique los tickets**.
+  Ahora el `catch` **no apaga el canal**: sigue consultando `GET /scan/runs` hasta que la corrida diga `terminada`, y avisa *"la conexión se cortó pero el escaneo sigue"*. El timeout de nginx es red de seguridad, no el mecanismo.
+
+- **El tiempo de leer una foto es CPU, no modelo.** MEDIDO el 2026-10-16, la misma foto (`IMG_4409`): **567 s con `cpus: 4.0` → 215 s con `cpus: 6.0`**, mismo resultado (`279.93`). La VM tiene 8 CPUs y `ollama` estaba limitado a 4: la mitad ociosa mientras la foto esperaba. **A 8 no mejora**: se pelea con `expense-api` (también pide 4) y la suma no cabe en las 8 de la VM. Seis es donde añadir CPU deja de pagar.
+  Antes de comprar un modelo más grande, sube la CPU: es **más rápido y sin coste de exactitud**.
+
+- **`Sub-Total` NO es un total, y el guardia viejo no lo veía.**
+  El guardia comparaba contra la palabra `"subtotal"` y en `Sub-Total: 500.00`
+  hay un guion en medio, así que **la línea no se excluía**. El patrón de total sí
+  la aceptaba (su borde es `(?:^|[^\w])` y el guion no es carácter de palabra):
+  el subtotal entraba como candidato y competía con el total real. No se notaba
+  porque ganaba la última coincidencia y el total real va después; al cambiar
+  el desempate por la fuerza del importe quedó a la vista, y
+  `Sub-Total: 500.00` + `Total: 580.00` devolvía `500.00`.
+  Lo arregla `_es_linea_de_subtotal`, que normaliza guion, espacio y guion bajo.
+  **Un guardia que deja pasar la mitad de las formas que se supone que filtra no
+  es un guardia.**
+
+- **La medición no puede comerse fotos en silencio — es lo peor que puede hacer.**
+  MEDIDO el 2026-10-15: la verdad nombra `IMG_4398.HEIC` y el archivo en disco es
+  `IMG_4398.heic`, y el filtro era `f.name in verdad`, **exacto**. Esa foto no se
+  medía y no se decía nada: el script reportaba el resto con la misma seguridad.
+  No es un número malo, es **menos datos de los que creías**, y la foto perdida
+  era justo la del defecto que se estaba mirando.
+  `selecciona_fotos()` (`scripts/medir_precision_ocr.py`) compara en minúsculas y
+  **devuelve también las rotuladas que no tienen foto**, para que se impriman. El
+  A/B usa esa misma función, no una copia: dos copias de la selección son dos
+  reglas que divergen, y esta ya había divergido una vez.
+  **La caché del A/B corre el OCR solo de las que faltan.** Antes `if CACHE.exists():
+  return cache` hacía que **una foto nueva nunca se midiera**, que es el modo de
+  fallo opuesto y igual de silencioso: agregar evidencia era la única forma de
+  no tenerla.
+  Lo fijo `tests/unit/test_medir_precision_ocr.py`, con el caso real.
 
 - **El borde de las etiquetas acepta puntuación, pero NO cualquier carácter.**
   `(?:^|\s)` → `(?:^|[^\w])`. El OCR pone ruido de caja delante de cada etiqueta

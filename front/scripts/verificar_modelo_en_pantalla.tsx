@@ -133,6 +133,67 @@ comprobar(
   /qwen2\.5:3b<\/span>/.test(conModelo),
 );
 
+// --- 5. El aviso de modelo ausente dice la verdad ---------------------------
+//
+// MEDIDO el 2026-10-15. Con `qwen2.5vl:3b` instalado y `moondream` (el de
+// TEXTO) ausente, el cartel decia "mientras falte, esos comprobantes caen a la
+// lectura por reglas o se quedan en la cola". Es FALSO: las fotos las leia el
+// modelo de vision, y la ausencia del de texto no las toca. Un aviso que dice
+// una cosa que no esta pasando entrena a ignorarlo.
+import { EstadoDeIa } from '../src/components/EstadoDeIa';
+
+const estado = (extra: any) =>
+  ({
+    configurado: {
+      proveedor: 'ollama',
+      ai_habilitado: true,
+      modelo_texto: 'moondream',
+      modelo_vision: 'qwen2.5vl:3b',
+    },
+    modelos_instalados: ['qwen2.5vl:3b'],
+    faltan: ['moondream'],
+    disponible: true,
+    error: null,
+    como_instalar: ['ollama pull moondream'],
+    ...extra,
+  }) as any;
+
+const montar = (estadoCompleto: any): string =>
+  renderToStaticMarkup(
+    React.createElement(EstadoDeIa as any, { estadoInicial: estadoCompleto } as any),
+  );
+
+// El TEXTO QUE SE VE, sin las etiquetas. La primera version de estas
+// comprobaciones comparaba contra el HTML y la frase "las fotos si las lee" salia
+// partida por un `<strong>`, que es exactamente el modo de fallo que el propio
+// archivo critica: un test que mide el marcado en vez de lo que lee la persona.
+const texto = (html: string): string => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+
+const soloTexto = montar(estado({}));
+comprobar('avisa del modelo de texto que falta', soloTexto.includes('moondream'));
+comprobar(
+  'NO dice que caen a las reglas cuando si las lee el modelo de vision',
+  !/esos comprobantes caen a la lectura por reglas/.test(soloTexto),
+);
+comprobar(
+  'dice que las fotos si las lee el modelo de vision',
+  /fotos s[ií] las lee/i.test(texto(soloTexto)),
+);
+
+const soloVision = montar(
+  estado({ faltan: ['qwen2.5vl:3b'], como_instalar: ['ollama pull qwen2.5vl:3b'] }),
+);
+comprobar('avisa del modelo de vision que falta', soloVision.includes('qwen2.5vl:3b'));
+comprobar(
+  'dice que las fotos caen al OCR cuando falta el de vision',
+  /fotos no se pueden leer con modelo/i.test(texto(soloVision)),
+);
+
+// Todo instalado: no se muestra nada. Un cartel permanente que dice "todo bien"
+// ocupa sitio y no ensena nada.
+const todoBien = montar(estado({ faltan: [], como_instalar: [] }));
+comprobar('con todo instalado no sale el cartel', todoBien.trim() === '');
+
 console.log('');
 if (fallos.length === 0) {
   console.log('  Todas pasan.');

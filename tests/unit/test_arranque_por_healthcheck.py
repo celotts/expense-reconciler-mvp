@@ -25,6 +25,7 @@ cliente HTTP, asi que se lee el archivo: es lo unico que hay.
 
 from pathlib import Path
 
+import re
 import pytest
 import yaml
 
@@ -119,6 +120,26 @@ def _test_de_healthcheck(servicio: dict) -> str:
         # Se ignoran "CMD-SHELL" / "CMD" y se junta el resto.
         bruto = " ".join(str(p) for p in bruto[1:]) if len(bruto) > 1 else ""
     return bruto
+
+
+def _sin_variables(linea: str) -> str:
+    """La linea con `$(...)` y `${...}` Developmentgaps, en un solo espacio.
+
+    MEDIDO: `make up` grew `$(COMPOSE_FILES)` —para los perfiles de multi-entorno
+    de `6f486f5`— y los dos tests de abajo dejaron de ver el `--wait` que sigue
+    ahi. La receta es `docker compose $(COMPOSE_FILES) up -d --wait`, y el test
+    buscaba la cadena `"docker compose up"`: sin la interpolacion esa cadena no
+    aparece nunca.
+
+    Que un test se ponga rojo por una refactorizacion que **no toco la defensa**
+    es la mitad del problema; lo otro es que el arreglo no puede ser relajar la
+    comprobacion (`"--wait" in linea` daria verde con un `--wait` en un
+    comentario). Por eso se quitan las variables y se sigue exigiendo la
+    forma completa del comando.
+    """
+    sin_vars = re.sub(r"\$\([^)]*\)", " ", linea)
+    sin_vars = re.sub(r"\$\{[^}]*\}", " ", sin_vars)
+    return re.sub(r"\s+", " ", sin_vars).strip()
 
 
 class TestElHealthcheckDePostgresPreguntaPorElEsquema:
@@ -302,11 +323,15 @@ class TestMakeUpEspera:
         MEDIDO: borrando `--wait` de la linea de `docker compose up` y dejando
         los comentarios intactos, el test paso 12/12. Por eso se lee la
         **receta** de `up`, que es lo que se ejecuta, y no el texto.
+
+        Y la comparacion es sobre la linea con `$(...)` interpolado a un
+        espacio (`_sin_variables`), no sobre el texto crudo: `make up` ahora
+        lleva `$(COMPOSE_FILES)` y el `"docker compose up"` literal no aparece.
         """
         receta = _lineas_de_receta("up")
 
         assert any(
-            "docker compose up" in l and "--wait" in l for l in receta
+            "docker compose up" in _sin_variables(l) and "--wait" in l for l in receta
         ), (
             "la receta de `up` no lleva `--wait` en su `docker compose up`: "
             "devuelve el control antes de que la app este servible. (Ojo: este "
@@ -321,7 +346,7 @@ class TestMakeUpEspera:
         receta = _lineas_de_receta("up-force")
 
         assert any(
-            "docker compose up" in l and "--wait" in l for l in receta
+            "docker compose up" in _sin_variables(l) and "--wait" in l for l in receta
         ), (
             "`up-force` tambien necesita `--wait`: `--no-cache` tarda mas, no "
             "significa que la app quede mas lista"

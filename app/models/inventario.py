@@ -161,6 +161,23 @@ class ProductoModel(Base):
     activo = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
 
+    # --- La cuenta de gasto por omision (0018) ---------------------------
+    #
+    # Dice en que cuenta va *por defecto* lo que se compre de este producto. NO
+    # es lo mismo que la cuenta del gasto, y por eso no se copia: lo mismo puede
+    # ir a despensa este mes y a un evento el siguiente, y copiarlo seria decidir
+    # por la persona en que cuenta va un gasto, que es lo que este producto no
+    # hace en ningun otro campo.
+    #
+    # Es una ayuda para el formulario: cuando se registra una compra, este valor
+    # llega puesto y se puede cambiar. Es `RESTRICT` y no `CASCADE` porque dar de
+    # baja una cuenta no puede dejar productos apuntando a una fila que ya no
+    # existe.
+    tipo_gasto_id = Column(
+        UUID(as_uuid=True), ForeignKey("tipos_gasto.id", ondelete="RESTRICT"), nullable=True
+    )
+    tipo_gasto = relationship("TipoGastoModel", back_populates="productos")
+
     # `passive_deletes=True` NO es cosmetico, y sin el el borrado de una empresa
     # esta ROTO. Medido, no supuesto:
     #

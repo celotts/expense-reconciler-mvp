@@ -52,6 +52,7 @@ TABLAS = [
     "compra_items",
     "productos",
     "movimientos_inventario",
+    "auditoria",
 ]
 
 
@@ -139,6 +140,7 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
     """`{tabla: {columna}}` desde los modelos, que es la fuente de verdad."""
     from app.models import (
         AccountingMappingModel,
+        Auditoria,
         BankTransactionModel,
         CierrePeriodoModel,
         CompanyModel,
@@ -169,6 +171,16 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         (CompraItemModel, "compra_items"),
         (ProductoModel, "productos"),
         (MovimientoInventarioModel, "movimientos_inventario"),
+        # MEDIDO el 2026-10-15: `auditoria` llego en `6f486f5` con modelo
+        # (`app/models/auditoria.py`), con su migracion (`0017_auditoria.sql`) y
+        # con su `CREATE TABLE` en el init.sql, pero esta lista es una constante
+        # escrita a mano y no lo cogio. El sintoma fue el inverso del que
+        # describe el archivo: la tabla salia "huerfana" -en el DDL y sin modelo-
+        # cuando el modelo existia. Un test que acusa de huerfana una tabla que
+        # si tiene modelo hace exactamente lo que este archivo critica: mentir
+        # sobre el esquema para que quien lo lea vaya a buscar un problema que no
+        # esta.
+        (Auditoria, "auditoria"),
     ]
     return {
         tabla: {c.name for c in modelo.__table__.columns}

@@ -84,6 +84,18 @@ async def _vision_que_si_lee(datos: bytes):
 
 class TestElOrdenDeLaEscalada:
 
+    # MEDIDO el 2026-10-15: esta clase mide el ORDEN de la cascada, y el orden lo
+    # decide `IMAGENES_VISION_PRIMERO`, que sale de la `.env` del operador. Al
+    # ponerlo en `true` en la maquina, los tests de esta clase empezaron a fallar
+    # sin que cambiara una linea de codigo: estaban midiendo el `.env` de quien
+    # los corria, no la politica.
+    #
+    # La politica se prueba con la politica puesta. Un test que depende de un
+    # ajuste del entorno no prueba el codigo: prueba el entorno.
+    @pytest.fixture(autouse=True)
+    def _ocr_primero(self, monkeypatch):
+        monkeypatch.setattr(settings, "IMAGENES_VISION_PRIMERO", False)
+
     async def test_una_foto_buena_no_toca_el_modelo(self, monkeypatch):
         """OCR primero significa que una foto legible no cuesta un modelo.
 

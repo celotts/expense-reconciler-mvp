@@ -255,6 +255,141 @@ def _importe_tras_la_etiqueta(linea: str, a_decimal) -> Decimal | None:
     return None
 
 
+def _fuerza_de_un_importe(bruto: str) -> int:
+    """Que tan de completo es el importe que la etiqueta declara: 2 o 1.
+
+    2 si el numero trae separador decimal (`193.65`, `51,50`, `1,100.00`).
+    1 si es un entero suelto (`5`, `51`).
+
+    ## POR QUE EL IMPORTE DECIDE Y NO LA POSICION
+
+    MEDIDO el 2026-10-15 sobre `IMG_4398.heic`, que esta en la base con esta
+    forma exacta. El OCR devuelve estas tres lineas, y las tres dicen "total":
+
+        Total $ 193.65 =                        <- la etiqueta CON su importe
+        oe Nenta total 5 © 19S Be               <- ruido de caja del OCR
+        Total despues del ahorro $ 193 65       <- filtrada por AHORRO_EN_LINEA_RE
+
+    Antes el bucle ganaba **la ultima coincidencia**, y por eso el ticket se
+    guardaba con `total 5.00` cuando el papel decia `193.65`. MEDIDO con el
+    mismo texto y el ruido **antes** de la linea buena: `193.65`. O sea que el
+    total no fallaba por no entender la etiqueta `Total $` —que la leia bien—
+    sino porque una linea de basura la pisaba despues.
+
+    Y el filtro de ahorro, que existe por el caso medido de DSW
+    (`Usted ahorra en Total: $119.97`), tapaba la tercera linea, que tambien
+    traia el importe correcto. Entre las dos cosas, la lectura buena se perdia
+    dos veces.
+
+    ## POR QUE "TRAE CENTAVOS" Y NO "ES EL ULTIMO"
+
+    Porque un entero suelto despues de "total" es, en un comprobante mexicano,
+    mucho mas probable que un **trozo partido** que el total entero: el OCR
+    parte `51 .50` en dos, y el caso de DSW es un precio ya descontado. Es el
+    mismo criterio, con el mismo por que y la misma perdida asumida, que
+    `_importe_tras_la_etiqueta` ya documenta; aqui se aplica a la COMPETENCIA
+    entre lineas, no a la lectura de una sola.
+
+    Y el caso que NO se cubre, dicho aqui para no vender cobertura que no hay:
+    un ticket que IMPRIMA el total sin centavos ("TOTAL 500") se lee igual,
+    porque no compite contra nada mas fuerte. Lo que se pierde es el caso raro
+    de un total entero legitimo junto a una linea de ruido **con** centavos, que
+    hoy se resuelve a favor del ruido: es el precio de no dejar que un numero
+    partido pise a uno completo.
+    """
+    return 2 if ("." in bruto or "," in bruto) else 1
+
+
+def _importe_de_bruto(bruto: str, a_decimal) -> tuple[Decimal, int] | None:
+    """`(importe, fuerza)` de un numero recien capturado, o `None` si no es un numero.
+
+    `a_decimal` se recibe como argumento por el mismo motivo que en
+    `_importe_tras_la_etiqueta`: el parser de importes vive dentro de
+    `_parse_receipt_text`, con la convencion mexicana de separadores.
+    """
+    try:
+        return a_decimal(bruto), _fuerza_de_un_importe(bruto)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _total_tras_la_etiqueta(
+    linea: str, siguiente_no_vacia: str | None, a_decimal
+) -> tuple[Decimal, int] | None:
+    """El total de una linea cuya etiqueta `Total` no trae el importe pegado.
+
+    Son las dos formas en que el papel separa la etiqueta de su numero, y se
+    prueban en este orden porque en un ticket impreso la misma linea gana
+    siempre a la siguiente.
+
+    (a) La MISMA linea, con tokens de por medio. El patron principal exige el
+        importe inmediatamente despues de la etiqueta; con el texto de EasyOCR
+        eso no se cumple, porque las palabras llegan en el orden de las cajas.
+        Medido en las dos fotos donde el total si esta bien leido:
+
+            Total hN $ 51.50                   <- "hN" es "M.N." mal leido
+            O/CREDITO TOTAL (* ENTRE HtvENTA $ 97.56
+
+        "PRIMER" importe despues de la etiqueta, a proposito: en una linea de
+        total hay mas numeros (el cambio, los puntos, el IVA) y el que va con la
+        etiqueta es el primero. Tomar el ultimo seria tomar el cambio.
+
+        Esa ruta solo devuelve importes CON separador decimal —es su filtro,
+        documentado en `_importe_tras_la_etiqueta`—, asi que su fuerza es
+        siempre la maxima y no hace falta volver a medirla.
+
+    (b) Lineas DISTINTAS: la columna de al lado. Es el caso mas comun en papel:
+        la etiqueta termina la linea y el importe esta en la fila siguiente.
+
+        El criterio NO es "la linea termina en la etiqueta" sino "no hay ningun
+        digito despues de la etiqueta". Los tickets imprimen "TOTAL M.N. $" y
+        "TOTAL A PAGAR", y "M.N." (moneda nacional) queda entre la etiqueta y el
+        fin de linea: un patron que exigiera el fin de linea no los cubiria.
+    """
+    en_la_misma = _importe_tras_la_etiqueta(linea, a_decimal)
+    if en_la_misma is not None:
+        return en_la_misma, 2
+
+    etiqueta = re.search(r"(?:^|\s)total\b(.*)$", linea, re.IGNORECASE)
+    if etiqueta and not re.search(r"\d", etiqueta.group(1)):
+        if siguiente_no_vacia is not None:
+            importe = re.match(r"\s*[$€]?\s*(\d[\d.,]*)\s*$", siguiente_no_vacia)
+            if importe:
+                return _importe_de_bruto(importe.group(1), a_decimal)
+    return None
+
+
+def _es_linea_de_subtotal(linea: str) -> bool:
+    """¿La linea declara un SUBTOTAL, y no un total?
+
+    ## POR QUE NO BASTA CON `"subtotal" in linea.lower()`
+
+    MEDIDO con el test `test_acepta_subtotal_con_guion`, que existe desde antes
+    de este trabajo:
+
+        FERRETERIA DEL SUR
+        Sub-Total: 500.00
+        IVA: 80.00
+        Total: 580.00
+
+    El guardia de abajo comparaba contra `"subtotal"`, y en `Sub-Total` hay un
+    guion en medio: la palabra no aparece y la linea **no se excluia**. El
+    patron principal de total, en cambio, si la aceptaba, porque su borde es
+    `(?:^|[^\\w])` y el guion no es un caracter de palabra.
+
+    O sea que el `SUBTOTAL` entraba como candidato a total y el total de verdad
+    competia con el. No se notaba porque el desempate era "gana la ultima
+    coincidencia" y el total real va despues. Ese desempate se cambio (ver
+    `_fuerza_de_un_importe` y el bloque del total) y el defecto quedo a la
+    vista con `total 500.00` en vez de `580.00`.
+
+    Un guardia que deja pasar la mitad de las formas que se supone que filtra
+    no es un guardia: se separa el guion, el espacio y el guion bajo porque las
+    tres formas se imprimen en papel.
+    """
+    return "subtotal" in re.sub(r"[\s\-_]", "", linea.lower())
+
+
 def _a_fecha(dia: str, mes: str, anio: str) -> date | None:
     """Une dia/mes/anio en una fecha, o `None` si no existe.
 
@@ -1062,6 +1197,176 @@ def render_pdf_pages(
 # motivo real.
 
 
+def _veces_que_imprime(
+    lines: list[str], valor: Decimal, a_decimal, *, incluir_ahorro: bool = False
+) -> int:
+    """Cuantas veces el documento IMPRIME ese importe, en cualquier linea.
+
+    No se cuenta el texto: se cuentan los importes que se leen. Comparar el
+    numero como cadena daria 1 en vez de 2 cuando el papel escribe `1,100.00` y
+    el OCR lo devuelve como `1100.00`, y una regla que depende de una decision
+    que el parser todavia no ha tomado no puede apoyarse en como se escribio.
+
+    `incluir_ahorro` existe porque **las dos preguntas necesitan filtros
+    distintos, y usar el mismo las hacia las dos falsas**:
+
+    - Para SOSTENER un total, una linea de ahorro no cuenta: `$119.97` impreso
+      dos veces no es un importe que se pueda afirmar.
+    - Para EXPLICAR una diferencia, esa misma linea es justo la prueba: si
+      `subtotal - total = 119.97` y el papel imprime "Usted ahorra $119.97", la
+      diferencia esta explicada y el total es el correcto.
+
+    Con el filtro en los dos, el cupon de descuento parecia un error de lectura,
+    porque la unica linea que lo explicaba era la que se estaba filtrando.
+    """
+    veces = 0
+    for linea in lines:
+        if not incluir_ahorro and AHORRO_EN_LINEA_RE.search(linea):
+            continue
+        for bruto in re.findall(r"[$€]?\s*\d[\d.,]*\d|\d", linea):
+            try:
+                if a_decimal(bruto.strip(" $€")) == valor:
+                    veces += 1
+            except (InvalidOperation, ValueError):
+                continue
+    return veces
+
+
+def _total_mas_corroborado(
+    lines: list[str],
+    total: Decimal,
+    subtotal: Decimal | None,
+    vio_impuesto: bool,
+    a_decimal,
+) -> Decimal:
+    """El total que el documento SOSTIENE, cuando los dos importes se contradicen.
+
+    ## EL CASO MEDIDO, Y POR QUE NO ES "SI NO CUADRA, TOMA EL SUBTOTAL"
+
+    MEDIDO el 2026-10-16 sobre `IMG_4409.heic`, con el papel a la vista:
+
+        papel:  PANTALON GAB 279.93 / SUBTOTAL 279.93 / TOTAL 279.93
+        OCR:    PANTALON SAB 279.93 / SUBTOTAL 279.93 / TOTAL. 219.93
+
+    El OCR leyo bien **dos de las tres** y se comio un glifo en la tercera
+    (`7` -> `1`). El sistema se fio de la linea que dice `TOTAL`, guardo
+    `219.93`, y esa lectura contradicha obligo a pagar **100 s de modelo** para
+    volver al numero que el propio OCR ya habia leido dos veces.
+
+    O sea que el documento **ya decia la respuesta** y nadie lo escucho.
+
+    ## POR QUE PIDE QUE NO HAYA IMPUESTO
+
+    Sin linea de impuesto, el papel dice que `subtotal == total`, por definicion.
+    Si los dos importes difieren, uno de los dos esta mal leido: es una
+    contradiccion que el propio documento declara, y la unica lectura que
+    contradice es la que esta mal.
+
+    **Con linea de impuesto la regla no se aplica, y ese `if` es lo que la
+    salva.** Con IVA, `subtotal != total` es lo NORMAL y tomar el subtotal
+    perderia el impuesto: en el ticket de Aurrera (`217.27 + 8.14 + 8.59 =
+    234.00`) el sistema habria guardado `217.27` como total y habria borrado el
+    IVA del archivo que ve el contador. Una regla que corrige hacia el numero
+    mas bajo no esta midiendo, esta suponiendo.
+
+    ## POR QUE EXIGE CORROBORACION Y NO SOLO QUE DIFIERAN
+
+    Porque "difieren y no hay impuesto" tambien es un cupon de descuento
+    (`SUBTOTAL 279.93`, `TOTAL 159.96`), y ahi el total es el que esta bien.
+
+    Y aqui esta el segundo error que esta regla cometio en su primera version,
+    que el test de contraste caczo antes de que llegara a produccion: contar
+    impresiones **no alcanza**, porque en el cupon el subtotal tambien sale dos
+    veces (linea de partida y `SUBTOTAL`) y el total una, exactamente igual que
+    en DSW. Los dos casos tienen la misma forma.
+
+    Lo que los separa es **la diferencia**. En el cupon, `279.93 - 159.96 =
+    119.97`, y `119.97` es justo lo que el papel imprime como ahorro: la
+    diferencia esta **explicada**. En DSW la diferencia es `60.00`, y `60.00` no
+    aparece en ninguna parte del papel: **nadie la explica**.
+
+    O sea que la regla es una sola frase: **una diferencia que el papel explica
+    no es un error de lectura, y una que el papel no explica, sobre una linea
+    que dice `TOTAL`, si lo es.**
+
+    ## EL LIMITE QUE SE SABE Y NO SE OCULTA
+
+    Si el cupon se imprime solo como porcentaje (`-30%`) y el papel **no**
+    escribe la diferencia en pesos, entonces la diferencia queda sin explicar y
+    la regla la tomaria por un error de lectura. Solo pasa cuando ademas la
+    linea de partida repite el importe ANTES del descuento, que es lo que hace
+    que el subtotal salga dos veces. Es un caso medido como posible y no medido
+    como real, y por eso el comportamiento esta fijado en un test en vez de
+    dejarse a la buena de uno.
+    """
+    if vio_impuesto or subtotal is None or total <= 0 or subtotal <= 0:
+        return total
+    if total == subtotal:
+        return total
+    # Si el papel imprime la DIFERENCIA, el papel la explico: es un descuento, un
+    # recargo o un ajuste, y el total que dice es el que se cobro.
+    diferencia = abs(total - subtotal)
+    if diferencia > 0 and _veces_que_imprime(
+        lines, diferencia, a_decimal, incluir_ahorro=True
+    ) > 0:
+        return total
+    # El papel tiene que SOSTENER al otro: dos impresiones o mas, y el que
+    # pierde exactamente una. Empate, o ninguno con dos, -> no se decide nada.
+    n_total = _veces_que_imprime(lines, total, a_decimal)
+    n_sub = _veces_que_imprime(lines, subtotal, a_decimal)
+    if n_sub >= 2 and n_total == 1:
+        return subtotal
+    return total
+
+
+def _impuesto_incoherente(resultado: TicketExtractionResult) -> TicketExtractionResult:
+    """Un total igual al subtotal NO lleva impuesto encima. El impuesto es cero.
+
+    ## MEDIDO el 2026-10-16: EL MODELO SE INVENTA EL IVA
+
+    `qwen2.5vl:3b` leyo bien el total de los dos tickets que se le pasaron y
+    **fabrico un impuesto que el papel no imprime**:
+
+    | ticket | total | subtotal | IVA devuelto | IVA real |
+    |---|---|---|---|---|
+    | `IMG_4398` | 193.65 | 193.65 | **19.36** | ninguno |
+    | `IMG_4409` | 279.93 | 279.93 | **27.93** | ninguno |
+
+    Un ticket sin desglose no tiene IVA, y el sistema lo metia en revision con
+    `subtotal_plus_tax_mismatch(leido=193.65,esperado=213.01)`: un check
+    FALSO, por un numero que nadie leyo. Peor: `IMG_4398` estaba
+    `AUTO_APROBADO` y el modelo lo dejo en `REQUIERE_REVISION`. O sea que
+    arreglar el total se pago con romper otro ticket.
+
+    ## POR QUE SE RESUELVE HACIA CERO Y NO HACIA "CORREGIR EL SUBTOTAL"
+
+    Porque el total es el unico numero que no se negocia, y las otras dos
+    lecturas son las que se contradicen entre si. Un papel que imprime la
+    MISMA cifra como subtotal y como total esta diciendo que no sumo nada
+    encima: la unica salida que conserva los dos numeros que el documento
+    acepta.
+
+    Y el riesgo del otro lado -"y si el que esta mal es el subtotal?"- se paga
+    en el desglose, no en el monto: el total sigue siendo el que se concilia
+    contra el banco. Un IVA inventado, en cambio, sale en el Excel con el
+    encabezado `IVA` y es un dato falso en un archivo de impuestos.
+
+    Se corrige SOLO cuando la contradiccion es aritmetica y total (`total ==
+    subtotal` y `tax > 0`). Cualquier otro caso lo deja como esta, para que lo
+    vea el gate.
+    """
+    subtotal = resultado.subtotal
+    total = resultado.total_amount
+    impuesto = resultado.tax_amount
+    if subtotal is None or total is None or impuesto is None:
+        return resultado
+    if impuesto <= 0 or total <= 0 or subtotal <= 0:
+        return resultado
+    if total != subtotal:
+        return resultado
+    return resultado.model_copy(update={"tax_amount": Decimal("0.00")})
+
+
 def _parse_receipt_text(text: str) -> TicketExtractionResult:
     """
     Parse receipt text to extract structured data.
@@ -1071,6 +1376,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     
     provider_name = UNKNOWN_PROVIDER
     total_amount = Decimal("0.00")
+    # Que tan completo es el importe que gano. El total no se decide por la
+    # POSICION de su linea sino por esto: una lectura con centavos no se deja
+    # pisar por una que solo trae un entero suelto. Ver
+    # `_fuerza_de_un_importe` y el caso medido de `IMG_4398`.
+    fuerza_total = 0
     tax_amount = Decimal("0.00")
     # Se queda en None si el documento no trae fecha. Poner la de hoy seria
     # fabricar un dato: el ticket parece fechado hoy y el cierre mensual lo
@@ -1082,6 +1392,10 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     # Subtotal del documento, si aparece. El gate lo usa para verificar
     # `subtotal + IVA == total`, que no necesita comparar contra nada externo.
     subtotal: Decimal | None = None
+    # Si el PAPEL imprimio una linea de impuesto. Es un hecho del documento, no
+    # una opinion: lo consume `_total_mas_corroborado`. Ver ahi el por que de
+    # que haga falta saberlo.
+    vio_impuesto = False
     
     import re
 
@@ -1253,64 +1567,52 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         if AHORRO_EN_LINEA_RE.search(line):
             continue
 
-        # Total - look for "TOTAL:" specifically (not SUBTOTAL)
+# Total - look for "TOTAL:" specifically (not SUBTOTAL)
+        #
+        # EL QUE GANA ES EL MAS FUERTE, NO EL ULTIMO.
+        #
+        # MEDIDO el 2026-10-15 en `IMG_4398.heic`, que esta en la base con esta
+        # forma exacta. El texto del OCR trae tres lineas que dicen "total":
+        #
+        #     Total $ 193.65 =                    <- la etiqueta CON su importe
+        #     oe Nenta total 5 (c) 19S Be         <- ruido de caja del OCR
+        #     Total despues del ahorro $ 193 65   <- filtrada por el ahorro
+        #
+        # Con "gana la ultima" el ticket se guardaba con `total 5.00` cuando el
+        # papel decia `193.65`. Con el ruido **antes** de la linea buena, el
+        # mismo texto daba `193.65`: o sea que la etiqueta `Total $` SI se leia
+        # bien y lo que la perdia era el criterio de desempate.
+        #
+        # Y la regla NO es "gana la primera" ni "gana la ultima": es "la que
+        # declara un importe COMPLETO no se deja pisar por una que declara un
+        # entero suelto". Ver `_fuerza_de_un_importe`, que es donde estan el
+        # criterio y el por que.
+        #
+        # Entre dos candidatos de la MISMA fuerza gana el ULTIMO, que es lo que
+        # hacia este parser desde siempre. No es una decision nueva: es la que se
+        # conserva a proposito, porque cambiar las dos variables a la vez
+        # (fuerza y desempate) haria imposible atribuir el efecto de ninguna.
+        # En un ticket el total va al final, despues del subtotal y del IVA.
         total_match = re.search(r"(?:^|[^\w])total[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
-        if total_match and "subtotal" not in line.lower():
-            try:
-                total_amount = parse_mexican_number(total_match.group(1))
-            except (InvalidOperation, ValueError):
-                pass
-        elif total_amount == Decimal("0.00") and "subtotal" not in line.lower():
-            # Hay DOS formas de que la etiqueta y su importe no esten pegados, y
-            # se prueban en este orden porque en un ticket impreso la misma linea
-            # gana siempre a la siguiente.
-            #
-            # (a) La MISMA linea, con tokens de por medio. El patron de arriba
-            #     exige el importe inmediatamente despues de la etiqueta. Con el
-            #     texto de EasyOCR no se cumple, porque las palabras llegan en el
-            #     orden de las cajas. Medido en las dos fotos donde el total si
-            #     esta bien leido:
-            #
-            #         Total hN $ 51.50                   <- "hN" es "M.N." mal leido
-            #         O/CREDITO TOTAL (* ENTRE HtvENTA $ 97.56
-            #
-            #     En las dos el numero correcto esta a la vista y el parser no lo
-            #     toma. No es un problema del motor: es que "la etiqueta y su
-            #     importe son contiguos" es un supuesto del papel ordenado, no del
-            #     texto.
-            #
-            #     "PRIMER" importe despues de la etiqueta, a proposito: en una
-            #     linea de total hay mas numeros (el cambio, los puntos, el IVA) y
-            #     el que va con la etiqueta es el primero. Tomar el ultimo seria
-            #     tomar el cambio.
-            total_en_linea = _importe_tras_la_etiqueta(line, parse_mexican_number)
-            if total_en_linea is not None:
-                total_amount = total_en_linea
-            else:
-                # (b) Lineas DISTINTAS: la columna de al lado. Es el caso mas
-                #     comun en papel: la etiqueta termina la linea y el importe
-                #     esta en la fila siguiente.
-                #
-                #     El criterio NO es "la linea termina en la etiqueta" sino
-                #     "no hay ningun digito despues de la etiqueta". Los tickets
-                #     imprimen "TOTAL M.N. $" y "TOTAL A PAGAR", y "M.N."
-                #     (moneda nacional) queda entre la etiqueta y el fin de linea:
-                #     un patron que exigiera el fin de linea no los cubiria.
-                etiqueta = re.search(r"(?:^|\s)total\b(.*)$", line, re.IGNORECASE)
-                if etiqueta and not re.search(r"\d", etiqueta.group(1)):
-                    if siguiente_no_vacia is not None:
-                        importe = re.match(r"\s*[$€]?\s*(\d[\d.,]*)\s*$", siguiente_no_vacia)
-                        if importe:
-                            try:
-                                total_amount = parse_mexican_number(importe.group(1))
-                            except (InvalidOperation, ValueError):
-                                pass
+        if not _es_linea_de_subtotal(line):
+            candidato = (
+                _importe_de_bruto(total_match.group(1), parse_mexican_number)
+                if total_match
+                else None
+            )
+            if candidato is None:
+                candidato = _total_tras_la_etiqueta(
+                    line, siguiente_no_vacia, parse_mexican_number
+                )
+            if candidato is not None and candidato[1] >= fuerza_total:
+                total_amount, fuerza_total = candidato
 
         # IVA - word-anchored so product names containing "iva"/"tax" don't match
         tax_match = re.search(r"\b(?:iva|tax|impuesto)\b(?:\s*\(\d+(?:[.,]\d+)?\s*%\))?[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
         if tax_match:
             try:
                 tax_amount = parse_mexican_number(tax_match.group(1))
+                vio_impuesto = True
             except (InvalidOperation, ValueError):
                 pass
 
@@ -1418,17 +1720,37 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     # el bucle principal para arreglar el fallback. Si el filtro cambia, hay que
     # cambiarlo en los dos: por eso el nombre del patron y el motivo estan ahi
     # arriba y no repartidos en las dos llamadas.
+    #
+    # Y AQUI TAMBIEN GANA EL MAS FUERTE, con el MISMO criterio. Antes esta puerta
+    # se llevaba la PRIMERA coincidencia que encontraba Barriendo el texto al
+    # reves —o sea, la ULTIMA linea del documento—, y es el mismo defecto que el
+    # del bucle principal: una linea de ruido escrita despues gana por estar
+    # despues. Se recorre igual (al reves) y no se rompe en el primer acierto: se
+    # sigue buscando por si hay algo mas fuerte. Entre iguales se queda con la
+    # primera que aparece en este recorrido, que es el comportamiento anterior.
     if total_amount == Decimal("0.00"):
+        mejor: tuple[Decimal, int] | None = None
         for line in reversed(lines):
             if AHORRO_EN_LINEA_RE.search(line):
                 continue
             total_match = re.search(r"(?:^|\s)(?:total|importe)[\s:]*[$€]?\s*([\d.,]+)", line, re.IGNORECASE)
-            if total_match:
-                try:
-                    total_amount = parse_mexican_number(total_match.group(1))
-                    break
-                except (InvalidOperation, ValueError):
-                    pass
+            if not total_match:
+                continue
+            candidato = _importe_de_bruto(total_match.group(1), parse_mexican_number)
+            if candidato is not None and (mejor is None or candidato[1] >= mejor[1]):
+                mejor = candidato
+        if mejor is not None:
+            total_amount, fuerza_total = mejor
+
+    # ## EL TOTAL QUE EL DOCUMENTO SOSTIENE
+    #
+    # Va DESPUES del bucle y del fallback, y antes de armar el resultado, porque
+    # necesita los tres: el total que gano, el subtotal, y si el papel imprimio
+    # alguna linea de impuesto. Ver `_total_mas_corroborado`: es lo que hace que
+    # `IMG_4409` salga en 279.93 sin gastar 100 s de modelo.
+    total_amount = _total_mas_corroborado(
+        lines, total_amount, subtotal, vio_impuesto, parse_mexican_number
+    )
     
     # Las lineas de este parseo. `None` y no `[]`, y NO por pereza: esta funcion
     # recibe TEXTO PLANO, y `parser_lineas.leer_lineas` necesita GEOMETRIA —las
@@ -1443,7 +1765,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
     # con `veredicto=NADA` en esta ruta, y eso es correcto, no una falta.
     items = None
 
-    return TicketExtractionResult(
+    # El IVA se corrige AL FINAL y sobre el resultado armado, para que la regla
+    # no tenga que volver a saber de donde salio cada numero. Y entra por la
+    # misma puerta que la del modelo, asi que las dos lecturas quedan sujetas al
+    # mismo criterio y no solo las reglas. Ver `_impuesto_incoherente`.
+    return _impuesto_incoherente(TicketExtractionResult(
         provider_name=provider_name,
         provider_tax_id=provider_tax_id,
         total_amount=total_amount,
@@ -1478,4 +1804,4 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # Si algun dia se quiere volver, el cable es
         # `ocr.ResultadoOCR.cajas -> leer_lineas`, y hay que escribirlo.
         verificacion_items=verificar_items(items, subtotal=subtotal, total=total_amount),
-    )
+    ))

@@ -375,6 +375,20 @@ class ScanResponse(BaseModel):
     con_error: int
     no_soportados: int
     omitidos_por_tope: int
+    # Los que no se pudieron LEER, con su motivo.
+    #
+    # MEDIDO el 2026-10-16: sin este campo, un archivo ilegible no aparecia en
+    # NADA. Ni en el registro de la corrida, ni en `scan_files`, ni en un numero,
+    # ni en la pantalla: el `POST /scan` respondia **200** con
+    # `archivos_vistos: 0` y no habia forma de distinguir "la carpeta esta
+    # vacia" de "la carpeta esta ahi y no se puede abrir". Los dos se ven igual
+    # desde fuera, y piden acciones opuestas.
+    #
+    # Lista y no numero, con nombre y motivo, porque el numero no dice que hacer:
+    # "3 ilegibles" deja igual de amplio el abanico entre "la carpeta no esta
+    # montada" (un problema de entorno, se arregla fuera) y "tres papeles
+    # dañados en el disco" (hay que ir por ellos).
+    ilegibles: list[dict] = Field(default_factory=list)
     leidos: int
     lecturas_por_motor: dict[str, int]
     detalles: list[ScanItemResponse]
@@ -491,6 +505,12 @@ class ResumenScan(BaseModel):
     con_error: int = 0
     no_soportados: int = 0
     omitidos_por_tope: int = 0
+    # Los que no se pudieron LEER. MEDIDO el 2026-10-16: sin esto, un archivo
+    # ilegible no aparecia en nada —ni registro, ni resumen, ni pantalla— y el
+    # `POST /scan` respondia 200 con cero, sin forma de distinguir "carpeta
+    # vacia" de "carpeta que no se puede abrir". Lista y no numero porque el
+    # numero no dice que hacer.
+    ilegibles: list[dict] = Field(default_factory=list)
 
     # --- El dinero ---
     #

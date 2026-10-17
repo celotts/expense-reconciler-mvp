@@ -44,6 +44,11 @@ export function Scan() {
   const [pagina, setPagina] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [escaneando, setEscaneando] = useState(false);
+  // MEDIDO el 2026-10-16: el POST /scan con vision tarda 7-9 min por foto y
+  // nginx corta a los 300 s. El escaneo SE HACE igual; lo que se perdia era el
+  // resultado en pantalla. Con esto la pantalla lo dice, en vez de fingir que
+  // nada paso.
+  const [conexionCortada, setConexionCortada] = useState(false);
   const [preparando, setPreparando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ultimo, setUltimo] = useState<ScanResultado | null>(null);
@@ -138,6 +143,7 @@ export function Scan() {
     setPreparando(true);
     setEscaneando(true);
     setError(null);
+    setConexionCortada(false);
     setCorrida(null);
     try {
       // `POST /scan` tarda minutos con fotos, asi que no se espera a que
@@ -168,12 +174,29 @@ export function Scan() {
       // `null`, no `false`: `null` le dice al servidor "usa tu default", y `false`
       // le diria "no muevas nada", que es una decision que el operador todavia no
       // ha tomado.
-      const r = await ticketsApi.escanear({
-        ...(conEmpresa && companyId ? { company_id: companyId } : {}),
-        archivar,
-      });
-      setUltimo(r);
-      await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { conEmpresa, company_id: companyId || null, archivos_vistos: r.archivos_vistos ?? null } });
+      try {
+        const r = await ticketsApi.escanear({
+          ...(conEmpresa && companyId ? { company_id: companyId } : {}),
+          archivar,
+        });
+        setUltimo(r);
+        await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { con_empresa: conEmpresa, company_id: companyId || null, archivos_vistos: r.archivos_vistos ?? null } });
+      } catch (e) {
+        // MEDIDO el 2026-10-16: con vision el escaneo tarda **7 a 9 minutos por
+        // foto** y nginx corta la conexion a los 300 s. El trabajo **si se hizo**
+        // -el ticket quedo guardado con el total leido- pero el POST cae con 504.
+        //
+        // Antes este `catch` hacia `setError(...)` y el `finally` apagaba el
+        // canal: la pantalla decia "no se pudo escanear" con el escaneo YA
+        // terminado y los tickets en la base. Un error que dice que no paso algo
+        // que si paso es peor que un error: hace que el operador repita la
+        // corrida y duplique los tickets.
+        //
+        // Aqui NO se apaga el canal: se sigue consultando hasta que la corrida
+        // diga `terminada`, y el resultado sale de alla.
+        setConexionCortada(true);
+      }
+
       // Un ultimo Hald del canal para recoger el resumen final, que en el
       // POST puede venir con `terminada: false` si se respondio justo al cerrar.
       try {
@@ -302,6 +325,23 @@ export function Scan() {
 
       {ultimo && <PanelResultado resultado={ultimo} />}
 
+      {/* MEDIDO el 2026-10-16. El texto importa mas que el color: el operador
+          tiene que saber que el trabajo SIGUE, no que fallo. Antes esta pantalla
+          decia "No se pudo escanear" con la corrida ya terminada y los tickets
+          guardados, y lo unico que se veía era un error rojo. Repetir la corrida
+          por ese aviso duplica los tickets. */}
+      {conexionCortada && (
+        <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
+          <p className="font-medium">La conexion con el servidor se corto, pero el escaneo sigue</p>
+          <p className="mt-1">
+            Leer una foto con el modelo tarda varios minutos en esta maquina y el servidor
+            cierra la conexion antes. <strong>Los comprobantes se estan guardando igual</strong>: el
+            progreso de arriba es el real. No vuelvas a darle escanear, porque duplicaria los
+            tickets.
+          </p>
+        </div>
+      )}
+
       {error && (
         <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm flex items-start gap-2">
           <span className="flex-1">{error}</span>
@@ -417,7 +457,7 @@ function PanelOcr({ ocr }: { ocr: ScanOcrEstado }) {
 
 function PanelResultado({ resultado }: { resultado: ScanResultado }) {
   const { nuevos, actualizados, sin_cambios, duplicados, con_error, no_soportados,
-    omitidos_por_tope, archivos_vistos } = resultado;
+    omitidos_por_tope, archivos_vistos, ilegibles = [] } = resultado;
 
   return (
     <Card className="mt-4">
@@ -430,7 +470,43 @@ function PanelResultado({ resultado }: { resultado: ScanResultado }) {
         {duplicados > 0 && <Badge variant="info">{duplicados} duplicados</Badge>}
         {no_soportados > 0 && <Badge variant="warning">{no_soportados} no soportados</Badge>}
         {con_error > 0 && <Badge variant="danger">{con_error} con error</Badge>}
+        {ilegibles.length > 0 && (
+          <Badge variant="danger">{ilegibles.length} ilegibles</Badge>
+        )}
       </div>
+      {/*
+        ESTE BLOQUE ES EL QUE NO ESTABA, y es la diferencia entre "no se puede
+        escanear" y "no hay nada que escanear". MEDIDO el 2026-10-16: los tres
+        archivos de la carpeta dieron `[Errno 5] Input/output error` al abrirlos
+        (un montaje de archivos de Docker roto), el `POST /scan` respondio 200
+        con cero, y la pantalla no decia nada. El unico rastro era
+        una linea de log, y quien escanea no abre logs.
+
+        Con nombre y motivo, porque "3 ilegibles" no dice que hacer: si los tres
+        son el mismo error de montaje, el problema es del entorno; si son tres
+        errores distintos, hay que ir por los papeles.
+      */}
+      {ilegibles.length > 0 && (
+        <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3">
+          <p className="text-sm font-medium text-red-800">
+            {ilegibles.length === 1
+              ? 'Un archivo de la carpeta no se pudo abrir:'
+              : `${ilegibles.length} archivos de la carpeta no se pudieron abrir:`}
+          </p>
+          <p className="text-xs text-red-700 mt-1">
+            No se digitalizaron ni se movieron. Si todos dan el mismo error,
+            probablemente el problema sea la carpeta montada y no los papeles.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {ilegibles.map((f) => (
+              <li key={f.ruta} className="text-xs text-red-800">
+                <span className="font-mono">{f.ruta}</span>
+                <span className="text-red-600"> — {f.motivo}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {omitidos_por_tope > 0 && (
         <p className="text-sm text-gray-600 mt-2">
           Se alcanzó el tope de la pasada: <strong>{omitidos_por_tope}</strong> archivos quedan

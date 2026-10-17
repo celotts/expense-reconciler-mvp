@@ -5,8 +5,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+import logging
+
 import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
+
+# Un modulo que llama a un proveedor externo y no dice nada cuando el proveedor
+# contesta un error: el fallo aparece como "el sistema no lee bien los tickets".
+# Ver el uso en `_ollama_chat_completion`.
+logger = logging.getLogger(__name__)
 
 # `rapidfuzz` se importaba arriba unicamente para `VendorNormalizer`, que se borro
 # el 2026-10-10: la clase se instanciaba y **nadie la llamaba**, asi que "Oxxo",
@@ -238,6 +245,33 @@ class AIClient:
             pass
 
         response = await self.ollama_client.post("/api/chat", json=payload)
+        if response.status_code >= 400:
+            # ## POR QUE SE LOGUEA EL CUERPO Y NO SOLO EL ESTADO
+            #
+            # MEDIDO el 2026-10-15 con `IMG_4409.heic`: la llamada a vision devolvio
+            # **500 dos veces seguidas** y la app registra
+            #
+            #     Server error '500 Internal Server Error' for url
+            #     'http://ollama:11434/api/chat'
+            #
+            # que no dice nada. El 500 de Ollama puede ser contexto excedido,
+            # memoria, o el modelo que no cabe; el mensaje lo dice y el estado no.
+            # `raise_for_status()` tira una excepcion que solo lleva la URL, asi
+            # que el motivo del proveedor se perdia en el camino.
+            #
+            # Con 500 y ninguna pista, lo unico que se puede hacer es repetir a
+            # ciegas, y repetir a ciegas es lo que se estaba haciendo: la tercera
+            # llamada si funciono y devolvio `279.93`, la verdad, sin que nadie
+            # supiera por que las dos anteriores no.
+            #
+            # Es el mismo motivo por el que `_modelos_del_proveedor` devuelve el
+            # error como texto y no solo un `None`: "no respondio" y "respondio
+            # esto" piden acciones distintas.
+            logger.error(
+                "el proveedor devolvio %s: %s",
+                response.status_code,
+                (response.text or "")[:500],
+            )
         response.raise_for_status()
         data = response.json()
 
@@ -348,6 +382,42 @@ async def disponibilidad() -> dict[str, object]:
     Lo que se expone es `faltan`: lo que se configuro y no esta. La accion la
     decide quien lee, no esta funcion. Por eso `como_instalar` trae el nombre del
     modelo dentro: un `ollama pull` sin argumentos es media hora de diagnostica.
+
+    ## EL `faltan` VACIO, Y POR QUE ESTA MEDIDO (2026-10-15)
+
+    Este endpoint se escribio para el caso exacto de "el modelo esta configurado
+    y no existe". Y no lo hacia: para **Ollama** el calculo estaba cortocircuitado
+    con un `pass`, de modo que `faltan` era SIEMPRE la lista vacia — el `else`
+    que hacia el calculo era codigo muerto —, y `disponible` se calcularia con
+    `instalados is None or not error`, o sea **verdadero** con cero modelos.
+
+    MEDIDO en esta maquina, con lo que responde la API viva:
+
+        {
+          "configurado": {"modelo_texto": "moondream", "modelo_vision": "qwen2.5vl:3b"},
+          "modelos_instalados": [],        <- no hay NINGUNO
+          "faltan": [],                    <- y aun asi dice que no falta nada
+          "disponible": true               <- y dice que esta disponible
+        }
+
+    O sea: el unico sintoma de que la IA no iba a contestar —"no hay modelo"— se
+    reportaba como si la IA estuviera bien. Y las fotos se leian solo con
+    Tesseract, que es el unico escalon que queda cuando no hay modelo: el
+    techo de exactitud del sistema pasaba a ser el del OCR sin que ninguna
+    pantalla lo dijera. `EstadoDeIa` en el front **solo aparece si hay algo que
+    arreglar**, asi que con `faltan` vacio no aparecia nada.
+
+    Lo que se cambio, y es lo minimo:
+      - `faltan` se calcula **siempre**, sin el caso especial de Ollama. El
+        corte por etiqueta (`moondream` = `moondream:latest`) ya lo hacia la
+        comparacion de nombres, y por eso la excepcion no era necesaria.
+      - `disponible` pregunta si **alguno** de los modelos configurados esta
+        instalado. Con `modelos_instalados: []` no hay nada que conteste a una
+        pregunta, y por eso no se puede decir que la IA esta disponible.
+
+    Y NO se cambia el criterio de "un modelo que falta no es un error": eso se
+    sostiene. Lo que se corrige es que la lista de los que faltan **no sea
+    siempre vacia**.
     """
     from app.core.config import settings
 
@@ -374,33 +444,57 @@ async def disponibilidad() -> dict[str, object]:
     elif proveedor is AIProvider.OLLAMA:
         instalados, error = await _modelos_del_proveedor(settings.OLLAMA_BASE_URL)
 
+    # Lo CONFIGURADO y no INSTALADO. Se calcula para cualquier proveedor: el caso
+    # especial de Ollama que hubo aqui lo dejaba siempre vacio, que es justo el
+    # fallo que este endpoint existe para reportar.
+    #
+    # La comparacion es por nombre SIN etiqueta (`moondream` contra
+    # `moondream:latest`), porque `ollama list` siempre devuelve la etiqueta y la
+    # `.env` muchas veces no la trae.
     faltan: list[str] = []
     if instalados is not None:
-        # Si el proveedor es Ollama y tiene base_url configurado, el usuario
-        # pulló los modelos y el contenedor está arriba, así que los consideramos
-        # instalados a menos que Ollama reporte explicitly 0 modelos.
-        if proveedor is AIProvider.OLLAMA and settings.OLLAMA_BASE_URL:
-            # Ollama respondió con algunos modelos: no marcamos como faltantes
-            # basándonos en una lista parcial. El usuario los pulló y el contenedor
-            # está arriba, así que los consideramos instalados.
-            pass  # no hacemos nada, faltan se queda vacío
-        else:
-            base = {n.split(":")[0] for n in instalados}
-            for clave in ("modelo_texto", "modelo_vision"):
-                nombre = configurado.get(clave)
-                if nombre and str(nombre).split(":")[0] not in base:
-                    faltan.append(str(nombre))
+        base = {n.split(":")[0] for n in instalados}
+        for clave in ("modelo_texto", "modelo_vision"):
+            nombre = configurado.get(clave)
+            if nombre and str(nombre).split(":")[0] not in base:
+                faltan.append(str(nombre))
+
+    # "Disponible" es "nadie dijo que haya un problema", y el problema lo dice
+    # `error`.
+    #
+    # ## POR QUE AQUI NO HAY UN `and hay_alguno`
+    #
+    # Seria codigo muerto, y se comprobo por mutacion. La rama de arriba pone
+    # `error` exactamente cuando `hay_alguno` es falso, o sea que
+    # `not error and hay_alguno` y `not error` dan **lo mismo** siempre. La
+    # version con las dos condiciones recibio la mutacion y no cambio ni un
+    # resultado: una defensa que no puede cambiar el veredicto no esta
+    # defendiendo, y este proyecto las quita en vez de dejarlas (el caso de
+    # `fecha` en `MARCA_DEL_COMPROBANTE_RE`).
+    #
+    # La condicion que decide es el `error` de arriba, y esa si esta probada:
+    # `test_hay_modelos_pero_ninguno_de_los_configurados`.
+    #
+    # Y `instalados is None` es "no se pudo preguntar", que NO es lo mismo que
+    # "no hay modelos": en el primero tampoco se puede afirmar disponibilidad, y
+    # en el segundo se acaba de ver la lista vacia.
+    base = {n.split(":")[0] for n in (instalados or [])}
+    hay_alguno = any(
+        str(configurado.get(clave)).split(":")[0] in base
+        for clave in ("modelo_texto", "modelo_vision")
+        if configurado.get(clave)
+    )
+    if error is None and not hay_alguno:
+        error = (
+            "ningun modelo configurado esta instalado en el proveedor: "
+            + (", ".join(faltan) or "no hay modelos configurados")
+        )
 
     return {
         "configurado": configurado,
         "modelos_instalados": instalados,
         "faltan": faltan,
-        # `None` en `error` con `modelos_instalados=None` es "el proveedor no
-        # respondio", que NO es lo mismo que "no hay modelos". Por eso el
-        # booleano se calcula con el `error` en vez de con la lista.
-        "disponible": bool(
-            settings.AI_ENABLED and (instalados is None or not error)
-        ),
+        "disponible": bool(settings.AI_ENABLED and not error),
         "error": error,
         "como_instalar": [f"ollama pull {m}" for m in faltan],
     }

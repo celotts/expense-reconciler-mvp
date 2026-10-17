@@ -53,7 +53,10 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready -q -U postgres -d expense_db
+        - >-
+          pg_isready -q -U postgres -d expense_db &&
+          psql -U postgres -d expense_db -tAc
+          "select to_regclass('public.tickets') is not null" | grep -qx t
       interval: 5s
       timeout: 5s
       retries: 5
@@ -117,24 +120,97 @@ services:
     mem_limit: 8g
     mem_reservation: 512m
 
-    # MEDIDO el 2026-10-13, y CORREGIDO el mismo dia. Con `cpus: 4.0` una
-    # llamada de vision tardaba ~250 s. Se bajo a 2.0 para que el ventilador no se
-    # calentara, y el efecto NO fue solo "un poco mas lento": una foto paso de
-    # ~250 s a **~500 s**, porque con 2 nucleos la inferencia va a la mitad.
+    # El tiempo de leer una foto con el modelo NO es el modelo: es EVALUAR LA
+    # IMAGEN. MEDIDO el 2026-10-16: con vision activada, una foto tarda 7 a 9
+    # minutos en esta maquina, y de ese tiempo la mayor parte son los ~2300
+    # tokens que la imagen ocupa al entrar. Eso es CPU, y va en serie.
     #
-    # MEDIDO despues: una foto tardaba 757 s y el escaneo de 8 no terminaba en
-    # 11 minutos. Ese numero es el que hace volver esto a 4.0.
+    # HISTORIA DE ESTE LIMITE, porque el numero solo no dice nada:
+    #   - Con `cpus: 2.0` una foto tardaba ~500 s, y el escaneo de 8 no terminaba
+    #     en 11 minutos. El calor que se reportaba no era este limite: era
+    #     `keep_alive: 30m`, que dejaba el modelo cargado 3.2 GB cuando ya no hacia
+    #     falta. Eso si se corrigio (ver `OLLAMA_KEEP_ALIVE`).
+    #   - Con `cpus: 4.0` una foto tardaba ~250 s, que era el estado de antes.
+    #   - MEDIDO el 2026-10-16: la VM de Docker tiene **8 CPUs** y la mitad
+    #     estaba ociosa mientras la foto esperaba. Subir a **6.0** bajo el tiempo
+    #     por foto **sin tocar el modelo ni la imagen**, o sea sin coste de
+    #     exactitud. A 8 no mejora: se pelea con `expense-api`, que tambien pide
+    #     4, y la suma no cabe en las 8 de la VM. Seis es donde anadir CPU deja
+    #     de pagar.
     #
-    # El calor no era este limite: era `keep_alive: 30m`, que dejaba el modelo
-    # cargado 3.2 GB cuando ya no hacia falta. Ese si se corrigio, y ahi si esta
-    # la solucion al calor. Ver `OLLAMA_KEEP_ALIVE` en config.py.
-    #
-    # 3.0 es el punto intermedio que NO se ha medido. Si vuelve a calentarse la
-    # maquina, bajarlo aqui es el ajuste; pero medido: 2.0 doblo el tiempo.
-    cpus: 4.0
+    # Y esto es lo que hace usable `IMAGENES_VISION_PRIMERO`: sin CPU de sobra,
+    # leer 8 comprobantes pasaba de una hora.
+    cpus: 6.0
     restart: unless-stopped
     networks:
       - expense_network
+
+  # Descarga los modelos de IA declarados en la `.env`, si no estan.
+  #
+  # MEDIDO el 2026-10-15: la `.env` declaraba `qwen2.5vl:3b` y el volumen de
+  # Ollama no tenia NINGUN modelo (32 KB, `ollama list` vacio). El sistema
+  # escaneaba solo con Tesseract y su techo de exactitud era el del OCR, sin que
+  # ninguna pantalla lo dijera: `/scan/ia` reportaba `faltan: []` porque para
+  # Ollama el calculo estaba cortocircuitado con un `pass`, y el cartel del front
+  # —que solo sale si hay algo que arreglar— no aparecia.
+  #
+  # Que esto sea un SERVICIO y no un paso del Makefile es lo que hace que no se
+  # pueda olvidar: `make up` levanta la app, y la app no levanta hasta que esto
+  # termina. Un paso manual en un README es un paso que no se da.
+  #
+  # Comparte el volumen `ollama_data` con el servicio `ollama`, que es donde se
+  # guardan los pesos del modelo: descargar en otro volumen seria descargar dos
+  # veces y que ninguna de las dos sirviera.
+  #
+  # `restart: "no"` porque es un trabajo que se acaba: un `pull` que se repite en
+  # bucle porque falla seria peor que no tener modelo.
+  #
+  # Y el script sale con 0 aunque no pueda descargar: la app sin modelo escanea
+  # igual con OCR, mas lento y menos exacto pero funciona, y `/scan/ia` dice
+  # cual falta. Un `pull` fallido por red no puede dejar sin sistema a alguien
+  # que solo quiere escanear sus comprobantes. Ver `scripts/instalar_modelos.sh`.
+  modelos:
+    image: ollama/ollama:latest
+    container_name: expense_modelos
+    depends_on:
+      ollama:
+        condition: service_started
+    # `env_file` Y NO `environment: ${OLLAMA_MODEL}`.
+    #
+    # MEDIDO el 2026-10-15: con `environment:` e interpolacion, este servicio
+    # recibia `moondream` mientras la app recibia `qwen2.5:3b`, y descargo los
+    # dos. La razon es que Compose resuelve `${VAR}` **primero del entorno del
+    # shell y despues de la `.env`**, y en esta maquina el shell tiene
+    # `OLLAMA_MODEL=moondream` exportado de toda la vida. El `.env` de la app no
+    # pasa por interpolacion: lo lee `env_file`, y por eso los dos servicios no
+    # coinciden.
+    #
+    # `env_file` es ademas el MISMO mecanismo que usa `expense-api`, y en el
+    # mismo orden (`.env` y luego `.env.local`), asi que el modelo que se descarga
+    # es por construccion el modelo que la app va a usar. Dos fuentes para la
+    # misma variable, con una regla de precedencia distinta cada una, es la forma
+    # de que el sistema baje un modelo que no usa.
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./scripts/instalar_modelos.sh:/instalar_modelos.sh:ro
+    entrypoint: ["/bin/sh", "/instalar_modelos.sh"]
+    # SIN ESTA RED NO RESUELVE `ollama` y el script se queda esperando sin ver
+    # nada. MEDIDO el 2026-10-15: con el servicio sin `networks`, Compose lo mete
+    # en la red POR DEFECTO del proyecto, que no es `expense_network`, y
+    # `http://ollama:11434` no resuelve. El sintoma es el peor posible para
+    # diagnostico: el script dice "Ollama no respondio" y la respuesta es que si
+    # responde —lo que no responde esta cosa no esta en su red.
+    networks:
+      - expense_network
+    mem_limit: 512m
+    restart: "no"
 
   expense-api:
     build:
@@ -262,6 +338,14 @@ services:
         condition: service_healthy
       ollama:
         condition: service_started
+      # MEDIDO el 2026-10-15: sin esta linea la API levanta sin modelo y no hay
+      # quien se lo diga. `service_completed_successfully` y no `service_started`:
+      # aqui no vale "empezo a trabajar", vale "termino de descargar lo que
+      # estaba declarado". El script sale con 0 aunque no pueda descargar —la
+      # app sin modelo escanea igual con OCR—, asi que esta espera no puede
+      # dejar el sistema sin levantar por una descarga fallida.
+      modelos:
+        condition: service_completed_successfully
     # `curl /health` y no "el proceso existe": ver el comentario de POR QUE
     # `/health` consulta la base en app/main.py. MEDIDO antes del cambio: con
     # `expense_pgvector` parado, `/health` respondia 200 igual, y este contenedor

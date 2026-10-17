@@ -337,6 +337,15 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("PATCH", "/usuarios/{usuario_id}"): "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
     ("POST", "/usuarios/{usuario_id}/contrasena"): "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
     ("POST", "/auditoria/evento"): "a1. Evento de auditoria  <- navegacion/pantalla",
+    # MEDIDO el 2026-10-15: faltaba esta entrada y con ella tres tests en rojo
+    # (`test_no_falta_ninguna_entrada_en_nombres`, el que compara la coleccion
+    # con la API viva, y `make insomnia-check`). Sin nombre, `GET /auditoria`
+    # salia rotulada con el `summary` del OpenAPI.
+    #
+    # Y dice "SOLO perfiles privilegiados" porque es lo que hace el endpoint: los
+    # demas reciben 403. Un 403 aqui es el resultado correcto, no un fallo de la
+    # peticion, y quien lo lea con la coleccion delante lo comprueba en un clic.
+    ("GET", "/auditoria"): "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
 }
 
 # Los tres scripts que hacen que la coleccion se sustains sola.

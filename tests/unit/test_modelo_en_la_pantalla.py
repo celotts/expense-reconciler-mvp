@@ -267,3 +267,202 @@ class TestElEndpointDeEstado:
         assert d["modelos_instalados"] is None
         assert d["error"] is not None
         assert "AI_ENABLED" in d["error"]
+
+class TestElDiagnosticoNoDiceQueTodoEstaBien:
+    """`faltan` era SIEMPRE la lista vacia con Ollama, y `disponible` daba true.
+
+    MEDIDO el 2026-10-15 en esta maquina, con lo que respondia la API viva:
+
+        {
+          "configurado": {"modelo_texto": "moondream", "modelo_vision": "qwen2.5vl:3b"},
+          "modelos_instalados": [],        <- no hay NINGUNO
+          "faltan": [],                    <- y aun asi "no falta nada"
+          "disponible": true               <- y "esta disponible"
+        }
+
+    Este endpoint se escribio para el caso exacto de "el modelo esta configurado
+    y no existe", y no lo hacia: el calculo de `faltan` estaba cortocircuitado
+    con un `pass` para Ollama y su `else` —el unico que hacia el calculo— era
+    codigo muerto.
+
+    ## POR QUE ESTO COSTO CARO Y NO SE NOTO
+
+    `EstadoDeIa` en el front **solo aparece si hay algo que arreglar**. Con
+    `faltan` vacio no aparecia nada, y las fotos se leian **solo con
+    Tesseract**, que es el unico escalon que queda cuando no hay modelo
+    instalado. El techo de exactitud del sistema paso a ser el del OCR sin que
+    ninguna pantalla lo dijera, y el sintoma era "el sistema no lee bien los
+    montos" — que es exactamente como se lee un problema de modelo ausente.
+
+    Es el fallo que el propio archivo critica: un dato que se pide en una capa
+    y se pierde en la siguiente, donde ademas **nada falla**.
+    """
+
+    @staticmethod
+    def _con_modelos(monkeypatch, instalados, error=None):
+        """`disponibilidad()` con la respuesta del proveedor controlada."""
+        from app.services import ai_client as mod
+
+        async def _fake(base_url):
+            return instalados, error
+
+        monkeypatch.setattr(mod, "_modelos_del_proveedor", _fake)
+
+    @pytest.mark.anyio
+    async def test_un_contenedor_sin_modelos_no_dice_que_esta_disponible(
+        self, monkeypatch
+    ):
+        """La defensa. `disponible: true` con `modelos_instalados: []` es mentir."""
+        from app.services.ai_client import disponibilidad
+
+        self._con_modelos(monkeypatch, [])
+
+        d = await disponibilidad()
+
+        assert d["disponible"] is False, (
+            "sin ningun modelo instalado no hay quien conteste una peticion: "
+            "decir 'disponible' es la mitad de la verdad"
+        )
+        assert d["error"], "tiene que decir POR QUE no esta disponible"
+        assert "moondream" in d["error"] or "qwen2.5vl" in d["error"]
+
+    @pytest.mark.anyio
+    async def test_los_modelos_configurados_que_faltan_se_dicen(self, monkeypatch):
+        """El caso de esta maquina: los dos configurados, ninguno instalado."""
+        from app.services.ai_client import disponibilidad
+
+        self._con_modelos(monkeypatch, [])
+
+        d = await disponibilidad()
+
+        assert d["faltan"], (
+            "`faltan` es la lista de lo que se configuro y no esta. Con "
+            "`modelos_instalados: []` tiene que traer los dos nombres."
+        )
+        assert set(d["faltan"]) == {"moondream", "qwen2.5vl:3b"}
+        assert all("ollama pull" in c for c in d["como_instalar"])
+
+    @pytest.mark.anyio
+    async def test_falta_el_que_no_esta_y_no_el_que_esta(self, monkeypatch):
+        """Solo los que faltan, y el corte por etiqueta no da falsos positivos.
+
+        `ollama list` devuelve siempre la etiqueta (`moondream:latest`) y la
+        `.env` muchas veces no la trae. Sin el corte por etiqueta, un modelo que
+        SI esta instalado se reportaria como faltante y el indicador se pondria
+        rojo sin motivo.
+        """
+        from app.services.ai_client import disponibilidad
+
+        self._con_modelos(monkeypatch, ["moondream:latest", "llama3.1:8b"])
+
+        d = await disponibilidad()
+
+        assert d["faltan"] == ["qwen2.5vl:3b"], (
+            "el de texto esta instalado (con etiqueta) y el de vision no: solo "
+            "el de vision puede estar en la lista"
+        )
+        assert d["disponible"] is True, (
+            "con el modelo de texto instalado hay quien conteste: disponible es "
+            "true aunque falte el de vision, y `faltan` dice cual"
+        )
+
+    @pytest.mark.anyio
+    async def test_hay_modelos_pero_ninguno_de_los_configurados(self, monkeypatch):
+        """El caso que hace_util el segundo corte, y el mas facil de confundir.
+
+        MEDIDO el 2026-10-15 en el Ollama NATIVO de esta maquina: hay 25 modelos
+        instalados, y ninguno es `moondream` ni `qwen2.5vl:3b`, que es lo que
+        declara la `.env`. La lista de instalados esta llena y aun asi no hay
+        quien conteste.
+
+        Es el caso donde `disponible` se calcula **solo** con "el proveedor no dio
+        error": el proveedor respondio perfecto, hay 25 nombres, y la respuesta
+        seria `true`. Y lo que se afirma con eso es "la IA funciona" cuando la
+        unica llamada que haria el sistema es a un modelo que no existe.
+        """
+        from app.services.ai_client import disponibilidad
+
+        self._con_modelos(monkeypatch, ["llama3.1:8b", "nomic-embed-text:latest"])
+
+        d = await disponibilidad()
+
+        assert d["disponible"] is False, (
+            "responder NO es lo mismo que poder contestar: los dos modelos "
+            "configurados estan ausentes"
+        )
+        assert set(d["faltan"]) == {"moondream", "qwen2.5vl:3b"}
+
+    @pytest.mark.anyio
+    async def test_no_se_puede_afirmar_disponibilidad_sin_preguntar(self, monkeypatch):
+        """`modelos_instalados: None` es "no se pudo preguntar", no "no hay".
+
+        Y en ese caso `disponible` no se puede afirmar: no es lo mismo que una
+        lista vacia, que si es una respuesta.
+        """
+        from app.services.ai_client import disponibilidad
+
+        self._con_modelos(monkeypatch, None, error="no se pudo consultar http://ollama:11434")
+
+        d = await disponibilidad()
+
+        assert d["modelos_instalados"] is None
+        assert d["disponible"] is False
+        assert "no se pudo consultar" in d["error"]
+
+
+class TestUnErrorDelProveedorSeDice:
+    """Un 500 sin cuerpo no dice nada, y no hay forma de actuar sobre "nada".
+
+    MEDIDO el 2026-10-15 con `IMG_4409.heic` y `qwen2.5vl:3b`: la llamada a
+    vision devolvio 500 dos veces seguidas y la app registra
+
+        Server error '500 Internal Server Error' for url 'http://ollama:11434/api/chat'
+
+    El 500 de Ollama puede ser contexto excedido, memoria, o el modelo que no
+    cabe: **el mensaje lo dice y el codigo no**. `raise_for_status()` tira una
+    excepcion que solo lleva la URL, asi que el motivo se perdia.
+
+    Lo que se perdio fue tiempo: con dos 500 sin pista, lo unico que se puede
+    hacer es repetir a ciegas. La tercera llamada SI funciono y devolvio
+    `279.93` —la verdad— sin que nadie supiera por que las dos anteriores no.
+    """
+
+    @pytest.mark.anyio
+    async def test_el_cuerpo_del_error_se_registra(self, monkeypatch, caplog):
+        """El motivo del proveedor tiene que quedar escrito."""
+        import httpx
+
+        from app.services import ai_client as mod
+
+        class _Respuesta:
+            status_code = 500
+            text = '{"error":"the request exceeds the available context size"}'
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "500 Server Error", request=None, response=None
+                )
+
+        class _Cliente:
+            async def post(self, *_a, **_kw):
+                return _Respuesta()
+
+            async def aclose(self):
+                pass
+
+        cliente = mod.AIClient()
+        cliente._ollama_client = _Cliente()
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(httpx.HTTPStatusError):
+                await cliente._ollama_chat_completion(
+                    [{"role": "user", "content": "hola"}], model="qwen2.5vl:3b",
+                    temperature=0.1, max_tokens=10, response_format=None,
+                )
+
+        escrito = "\n".join(r.getMessage() for r in caplog.records)
+        assert "exceeds the available context size" in escrito, (
+            "el cuerpo del proveedor es lo unico que distingue 'contexto "
+            "excedido' de 'sin memoria' de 'modelo que no cabe'. Registrar solo "
+            "el 500 deja las tres como el mismo fallo."
+        )

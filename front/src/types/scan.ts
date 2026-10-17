@@ -224,6 +224,11 @@ export interface ScanResultado {
   no_soportados: number;
   /** Lo que no se alcanzo a procesar por `TICKETS_SCAN_MAX_ARCHIVOS`. */
   omitidos_por_tope: number;
+  /**
+   * Los que no se pudieron LEER, con su motivo. MEDIDO el 2026-10-16: sin esto
+   * una carpeta ilegible se ve igual que una carpeta vacia.
+   */
+  ilegibles: { ruta: string; motivo: string }[];
   leidos: number;
   lecturas_por_motor: Record<string, number>;
   detalles: ScanItem[];
