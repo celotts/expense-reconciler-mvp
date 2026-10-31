@@ -221,7 +221,7 @@ class TestLoQueNoTieneDocumento:
 
     @pytest.mark.asyncio
     async def test_la_captura_manual_no_inventa_un_documento(
-        self, db_session, test_company
+        self, db_session, test_company, usuario_de_prueba
     ):
         """Un ticket tecleado no viene de un archivo.
 
@@ -242,6 +242,7 @@ class TestLoQueNoTieneDocumento:
                 tax_amount=Decimal("20.69"),
                 expense_date=date(2025, 3, 15),
             ),
+            usuario=usuario_de_prueba,
             db=db_session,
         )
 

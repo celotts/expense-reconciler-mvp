@@ -96,6 +96,28 @@ def _metodo(peticion: dict) -> str:
     return (peticion.get("method") or "GET").upper()
 
 
+def _la_api_esta_arriba() -> bool:
+    """Si el OpenAPI responde. Un `urlopen` de 200 ms: es una pregunta de si hay
+    algo escuchando, no una lectura del spec.
+
+    ## POR QUE NO SE USA EL SPEC COMO CRITERIO
+
+    Comprobar "la API contesto" es distinto de comprobar "el spec tiene rutas".
+    Este helper solo responde lo primero: si el servidor esta vivo, el
+    `--check` de abajo hace el trabajo de verdad y su error es preciso. Lo que
+    no debe es inventar un veredicto propio sobre si la coleccion esta al dia.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = "http://127.0.0.1:8000/openapi.json"
+    try:
+        with urllib.request.urlopen(url, timeout=1):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 class TestLaColeccionSirve:
     def test_el_archivo_existe_y_tiene_peticiones(self):
         assert COLECCION.exists(), "falta la coleccion de Insomnia"
@@ -109,7 +131,37 @@ class TestLaColeccionSirve:
 
         Sin esto, las demas pruebas de este archivo pasan sobre una coleccion
         vieja que si tenia el header — y el defecto vuelve sin que nadie lo note.
+
+        ## POR QUE SE SALTA Y NO FALLA CUANDO NO HAY API
+
+        El generador lee el OpenAPI **de la API viva**, que es lo que lo hace
+        bueno: una ruta que nadie declaro en un router no aparece. Por eso este
+        test necesita el servidor arriba, y por eso **no es un test unitario**
+        aunque viva en `tests/unit/`.
+
+        MEDIDO: sin `make up` la suite daba **6 rojos** y cuatro de ellos no
+        tenian nada que ver con lo que se estaba probando —el generador
+        imprimia "Connection refused" y el assert leia eso como "la coleccion
+        esta desfasada". El mensaje era falso: lo que estaba desfasado era el
+        entorno.
+
+        Un test que falla porque el servidor no esta arriba entrena a ignorar
+        la suite entera: el proximo rojo real se lee como "otro de estos". Y
+        salta **con el motivo escrito**, para que quien lo lea sepa que el
+        check se tiene que correr en otro momento: `make insomnia-check`, o la
+        suite con `make up` ya hecho.
+
+        La verificacion de que la coleccion NO esta desfasada sigue existiendo y
+        sigue siendo obligatoria antes de commitear: es `make insomnia-check`,
+        que es exactamente este comando.
         """
+        if not _la_api_esta_arriba():
+            pytest.skip(
+                "el generador lee el OpenAPI de la API viva y no hay servidor "
+                "en 127.0.0.1:8000. Corré `make up` y repetí, o `make "
+                "insomnia-check` para comprobarlo sin la suite."
+            )
+
         resultado = subprocess.run(
             [sys.executable, str(GENERADOR), "--check"],
             cwd=RAIZ,

@@ -71,7 +71,14 @@ class TipoGastoModel(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
-    company = relationship("CompanyModel", backref="tipos_gasto")
+    # `passive_deletes=True`: la FK es `ON DELETE CASCADE` en la base
+    # (`db/migrations/0018_tipos_gasto.sql:69`), y sin este `True` el ORM manda
+    # `UPDATE tipos_gasto SET company_id = NULL` antes del DELETE de la empresa,
+    # que revienta con `NotNullViolationError`. Mismo argumento que en
+    # `app/models/ticket.py`.
+    company = relationship(
+        "CompanyModel", backref="tipos_gasto", passive_deletes=True
+    )
 
     # `back_populates` en los dos lados (convencion del proyecto). El `passive_deletes`
     # no se pone a proposito: sin `ON DELETE CASCADE` hacia estos lados, el borrado

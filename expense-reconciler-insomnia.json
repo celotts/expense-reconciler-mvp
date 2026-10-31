@@ -3092,6 +3092,30 @@
       "authentication": {
         "type": "none"
       }
+    },
+    {
+      "_id": "req_84",
+      "parentId": "fld_13",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "s1. Respaldo de la base de datos  (descarga SQL, solo admin)",
+      "description": "Descarga un archivo SQL con toda la base de datos.\n\n## POR QUE EXISTE\n\nEl SAT exige conservar comprobantes 5 años. Si se pierde el disco, se\npierden los comprobantes y la evidencia. Un contador que no tiene backup\nautomatizado es un contador que va a perder datos.\n\n## COMO FUNCIONA\n\nEjecuta `pg_dump` sobre la base de datos y devuelve el archivo SQL.\nEl usuario lo guarda donde quiera (USB, Dropbox, etc.).\n\n## QUIEN PUEDE\n\nSolo usuarios con perfil `admin` o `develop`. Un digitalizador no necesita\nrespaldar la base entera.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/sistema/backup",
+      "metaSortKey": 84,
+      "collectionId": "col_api",
+      "_type": "request"
     }
   ]
 }

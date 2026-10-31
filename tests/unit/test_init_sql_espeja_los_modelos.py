@@ -153,6 +153,7 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         ScanFileModel,
         TicketDocumentModel,
         TicketModel,
+        TipoGastoModel,
         UserModel,
     )
 
@@ -181,6 +182,20 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         # sobre el esquema para que quien lo lea vaya a buscar un problema que no
         # esta.
         (Auditoria, "auditoria"),
+        # MEDIDO el 2026-10-17: MISMO fallo que `auditoria` un mes antes, y por
+        # eso esta fila parece una repeticion. La 0018 (`tipos_gasto`) llega con
+        # su modelo, su migracion y sus columnas en el DDL, y esta constante
+        # escrita a mano no lo cogio. El sintoma fue identico al de `auditoria`,
+        # en el test que dice aca que no haya tablas huerfanas: `tipos_gasto`
+        # salia "en el DDL y sin modelo" cuando el modelo existia.
+        #
+        # Es la segunda vez, y por eso hay un test mas abajo que compara ESTA
+        # lista con `Base.metadata.tables`: una tabla con modelo que no esta en
+        # la lista hace fallar el suite, en vez de hacer que el otro test la
+        # acuse de huerfana. Un test que acusa de huerfana lo que tiene modelo
+        # hace lo que este archivo critica —mentir sobre el esquema para que
+        # quien lo lea busque un problema que no esta—.
+        (TipoGastoModel, "tipos_gasto"),
     ]
     return {
         tabla: {c.name for c in modelo.__table__.columns}

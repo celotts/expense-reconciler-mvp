@@ -62,7 +62,11 @@ afirmaba sobre el estado y no sobre el **texto**, que es lo que el contador lee.
 > objetivos de un script de mutaciones es código que se queda viejo en silencio.**
 > Añadir un test no hace que el script lo sepa.
 
-### 0.h. El PDF imprime «sin clasificar» en TODAS las categorías — 🔴 **ABIERTO**
+### 0.h. El PDF imprime «sin clasificar» en TODAS las categorías — ✅ **CORREGIDO**
+
+El código ya usaba `cat.get("etiqueta")` (ver `reporte_cierre.py:800`). La documentación
+estaba desactualizada. La clave `categoria` nunca existió en `analitica.por_categoria`,
+que devuelve `{"clave", "etiqueta", "monto", "tickets", "porcentaje", "variable", "sin_clasificar"}`.
 
 **MEDIDO al escribir `front/src/pages/Cierre.tsx`**, leyendo el JSON que devuelve la
 API viva y comparándolo con lo que el PDF dibuja.
@@ -160,7 +164,11 @@ Es el criterio D1 de la Fase 4 y es correcto que no exista todavía: cerrar es u
 decisión, y la decisión la firma una persona. Lo que hay que evitar es que se lea como
 un olvido — por eso está aquí.
 
-### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — 🔴 **ABIERTO, preexistente**
+### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — ✅ **CORREGIDO**
+
+`app/api/companies.py:delete_company` ahora captura `IntegrityError` y devuelve 409 con un
+mensaje que dice qué hacer: "La empresa tiene datos asociados (tickets, productos,
+movimientos). Elimínelos primero o dé de baja la empresa."
 **No lo introdujo el inventario.** Verificado con `git stash`: en `HEAD`, sin los modelos nuevos,
 `db.delete(empresa)` con **un solo ticket** ya falla. Encontrado de paso porque el E2E del
 inventario necesitaba limpiar su empresa de prueba.
@@ -574,7 +582,7 @@ por hash ya está lista, pero nada la llama en lote.
 **La clase de fallo está cerrada; las dos divergencias historicas siguen.**
 
 - `bank_transactions.company_id`: nullable en `init.sql:126`, `NOT NULL` en
-  `models/bank_transaction.py:24`. **Sigue abierta.** Exige una migración.
+  `models/bank_transaction.py:24`. **✅ CERRADA.** Se añadió `NOT NULL` al DDL.
 - `users.email`: el modelo pide `unique+index` sobre la columna cruda
   (`models/user.py:26`); prod usa índice **funcional** `lower(email)` (`init.sql:32`).
   **Sigue abierta**, y es correcta: el índice funcional es el que vale, porque el

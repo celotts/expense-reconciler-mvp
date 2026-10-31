@@ -1621,6 +1621,65 @@ costumbre — el porqué está en el comentario junto al código.
 
 ---
 
+## La tabla `auditoria` no sabía quién hizo nada
+
+**MEDIDO.** `auditoria` era la única tabla del proyecto que no podía responder
+*quién* hizo cada cosa, que es la única pregunta para la que existe. El resto
+del proyecto sí: hay cinco columnas que guardan quién firmó (`confirmada_por`,
+`revisado_por`, `cerrado_por`, `authorizado_por`, `reviewed_by`), todas
+pobladas, y la **regla 23** de este archivo dice que quien firma sale del token,
+nunca del cuerpo. La tabla genérica era la única que no lo sabía.
+
+Tres defectos, cada uno con su consecuencia:
+
+| Defecto | Qué pasaba |
+|---|---|
+| `usuario_id=None` **hardcodeado** en `registrar_auditoria` | Los 6 helpers recibían `usuario_id` como parámetro y lo enterraban en `detalles={'usuario': ...}` como texto. La columna quedaba `NULL` siempre. |
+| `rol=ticket.perfil if hasattr(ticket, 'perfil')` | `tickets` **no tiene columna `perfil`** (solo `users`), así que `hasattr` era siempre `False`. El rol salía `None` en todas las llamadas. |
+| 4 llamadas con `accion='update_ticket'` | La creación, la corrección, la aprobación y el cambio de papel compartían el mismo nombre. El rastro no distinguía qué pasó. |
+
+Y un cuarto que no era de datos sino de diseño: **`registrar_logout_auditoria`,
+`registrar_update_auditoria`, `registrar_delete_auditoria`,
+`registrar_error_sistema_auditoria`, `registrar_perfil_usuario` y
+`registrar_digitalizacion_auditoria` tenían 0 callers.** El módulo prometía
+*"todas las operaciones del sistema"* y registraba dos. Código muerto que
+parece cobertura.
+
+### Lo que se arreglo
+
+1. **`usuario_id` va en la firma** de `registrar_auditoria`, como parámetro
+   keyword-only `db` para que los tests puedan inyectar la sesión de SQLite.
+2. **Las 4 llamadas de `tickets.py` dicen qué pasó**: `crear_ticket`,
+   `revisar_ticket`, `actualizar_documento`, `actualizar_ticket`. Sale del
+   token (`usuario: UsuarioActual`), no del cuerpo.
+3. **Login, logout e intento fallido conectados** en `auth.py`. Tres tipos de
+   fallo: usuario no existe, contraseña mala, cuenta inactiva.
+4. **El escáner registra cada archivo** con `registrar_digitalizacion_auditoria`
+   (o `digitalizar_sin_ticket` si no produjo ticket).
+5. **`except` → `logger.exception`** en vez de `print`. La auditoría no tumba
+   la operación, pero el fallo queda dicho.
+6. **`registrar_perfil_usuario` escribe una fila, no dos**, con
+   `perfil_anterior` capturado **antes** del cambio. Antes escribía dos y la
+   segunda releía el perfil ya mutado: `perfil_anterior: "admin",
+   perfil_nuevo: "admin"` cuando lo que pasó fue de `admin` a `digitalizador`.
+7. **`Auditoria.id` usa `BigInteger().with_variant(Integer, "sqlite")`**:
+   SQLite no soporta `autoincrement` en `BigInteger` y los tests reventaban con
+   `NOT NULL constraint failed: auditoria.id`.
+
+`tests/unit/test_auditoria.py`, 11 tests. Cada uno **muere** si alguien revierte
+el arreglo correspondiente.
+
+### Los helpers aceptan `db` opcional, y por qué
+
+`registrar_auditoria` y todos sus helpers aceptan `db: Optional[AsyncSession]`
+como parámetro keyword-only. En producción la función abre su propia sesión
+(`AsyncSessionLocal`), que es lo correcto porque el llamador no tiene una
+sesión que pasar. En tests, se inyecta `db_session` para que la escritura caiga
+en el SQLite en memoria. Sin ese parámetro, los tests se conectan a Postgres
+real y revientan con `Connect call failed ('127.0.0.1', 5432)`.
+
+---
+
 ## Trampas verificadas
 
 Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta tiempo real.

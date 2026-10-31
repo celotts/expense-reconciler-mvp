@@ -309,13 +309,75 @@ def _recursos(datos: dict):
         pila.extend(recurso.get("children", []))
 
 
+def _la_api_esta_arriba() -> bool:
+    """Si el OpenAPI responde. Un `urlopen` corto: es una pregunta de si hay algo
+    escuchando, no una lectura del spec.
+
+    ## POR QUE ESTA COPIA Y NO UN IMPORT DEL OTRO TEST
+
+    `tests/unit/test_insomnia_tiene_token.py` tiene la misma comprobacion. Se
+    podria importar de ahi —los dos archivos son del mismo dominio— y seria lo
+    correcto en un solo modulo comun.
+
+    Se copia por una razon concreta: los dos archivos **estan probando el
+    generador**, y si uno importara una constante o un helper **del otro**, un
+    cambio accidental en ese helper haria que los dos tests dejaran de mirar lo
+    que miran **a la vez y sin avisar**. El fallo seria indistinguible de "los dos
+    pasan". Es el mismo motivo por el que `SIN_TOKEN` vive duplicado en
+    `test_insomnia_tiene_token.py` en vez de importarse de
+    `scripts/generar_insomnia.py`: no se prueba el codigo contra si mismo.
+
+    Que sea una copia de cuatro lineas es un precio aceptable por que los dos
+    archivos puedan fallar por separado.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = "http://127.0.0.1:8000/openapi.json"
+    try:
+        with urllib.request.urlopen(url, timeout=1):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 class TestLaColeccionEstaAlDia:
     def test_make_insomnia_check_sale_cero(self):
         """`make insomnia-check` compara el archivo contra la API viva.
 
         Es el unico test que detecta "se anadio una ruta y nadie regenero". Los demas
         de este archivo miran el generador; este mira el resultado.
+
+        ## POR QUE SE SALTA Y NO FALLA SIN LA API
+
+        MEDIDO: sin `make up` este test fallaba con
+
+            la coleccion esta desfasada. Regenerala con `make insomnia`.
+            No se pudo leer http://127.0.0.1:8000/openapi.json: Connection refused
+            Levanta la API primero:  make up
+
+        O sea, el mensaje **acusaba a la coleccion** cuando lo que faltaba era el
+        servidor, y encima proponia regenerar un archivo que no era el problema.
+        Quien leeria eso regeneraba la coleccion, el `--check` volveria a fallar
+        igual, y el siguiente paso ya seria pensar que el generador esta roto.
+
+        Es el mismo tratamiento que recibe
+        `tests/unit/test_insomnia_tiene_token.py::test_todas_las_peticiones_salen_de_la_API_viva`,
+        y por el mismo motivo: **el generador lee el OpenAPI de la API viva**, y
+        eso lo convierte en un test de integracion que depende del servidor. Un
+        test que falla porque el servidor no esta arriba entrena a ignorar el
+        resto de la suite.
+
+        La comprobacion no se pierde: es `make insomnia-check`, que es literally
+        este comando. Y salta con el motivo escrito.
         """
+        if not _la_api_esta_arriba():
+            pytest.skip(
+                "el generador lee el OpenAPI de la API viva y no hay servidor en "
+                "127.0.0.1:8000. Corré `make up` y repetí la suite, o "
+                "`make insomnia-check` para comprobarlo sin pytest."
+            )
+
         proc = subprocess.run(
             [sys.executable, str(GENERADOR), "--check"],
             capture_output=True,

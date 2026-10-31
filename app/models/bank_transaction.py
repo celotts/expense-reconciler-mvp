@@ -29,5 +29,10 @@ class BankTransactionModel(Base):
     is_reconciled = Column(Boolean, default=False)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
-    company = relationship("CompanyModel", backref="bank_transactions")
+    # `passive_deletes=True`: la FK es `ON DELETE CASCADE` en la base, y sin
+    # este `True` el ORM manda `UPDATE bank_transactions SET company_id=NULL`
+    # antes del DELETE. Ver el mismo argumento en `app/models/ticket.py`.
+    company = relationship(
+        "CompanyModel", backref="bank_transactions", passive_deletes=True
+    )
     reconciliations = relationship("ReconciliationModel", back_populates="bank_transaction")

@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS tickets (
 -- Tabla de Movimientos Bancarios (Importados vía CSV/PDF)
 CREATE TABLE IF NOT EXISTS bank_transactions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+    company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
     transaction_date DATE NOT NULL,
     amount NUMERIC(12, 2) NOT NULL,
     description TEXT NOT NULL,
@@ -1052,6 +1052,171 @@ CREATE INDEX IF NOT EXISTS ix_compra_items_impuestos
 
 
 -- =====================================================================
+-- 0018_tipos_gasto.sql — la cuenta de gasto, y la AUTORIZACION, que
+-- no es lo mismo que haber leido bien el papel
+-- =====================================================================
+--
+-- QUE FALTABA Y POR QUE ESTA COPIA ESTA AQUI
+--
+-- `init.sql` se、建设停在 la 0013. Las 0014 a 0017 se habian replicado (sus
+-- columnas estan mas arriba), pero **esta no**: faltaba la tabla `tipos_gasto`
+-- entera, las dos columnas `tipo_gasto_id` y las cuatro de autorizacion. Y el
+-- fallo no lo cazaba nadie, porque la suite construye el esquema **desde los
+-- modelos**, no desde el `init.sql` —este solo corre una vez, con el volumen
+-- vacio—.
+--
+-- MEDIDO: `tests/unit/test_init_sql_espeja_los_modelos.py`的一份 erst
+-- `{'tickets': ['autorizado_at', 'autorizado_por', 'estado_autorizacion',
+-- 'motivo_rechazo', 'tipo_gasto_id'], 'productos': ['tipo_gasto_id']}`. Eso es
+-- lo que ve quien levanta una base nueva: un INSERT de `tickets` revienta con
+-- `column does not exist`, y el comprobante se pierde.
+--
+-- Y lo que el mensaje decia era peor que el bug: "estas columnas las declara
+-- el modelo y NO estan en db/init.sql" — sin decir que tampoco estaba la tabla
+-- de la que cuelgan. Seis objetos, no cinco columnas.
+--
+-- LA REGLA, QUE SIGUE VIGENTE
+--
+-- Si anades una columna: **la migracion Y el `init.sql`, o nada.** Y si
+-- escribes un test que lo verifique, verifica la DECLARACION (`ADD COLUMN` o la
+-- columna dentro de un `CREATE TABLE`), no el nombre de la columna.
+
+-- La lista de cuentas de gasto de la empresa. Es distinta de `categoria`: la
+-- categoria clasifica el gasto por naturaleza, esta es la cuenta contable a la
+-- que va, y un mismo concepto puede ir a cuentas distintas segun la empresa.
+--
+-- COPIA LITERAL de la 0018. La primera version de este bloque se escribio a
+-- mano desde lo que el modelo pedia, y salio con `variable` y `updated_at`
+-- faltando, una columna `naturaleza` que no existe, y sin el indice unico ni
+-- los tres `CHECK`. No lo caza ningun test de modelos —la suite construye el
+-- esquema desde SQLAlchemy, no desde este archivo—: lo cazó
+-- `test_init_sql_espeja_los_modelos.py` al anadir `TipoGastoModel` a su lista,
+-- que es la segunda vez que esa constante escrita a mano se queda corta.
+CREATE TABLE IF NOT EXISTS tipos_gasto (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+
+    -- El codigo de la cuenta. Es lo que se agrupa, lo que va al archivo de
+    -- CONTPAQI y lo que se lee en un reporte. Se guarda en mayusculas porque el
+    -- agrupamiento es por texto y "supermercado" y "SUPERMERCADO" siendo la misma
+    -- cuenta darian dos filas en el cierre.
+    clave VARCHAR(50) NOT NULL,
+
+    -- Lo que ve la persona. Se separa de la clave porque el codigo es para
+    -- maquinas y para el contador, y el nombre es para quien lee la pantalla.
+    nombre VARCHAR(120) NOT NULL,
+
+    -- Gasto variable: depende del volumen (consumo, viaticos) o es fijo
+    -- (renta, suedos). Es lo que separa "subio porque hubo mas actividad" de
+    -- "subio porque se fue de las manos", que es la pregunta que un cierre tiene
+    -- que poder contestar. Viene de `Categoria.variable` en el catalogo viejo.
+    variable BOOLEAN NOT NULL DEFAULT TRUE,
+
+    -- Dar de baja, no borrar (regla 24). Un gasto ya contabilizado apunta a esta
+    -- fila para siempre: si se borra, el reporte de un mes que ya se cerro no
+    -- puede decir en que cuenta estaba.
+    activo BOOLEAN NOT NULL DEFAULT TRUE,
+
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT ck_tipos_gasto_clave_no_vacia CHECK (length(trim(clave)) > 0),
+    CONSTRAINT ck_tipos_gasto_nombre_no_vacio CHECK (length(trim(nombre)) > 0),
+    CONSTRAINT ck_tipos_gasto_clave_mayuscula CHECK (clave = upper(clave))
+);
+
+-- Una cuenta por clave y por empresa. Sin este indice, dos altas con la misma
+-- clave crean dos cuentas y el cierre agrupa dos filas que son la misma cuenta.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tipos_gasto_empresa_clave
+    ON tipos_gasto (company_id, clave);
+
+COMMENT ON COLUMN tipos_gasto.clave IS
+    'Clave normalizada. Se agrupa por ella y va al archivo de CONTPAQI. Mayusculas: el agrupamiento es por texto.';
+COMMENT ON COLUMN tipos_gasto.activo IS
+    'Baja logica. No se borra: un gasto ya contabilizado tiene que seguir diciendo en que cuenta estaba.';
+
+-- El gasto dice en que cuenta va.
+--
+-- `NULL` significa SIN CLASIFICAR, que es un dato sobre la disciplina de
+-- captura, no una cuenta mas. Por eso no se rellena con un valor por omision:
+-- rellenar seria afirmar que alguien lo reviso.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS tipo_gasto_id UUID
+    REFERENCES tipos_gasto(id) ON DELETE RESTRICT;
+
+-- El reporte del cierre agrupa por esta columna: sin el indice, cada cierre lee
+-- la tabla entera de tickets.
+CREATE INDEX IF NOT EXISTS ix_tickets_tipo_gasto ON tickets (tipo_gasto_id);
+
+COMMENT ON COLUMN tickets.tipo_gasto_id IS
+    'Cuenta de gasto. NULL significa SIN CLASIFICAR, que es un dato sobre la disciplina de captura, no una cuenta mas.';
+
+-- El producto dice en que cuenta va por omision.
+ALTER TABLE productos ADD COLUMN IF NOT EXISTS tipo_gasto_id UUID
+    REFERENCES tipos_gasto(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS ix_productos_tipo_gasto ON productos (tipo_gasto_id);
+
+COMMENT ON COLUMN productos.tipo_gasto_id IS
+    'Cuenta propuesta para las compras de este producto. NO se copia al gasto: lo que se compro en una fecha puede ir a otra cuenta.';
+
+-- La lista de la pantalla: las de la empresa, las vivas primero y por nombre.
+CREATE INDEX IF NOT EXISTS ix_tipos_gasto_empresa_activo
+    ON tipos_gasto (company_id, activo);
+
+
+-- LA AUTORIZACION, QUE NO ES LO MISMO QUE HABER LEIDO BIEN EL PAPEL
+--
+-- `ExtractionStatus` responde "como se leyo el papel". `AUTO_APROBADO` significa
+-- que el automatismo se responsabiliza de la lectura, y eso NO es que alguien haya
+-- autorizado el gasto. Meter la autorizacion ahi seria afirmar que un gasto que
+-- leyo solo una maquina quedo autorizado por alguien, y el cierre mensual no
+-- podria distinguir los dos casos.
+--
+-- Son dos preguntas, asi que son dos columnas. Y el que autoriza sale del token,
+-- nunca del cuerpo (regla 23): aceptarlo del body seria una puerta para
+-- autorizar en nombre de otra persona.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS estado_autorizacion VARCHAR(20)
+    NOT NULL DEFAULT 'PENDIENTE';
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS autorizado_por VARCHAR(255) NULL;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS autorizado_at TIMESTAMP WITH TIME ZONE NULL;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS motivo_rechazo TEXT NULL;
+
+-- `PENDIENTE` / `APROBADA` / `RECHAZADA`. La constraint esta en la base y no
+-- solo en el enum: sin ella, un UPDATE basta para que una autorizacion parezca
+-- firmada —el mismo motivo que `ck_compras_confirmacion`.
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS ck_tickets_estado_autorizacion;
+ALTER TABLE tickets ADD CONSTRAINT ck_tickets_estado_autorizacion
+    CHECK (estado_autorizacion IN ('PENDIENTE', 'APROBADA', 'RECHAZADA'));
+
+-- Y que APROBAR exija quien y cuando, igual que `confirmar_compra`. Una
+-- aprobacion sin firma es una afirmacion sin autor.
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS ck_tickets_autorizacion_firmada;
+ALTER TABLE tickets ADD CONSTRAINT ck_tickets_autorizacion_firmada
+    CHECK (
+        estado_autorizacion <> 'APROBADA'
+        OR (autorizado_por IS NOT NULL AND autorizado_at IS NOT NULL)
+    );
+
+-- `autorizado_por` es TEXTO y no FK a proposito, y es la misma razon que
+-- `compras.confirmada_por` y `tickets.reviewed_by`: la firma tiene que
+-- sobrevivir a que se de de baja la cuenta que firmo. Una FK con
+-- `ON DELETE SET NULL` perderia justo el dato que dice quien autorizo.
+COMMENT ON COLUMN tickets.autorizado_por IS
+    'Email de quien autorizo. TEXTO y no FK: la firma tiene que sobrevivir a la baja de la cuenta.';
+
+-- RECHAZAR tambien es una decision con motivo: "no se autorizo" y "no se autorizo
+-- por esto" son respuestas distintas, y sin el motivo el rechazo no se puede
+-- distinguir de un alta a medias.
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS ck_tickets_rechazo_con_motivo;
+ALTER TABLE tickets ADD CONSTRAINT ck_tickets_rechazo_con_motivo
+    CHECK (estado_autorizacion <> 'RECHAZADA' OR motivo_rechazo IS NOT NULL);
+
+COMMENT ON COLUMN tickets.motivo_rechazo IS
+    'Por que NO se autorizo. Obligatorio en RECHAZADA: sin el, el rechazo no se distingue de un alta a medias.';
+
+
+-- =====================================================================
 -- El registro de que esta base ya esta al dia (0015)
 -- =====================================================================
 --
@@ -1059,7 +1224,7 @@ CREATE INDEX IF NOT EXISTS ix_compra_items_impuestos
 --
 -- Hasta ahora no habia forma de responder "¿esta base necesita migraciones?".
 -- Se podia mirar el esquema, y el esquema NO RESPONDE: `init.sql` trae las
--- mismas 105 cosas que las 12 migraciones (verificado), asi que una base creada
+-- mismas 105 cosas que las 18 migraciones (verificado), asi que una base creada
 -- desde cero y una migrada se ven IDENTICAS. Se probo usar una tabla como
 -- discriminante —`cierres_periodo` es la 0007, si existe es vieja— y da la
 -- respuesta equivocada en las dos direcciones: una base recien creada tambien la
@@ -1083,12 +1248,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Una base creada desde `init.sql` esta AL DIA con las 12 migraciones, porque
--- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 12
+-- Una base creada desde `init.sql` esta AL DIA con las 18 migraciones, porque
+-- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 18
 -- archivos sobre una base que ya tiene todo: `IF NOT EXISTS` los haria
 -- idempotentes, pero el operador veria "aplicando 0002..." y pensaria que su
 -- base estaba vieja. El registro tiene que decir la verdad, y la verdad es que
 -- esa base no necesita nada.
+--
+-- Son 18 y no 12 porque la 0018 se anadio despues. Esa omision es exactamente
+-- el fallo que `test_init_sql_espeja_los_modelos.py` existe para cazar, y lo
+-- cazó: faltaba la tabla `tipos_gasto` entera y no solo columnas. Si anades una
+-- migracion, la copias aqui Y agregas su fila a esta lista.
 --
 -- `INSERT ... ON CONFLICT DO NOTHING` porque el `init.sql` se puede volver a
 -- correr sin reventar, y estas filas ya pueden estar.
@@ -1104,5 +1274,10 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0010_inventario.sql'),
     ('0011_productos_origen.sql'),
     ('0012_el_impuesto_es_de_la_partida.sql'),
-    ('0013_compras_rechazables.sql')
+    ('0013_compras_rechazables.sql'),
+    ('0014_import_bancario_idempotente.sql'),
+    ('0015_fecha_provisional.sql'),
+    ('0016_perfil_usuario.sql'),
+    ('0017_auditoria.sql'),
+    ('0018_tipos_gasto.sql')
 ON CONFLICT (nombre) DO NOTHING;

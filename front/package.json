@@ -12,7 +12,8 @@
     "verify:aviso": "esbuild scripts/verificar_aviso_formato.ts --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty && node /tmp/verify-front/verificar_aviso_formato.js",
     "verify:fecha": "esbuild scripts/verificar_fecha.ts --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty && node /tmp/verify-front/verificar_fecha.js",
     "verify:papel": "esbuild scripts/verificar_disposicion_del_papel.ts --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty && node /tmp/verify-front/verificar_disposicion_del_papel.js",
-    "verify:cierre": "esbuild scripts/verificar_cierre_en_pantalla.tsx --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty --define:import.meta='{\"env\":{\"VITE_API_URL\":\"http://localhost:8000/api/v1\"}}' && node /tmp/verify-front/verificar_cierre_en_pantalla.js"
+    "verify:cierre": "esbuild scripts/verificar_cierre_en_pantalla.tsx --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty --define:import.meta='{\"env\":{\"VITE_API_URL\":\"http://localhost:8000/api/v1\"}}' && node /tmp/verify-front/verificar_cierre_en_pantalla.js",
+    "verify:ojo": "esbuild scripts/verificar_ojo_contrasena.tsx --bundle --platform=node --format=cjs --outdir=/tmp/verify-front --log-level=error --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty && node /tmp/verify-front/verificar_ojo_contrasena.js"
   },
   "dependencies": {
     "react": "^18.2.0",

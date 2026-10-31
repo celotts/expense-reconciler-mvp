@@ -233,7 +233,7 @@ class TestLoQueNoExiste:
 
     @pytest.mark.asyncio
     async def test_un_ticket_sin_documento_lo_dice_con_un_motivo(
-        self, async_client, db_session, test_company
+        self, async_client, db_session, test_company, usuario_de_prueba
     ):
         """El mensaje distingue las dos causas, porque piden cosas distintas.
 
@@ -254,6 +254,7 @@ class TestLoQueNoExiste:
                 total_amount=Decimal("150.00"),
                 expense_date=date(2025, 3, 15),
             ),
+            usuario=usuario_de_prueba,
             db=db_session,
         )
 
@@ -427,7 +428,7 @@ class TestReemplazarElDocumento:
 
     @pytest.mark.asyncio
     async def test_un_ticket_manual_no_anuncia_un_documento_que_no_existe(
-        self, async_client, db_session, test_company
+        self, async_client, db_session, test_company, usuario_de_prueba
     ):
         """El caso contrario, que es el que hace que el campo signifique algo.
 
@@ -445,6 +446,7 @@ class TestReemplazarElDocumento:
                 total_amount=Decimal("150.00"),
                 expense_date=date(2025, 3, 15),
             ),
+            usuario=usuario_de_prueba,
             db=db_session,
         )
 

@@ -117,8 +117,29 @@ export function Input({
           className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
             esPassword ? 'pr-11' : ''
           } ${error ? 'border-red-500' : 'border-gray-300'} ${className}`}
-          {...(esPassword ? { type: visible ? 'text' : 'password' } : {})}
           {...props}
+          // EL `type` VA **DESPUES** DE `{...props}`, y el orden es el arreglo.
+          //
+          // MEDIDO: con el spread de props despues, el boton del ojo no
+          // mostraba nada. `Login.tsx:120` pasa `type="password"`, y eso
+          // traveling en `props` pisaba el `type` calculado: React aplica el
+          // ultimo spread que aparece, y aqui el ultimo era `{...props}` con
+          // `type="password"` dentro. El estado `visible` SI cambiaba —el icono
+          // del ojo alternaba, y por eso el boton parecia funcionar—, pero el
+          // input se quedaba en `password` para siempre y la clave seguia
+          // saliendo como asteriscos.
+          //
+          // El sintoma era el peor posible para diagnosticar: **el icono
+          // cambia y el campo no**, que se lee como "el boton esta roto" y no
+          // como "el boton funciona y el atributo no llega". Un control que
+          // cambia de estado sin cambiar lo que controla no esta-rotos: esta
+          // decorado.
+          //
+          // Va despues a proposito y no se "simplifica" moviendolo antes: un
+          // input cuyo `type` viene del padre es un input que no puede
+          // controlledar su propio `type`. El padre dice "esto es una clave"
+          // (`esPassword`) y este decide si se ve.
+          {...(esPassword ? { type: visible ? 'text' : 'password' } : {})}
         />
         {esPassword && (
           <button

@@ -93,6 +93,10 @@ from app.services.archivado_service import (
     archivar,
     carpeta_de_escaneados,
 )
+from app.services.auditoria import (
+    registrar_auditoria,
+    registrar_digitalizacion_auditoria,
+)
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.confidence_gate import gate_ticket
 from app.services.ticket_persistence import persistir_extraccion
@@ -1237,6 +1241,41 @@ async def escanear(
             # "0 leidos / Ningun archivo se leyo en esta corrida" habiendo
             # Dedicated tres minutos y medio a leerlos.
             await _registrar_en_el_feed(corrida, db, detalle)
+
+            # --- Registro de auditoría de digitalización ------------------
+            #
+            # ANTES: `registrar_digitalizacion_auditoria` existía pero tenía
+            # **0 callers** — era código muerto. El escáner es el que sabe qué
+            # archivo se leyó, con qué resultado y quién lo disparó, así que es
+            # el único punto donde este registro puede escribirse con datos
+            # reales.
+            #
+            # `actor` es el identificador del usuario que disparó la corrida
+            # (UUID o email). Va en `usuario_id` para que "quién digitalizó
+            # esto" sea una consulta, no una búsqueda en `detalles`.
+            exitoso = detalle.accion != "ERROR"
+            if detalle.ticket_id is not None:
+                await registrar_digitalizacion_auditoria(
+                    ticket_id=str(detalle.ticket_id),
+                    usuario_id=str(actor),
+                    rol=None,
+                    archivo=vista.relative_path,
+                    resultado=detalle.accion,
+                    exitoso=exitoso,
+                )
+            else:
+                await registrar_auditoria(
+                    accion="digitalizar_sin_ticket",
+                    modulo="scan",
+                    usuario_id=str(actor),
+                    registro_afectado=None,
+                    detalles={
+                        "archivo": vista.relative_path,
+                        "resultado": detalle.accion,
+                        "exitoso": exitoso,
+                    },
+                    rol=None,
+                )
 
             # --- El archivado, DESPUES de registrar el resultado ----------
             #

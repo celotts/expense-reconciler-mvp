@@ -173,6 +173,7 @@ CARPETAS: list[tuple[str, str]] = [
     ("/reconciliations", "Reconciliations"),
     ("/reports", "Reports"),
     ("/auditoria", "Auditoria"),
+    ("/sistema", "Sistema"),
 ]
 
 # El orden de ESTA lista es el orden de las carpetas, y el de las peticiones dentro de
@@ -346,6 +347,7 @@ NOMBRES: dict[tuple[str, str], str] = {
     # demas reciben 403. Un 403 aqui es el resultado correcto, no un fallo de la
     # peticion, y quien lo lea con la coleccion delante lo comprueba en un clic.
     ("GET", "/auditoria"): "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
+    ("GET", "/sistema/backup"): "s1. Respaldo de la base de datos  (descarga SQL, solo admin)",
 }
 
 # Los tres scripts que hacen que la coleccion se sustains sola.

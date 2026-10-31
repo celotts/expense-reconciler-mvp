@@ -193,6 +193,7 @@ def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
 async def create_ticket(
     ticket_in: TicketCreate,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> TicketModel:
     """Create a new ticket manually.
@@ -234,13 +235,24 @@ async def create_ticket(
     await db.commit()
     await db.refresh(ticket)
     
-    # Registrar auditoría de creación de ticket
+    # La auditoria dice QUE PASO, no solo que algo se toco.
+    #
+    # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
+    # —tambien en la CREACION— y `rol=ticket.perfil if hasattr(ticket, 'perfil')
+    # else None`. Ese `hasattr` era **siempre False**: `tickets` no tiene columna
+    # `perfil` (solo `users`), asi que el rol salia `None` en las cuatro. Y
+    # `usuario_id` venia hardcodeado a `None` en `registrar_auditoria`, o sea que
+    # **ninguna fila podia decir quien habia hecho nada**.
+    #
+    # `usuario.perfil` y no `ticket.perfil`: el rol es el de quien OPERA, y sale
+    # del token (regla 23), no de un cuerpo que el cliente pueda mandar.
     await registrar_auditoria(
-        accion='update_ticket',
+        accion='crear_ticket',
         modulo='tickets',
+        usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
         detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
-        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+        rol=usuario.perfil,
     )
     
     return ticket
@@ -780,13 +792,31 @@ async def review_ticket(
     await db.commit()
     await db.refresh(ticket)
     
-    # Registrar auditoría de creación de ticket
+    # La auditoria dice QUE PASO, no solo que algo se toco.
+    #
+    # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
+    # —tambien en la CREACION— y `rol=ticket.perfil if hasattr(ticket, 'perfil')
+    # else None`. Ese `hasattr` era **siempre False**: `tickets` no tiene columna
+    # `perfil` (solo `users`), asi que el rol salia `None` en las cuatro. Y
+    # `usuario_id` venia hardcodeado a `None` en `registrar_auditoria`, o sea que
+    # **ninguna fila podia decir quien habia hecho nada**.
+    #
+    # `usuario.perfil` y no `ticket.perfil`: el rol es el de quien OPERA, y sale
+    # del token (regla 23), no de un cuerpo que el cliente pueda mandar.
+    # MEDIDO: esto se registraba como `update_ticket`, igual que una correccion
+    # cualquiera y que la creacion. Aprobar en la cola es **una decision con su
+    # propio nombre**: es la fila que responde "quien aprobo este gasto".
+    #
+    # El `accion` es lo que se filtra en el rastro (`GET /auditoria?accion=`), y
+    # un nombre generico hace que la pregunta "quien aprobo esto" no se pueda
+    # formular.
     await registrar_auditoria(
-        accion='update_ticket',
+        accion='revisar_ticket',
         modulo='tickets',
+        usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
         detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
-        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+        rol=usuario.perfil,
     )
     
     return ticket
@@ -1508,13 +1538,28 @@ async def put_documento(
     await db.commit()
     await db.refresh(ticket)
     
-    # Registrar auditoría de creación de ticket
+    # La auditoria dice QUE PASO, no solo que algo se toco.
+    #
+    # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
+    # —tambien en la CREACION— y `rol=ticket.perfil if hasattr(ticket, 'perfil')
+    # else None`. Ese `hasattr` era **siempre False**: `tickets` no tiene columna
+    # `perfil` (solo `users`), asi que el rol salia `None` en las cuatro. Y
+    # `usuario_id` venia hardcodeado a `None` en `registrar_auditoria`, o sea que
+    # **ninguna fila podia decir quien habia hecho nada**.
+    #
+    # `usuario.perfil` y no `ticket.perfil`: el rol es el de quien OPERA, y sale
+    # del token (regla 23), no de un cuerpo que el cliente pueda mandar.
+    # MEDIDO: se registraba como `update_ticket`. Cambiar el papel de un
+    # comprobante es de lo mas sensible que hace el sistema —el papel es la
+    # evidencia— y compartia nombre con una correccion de campos. Con nombres
+    # distintos, "quien cambio el papel" es una consulta y no una busqueda.
     await registrar_auditoria(
-        accion='update_ticket',
+        accion='actualizar_documento',
         modulo='tickets',
+        usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
         detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
-        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+        rol=usuario.perfil,
     )
     
     return ticket
@@ -1558,6 +1603,7 @@ async def get_ticket(
 async def update_ticket(
     ticket_id: UUID,
     ticket_in: TicketUpdate,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> TicketModel:
     """Update a ticket."""
@@ -1660,13 +1706,26 @@ async def update_ticket(
     await db.commit()
     await db.refresh(ticket)
     
-    # Registrar auditoría de creación de ticket
+    # La auditoria dice QUE PASO, no solo que algo se toco.
+    #
+    # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
+    # —tambien en la CREACION— y `rol=ticket.perfil if hasattr(ticket, 'perfil')
+    # else None`. Ese `hasattr` era **siempre False**: `tickets` no tiene columna
+    # `perfil` (solo `users`), asi que el rol salia `None` en las cuatro. Y
+    # `usuario_id` venia hardcodeado a `None` en `registrar_auditoria`, o sea que
+    # **ninguna fila podia decir quien habia hecho nada**.
+    #
+    # `usuario.perfil` y no `ticket.perfil`: el rol es el de quien OPERA, y sale
+    # del token (regla 23), no de un cuerpo que el cliente pueda mandar.
+    # MEDIDO: se registraba como `update_ticket`, igual que la creacion y que la
+    # revision. Son tres hechos distintos y el rastro no los distinguia.
     await registrar_auditoria(
-        accion='update_ticket',
+        accion='actualizar_ticket',
         modulo='tickets',
+        usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
         detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
-        rol=ticket.perfil if hasattr(ticket, 'perfil') else None,
+        rol=usuario.perfil,
     )
     
     return ticket

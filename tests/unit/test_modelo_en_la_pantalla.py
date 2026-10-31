@@ -45,6 +45,7 @@ from app.services.ai_client import AIProvider, AIResponse
 from app.services.ai_extractor import ExtractedInvoice
 from app.services.capture import invoice_to_result
 from app.services.scan_service import ResumenArchivo
+from app.core.config import settings
 from app.core.enums import ConfidenceSource
 
 
@@ -308,6 +309,46 @@ class TestElDiagnosticoNoDiceQueTodoEstaBien:
 
         monkeypatch.setattr(mod, "_modelos_del_proveedor", _fake)
 
+    @staticmethod
+    def _configurados() -> set[str]:
+        """Los DOS modelos que la configuracion declara, sin escribir sus nombres.
+
+        ## POR QUE NO SE ESCRIBEN A MANO
+
+        Este archivo afirmaba `moondream` y `qwen2.5vl:3b` a pelo, lo que
+        subjectaba el `.env` de una maquina concreta a no moverse. Y se movio:
+        `OLLAMA_MODEL`
+        paso de `moondream` a `qwen2.5:3b` (el modelo de texto que no leia
+        comprobantes fue cambiado por el que si los lee), y **estos tres tests
+        se pusieron rojos sin que cambiara una linea de produccion**.
+
+        Eso es un test que afirma algo de la maquina, no del codigo: el dia que
+        se cambie el modelo —que es una operacion legitima y la que ya se hizo—
+        falla el suite entero. Y peor: el nombre correcto en el `.env` puede ser
+        cualquiera, asi que la un forma de que el test sobreviva es leer lo que
+        la configuracion DECLARA y afirmar la relacion entre esa declaracion y
+        lo que el proveedor tiene.
+
+        Lo que se afirma sigue siendo lo mismo de antes, y es lo que hay que
+        proteger: `faltan` trae **los dos** configurados cuando no hay ninguno
+        instalado, y trae **solo** el que falta cuando hay uno. Los nombres
+        salen de `settings`, que es de donde los lee `disponibilidad`.
+        """
+        from app.core.config import settings
+
+        return {settings.OLLAMA_MODEL, settings.OLLAMA_VISION_MODEL}
+
+    @staticmethod
+    def _instalados_de(uno_de_los_configurados: str) -> list[str]:
+        """La lista que hace que UNO de los dos se considere instalado.
+
+        `ollama list` devuelve la etiqueta (`qwen2.5:3b:latest`) y el corte por
+        etiqueta es el que evita el falso positivo. Se construye desde la
+        configuracion para que el test siga probando el corte por etiqueta y no
+        un nombre que puede dejar de existir.
+        """
+        return [f"{uno_de_los_configurados}:latest", "llama3.1:8b"]
+
     @pytest.mark.anyio
     async def test_un_contenedor_sin_modelos_no_dice_que_esta_disponible(
         self, monkeypatch
@@ -324,7 +365,10 @@ class TestElDiagnosticoNoDiceQueTodoEstaBien:
             "decir 'disponible' es la mitad de la verdad"
         )
         assert d["error"], "tiene que decir POR QUE no esta disponible"
-        assert "moondream" in d["error"] or "qwen2.5vl" in d["error"]
+        assert any(c in d["error"] for c in self._configurados()), (
+            "el error tiene que NOMBRAR el modelo que falta; sin el nombre es "
+            "media hora de diagnostica"
+        )
 
     @pytest.mark.anyio
     async def test_los_modelos_configurados_que_faltan_se_dicen(self, monkeypatch):
@@ -339,7 +383,7 @@ class TestElDiagnosticoNoDiceQueTodoEstaBien:
             "`faltan` es la lista de lo que se configuro y no esta. Con "
             "`modelos_instalados: []` tiene que traer los dos nombres."
         )
-        assert set(d["faltan"]) == {"moondream", "qwen2.5vl:3b"}
+        assert set(d["faltan"]) == self._configurados()
         assert all("ollama pull" in c for c in d["como_instalar"])
 
     @pytest.mark.anyio
@@ -353,11 +397,13 @@ class TestElDiagnosticoNoDiceQueTodoEstaBien:
         """
         from app.services.ai_client import disponibilidad
 
-        self._con_modelos(monkeypatch, ["moondream:latest", "llama3.1:8b"])
+        self._con_modelos(
+            monkeypatch, self._instalados_de(settings.OLLAMA_MODEL)
+        )
 
         d = await disponibilidad()
 
-        assert d["faltan"] == ["qwen2.5vl:3b"], (
+        assert d["faltan"] == [settings.OLLAMA_VISION_MODEL], (
             "el de texto esta instalado (con etiqueta) y el de vision no: solo "
             "el de vision puede estar en la lista"
         )
@@ -390,7 +436,7 @@ class TestElDiagnosticoNoDiceQueTodoEstaBien:
             "responder NO es lo mismo que poder contestar: los dos modelos "
             "configurados estan ausentes"
         )
-        assert set(d["faltan"]) == {"moondream", "qwen2.5vl:3b"}
+        assert set(d["faltan"]) == self._configurados()
 
     @pytest.mark.anyio
     async def test_no_se_puede_afirmar_disponibilidad_sin_preguntar(self, monkeypatch):

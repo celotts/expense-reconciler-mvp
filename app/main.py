@@ -27,29 +27,56 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 async def _sembrar_sos() -> None:
-    """Crea el usuario sos (super usuario) si no existe. Permite iniciar
-    la administracion de perfiles y crear admins desde el primer arranque."""
+    """Crea el usuario inicial si no existe ninguno.
+
+    ## POR QUE NO HAY CONTRASENA POR DEFECTO
+
+    MEDIDO: antes se creaba `sos@empresa.mx` / `SosTesting123` en cada
+    arranque. Eso es un backdoor: cualquier persona que sepa el repo sabe la
+    contraseña del primer admin. Para un producto que se vende, eso es inaceptable.
+
+    Ahora: si no hay NINGUN usuario, se crea uno con email `admin@localhost`
+    y contraseña aleatoria de 16 caracteres. La contraseña se imprime UNA VEZ
+    en el log del arranque. Si ya hay usuarios, no se toca nada.
+
+    El usuario la cambia en el primer login (el frontend lo fuerza).
+    """
     try:
         from app.core.database import AsyncSessionLocal
         from app.core.security import hashear_contrasena
         from app.models.user import UserModel
-        from sqlalchemy import select
+        from sqlalchemy import func, select
+        import secrets
+        import string
 
         async with AsyncSessionLocal() as db:
-            existente = (await db.execute(
-                select(UserModel).where(UserModel.email == "sos@empresa.mx")
-            )).scalar_one_or_none()
-            if existente is None:
-                sos = UserModel(
-                    email="sos@empresa.mx",
-                    nombre="Super Sos",
-                    password_hash=hashear_contrasena("SosTesting123"),
+            total = (await db.execute(
+                select(func.count()).select_from(UserModel)
+            )).scalar_one()
+
+            if total == 0:
+                # Contraseña aleatoria de 16 caracteres (letras + digitos)
+                alfabeto = string.ascii_letters + string.digits
+                password_inicial = "".join(secrets.choice(alfabeto) for _ in range(16))
+
+                admin = UserModel(
+                    email="admin@localhost",
+                    nombre="Administrador",
+                    password_hash=hashear_contrasena(password_inicial),
                     perfil="admin",
                     grupo="administracion",
                     is_active=True,
                 )
-                db.add(sos)
+                db.add(admin)
                 await db.commit()
+
+                # Se imprime UNA vez. No se vuelve a imprimir porque total != 0.
+                print("=" * 60)
+                print("  PRIMER ARRANQUE: usuario inicial creado")
+                print(f"  Email:      admin@localhost")
+                print(f"  Contraseña: {password_inicial}")
+                print("  Cambiala en el primer login.")
+                print("=" * 60)
     except Exception:  # noqa: BLE001
         # No abortar el arranque si el esquema aun no esta listo.
         pass

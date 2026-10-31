@@ -166,7 +166,15 @@ class ScanFileModel(Base):
     # abajo: un `ScanFileResponse` construido con `from_attributes` toca estos
     # atributos, y si son diferidos aparece el mismo `MissingGreenlet`.
     ticket = relationship("TicketModel", lazy="selectin")
-    company = relationship("CompanyModel", lazy="selectin")
+    # `passive_deletes=True`: la FK de `scan_files.company_id` es nullable con
+    # `ON DELETE CASCADE` en la base (`db/init.sql:250`), o sea que el borrado en
+    # cascada lo sabe hacer Postgres. Sin este `True` el ORM manda
+    # `UPDATE scan_files SET company_id = NULL` antes del DELETE de la empresa —
+    # aqui no revienta por el NOT NULL, pero **pierde la fila del escaner**: el
+    # registro de "este archivo ya se miró" es lo que hace que la proxima
+    # corrida no vuelva a gastar OCR en el, y `DELETE /scan/reset` lo borra a
+    # proposito, no por accidente de un UPDATE.
+    company = relationship("CompanyModel", lazy="selectin", passive_deletes=True)
     # `lazy="selectin"` y no el `select` por omision. Con el diferido, tocar
     # `fila.events` desde un schema de Pydantic dispara IO en un punto donde
     # SQLAlchemy asincrono no puede esperar, y el error que sale es

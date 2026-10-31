@@ -781,7 +781,23 @@ def generar_pdf(reporte: ReporteCierreMensual) -> bytes:
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(ancho, 5.4, _latin1("Por categoria"))
         for cat in reporte.gasto.por_categoria:
-            nombre = cat.get("categoria") or "sin clasificar"
+            # `etiqueta`, y no `categoria`: `analitica.por_categoria` devuelve
+            # `{"clave", "etiqueta", "monto", "tickets"}` y no existe una clave
+            # `categoria` en ese diccionario. Con la clave equivocada el `.get()`
+            # devolvia `None` y TODAS las filas salian como "sin clasificar":
+            # el PDF de un periodo con veinte categorias las decia todas sin
+            # clasificar, y es el documento que se firma.
+            #
+            # MEDIDO: el JSON de la API viva y el PDF de la MISMA consulta
+            # discrepaban —el front si leia `etiqueta`, el PDF no—, y eso rompia
+            # la garantia de R4: "un objeto, dos salidas, y el PDF no recalcula
+            # nada". No recalculaba, pero si leyia otra cosa.
+            #
+            # El `.get("etiqueta")` sigue siendo tolerante a proposito: si el
+            # dia de manana se le anade una clave mas, una fila sin etiqueta se
+            # declara "sin clasificar" en vez de sacar un `KeyError` en una
+            # peticion que pide un PDF.
+            nombre = cat.get("etiqueta") or "sin clasificar"
             pdf.set_font("Helvetica", "", 10)
             pdf.cell(ancho * 0.6, 5.2, _latin1(str(nombre)))
             pdf.cell(ancho * 0.25, 5.2, _dinero(cat.get("monto")), align="R")

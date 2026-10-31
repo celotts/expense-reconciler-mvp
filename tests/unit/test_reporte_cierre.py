@@ -717,3 +717,111 @@ class TestR3LosEstadosDelPeriodo:
     def test_sin_pendientes_no_hay_motivo(self):
         assert self._pendientes().motivo is None
         assert self._pendientes().hay_pendientes is False
+
+# ---------------------------------------------------------------------------
+# El reparto por categoria: el PDF leia una clave que no existia
+# ---------------------------------------------------------------------------
+
+class TestElPdfNombraCadaCategoria:
+    """`known-issues.md` §0.h. El PDF decia "sin clasificar" en TODAS las filas.
+
+    `reporte_cierre.py` imprimia `cat.get("categoria")`, y
+    `analitica.por_categoria` devuelve `{"clave", "etiqueta", "monto", "tickets"}`:
+    **no hay una clave `categoria` en ese diccionario**. El `.get()` devolvia
+    `None` en cada fila y el `or "sin clasificar"` caia en todas.
+
+    ## POR QUE NO ES COSMETICO
+
+    Es el documento que se entrega y se firma. Un periodo con veinte categorias
+    de gasto decía veinte veces "sin clasificar", y un contador que lo lee得出
+    que no hay nada clasificado — o, peor, que el reparto por rubro esta vacio.
+    Y Rompia la garantia de R4 de otra manera que no era la que R4 prohibe: el
+    PDF **no recalcula** nada (sigue saliendo del mismo `ReporteCierreMensual`),
+    pero **leia otra clave** que el JSON. El preview del front si leia
+    `etiqueta`, asi que la misma consulta se veia de dos maneras distintas en
+    dos pantallas, y solo una era la buena.
+
+    El `.get()` tolerante se queda a proposito: una fila sin `etiqueta` se
+    declara "sin clasificar" en vez de tumbar la peticion que pide un PDF.
+    """
+
+    @staticmethod
+    def _reporte_con_categorias(por_categoria: list[dict]):
+        from app.schemas.reporte import ResumenGasto
+
+        return _reporte_minimo(
+            gasto=ResumenGasto(
+                total=Decimal("1000.00"),
+                tickets=10,
+                por_categoria=por_categoria,
+            )
+        )
+
+    def test_las_categorias_clasificadas_salen_con_su_nombre(self):
+        texto = _texto_del_pdf(
+            bytes(
+                generar_pdf(
+                    self._reporte_con_categorias([
+                        {"clave": "alimentacion", "etiqueta": "Alimentacion",
+                         "monto": Decimal("600.00"), "tickets": 6},
+                        {"clave": "transporte", "etiqueta": "Transporte",
+                         "monto": Decimal("400.00"), "tickets": 4},
+                    ])
+                )
+            )
+        )
+        assert "Alimentacion" in texto
+        assert "Transporte" in texto
+
+    def test_una_categoria_clasificada_no_se_declara_sin_clasificar(self):
+        """El defecto medido: el PDF decia "sin clasificar" y el nombre no salia.
+
+        Se comprueba **el nombre Y la ausencia del fallo a la vez**, porque
+        afirmar solo "no hay 'sin clasificar'" pasaria con un informe que no
+        dibuja la seccion. Un informe sin la seccion tiene que ver as an
+        `Por categoria` sin filas, que es otra cosa.
+        """
+        texto = _texto_del_pdf(
+            bytes(
+                generar_pdf(
+                    self._reporte_con_categorias([
+                        {"clave": "alimentacion", "etiqueta": "Alimentacion",
+                         "monto": Decimal("1000.00"), "tickets": 10},
+                    ])
+                )
+            )
+        )
+        assert "Por categoria" in texto, "la seccion tiene que estar"
+        assert "Alimentacion" in texto
+        assert "sin clasificar" not in texto.lower(), (
+            "una categoria clasificada sale como sin clasificar: el PDF esta "
+            "leyendo una clave que `por_categoria` no produce"
+        )
+
+    def test_sin_categorias_no_se_inventa_la_seccion(self):
+        """El caso contrario: sin reparto, la seccion no se imprime.
+
+        Con `por_categoria` vacio el PDF tiene que omitir el encabezado, porque
+        "Por categoria" seguido de nada es una fila que parece un dato vacio.
+        """
+        texto = _texto_del_pdf(bytes(generar_pdf(_reporte_minimo())))
+        assert "Por categoria" not in texto
+
+    def test_una_fila_sin_etiqueta_se_declara_y_no_tumba(self):
+        """La tolerancia del `.get()` es deliberada y aqui se afirma.
+
+        Una fila sin `etiqueta` es "sin clasificar", que es lo que el papel
+        realmente dice. Lo que NO puede ser es un `KeyError` en una peticion que
+        pide el PDF de un periodo: quien lo pide no se puede enterar de que el
+        servicio de categorias cambio.
+        """
+        texto = _texto_del_pdf(
+            bytes(
+                generar_pdf(
+                    self._reporte_con_categorias([
+                        {"clave": "lo_que_sea", "monto": Decimal("10.00"), "tickets": 1},
+                    ])
+                )
+            )
+        )
+        assert "sin clasificar" in texto.lower()

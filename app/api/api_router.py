@@ -10,6 +10,7 @@ from app.api.inventario import router as inventario_router
 from app.api.reconciliations import router as reconciliations_router
 from app.api.reports import router as reports_router
 from app.api.scans import router as scan_router
+from app.api.sistema import router as sistema_router
 from app.api.tickets import router as tickets_router
 from app.api.usuarios import router as usuarios_router
 from app.core.deps import get_current_user
@@ -126,5 +127,12 @@ api_router.include_router(
     reports_router,
     prefix="/reports",
     tags=["Reports"],
+    dependencies=[Depends(get_current_user)],
+)
+# Sistema: backup, estado, version. Token obligatorio como el resto.
+api_router.include_router(
+    sistema_router,
+    prefix="/sistema",
+    tags=["Sistema"],
     dependencies=[Depends(get_current_user)],
 )

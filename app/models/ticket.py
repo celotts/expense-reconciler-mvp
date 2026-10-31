@@ -285,7 +285,17 @@ class TicketModel(Base):
     # SET NULL se perderia justo ese dato.
     spot_checked_by = Column(String(255), nullable=True)
 
-    company = relationship("CompanyModel", backref="tickets")
+    # `passive_deletes=True`: la FK ya es `ON DELETE CASCADE` en la base
+    # (`db/init.sql:63`), asi que el borrado en cascada lo sabe hacer Postgres.
+    # Sin este `True`, SQLAlchemy intercepta el DELETE de la empresa y manda
+    # antes `UPDATE tickets SET company_id = NULL` — que revienta con
+    # `NotNullViolationError` porque `company_id` es NOT NULL. MEDIDO: ese era
+    # el 500 de `DELETE /companies/{id}` con cualquier ticket.
+    #
+    # Con el `True`, el ORM **no toca las filas hijas** y deja que la cascada de
+    # la base haga su trabajo. Ver `app/models/inventario.py` para el mismo
+    # argumento aplicado a `productos` y `compras`.
+    company = relationship("CompanyModel", backref="tickets", passive_deletes=True)
     reconciliations = relationship("ReconciliationModel", back_populates="ticket")
 
     # LA CADENA DE DOCUMENTOS del ticket, en orden de version.

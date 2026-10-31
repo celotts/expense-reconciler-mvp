@@ -114,6 +114,21 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         ],
     ),
     (
+        # §0.h. El PDF imprimia `cat.get("categoria")` y `por_categoria` devuelve
+        # `etiqueta`: la clave no existe, el `.get()` daba `None` y TODAS las
+        # filas salian como "sin clasificar" en el documento que se firma.
+        "el PDF lee una clave que por_categoria no produce",
+        "app/services/reporte_cierre.py",
+        '            nombre = cat.get("etiqueta") or "sin clasificar"',
+        '            nombre = cat.get("categoria") or "sin clasificar"',
+        [
+            "tests/unit/test_reporte_cierre.py::TestElPdfNombraCadaCategoria"
+            "::test_una_categoria_clasificada_no_se_declara_sin_clasificar",
+            "tests/unit/test_reporte_cierre.py::TestElPdfNombraCadaCategoria"
+            "::test_las_categorias_clasificadas_salen_con_su_nombre",
+        ],
+    ),
+    (
         "el pendiente sin categoria se cuenta sobre todo el historico",
         "app/services/reporte_cierre.py",
         "                TicketModel.expense_date >= inicio.date(),\n"

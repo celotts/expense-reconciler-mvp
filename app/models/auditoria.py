@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, DateTime, Text, UUID
+from sqlalchemy import Column, BigInteger, Integer, String, DateTime, Text, UUID
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -7,7 +7,14 @@ from app.core.database import Base
 class Auditoria(Base):
     __tablename__ = "auditoria"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # `BigInteger` para Postgres (tabla que crece sin techo), con variante
+    # `Integer` para SQLite: SQLite no soporta `autoincrement` en `BigInteger`,
+    # y los tests revientan con `NOT NULL constraint failed: auditoria.id`.
+    id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     usuario_id = Column(UUID(as_uuid=True), nullable=True)
     rol = Column(String(50), nullable=True)
     accion = Column(String(100), nullable=False)

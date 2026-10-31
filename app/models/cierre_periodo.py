@@ -197,4 +197,13 @@ class CierrePeriodoModel(Base):
     # `backref` y no `back_populates` porque `CompanyModel` no declara ninguna
     # relacion: las de empresa se crean todas desde el lado del hijo, que es lo
     # que hacen `tickets.py:181` y `bank_transaction.py:32`.
-    company = relationship("CompanyModel", backref="cierres_periodo")
+    # `passive_deletes=True`: la FK es `ON DELETE CASCADE` en la base
+    # (`db/migrations/0007_cierre_periodo.sql:94`) y sin este `True` el ORM manda
+    # `UPDATE cierres_periodo SET company_id = NULL` antes del DELETE de la
+    # empresa. Mismo argumento que en `app/models/ticket.py`.
+    #
+    # Y `firmedo_por` es texto y no FK a proposito: la firma de un cierre tiene
+    # que sobrevivir a que se borre la empresa que lo firmo.
+    company = relationship(
+        "CompanyModel", backref="cierres_periodo", passive_deletes=True
+    )

@@ -37,6 +37,11 @@ from app.core.security import (
 from app.core.time import utcnow
 from app.models.user import UserModel
 from app.schemas.auth import LoginRequest, TokenResponse, UsuarioResponse
+from app.services.auditoria import (
+    registrar_auditoria,
+    registrar_intento_fallido_auditoria,
+    registrar_login_auditoria,
+)
 
 router = APIRouter()
 
@@ -114,24 +119,68 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
         bloqueados = anotar_intento_fallido(correo, ip)
         if bloqueados:
             raise _demasiados_intentos(bloqueados)
+        # REGISTRO DE AUDITORIA: intento fallido (usuario no existe)
+        # POR QUE: `usuario_id=None` a propósito — un login que no encontró cuenta
+        # no tiene cuenta asociada, y rellenar la columna con algo inventado sería
+        # afirmar que se sabe quién es. El correo va en `detalles`.
+        await registrar_intento_fallido_auditoria(
+            modulo='auth',
+            accion='login',
+            usuario_identificacion=correo,
+            rol=None,
+            ip=ip,
+            motivo='usuario_no_existe',
+        )
         raise _credenciales_malas()
 
     if not verificar_contrasena(datos.password, usuario.password_hash):
         bloqueados = anotar_intento_fallido(correo, ip)
         if bloqueados:
             raise _demasiados_intentos(bloqueados)
+        # REGISTRO DE AUDITORIA: intento fallido (contraseña incorrecta)
+        # POR QUE: este es el evento más importante de una auditoría de auth.
+        # `usuario_id` sí se pone: la cuenta existe, solo que la contraseña no es.
+        await registrar_intento_fallido_auditoria(
+            modulo='auth',
+            accion='login',
+            usuario_identificacion=correo,
+            rol=None,
+            ip=ip,
+            motivo='contrasena_incorrecta',
+        )
         raise _credenciales_malas()
 
     if not usuario.is_active:
         # Tampoco se dice "tu cuenta esta dada de baja" con este mismo codigo.
         # Lo diria el 403 mas adelante, cuando alguien intente usar un token
         # suyo. Aqui el login falla igual que con una contrasena mala.
+        # REGISTRO DE AUDITORIA: intento fallido (cuenta inactiva)
+        # POR QUE: una cuenta dada de baja que sigue recibiendo intentos es una
+        # señal. `usuario_id` se pone: la cuenta existe, solo está desactivada.
+        await registrar_intento_fallido_auditoria(
+            modulo='auth',
+            accion='login',
+            usuario_identificacion=correo,
+            rol=None,
+            ip=ip,
+            motivo='cuenta_inactiva',
+        )
         raise _credenciales_malas()
 
     # Acierto: se borran los intentos fallidos de esta combinacion. Meter la
     # contrasena correcta cinco veces por un error de tecleo y luego acertar
     # no debe dejar a la persona esperando a que expire el bloqueo.
     anotar_intento_exitoso(correo, ip)
+
+    # REGISTRO DE AUDITORIA: login exitoso
+    # POR QUE: una auditoria que no sabe quién entró no es una auditoria.
+    # Antes este evento no se registraba (el helper existía pero tenía 0 callers).
+    # `sale del token`: el id y el perfil vienen de `usuario`, que se leyó de la BD.
+    await registrar_login_auditoria(
+        usuario_id=str(usuario.id),
+        rol=usuario.perfil,
+        ip=ip,
+    )
 
     token, segundos = crear_token(str(usuario.id), usuario.email, usuario.perfil, usuario.grupo)
 
