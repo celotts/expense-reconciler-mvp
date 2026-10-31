@@ -30,12 +30,14 @@ from app.services import capture
 from app.services.ai_extractor import ExtractedInvoice
 from app.services.capture import (
     ExtractionUnavailable,
+    _nombre_parece_basura,
     capture_ticket,
     confianza_por_campos,
     invoice_to_result,
     motivo_de_fallo_del_modelo,
 )
 from app.services.parser_service import TicketExtractionResult, extract_pdf_text, render_pdf_pages
+from app.services.ocr import OCRNoDisponible
 
 RAIZ = Path(__file__).resolve().parents[2]
 
@@ -47,6 +49,23 @@ SUBTOTAL 964.00
 IVA (16%) 136.00
 TOTAL 1,100.00
 """
+
+
+def _ocr_no_instalado(datos: bytes):
+    """Un OCR que se declara ausente, para aislar el escalon de vision.
+
+    Un PDF escaneado pasa PRIMERO por OCR local (`_vision_pdf` ->
+    `_ocr_de_paginas`). Sin inyectar esto, estos tests dependen de si el binario
+    de Tesseract esta instalado en la maquina que corre la suite: aqui lo esta,
+    el OCR lee la pagina renderizada y vision **nunca** se llama, asi que las
+    aserciones sobre `espia.llamadas` y sobre los motivos del modelo dejan de
+    medir lo que dicen medir.
+
+    `OCRNoDisponible` es la forma honesta de decirlo: "no hay quien lea", que
+    `_ocr_de_paginas` trata como "pasa al siguiente escalon" igual que una
+    maquina sin Tesseract. Ver el docstring de `capture._ocr_por_defecto`.
+    """
+    raise OCRNoDisponible("sin tesseract en esta prueba")
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +324,7 @@ class TestPdfEscaneado:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
 
         assert len(espia.llamadas) == 1, "debe mandarse la pagina renderizada"
@@ -351,7 +371,11 @@ class TestPdfEscaneado:
         """
         espia = Espia(_invoice())
         contenido = pdf_escaneado if paginas_en_el_pdf == 1 else pdf_escaneado_largo
-        await capture_ticket(contenido, "pdf", extract_from_image=espia.imagen)
+        await capture_ticket(
+            contenido, "pdf",
+            extract_from_image=espia.imagen,
+            ocr_reader=_ocr_no_instalado,
+        )
         assert len(espia.llamadas) == esperadas
 
     async def test_el_pdf_largo_si_tiene_texto_va_por_reglas(
@@ -444,6 +468,7 @@ class TestFallosDelSistema:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
         assert resultado.provider_name == UNKNOWN_PROVIDER
         assert "extractor de IA esta apagado" in resultado.raw_text
@@ -454,6 +479,7 @@ class TestFallosDelSistema:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
         assert "no se pudo interpretar" in resultado.raw_text
 
@@ -471,6 +497,7 @@ class TestFallosDelSistema:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
         assert resultado.provider_name == UNKNOWN_PROVIDER
         assert "connection reset" in resultado.raw_text
@@ -1005,3 +1032,56 @@ class TestLaFotoQueSeContradiceSeRelee:
             "mejor dato que hay, y descartar una lectura correcta por una mala es "
             "el fallo que `_mejor_de` existe para evitar"
         )
+
+
+# ---------------------------------------------------------------------------
+# El nombre del proveedor: que es ruido y que es un comercio
+# ---------------------------------------------------------------------------
+
+class TestElNombreDelProveedor:
+    """`_nombre_parece_basura` decide si una lectura vale o si hay que releer.
+
+    Rechaza de mas a proposito (un falso positivo cuesta una relectura, un falso
+    negativo deja un ticket que afirma que el gasto fue en "CANT. TOTAL"). Aun
+    asi, rechazar un comercio real es caro: MEDIDO el 2026-10-31, un PDF **con
+    capa de texto** que las reglas leian bien (`4094.80`) se escalaba al modelo y
+    acababa con `confidence_source=llm`, saltandose la regla 3 de `AGENTS.md`.
+
+    La causa era la `y` de `PAPELERIA Y SUMINISTROS`: la regla de "una letra
+    suelta es ruido de OCR" la tomaba por un glifo roto. En espanol `y`, `o`, `e`
+    y `u` son palabras, no ruido.
+    """
+
+    @pytest.mark.parametrize("nombre", [
+        # Las dos que mueren si se quita la excepcion de las conjunciones: sin
+        # ella, la letra suelta las declara basura y son comercios legitimos.
+        "DISTRIBUIDORA O SUMINISTROS DEL NORTE",
+        "Abarrotes E Insumos",
+        # El caso medido. Es el nombre del PDF de `test-files/`.
+        "PAPELERIA Y SUMINISTROS CENTRAL SA DE CV",
+        "TIENDAS DEL SOL",
+        "La Esquina",
+        "7 Eleven",
+        "OXXO SA DE CV",
+        # Una palabra buena con un encabezado pegado no es ruido.
+        "TOTAL FITNESS",
+    ])
+    def test_un_comercio_de_verdad_no_es_ruido(self, nombre):
+        assert _nombre_parece_basura(nombre) is False
+
+    @pytest.mark.parametrize("nombre", [
+        "",                                    # sin nombre
+        "UNKNOWN",                             # centinela del modelo (SENTINELS_SIN_PROVEEDOR)
+        "AI_DISABLED",
+        "gt Edson Nte hunera 1235",            # una direccion como proveedor
+        "AAA AI",                              # ruido de caja, todo corto
+        "CANT. TOTAL",                         # encabezados de casilla
+        "PAPELERIA CENTRAL 1235",              # un numero que no abre el nombre
+    ])
+    def test_el_ruido_sigue_siendo_ruido(self, nombre):
+        """La excepcion es para las conjunciones, no para aflojar la regla.
+
+        Si alguien borra el resto del criterio para "dejar pasar nombres
+        reales", estos casos mueren.
+        """
+        assert _nombre_parece_basura(nombre) is True

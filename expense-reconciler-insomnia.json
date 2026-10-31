@@ -3076,28 +3076,6 @@
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
-      "name": "Health",
-      "description": "El chequeo de vida, y de qué la app depende para funcionar.\n\n## POR QUE CONSULTA LA BASE Y NO SOLO EL PROCESO\n\nMEDIDO en este repo antes de este cambio: con `expense_pgvector` parado,\neste endpoint respondía **200 `{\"status\": \"healthy\"}`**. El contenedor se\ndeclaraba `healthy` y `docker compose ps` decía que todo estaba en orden\nmientras **ninguna ruta que lea datos funcionaba**: cada una devolvía 500\npor conexión rechazada.\n\nEso es un healthcheck que no sabe nada, y el daño no es solo theoretical:\nes el que decide si `expense-front` puede levantarse\n(`depends_on: service_healthy`). Con esta mentira, el front levantaba\napuntando a una API que no podía contestar y el síntoma era \"el front está\narriba pero nada carga\".\n\n## POR QUE NO ES UNA DEFENSA CONTRA CUALQUIER FALLA\n\n`SELECT 1` prueba que hay una conexión y que Postgres responde. **No**\ncomprueba que el esquema esté cargado: una base a la que le falta `tickets`\npasa este chequeo y falla en cada endpoint. Para eso está el healthcheck del\ncontenedor de Postgres, que pregunta por `to_regclass('public.tickets')` y\nno por el socket — porque durante el init la conexión responde antes de que\nlas tablas existan. Son dos preguntas distintas y cada una la contesta su\nhealthcheck: esta dice \"hay base\", el otro dice \"la base tiene el esquema\".\n\n## POR SIGUE SIN PEDIR TOKEN\n\nUn monitor externo no tiene credenciales, y uno que las pide reporta caído un\nservicio que está arriba. Y la respuesta no dice nada del dominio: ni\ntickets, ni montos, ni cuentas. Solo el estado de la conexión.\n\nEl 503 lleva `Connection: close` porque, sin él, nginx y el navegador\npueden cachear el 503 y seguir mostrando \"caído\" después de que la base\nvolvió. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en\nuna URL de Postgres el usuario y la contraseña viajan dentro, y un\nhealthcheck abierto a localhost no es el lugar donde se publican.",
-      "method": "GET",
-      "body": {
-        "mimeType": "application/json",
-        "text": ""
-      },
-      "parameters": [],
-      "headers": [],
-      "url": "{{ api_root }}/health",
-      "metaSortKey": 83,
-      "collectionId": "col_api",
-      "_type": "request",
-      "authentication": {
-        "type": "none"
-      }
-    },
-    {
-      "_id": "req_84",
-      "parentId": "fld_13",
-      "modified": 1759353600000,
-      "created": 1759353600000,
       "name": "s1. Respaldo de la base de datos  (descarga SQL, solo admin)",
       "description": "Descarga un archivo SQL con toda la base de datos.\n\n## POR QUE EXISTE\n\nEl SAT exige conservar comprobantes 5 años. Si se pierde el disco, se\npierden los comprobantes y la evidencia. Un contador que no tiene backup\nautomatizado es un contador que va a perder datos.\n\n## COMO FUNCIONA\n\nEjecuta `pg_dump` sobre la base de datos y devuelve el archivo SQL.\nEl usuario lo guarda donde quiera (USB, Dropbox, etc.).\n\n## QUIEN PUEDE\n\nSolo usuarios con perfil `admin` o `develop`. Un digitalizador no necesita\nrespaldar la base entera.",
       "method": "GET",
@@ -3113,9 +3091,46 @@
         }
       ],
       "url": "{{ base_url }}/sistema/backup",
-      "metaSortKey": 84,
+      "metaSortKey": 83,
       "collectionId": "col_api",
       "_type": "request"
+    },
+    {
+      "_id": "fld_14",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Sin /api/v1",
+      "environment": {},
+      "metaSortKey": -986,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_84",
+      "parentId": "fld_14",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Health",
+      "description": "El chequeo de vida, y de qué la app depende para funcionar.\n\n## POR QUE CONSULTA LA BASE Y NO SOLO EL PROCESO\n\nMEDIDO en este repo antes de este cambio: con `expense_pgvector` parado,\neste endpoint respondía **200 `{\"status\": \"healthy\"}`**. El contenedor se\ndeclaraba `healthy` y `docker compose ps` decía que todo estaba en orden\nmientras **ninguna ruta que lea datos funcionaba**: cada una devolvía 500\npor conexión rechazada.\n\nEso es un healthcheck que no sabe nada, y el daño no es solo theoretical:\nes el que decide si `expense-front` puede levantarse\n(`depends_on: service_healthy`). Con esta mentira, el front levantaba\napuntando a una API que no podía contestar y el síntoma era \"el front está\narriba pero nada carga\".\n\n## POR QUE NO ES UNA DEFENSA CONTRA CUALQUIER FALLA\n\n`SELECT 1` prueba que hay una conexión y que Postgres responde. **No**\ncomprueba que el esquema esté cargado: una base a la que le falta `tickets`\npasa este chequeo y falla en cada endpoint. Para eso está el healthcheck del\ncontenedor de Postgres, que pregunta por `to_regclass('public.tickets')` y\nno por el socket — porque durante el init la conexión responde antes de que\nlas tablas existan. Son dos preguntas distintas y cada una la contesta su\nhealthcheck: esta dice \"hay base\", el otro dice \"la base tiene el esquema\".\n\n## POR SIGUE SIN PEDIR TOKEN\n\nUn monitor externo no tiene credenciales, y uno que las pide reporta caído un\nservicio que está arriba. Y la respuesta no dice nada del dominio: ni\ntickets, ni montos, ni cuentas. Solo el estado de la conexión.\n\nEl 503 lleva `Connection: close` porque, sin él, nginx y el navegador\npueden cachear el 503 y seguir mostrando \"caído\" después de que la base\nvolvió. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en\nuna URL de Postgres el usuario y la contraseña viajan dentro, y un\nhealthcheck abierto a localhost no es el lugar donde se publican.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [],
+      "url": "{{ api_root }}/health",
+      "metaSortKey": 84,
+      "collectionId": "col_api",
+      "_type": "request",
+      "authentication": {
+        "type": "none"
+      }
     }
   ]
 }

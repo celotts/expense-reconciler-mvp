@@ -179,6 +179,20 @@ PALABRAS_DE_DIRECCION = frozenset({
 # para condemnar: hay que mirar que el token NO sea uno de estos.
 ARTICULOS = frozenset({"la", "el", "los", "las", "de", "del", "un", "una"})
 
+# Palabras ESPAÑOLAS de una sola letra. No son ruido de OCR.
+#
+# MEDIDO el 2026-10-31: `PAPELERIA Y SUMINISTROS CENTRAL SA DE CV` salia como
+# "basura" porque la `y` es una letra suelta en medio del nombre. Con eso,
+# `_es_extraccion_util` decia que no y un PDF **con capa de texto** —que las
+# reglas leian bien, total 4094.80— se escalaba al modelo: acababa con
+# `confidence_source=llm`, saltandose la regla 3 de `AGENTS.md` ("un PDF con
+# texto no toca el modelo") y pagando una llamada por un documento ya leido.
+#
+# La regla de la letra suelta sigue viva para lo que la motivo: una `m` o una
+# `a` de un logo roto. Lo que cambia es que una conjuncion no cuenta como
+# evidencia de ruido.
+UNA_LETRA_QUE_NO_ES_RUIDO = frozenset({"y", "o", "e", "u"})
+
 
 def _tokens_de(nombre: str) -> list[str]:
     """El nombre del proveedor partido en palabras, sin acentos ni puntuacion.
@@ -277,7 +291,7 @@ def _nombre_parece_basura(nombre: str) -> bool:
     ):
         return True
 
-    if any(len(t) == 1 for t in tokens[1:]):
+    if any(len(t) == 1 and t not in UNA_LETRA_QUE_NO_ES_RUIDO for t in tokens[1:]):
         return True
 
     if all(len(t) <= 3 for t in tokens):

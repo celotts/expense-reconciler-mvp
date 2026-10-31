@@ -163,6 +163,52 @@ class TestElPeriodo:
 
 
 # ---------------------------------------------------------------------------
+# El comparativo: cuando un periodo se puede comparar y cuando no
+# ---------------------------------------------------------------------------
+
+class TestElUltimoDiaDelMesSigueEnCurso:
+    """El ultimo dia del mes NO es un periodo terminado.
+
+    MEDIDO el 2026-10-31: con la condicion `ultimo_dia > hoy`, un informe del mes
+    en curso decia `conclusivo=True` justo el dia 31, y comparaba un mes cuyo
+    ultimo dia todavia estaba corriendo contra el mes anterior completo. Y los
+    dos tests del periodo en curso fallaban **solo ese dia**: un test que solo
+    falla el ultimo dia de cada mes miente 30 de 31.
+
+    `hoy` se inyecta a proposito: un test que dice "hoy" y depende de la fecha de
+    la maquina donde corre no fija nada.
+    """
+
+    async def test_el_ultimo_dia_todavia_no_es_concluyente(
+        self, db_session, test_company
+    ):
+        reporte = await construir_reporte(
+            db_session, test_company.id, "2026-10", "ana@despacho.mx",
+            hoy=date(2026, 10, 31),
+        )
+        comp = reporte.gasto.comparativo
+
+        assert comp.conclusivo is False
+        assert comp.nota, "un comparativo no concluyente tiene que explicar por que"
+        assert "dia 31" in comp.nota
+
+    async def test_al_dia_siguiente_si_lo_es(self, db_session, test_company):
+        """El otro lado, porque `>=` puede volverse "nunca concluyente".
+
+        Si la condicion se equivocara al reves, este test muere: un periodo
+        terminado se compara contra el mes anterior completo y no lleva nota.
+        """
+        reporte = await construir_reporte(
+            db_session, test_company.id, "2026-10", "ana@despacho.mx",
+            hoy=date(2026, 11, 1),
+        )
+        comp = reporte.gasto.comparativo
+
+        assert comp.conclusivo is True
+        assert comp.nota is None
+
+
+# ---------------------------------------------------------------------------
 # A6: ninguna cifra de dinero pasa por un float
 # ---------------------------------------------------------------------------
 

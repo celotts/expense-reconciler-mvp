@@ -33,15 +33,31 @@ build:
 # base nueva y la subida de uvicorn con torch. Si se pasa, `make up` sale con
 # codigo != 0 y dice CUAL contenedor no llego — que es la unica forma de que un
 # fallo de arranque sea visible en vez de silencioso.
+# DOS PASOS, Y POR QUE NO UNO SOLO
+# ---------------------------------
+# `modelos` es un instalador de UNA PASADA: corre el script, deja los modelos en
+# el volumen y sale con 0. `--wait` no distingue "salio bien" de "se cayo": con
+# el servicio en estado `exited` devuelve **1** igual. MEDIDO el 2026-10-31:
+# `docker compose up -d --wait` -> EXIT 1 con `container expense_modelos exited
+# (0)`, y `make up` acababa en "Error 1" en CADA corrida aunque el stack quedara
+# arriba y sirviendo.
+#
+# El primer paso levanta todo y sigue respetando `depends_on:
+# service_completed_successfully`, asi que el API no arranca hasta que los
+# modelos terminaron de bajar. El segundo espera SOLO a los que tienen que
+# quedarse sirviendo: con `--no-deps`, `modelos` no entra en la espera y el
+# codigo de salida dice la verdad.
 up: build
-	docker compose $(COMPOSE_FILES) up -d --remove-orphans --wait --wait-timeout 120
+	docker compose $(COMPOSE_FILES) up -d --remove-orphans
+	docker compose $(COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 expense-api expense-front
 
 # up-force ignora la cache de Docker y rehace todas las capas.
 # El `--wait` es el mismo y por el mismo motivo: `--no-cache` tarda mas, no
 # significa que la app quede mas lista.
 up-force:
 	docker compose $(COMPOSE_FILES) build --no-cache
-	docker compose $(COMPOSE_FILES) up -d --remove-orphans --wait --wait-timeout 120
+	docker compose $(COMPOSE_FILES) up -d --remove-orphans
+	docker compose $(COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 expense-api expense-front
 
 up-dev:
 	$(MAKE) up ENV=dev

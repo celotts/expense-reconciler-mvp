@@ -144,7 +144,19 @@ async def _comparativo(
     contra "el mes actual", y este informe es de un periodo arbitrario.
     """
     anio, mes = validar_periodo(periodo)
-    en_curso = ultimo_dia > hoy
+    # `>=` Y NO `>`, QUE ES LO QUE PARECE NATURAL
+    # -------------------------------------------
+    # Con `>` el ultimo dia del mes el periodo ya se daba por terminado: el 31 de
+    # octubre a las 10 de la manana el informe decia `conclusivo=True` y comparaba
+    # un mes cuyo ultimo dia **todavia estaba corriendo** contra el mes anterior
+    # completo. El dia no termina a las 00:00, y los comprobantes de esa tarde
+    # entran despues. El periodo se cierra cuando pasa el dia, no cuando empieza.
+    #
+    # Y aunque fuera discutible en el limite, el defecto real es el que se midio:
+    # los dos tests del periodo en curso solo fallaban **el ultimo dia de cada
+    # mes**. Un test que depende del dia en que se corre la suite es un test que
+    # miente 30 dias de 31, y el fallo aparece justo cuando nadie lo busca.
+    en_curso = ultimo_dia >= hoy
 
     if en_curso:
         dia_corte = hoy.day

@@ -194,7 +194,19 @@ CARPETAS: list[tuple[str, str]] = [
 # Lo que no cae bajo /api/v1. Ahora mismo es solo /health, que cuelga del app
 # y no del router de la v1 (ver app/main.py).
 PREFIJO_V1 = "/api/v1"
-CARPETA_SIN_V1 = "Sistema"
+
+# Y NO `"Sistema"`, QUE ES LO QUE DECIA
+# -------------------------------------
+# `CARPETAS` tiene una carpeta real llamada `"Sistema"` (el router `/sistema`:
+# respaldo, estado, version). Con el cajon de lo desconocido llamandose igual,
+# las dos preguntas —"¿esta ruta la reconoce `CARPETAS`?" y "¿cayo en el
+# cajon?"— tienen la MISMA respuesta, y `test_toda_ruta_cae_en_una_carpeta_conocida`
+# no puede distinguirlas: `GET /sistema/backup` parecia estar en su carpeta y en
+# realidad era indistinguible de una ruta huerfana.
+#
+# El nombre tiene que ser distinto del de cualquier carpeta real, o la defensa
+# que vigila las rutas perdidas se queda ciega en el unico sitio donde ya hay una.
+CARPETA_SIN_V1 = "Sin /api/v1"
 
 # Values de query param que no salen solos del schema.
 QUERY_EJEMPLOS: dict[str, Any] = {
