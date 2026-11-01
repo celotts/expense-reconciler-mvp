@@ -18,6 +18,7 @@ un literal se declara antes que cualquier cosa que lo pueda absorbing.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated
 from uuid import UUID
 
@@ -60,6 +61,12 @@ async def _reporte(
             company_id=company_id,
             periodo=periodo,
             firmado_por=usuario.email,
+            # El corte del periodo es una fecha de NEGOCIO (Mexico, UTC-6): se pasa
+            # explicita desde el router, que ya es la marca que usan los tests. Antes
+            # el servicio hacia `analitica.utcnow().date()`: entre las 18:00 y las
+            # 24:00 de Mexico el informe se fechaba a un dia distinto que el que un
+            # test con `date.today()` esperaba (P0.2, bomba horaria).
+            hoy=date.today(),
         )
     except LookupError as exc:
         raise HTTPException(

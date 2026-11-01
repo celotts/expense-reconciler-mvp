@@ -137,15 +137,49 @@ SENTINELS_SIN_PROVEEDOR = frozenset({"UNKNOWN", "ERROR_PARSING", "AI_DISABLED"})
 # "Ticketmaster" y "Total Fitness" no entran: "ticketmaster" no es "ticket".
 # Se acepta el falso positivo de "Total Fitness" a proposito: rechazar cuesta
 # una llamada a vision, y aceptar basura cuesta una mentira en la base.
-PALABRAS_DE_ENCABEZADO = frozenset({
-    "total", "totales", "subtotal", "base", "iva", "ieps", "isr",
-    "impuesto", "impuestos", "importe", "monto", "cantidad", "cant",
-    "articulo", "articulos", "descripcion", "producto", "productos",
-    "fecha", "hora", "folio", "factura", "comprobante", "recibo",
-    "rfc", "curp", "cambio", "efectivo", "tarjeta", "debito", "credito",
-    "transferencia", "transferencia", "cuenta", "vendedor", "cajero",
-    "cajera", "ticket", "venta", "consumidor",
-})
+PALABRAS_DE_ENCABEZADO = frozenset(
+    {
+        "total",
+        "totales",
+        "subtotal",
+        "base",
+        "iva",
+        "ieps",
+        "isr",
+        "impuesto",
+        "impuestos",
+        "importe",
+        "monto",
+        "cantidad",
+        "cant",
+        "articulo",
+        "articulos",
+        "descripcion",
+        "producto",
+        "productos",
+        "fecha",
+        "hora",
+        "folio",
+        "factura",
+        "comprobante",
+        "recibo",
+        "rfc",
+        "curp",
+        "cambio",
+        "efectivo",
+        "tarjeta",
+        "debito",
+        "credito",
+        "transferencia",
+        "cuenta",
+        "vendedor",
+        "cajero",
+        "cajera",
+        "ticket",
+        "venta",
+        "consumidor",
+    }
+)
 
 # Palabras que delatan una DIRECCION leida como si fuera el nombre del negocio.
 #
@@ -194,6 +228,25 @@ ARTICULOS = frozenset({"la", "el", "los", "las", "de", "del", "un", "una"})
 UNA_LETRA_QUE_NO_ES_RUIDO = frozenset({"y", "o", "e", "u"})
 
 
+# Sufijos legales que los comprobantes mexicanos pegan al nombre del emisor:
+# `S.A. DE C.V.`, `S.A.B. DE C.V.`, `S. DE R.L.`, `S.C.`, `S. en C.`, `A.C.`.
+# Se quitan ANTES de tokenizar: `_tokens_de` ya descarta la puntuacion, pero un
+# sufijo escrito con puntos deja tokens de una sola letra (`s`, `a`, `c`, `v`)
+# que las reglas de basura leen como ruido. MEDIDO: `OXXO S.A. DE C.V.` salia como
+# "basura" aunque es el mismo comercio que `OXXO SA DE CV` (sin puntos), que si se
+# acepta.
+_RE_SUFICIO_LEGAL = re.compile(
+    r"\bS\s*\.\s*A\s*\.\s*DE\s+C\s*\.\s*V\.?"
+    r"|\bS\s*\.\s*A\s*\.\s*B\s*\.\s*DE\s+C\s*\.\s*V\.?"
+    r"|\bS\s*\.\s*DE\s+R\s*\.\s*L\.?"
+    r"|\bS\s*\.\s*R\s*\.\s*L\.?"
+    r"|\bS\s*\.\s*C\.?"
+    r"|\bS\s*\.\s*en\s+C\.?"
+    r"|\bA\s*\.\s*C\.?",
+    re.IGNORECASE,
+)
+
+
 def _tokens_de(nombre: str) -> list[str]:
     """El nombre del proveedor partido en palabras, sin acentos ni puntuacion.
 
@@ -201,12 +254,15 @@ def _tokens_de(nombre: str) -> list[str]:
     `Artículo` de una foto, y son la misma casilla. Sin puntuacion porque
     `CANT. TOTAL` y `CANT TOTAL` son el mismo encabezado.
 
-    Lo que sale de aca no se guarda: es solo el insumo del juicio de "¿esto es un
-    nombre o es basura?". El nombre que se persiste es el que dio la lectura,
-    sin tocar.
+    El sufijo legal (`S.A. DE C.V.`) se quita antes de tokenizar: su forma con
+    puntos deja tokens de una sola letra que las reglas de basura confunden con
+    ruido. Lo que sale de aca no se guarda: es solo el insumo del juicio de "¿esto
+    es un nombre o es basura?". El nombre que se persiste es el que dio la
+    lectura, sin tocar.
     """
+    sin_sufijo = _RE_SUFICIO_LEGAL.sub(" ", nombre or "")
     sin_acentos = "".join(
-        c for c in unicodedata.normalize("NFD", nombre.lower())
+        c for c in unicodedata.normalize("NFD", sin_sufijo.lower())
         if unicodedata.category(c) != "Mn"
     )
     return [t for t in re.split(r"[^a-z0-9]+", sin_acentos) if t]

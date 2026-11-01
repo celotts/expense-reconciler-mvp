@@ -143,6 +143,14 @@ la generación con `FPDFUnicodeEncodingException`. Un `?` es preferible a un 500
 `bytes(pdf.output())` o starlette revienta al codificar, en una ruta cuyo JSON sí
 funciona.
 
+**El `hoy` del informe es local, no UTC (P0 cerrado).** El router pasa
+`hoy=date.today()` a `construir_reporte`; antes la construccion caia en
+`analitica.utcnow().date()`, y entre las 18:00 y las 24:00 de Mexico (UTC-6) el
+informe se fechaba un dia distinto que el que fijan los tests con `date.today()`.
+Lo arreglo en el P0 del plan de desarrollo (`docs/prompts-desarrollo-plus.md`):
+`TestA2ElTotalCuadra` (integracion) era el que lo ponia en rojo, y ahora pasa de
+forma determinista con `hoy` explicito.
+
 ### Verificación por mutación — correr tras tocar defensa
 Cada defensa de seguridad tiene un test que **muere si quitas la defensa**. Si tocas una,
 corre su verificador:
@@ -1279,6 +1287,20 @@ exactamente el caso que mide el segundo test de la clase
 > equivocado**, que es la forma más caro de tener un test. Ahora los tests
 > fijan el ajuste real del `.env` y usan **el texto OCR medido** de las fotos,
 > y la mutación de quitar la regla muere.
+
+### El sufijo legal no es basura (MEDIDO 2026-11-01, P0 cerrado)
+
+`_tokens_de` (`capture.py`) quita el sufijo legal (`S.A. DE C.V.`, `S.A.B. DE C.V.`,
+`S. DE R.L.`, `S.C.`, `S. en C.`, `A.C.`) **antes** de tokenizar. La puntuación ya se
+descartaba, pero un sufijo escrito con puntos dejaba tokens de una sola letra (`s`,
+`a`, `c`, `v`) que las reglas de `_nombre_parece_basura` leían como ruido: `OXXO S.A. DE
+C.V.` se declaraba "basura" y el comprobante se perdía, mientras que `OXXO SA DE CV`
+(sin puntos) sí se aceptaba. Se arreglo con el regex `_RE_SUFICIO_LEGAL` dentro de
+`_tokens_de` (input de juicio: lo que sale no se persiste).
+
+Tres casos reales fijados (todos → no basura): `OXXO S.A. DE C.V.`, `WALMART DE MEXICO
+S.A.B. DE C.V.`, `GRUPO COMERCIAL DSW S.A. DE C.V.`. Mutación verificada: sin el strip,
+los 3 tests nuevos mueren.
 
 ### `GET /scan/ia` decía que todo estaba bien con cero modelos instalados
 MEDIDO el 2026-10-15: `modelos_instalados: []`, `faltan: []`, `disponible: true`.

@@ -1063,6 +1063,12 @@ class TestElNombreDelProveedor:
         "La Esquina",
         "7 Eleven",
         "OXXO SA DE CV",
+        # Formas con sufijo legal escrito con puntos: el mismo comercio, la misma
+        # lectura, distinta grafia. Sin el strip del sufijo, la puntuacion dejaba
+        # tokens de una sola letra y el comercio se declaraba basura (P0.1).
+        "OXXO S.A. DE C.V.",
+        "WALMART DE MEXICO S.A.B. DE C.V.",
+        "GRUPO COMERCIAL DSW S.A. DE C.V.",
         # Una palabra buena con un encabezado pegado no es ruido.
         "TOTAL FITNESS",
     ])

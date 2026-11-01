@@ -164,6 +164,28 @@ Es el criterio D1 de la Fase 4 y es correcto que no exista todavía: cerrar es u
 decisión, y la decisión la firma una persona. Lo que hay que evitar es que se lea como
 un olvido — por eso está aquí.
 
+### 0.i. El informe de cierre fechaba el periodo con la fecha UTC — ✅ **CORREGIDO** (P0 cerrado)
+
+**Nació en la puerta verde del plan de desarrollo** (`docs/prompts-desarrollo-plus.md`,
+Tarea 0.2). El informe tomaba `hoy` de `analitica.utcnow().date()` (UTC) y los tests del
+periodo en curso usaban `date.today()` (local). Entre las 18:00 y las 24:00 de México
+(UTC-6) el informe se fechaba un día distinto que el que fijan los tests: `TestA2ElTotalCuadra`
+(integración) lo ponía en rojo.
+
+**Arreglo:** el router pasa `hoy=date.today()` a `construir_reporte`. El servicio sigue
+aceptando `hoy` inyectable por determinismo (R4); solo cambió quién lo fija en producción.
+
+### 0.j. El sufijo legal escrito con puntos matcheaba un comercio real como basura — ✅ **CORREGIDO** (P0 cerrado)
+
+`_tokens_de` (`capture.py`) ahora quita el sufijo legal (`S.A. DE C.V.`, `S.A.B. DE C.V.`,
+`S. DE R.L.`, `S.C.`, `S. en C.`, `A.C.`) antes de tokenizar. Sin el strip, un sufijo con
+puntos dejaba tokens de una sola letra (`s`, `a`, `c`, `v`) que las reglas de
+`_nombre_parece_basura` leían como ruido: `OXXO S.A. DE C.V.` se declaraba "basura" y el
+comprobante se perdía, mientras que `OXXO SA DE CV` (sin puntos) sí se aceptaba.
+
+**Arreglo:** strip regex `_RE_SUFICIO_LEGAL` aplicado en `_tokens_de`. Tres casos reales
+fijados con tests que mueren si se quita el strip; mutación verificada.
+
 ### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — ✅ **CORREGIDO**
 
 `app/api/companies.py:delete_company` ahora captura `IntegrityError` y devuelve 409 con un
