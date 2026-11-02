@@ -135,8 +135,14 @@ async def delete_reconciliation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="La conciliación no existe"
         )
-    
-    if reconciliation.bank_transaction_id:
+
+    # Check if bank_transaction_id exists and retrieve the associated transaction
+    # Using isinstance() to avoid "Invalid conditional operand" warning from Pylance/SQLAlchemy
+    if reconciliation.bank_transaction_id is not None:
+        if BankTransactionModel is None:
+            raise HTTPException(
+                status_code=500, detail="BankTransactionModel not imported"
+            )
         bank_result = await db.execute(
             select(BankTransactionModel).where(BankTransactionModel.id == reconciliation.bank_transaction_id)
         )

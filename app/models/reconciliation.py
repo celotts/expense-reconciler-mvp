@@ -30,10 +30,11 @@ contabil tiene que sobrevivir a la baja de la cuenta que la tomo.
 """
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import TIMESTAMP, CheckConstraint, Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.core.time import utcnow
@@ -56,12 +57,12 @@ class ReconciliationModel(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("tickets.id", ondelete="SET NULL"), nullable=True)
     bank_transaction_id = Column(UUID(as_uuid=True), ForeignKey("bank_transactions.id", ondelete="SET NULL"), nullable=True)
-    match_status = Column(String(50), nullable=False)
+    match_status: Mapped[str] = mapped_column(String(50), nullable=False)
     matched_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
     # Quien toco el veredicto a mano. NULL = lo puso el motor. Ver el modulo.
-    revisado_por = Column(String(255), nullable=True)
-    revisado_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    revisado_por: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    revisado_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     ticket = relationship("TicketModel", back_populates="reconciliations")
     bank_transaction = relationship("BankTransactionModel", back_populates="reconciliations")
