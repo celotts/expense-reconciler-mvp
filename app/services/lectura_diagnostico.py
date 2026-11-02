@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Callable
 from uuid import UUID
@@ -68,7 +68,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.archivo_real import resolver_tipo
 from app.core.enums import ConfidenceSource, ExtractionStatus
-from app.core.time import utcnow
 from app.models.ticket import TicketModel
 from app.services.ai_extractor import ai_extractor
 from app.services.capture import (
@@ -203,6 +202,18 @@ async def diagnosticar_lectura(
         _explorar_pdf(content, salida, ocr_reader)
     elif formato == "image":
         _explorar_imagen(content, salida, ocr_reader)
+    elif formato == "xml":
+        texto = content.decode("utf-8", errors="replace")
+        salida.pasos.append(
+            PasoLectura(
+                escalon="formato",
+                motor="xml",
+                dio={"caracteres": len(texto)},
+                aceptado=True,
+                motivo=None,
+            )
+        )
+        _explorar_texto(texto, salida, exigir_items=True)
     else:
         texto = content.decode("utf-8", errors="replace")
         salida.pasos.append(

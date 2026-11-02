@@ -186,6 +186,19 @@ comprobante se perdía, mientras que `OXXO SA DE CV` (sin puntos) sí se aceptab
 **Arreglo:** strip regex `_RE_SUFICIO_LEGAL` aplicado en `_tokens_de`. Tres casos reales
 fijados con tests que mueren si se quita el strip; mutación verificada.
 
+### 0.k. Un CFDI en XML se leia como foto o se perdia — ✅ **CORREGIDO** (P1 sub-paso 1)
+
+**Nacio en el sub-paso 1 del plan de desarrollo** (`docs/prompts-desarrollo-plus.md`, fase
+P1 — el CFDI como fuente). Antes de la firma XML, un comprobante en formato digital
+(`<?xml ...?>`) no era un formato conocido: con `file_type=image` entraba a visión y en la
+carpeta se detectaba como desconocido (`NO_SOPORTADO`).
+
+**Síntoma:** un CFDI subido (o escaneado a un `.xml`) se leía como foto, o no se leía.
+
+**Arreglo:** firma XML (`<?xml`, `<!DOCTYPE`) en `app/core/archivo_real.py` +
+rama `xml` en la cascada de `capture` y del diagnóstico. Mutación verificada: sin la
+firma, el test `test_xml_por_la_declaracion` muere.
+
 ### 0. `DELETE /companies/{id}` devuelve 500 para toda empresa con hijos — ✅ **CORREGIDO**
 
 `app/api/companies.py:delete_company` ahora captura `IntegrityError` y devuelve 409 con un

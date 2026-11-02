@@ -1069,13 +1069,13 @@ def parse_bank_csv(
                 description=description,
                 reference=reference
             ))
-        except Exception:
+        except Exception as exc:
             # No se refleja el contenido de la fila ni el error interno: el
             # cliente recibe un mensaje generico y los detalles quedan en el
             # log del servidor. Si se refleja la fila, un CSV malicioso con
             # datos largos en cada columna puede hacer que el mensaje de error
             # sea enorme y filtrar informacion de otras filas.
-            raise ValueError("Error en el formato del CSV: fila invalida")
+            raise ValueError("Error en el formato del CSV: fila invalida") from exc
     
     return transactions
 
@@ -1104,6 +1104,12 @@ def extract_ticket_data(
     if file_type == "pdf":
         return _extract_from_pdf(file_content)
     if file_type == "text":
+        return _parse_receipt_text(file_content.decode("utf-8"))
+    if file_type == "xml":
+        # Un CFDI es texto digital: la firma ya lo dijera `resolver_tipo`. Se
+        # lee con el MISMO parser que un `.txt`, porque la capa XML solo envolve
+        # etiquetas en lugar de texto plano; el vocabulario de casilla
+        # (`RFC:`, `TOTAL:`) es el mismo.
         return _parse_receipt_text(file_content.decode("utf-8"))
     if file_type == "image":
         raise ValueError(

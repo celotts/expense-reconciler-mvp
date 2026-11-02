@@ -68,7 +68,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -704,7 +704,7 @@ async def procesar_archivo(
 
     tipo = detectar_tipo_real(contenido)
 
-    # EL ESCANER SOLO ADMITE PDF E IMAGEN. NADA MAS.
+    # EL ESCANER ADMITE PDF, IMAGEN Y XML. NADA MAS.
     #
     # Antes, si los bytes no eran un PDF ni una imagen con firma conocida, se
     # preguntaba `es_texto_plano` y, si lo eran, se leia con la cascada de texto.

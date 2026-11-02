@@ -85,6 +85,7 @@ from dataclasses import dataclass
 FORMATO_PDF = "pdf"
 FORMATO_IMAGEN = "image"
 FORMATO_TEXTO = "text"
+FORMATO_XML = "xml"
 FORMATO_DESCONOCIDO = "desconocido"
 
 # Alias con el nombre que usa el escaner. Se declaran y no se renombra el juego
@@ -93,6 +94,7 @@ FORMATO_DESCONOCIDO = "desconocido"
 TIPO_PDF = FORMATO_PDF
 TIPO_IMAGEN = FORMATO_IMAGEN
 TIPO_TEXTO = FORMATO_TEXTO
+TIPO_XML = FORMATO_XML
 
 # Las firmas se leen del principio del archivo. Cada entrada es el prefijo que
 # tiene que aparecer para que el tipo se considere ese, con su desplazamiento.
@@ -101,6 +103,15 @@ TIPO_TEXTO = FORMATO_TEXTO
 # PDF con basura delante es un archivo manipulado, no un PDF. Asi lo pide la
 # especificacion y asi lo pone el visor del sistema, no el nuestro.
 _FIRMA_PDF = (b"%PDF", 0)
+
+# XML (CFDI): la declaracion de la capa raiz (`<?xml ...?>`) o el doctype. El
+# CFDI 4.0 siempre lleva declaracion; el doctype se acepta como sinonimo por si
+# un emisor lo usa. Es la firma de texto digital que distingue un CFDI de un
+# `.txt` cualquiera.
+_FIRMA_XML: tuple[tuple[bytes, int], ...] = (
+    (b"<?xml", 0),
+    (b"<!DOCTYPE", 0),
+)
 
 # Las imagenes se reconocen por un numero magico, no por una extension. HEIC
 # entra porque el producto se define por "la foto del telefono" y un iPhone
@@ -239,6 +250,10 @@ def sniff_tipo(contenido: bytes) -> TipoDetectado:
     firma, desplazamiento = _FIRMA_PDF
     if contenido[desplazamiento : desplazamiento + len(firma)] == firma:
         return TipoDetectado(FORMATO_PDF, len(firma))
+
+    for firma, desplazamiento in _FIRMA_XML:
+        if contenido[desplazamiento : desplazamiento + len(firma)] == firma:
+            return TipoDetectado(FORMATO_XML, len(firma))
 
     for firma, desplazamiento in _FIRMAS_IMAGEN:
         if contenido[desplazamiento : desplazamiento + len(firma)] == firma:

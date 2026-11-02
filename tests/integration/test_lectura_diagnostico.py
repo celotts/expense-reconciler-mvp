@@ -42,7 +42,6 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -493,6 +492,35 @@ class TestElFileTypeNoDecide:
         cuerpo = r.json()
         assert cuerpo["formato_detectado"] == "image"
         assert cuerpo["formato_corregido"]
+
+    async def test_un_xml_declarado_como_imagen_se_reporta_como_corregido(self, async_client):
+        """Un CFDI subido con el nombre de una foto: la firma de XML gana.
+
+        Con `file_type=image`, un XML (texto digital) entraria a vision y saldria
+        con origen `llm`, igual que un PDF declarado como imagen. El sniffing con
+        la firma XML lo detecta y corrige: el formato detectado es `xml` y el
+        motivo viaja en la respuesta para que quien subio el archivo sepa que su
+        etiqueta no fue la que se uso.
+        """
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b"<cfdi:Comprobante><cfdi:Concepto/></cfdi:Comprobante>"
+        )
+        r = await async_client.post(
+            "/api/v1/tickets/extract-diagnostico",
+            files={"file": ("factura.xml", xml, "application/xml")},
+            data={"file_type": "image"},
+        )
+        assert r.status_code == 200, r.text
+        cuerpo = r.json()
+
+        assert cuerpo["formato_detectado"] == "xml"
+        assert cuerpo["formato_declarado"] == "image"
+        assert cuerpo["formato_corregido"], (
+            "los bytes son XML y el cliente declaro image. La correccion tiene que "
+            "decirlo: elegir la ruta de lectura desde el cliente permite saltarse la "
+            "cascada y contaminar la medicion de origen."
+        )
 
 
 # ---------------------------------------------------------------------------

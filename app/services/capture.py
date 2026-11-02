@@ -1055,6 +1055,17 @@ async def capture_ticket(
             texto, ConfidenceSource.RULES, extract_from_text, exigir_items=False
         )
 
+    if file_type == "xml":
+        # Un CFDI llega como XML: texto digital, sin OCR, sin render, sin modelo
+        # en la ruta base. La fuente es el texto del XML y el origen que se reporta
+        # es `xml`. El parseo por reglas ve el XML; si no saca provecho, la cascada
+        # de texto decide (la extraccion de Conceptos del CFDI es la que viene en
+        # los sub-pasos siguientes de este plan).
+        texto = content.decode("utf-8", errors="replace")
+        return await _cascada_texto(
+            texto, ConfidenceSource.XML, extract_from_text, exigir_items=True
+        )
+
     if file_type != "pdf":
         raise ExtractionUnavailable(f"tipo de archivo no soportado: {file_type!r}")
 

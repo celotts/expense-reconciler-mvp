@@ -18,7 +18,6 @@ desapercibida.
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -92,6 +91,13 @@ MUTACIONES = [
         viejo="    tipo = detectar_tipo_real(contenido)",
         nuevo='    tipo = "image" if vista.extension in {".jpg", ".png", ".jpeg"} else "pdf"',
         prueba="test_la_extension_no_elige_la_ruta_de_lectura",
+    ),
+    Mutacion(
+        nombre="la firma del XML desaparece (el CFDI se degrada a desconocido)",
+        archivo="app/core/archivo_real.py",
+        viejo="    for firma, desplazamiento in _FIRMA_XML:",
+        nuevo="    for firma, desplazamiento in ():",
+        prueba="test_xml_por_la_declaracion",
     ),
     # --- 4. El hash decide, no la fecha ------------------------------------
     Mutacion(

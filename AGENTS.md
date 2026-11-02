@@ -1288,6 +1288,25 @@ exactamente el caso que mide el segundo test de la clase
 > fijan el ajuste real del `.env` y usan **el texto OCR medido** de las fotos,
 > y la mutación de quitar la regla muere.
 
+### El CFDI ya no se lee por foto: la firma XML entra en la cascada (P1, sub-paso 1)
+
+**MEDIDO el 2026-11-02, P1 sub-paso 1.** Antes de este cambio, un CFDI que llegaba como
+XML se trataba como un documento cualquiera: con `file_type=image` entraba a visión (un
+PDF declarado como imagen), y en la carpeta el sniffing solo conocía PDF e imagen, asi que
+un `.xml` se quedaba en `NO_SOPORTADO` sin procesar.
+
+**Arreglo:** la firma XML (`<?xml` o `<!DOCTYPE` en el byte 0) se reconoce en
+`app/core/archivo_real.py` (`_FIRMA_XML`); el tipo detectado es `xml`. La cascada de
+`capture_ticket` y la del diagnóstico (`lectura_diagnostico`) tienen la rama `xml`, que
+decodifica el XML y le pasa el texto a la cascada de texto con `ConfidenceSource.XML` —
+las reglas leen el XML y, si no alcanzan, se pregunta al modelo; `exigir_items=True`
+porque un comprobante en texto digital tambien puede tener conceptos.
+
+**Lo que NO se hizo en este sub-paso:** la extraccion de los campos del CFDI
+(Comprobante / Conceptos) con regex estructurado. Se dejo para los sub-pasos siguientes:
+hasta que el parser conozca las etiquetas del CFDI, leer el XML crudo con el vocabulario de
+casillas (`RFC:`, `TOTAL:`) es el primer paso y ya corre.
+
 ### El sufijo legal no es basura (MEDIDO 2026-11-01, P0 cerrado)
 
 `_tokens_de` (`capture.py`) quita el sufijo legal (`S.A. DE C.V.`, `S.A.B. DE C.V.`,

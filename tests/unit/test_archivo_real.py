@@ -49,8 +49,10 @@ from app.core.archivo_real import (
     FORMATO_IMAGEN,
     FORMATO_PDF,
     FORMATO_TEXTO,
+    FORMATO_XML,
     TIPO_IMAGEN,
     TIPO_PDF,
+    TIPO_XML,
     detectar_tipo_real,
     es_texto_plano,
     resolver_tipo,
@@ -101,6 +103,30 @@ class TestLasFirmasReconocenLoQueSon:
         for basura in (b"\x00" * 40, b"PK\x03\x04zip", b"#!/bin/sh\nrm -rf /"):
             assert sniff_tipo(basura).formato == FORMATO_DESCONOCIDO
 
+    def test_xml_por_la_declaracion(self):
+        """Un CFDI lleva `<?xml ...?>`: esa es su firma de texto digital.
+
+        No es un `.txt` cualquiera con etiquetas raras: la declaracion de la capa
+        raiz es la firma que la especificacion del CFDI pone a cada factura.
+        """
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b"<cfdi:Comprobante><cfdi:Concepto/></cfdi:Comprobante>"
+        )
+        detectado = sniff_tipo(xml)
+        assert detectado.formato == FORMATO_XML
+        assert detectado.margen == len(b"<?xml")
+
+    def test_xml_por_el_doctype(self):
+        """El doctype se acepta como sinonimo de la declaracion.
+
+        El CFDI 4.0 lleva declaracion; el doctype aparece en variantes de algunos
+        emisores. Son dos caras de la misma cosa y ninguna sola es suficiente.
+        """
+        detectado = sniff_tipo(b'<!DOCTYPE CFDI FacturaElectronica "1.0"> ...')
+        assert detectado.formato == FORMATO_XML
+        assert detectado.margen == len(b"<!DOCTYPE")
+
 
 class TestElClienteNoDecide:
     """El nucleo de la defensa."""
@@ -139,6 +165,25 @@ class TestElClienteNoDecide:
         pdf = b"%PDF-1.7\ncomprobante con texto suficiente para el parser"
         resultados = {resolver_tipo(pdf, ft)[0] for ft in ("pdf", "image", "text", None, "")}
         assert resultados == {FORMATO_PDF}, f"Las etiquetas cambiaron el resultado: {resultados}"
+
+    def test_xml_declarado_como_imagen_usa_xml(self):
+        """Y al reves: un XML subido con el nombre de una foto se lee como XML.
+
+        Es el mismo ataque que un PDF con `file_type=image`: el sniffing gana, y
+        la etiqueta que declaro el cliente no decide la ruta. Un CFDI que llega
+        como `image` entraria a vision y saldria con origen `llm`, contaminando
+        el reporte de exactitud con una lectura que no hizo el modelo: el texto
+        digital ya estaba completo.
+        """
+        xml = b'<?xml version="1.0"?><cfdi:Comprobante/>'
+        usado, motivo = resolver_tipo(xml, "image")
+        assert usado == FORMATO_XML
+        assert motivo is not None, "La correccion tiene que quedar registrada"
+
+    def test_xml_declarado_con_su_propio_formato_no_inventa_motivo(self):
+        usado, motivo = resolver_tipo(b'<?xml version="1.0"?><cfdi:Comprobante/>', "xml")
+        assert usado == FORMATO_XML
+        assert motivo is None
 
 
 class TestLoDesconocidoNoSePierde:
@@ -297,6 +342,8 @@ class TestDetectarSinDeclaracion:
             # HEIC / AVIF: la caja `ftyp` va en el byte 4, no en el 0.
             (b"\x00\x00\x00\x18ftypheic", TIPO_IMAGEN),
             (b"\x00\x00\x00\x20ftypavif", TIPO_IMAGEN),
+            # Un CFDI en la carpeta: la firma es la declaracion XML.
+            (b'<?xml version="1.0"?><cfdi:Comprobante/>', TIPO_XML),
         ],
     )
     def test_reconoce_cada_firma(self, contenido, esperado):

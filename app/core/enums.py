@@ -96,6 +96,7 @@ class ConfidenceSource(str, Enum):
     LLM_VALIDATED = "llm_validated"  # LLM que ademas paso validacion de consistencia
     PDF_TEXT = "pdf_text"    # texto extraido de PDF digital (sin IA)
     OCR = "ocr"              # OCR local sobre la foto, y reglas sobre su texto
+    XML = "xml"              # texto (CFDI) leido de un XML digital, sin OCR ni IA
 
     # OCR es un valor aparte y no una variante de `LLM` por una razon concreta:
     # el reporte de exactitud agrupa por `confidence_source`. Si una foto leida

@@ -12,7 +12,6 @@ no. La politica es lo que se decide aqui.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 from datetime import date
 from decimal import Decimal
@@ -36,7 +35,7 @@ from app.services.capture import (
     invoice_to_result,
     motivo_de_fallo_del_modelo,
 )
-from app.services.parser_service import TicketExtractionResult, extract_pdf_text, render_pdf_pages
+from app.services.parser_service import extract_pdf_text, render_pdf_pages
 from app.services.ocr import OCRNoDisponible
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -545,6 +544,40 @@ class TestTiposDeArchivo:
         )
         assert espia.llamadas == []
         assert resultado.confidence_source is ConfidenceSource.RULES
+
+    async def test_xml_usa_reglas_con_origen_xml(self, monkeypatch):
+        """Un CFDI entra por la ruta de texto digital y las reglas leen el XML.
+
+        `file_type=xml` no es una ruta nueva de lectura con politica nueva: es
+        texto con firma de CFDI, y la fuente que se reporta es `xml`. Eso manda
+        al reporte de exactitud y al muestreo: un CFDI leido por reglas es una
+        lectura determinista, no una del modelo, y mezclarlos contaria la
+        exactitud con datos que el modelo no hizo.
+        """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        espia = Espia(_invoice())
+        resultado = await capture_ticket(
+            TICKET_IMPRESO.encode(), "xml", extract_from_text=espia.texto
+        )
+        assert espia.llamadas == [], "el XML se lee con las reglas, no se pide un modelo"
+        assert resultado.confidence_source is ConfidenceSource.XML
+        assert resultado.total_amount == Decimal("1100.00")
+
+    async def test_un_xml_que_las_reglas_no_alcanzan_pide_al_texto(self):
+        """Si el XML no trae el vocabulario de etiquetas, se le pregunta al modelo.
+
+        Misma cascada que el `.txt`: las reglas primero, el modelo solo si las
+        reglas no pueden responder. Un CFDI con tags que el parser no conoce cae
+        al modelo de texto, que es quien lee el XML crudo.
+        """
+        espia = Espia(_invoice(provider_name="LEIDO POR EL MODELO"))
+        resultado = await capture_ticket(
+            b"<cfdi:Comprobante><cfdi:Concepto/></cfdi:Comprobante>",
+            "xml",
+            extract_from_text=espia.texto,
+        )
+        assert espia.llamadas, "habia XML y las reglas no alcanzaron: se pide al modelo"
+        assert resultado.provider_name == "LEIDO POR EL MODELO"
 
     async def test_imagen_siempre_vision(self):
         espia = Espia(_invoice())

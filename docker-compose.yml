@@ -301,6 +301,13 @@ services:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Copia .env.example a .env y rellenala}@postgres-reconciler:5432/expense_db
       - HF_HOME=/opt/hf-cache
+      # La URL de Ollama DENTRO del contenedor. Sin esta linea, la app lee
+      # `OLLAMA_BASE_URL` del `.env` del host (`http://localhost:11434`), que en el
+      # contenedor apunta a un localhost donde no hay nada escuchando: el
+      # contenedor de Ollama se llama `ollama` en la red interna. Con esto gana
+      # el `environment:` de compose (que pisa al `env_file`), y la IA vuelve a
+      # responder. Es el mismo patron que `OLLAMA_HOST` del servicio ollama.
+      - OLLAMA_BASE_URL=http://ollama:11434
       # Dentro del contenedor la carpeta SIEMPRE es /tickets. Se sobrescribe aqui
       # a proposito: el `.env` del host tiene la ruta del host, que no existe
       # dentro del contenedor, y sin esto la app crearia `/Users/carloslott/...`
