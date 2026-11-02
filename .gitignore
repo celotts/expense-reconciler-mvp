@@ -116,6 +116,9 @@ test-files/*.pdf
 *.temp
 /tmp/
 
+# Playwright MCP runtime snapshots (salidas del browser_navigate durante una sesion)
+.playwright-mcp/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
