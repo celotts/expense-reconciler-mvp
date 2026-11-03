@@ -67,10 +67,10 @@
 -- confirmando la anterior: esta escribiendo otra vez la del dia. Ver
 -- `app/api/tickets.py:review_ticket` y `app/api/tickets.py:update_ticket`.
 
-ALTER TABLE tickets ADD COLUMN IF NOT EXISTS fecha_provisional BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE tickets ADD fecha_provisional BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- El indice del periodo ya existe (`idx_tickets_date`), y sigue siendo el que
 -- usa el informe. Este es adicional porque la consulta nueva filtra por las dos
 -- columnas a la vez: "los gastos de este periodo cuya fecha NO es del papel".
-CREATE INDEX IF NOT EXISTS idx_tickets_periodo_sin_fecha
+CREATE INDEX idx_tickets_periodo_sin_fecha
     ON tickets (company_id, expense_date, fecha_provisional);

@@ -13,7 +13,7 @@ services:
         required: false
     environment:
       POSTGRES_DB: expense_db
-      POSTGRES_USER: postgres
+      POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${password_inicial:?password_inicial no esta definida. Copia .env.example a .env y rellenala}
     ports:
       - "127.0.0.1:5434:5432"

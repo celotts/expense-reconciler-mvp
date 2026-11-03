@@ -11,13 +11,10 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
 
 from app.core.deps import UsuarioActual
-from app.core.database import get_db, AsyncSessionLocal
-from app.models.user import UserModel
 
 router = APIRouter(tags=["Sistema"])
 
@@ -85,16 +82,16 @@ async def descargar_backup(usuario: UsuarioActual) -> FileResponse:
             capture_output=True,
             text=True,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="El comando pg_dump no esta instalado. Instala las herramientas de cliente de PostgreSQL.",
-        )
+        ) from exc
     except subprocess.CalledProcessError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al generar el respaldo: {e.stderr}",
-        )
+        ) from e
 
     return FileResponse(
         path=str(ruta),

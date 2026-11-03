@@ -1,19 +1,18 @@
-"""Administrar las cuentas: listar, dar de baja, cambiar la contrasena.
+"""Administrar las cuentas: listar, registrar, dar de baja, cambiar la contrasena.
 
-QUE POR QUE EXISTE, Y QUE POR QUE NO HAY `POST /usuarios`
---------------------------------------------------------
+EL ALTA DE CUENTAS: `POST /usuarios`
+------------------------------------
 
-Existia `scripts/crear_usuario.py` y nada mas. Las cuentas las creaba quien tenia
-la base de datos, con un script que pide la contrasena por teclado para que no
-quede en el historial del shell. Eso es correcto para el alta —no hay autorregistro
-porque un formulario abierto es la forma mas rapida de que un tercero se siente a
-escribir en el historico contable— y es insuficiente para el resto: no habia forma
-de dar de baja a alguien ni de rotarle la contrasena desde la aplicacion.
+Existia `scripts/crear_usuario.py` y nada mas. Para permitir el registro de usuarios
+desde la aplicacion y la API sin abrir la puerta a atacantes:
 
-El alta se queda en el script, a proposito. No es que se haya olvidado el `POST`:
-es que el argumento de por que no hay autorregistro ("quien decide que alguien
-entra, es quien tiene la base de datos") sigue valido, y un endpoint de alta
-autenticado seria un autorregistro con un paso mas.
+- No hay autorregistro publico: la ruta requiere autenticacion.
+- Exige `UsuarioVerificado`, o sea token **y** la contrasena de quien lo hace
+  (`X-Contrasena-Actual`). Un atacante con un token robado no puede crear cuentas
+  administrativas o de acceso en el sistema.
+- Normaliza el correo a minusculas y comprueba unicidad (409 Conflict si ya existe).
+- Hashea la clave con scrypt (`hashear_contrasena`) y devuelve `UsuarioResponse`,
+  garantizando que ningun hash o clave en plano quede expuesto.
 
 LO QUE ESTA PROTEGIDO Y LO QUE NO
 ----------------------------------
@@ -45,13 +44,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
-from app.core.database import get_db
 from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
 from app.core.security import hashear_contrasena, verificar_contrasena
 from app.models.user import UserModel
 from app.schemas.auth import (
     CambioContrasenaRequest,
+    UsuarioCreate,
     UsuarioResponse,
     UsuarioUpdate,
 )
@@ -105,6 +105,59 @@ async def listar_cuentas(
         ).scalars()
     )
     return [UsuarioResponse.model_validate(c) for c in cuentas]
+
+
+@router.post("", response_model=UsuarioResponse, status_code=status.HTTP_201_CREATED)
+async def registrar_usuario(
+    datos: UsuarioCreate,
+    db: Sesion,
+    _: UsuarioVerificado,
+) -> UsuarioResponse:
+    """Registra una nueva cuenta en el sistema.
+
+    SEGURIDAD
+    ---------
+    - Requiere `UsuarioVerificado`: token y cabecera `X-Contrasena-Actual` de quien
+      ejecuta la operacion. Esto impide que un atacante con un token robado cree
+      nuevas cuentas con credenciales conocidas.
+    - El correo se normaliza en minusculas y se rechaza con 409 si ya existe.
+    - La contrasena se hashea con `hashear_contrasena` (scrypt N=2**17) y NUNCA se
+      almacena en texto plano.
+    - La respuesta usa `UsuarioResponse`, por lo que el hash jamas se devuelve.
+    """
+    correo = datos.correo_normalizado
+    existe = (
+        await db.execute(
+            select(UserModel).where(func.lower(UserModel.email) == correo)
+        )
+    ).scalar_one_or_none()
+
+    if existe is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ya existe una cuenta con el correo {correo}",
+        )
+
+    nuevo_usuario = UserModel(
+        email=correo,
+        nombre=datos.nombre.strip(),
+        password_hash=hashear_contrasena(datos.password),
+        perfil=datos.perfil,
+        grupo=datos.grupo,
+        is_active=datos.is_active,
+    )
+    db.add(nuevo_usuario)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ya existe una cuenta con el correo {correo}",
+        )
+
+    await db.refresh(nuevo_usuario)
+    return UsuarioResponse.model_validate(nuevo_usuario)
 
 
 @router.get("/{usuario_id}", response_model=UsuarioResponse)
@@ -238,5 +291,5 @@ async def cambiar_contrasena(
     # por hash: comparar primero significa que solo se gasta uno, y solo cuando
     # hay algo que verificar. Es el mismo criterio que la regla 10 de `AGENTS.md`
     # para el login.
-    cuenta.password_hash = hashear_contrasena(cuerpo.contrasena_nueva)
+    cuenta.password_hash = hashear_contrasena(cuerpo.contrasena_nueva)  # type: ignore
     await db.commit()

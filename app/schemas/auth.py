@@ -42,6 +42,28 @@ class LoginRequest(BaseModel):
         return self.email.strip().lower()
 
 
+class UsuarioCreate(BaseModel):
+    """El cuerpo de registrar una cuenta.
+
+    `password` se valida con min_length=_CONTRASENA_MINIMA (8) y max_length=256,
+    igual que `CambioContrasenaRequest` y `scripts/crear_usuario.py`.
+    `email` se normaliza en minusculas a traves de `correo_normalizado`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(..., max_length=_CORREO_MAXIMO)
+    nombre: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=_CONTRASENA_MINIMA, max_length=256)
+    perfil: str = Field(default="digitalizador", max_length=50)
+    grupo: str = Field(default="operaciones", max_length=50)
+    is_active: bool = Field(default=True)
+
+    @property
+    def correo_normalizado(self) -> str:
+        return self.email.strip().lower()
+
+
 class UsuarioResponse(BaseModel):
     """La forma de salida de un usuario. NUNCA el hash.
 

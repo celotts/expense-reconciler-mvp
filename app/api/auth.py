@@ -38,7 +38,6 @@ from app.core.time import utcnow
 from app.models.user import UserModel
 from app.schemas.auth import LoginRequest, TokenResponse, UsuarioResponse
 from app.services.auditoria import (
-    registrar_auditoria,
     registrar_intento_fallido_auditoria,
     registrar_login_auditoria,
 )

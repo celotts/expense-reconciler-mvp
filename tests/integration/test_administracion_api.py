@@ -804,6 +804,112 @@ class TestAdministrarCuentas:
         )
         assert r.status_code == 401
 
+    async def test_crear_usuario_exitoso(self, async_client, db_session, usuario_de_prueba):
+        """Crea un usuario mediante la API y verifica que los datos y el hash sean correctos."""
+        from app.core.security import verificar_contrasena
+        from app.models.user import UserModel
+
+        nuevo_correo = f"nuevo_{uuid4().hex[:6]}@empresa.mx"
+        payload = {
+            "email": nuevo_correo,
+            "nombre": "Nuevo Usuario Operador",
+            "password": "PasswordSegura123!",
+            "perfil": "digitalizador",
+            "grupo": "operaciones",
+        }
+        r = await async_client.post(
+            "/api/v1/usuarios",
+            json=payload,
+            headers={"X-Contrasena-Actual": CONTRASENA},
+        )
+        assert r.status_code == 201, r.text
+        datos = r.json()
+        assert datos["email"] == nuevo_correo.lower()
+        assert datos["nombre"] == "Nuevo Usuario Operador"
+        assert datos["is_active"] is True
+        assert datos["perfil"] == "digitalizador"
+        assert datos["grupo"] == "operaciones"
+        assert "password" not in datos
+        assert "password_hash" not in datos
+
+        # Comprobar en base de datos
+        db_user = (
+            await db_session.execute(
+                select(UserModel).where(UserModel.email == nuevo_correo.lower())
+            )
+        ).scalar_one_or_none()
+        assert db_user is not None
+        assert verificar_contrasena("PasswordSegura123!", db_user.password_hash)
+
+    async def test_crear_usuario_correo_duplicado_da_409(self, async_client, db_session):
+        """Intentar registrar un usuario con un correo existente (incluso variando mayúsculas) da 409."""
+        from app.core.security import hashear_contrasena
+        from app.models.user import UserModel
+
+        correo_base = f"duplicado_{uuid4().hex[:6]}@empresa.mx"
+        existente = UserModel(
+            email=correo_base.lower(),
+            nombre="Existente",
+            password_hash=hashear_contrasena(CONTRASENA),
+        )
+        db_session.add(existente)
+        await db_session.commit()
+
+        payload = {
+            "email": correo_base.upper(),
+            "nombre": "Duplicado",
+            "password": "PasswordSegura123!",
+        }
+        r = await async_client.post(
+            "/api/v1/usuarios",
+            json=payload,
+            headers={"X-Contrasena-Actual": CONTRASENA},
+        )
+        assert r.status_code == 409
+        assert "Ya existe una cuenta con el correo" in r.json()["detail"]
+
+    async def test_crear_usuario_contrasena_corta_da_422(self, async_client):
+        """Contraseñas menores al mínimo de 8 caracteres fallan validación con 422."""
+        payload = {
+            "email": f"corto_{uuid4().hex[:6]}@empresa.mx",
+            "nombre": "Contrasena Corta",
+            "password": "12345",
+        }
+        r = await async_client.post(
+            "/api/v1/usuarios",
+            json=payload,
+            headers={"X-Contrasena-Actual": CONTRASENA},
+        )
+        assert r.status_code == 422
+
+    async def test_crear_usuario_necesita_contrasena_actual(self, async_client):
+        """Crear un usuario exige la cabecera X-Contrasena-Actual."""
+        payload = {
+            "email": f"sin_header_{uuid4().hex[:6]}@empresa.mx",
+            "nombre": "Sin Header",
+            "password": "PasswordSegura123!",
+        }
+        r = await async_client.post("/api/v1/usuarios", json=payload)
+        assert r.status_code == 401
+
+        # Con contraseña incorrecta
+        r = await async_client.post(
+            "/api/v1/usuarios",
+            json=payload,
+            headers={"X-Contrasena-Actual": "contrasena-equivocada"},
+        )
+        assert r.status_code == 401
+
+    async def test_crear_usuario_sin_token_da_401(self, async_client_sin_autenticar):
+        """Sin autenticación el endpoint rechaza la petición con 401."""
+        payload = {
+            "email": "anonimo@empresa.mx",
+            "nombre": "Anonimo",
+            "password": "PasswordSegura123!",
+        }
+        r = await async_client_sin_autenticar.post("/api/v1/usuarios", json=payload)
+        assert r.status_code == 401
+
 
 # ---------------------------------------------------------------------------
 # Mapeos contables y conciliaciones

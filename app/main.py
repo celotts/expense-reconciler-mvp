@@ -60,7 +60,7 @@ async def _sembrar_sos() -> None:
 
                 # Obtiene las variables desde el archivo .env o .env.local
                 alfabeto = os.getenv("password_inicial")
-                username = os.getenv("email", "admin@localhost")
+                username = os.getenv("email", "admin@localhost.com")
 
                 # Verificación de que el alfabeto se cargó correctamente
                 if not alfabeto:
