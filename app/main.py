@@ -1,3 +1,6 @@
+import os
+
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -8,10 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
-    version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    title=settings.PROJECT_NAME, version="0.1.0", docs_url="/docs", redoc_url="/redoc"
 )
 
 app.add_middleware(
@@ -42,25 +42,39 @@ async def _sembrar_sos() -> None:
     El usuario la cambia en el primer login (el frontend lo fuerza).
     """
     try:
+        import secrets
+
+        from sqlalchemy import func, select
+
         from app.core.database import AsyncSessionLocal
         from app.core.security import hashear_contrasena
         from app.models.user import UserModel
-        from sqlalchemy import func, select
-        import secrets
-        import string
 
         async with AsyncSessionLocal() as db:
-            total = (await db.execute(
-                select(func.count()).select_from(UserModel)
-            )).scalar_one()
+            total = (
+                await db.execute(select(func.count()).select_from(UserModel))
+            ).scalar_one()
 
             if total == 0:
-                # Contraseña aleatoria de 16 caracteres (letras + digitos)
-                alfabeto = string.ascii_letters + string.digits
+                load_dotenv()
+
+                # Obtiene las variables desde el archivo .env o .env.local
+                alfabeto = os.getenv("password_inicial")
+                username = os.getenv("email", "admin@localhost")
+
+                # Verificación de que el alfabeto se cargó correctamente
+                if not alfabeto:
+                    raise ValueError(
+                        "Error: No se encontró la variable 'password_inicial' en el archivo .env"
+                    )
+
+                print("Alfabeto cargado con éxito para generar la clave inicial.")
+
+                # Genera una contraseña aleatoria de 16 caracteres usando el alfabeto del .env
                 password_inicial = "".join(secrets.choice(alfabeto) for _ in range(16))
 
                 admin = UserModel(
-                    email="admin@localhost",
+                    email=username,
                     nombre="Administrador",
                     password_hash=hashear_contrasena(password_inicial),
                     perfil="admin",
@@ -73,7 +87,7 @@ async def _sembrar_sos() -> None:
                 # Se imprime UNA vez. No se vuelve a imprimir porque total != 0.
                 print("=" * 60)
                 print("  PRIMER ARRANQUE: usuario inicial creado")
-                print(f"  Email:      admin@localhost")
+                print(f"  Email:      {username}")
                 print(f"  Contraseña: {password_inicial}")
                 print("  Cambiala en el primer login.")
                 print("=" * 60)
@@ -121,24 +135,21 @@ async def health_check(
 
     El 503 lleva `Connection: close` porque, sin él, nginx y el navegador
     pueden cachear el 503 y seguir mostrando "caído" después de que la base
-    volvió. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en
+    volvía. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en
     una URL de Postgres el usuario y la contraseña viajan dentro, y un
     healthcheck abierto a localhost no es el lugar donde se publican.
     """
-    # `get_db` y no una sesion propia: es la misma sesion que usan los endpoints,
-    # y es la que los tests pueden sobreescribir para correr contra SQLite. Una
-    # sesion abierta a mano aqui seria real en el contenedor y falsa en la suite.
     try:
         await sesion.execute(text("SELECT 1"))
     except Exception:  # noqa: BLE001 — cualquier falla es "no está sana"
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         response.headers["Connection"] = "close"
-        return {"status": "unhealthy", "service": settings.PROJECT_NAME,
-                "database": "no responde"}
+        return {
+            "status": "unhealthy",
+            "service": settings.PROJECT_NAME,
+            "database": "no responde",
+        }
 
-    # `no-store` en el 200 y no solo `close` en el 503: el `close` impide que
-    # el 503 se quede pegado, pero no impide que un proxy guarde el 200 viejo y
-    # lo sirva despues de una caida. Los dos lados del mismo problema.
     response.headers["Cache-Control"] = "no-store"
     return {"status": "healthy", "service": settings.PROJECT_NAME,
             "database": "ok"}

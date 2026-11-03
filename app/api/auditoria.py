@@ -6,15 +6,16 @@ hizo que y cuando.
 """
 
 from __future__ import annotations
+
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request, status, Query
+from fastapi import APIRouter, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
-from app.core.database import get_db
+from sqlalchemy import func, select
+
+from app.core.database import AsyncSessionLocal
 from app.core.deps import UsuarioActual
 from app.models import Auditoria, UserModel
-from app.core.database import AsyncSessionLocal
 
 router = APIRouter(tags=["Auditoria"])
 
@@ -113,17 +114,25 @@ async def listar_auditoria(
 
     items = []
     for r in rows:
-        items.append(AuditoriaListadoItem(
-            id=int(r.id),
-            usuario_id=str(r.usuario_id) if r.usuario_id else None,
-            usuario_email=email_map.get(str(r.usuario_id)) if r.usuario_id else None,
-            rol=r.rol,
-            accion=r.accion,
-            modulo=r.modulo,
-            registro_afectado=(str(r.registro_afectado) if r.registro_afectado else None),
-            detalles=r.detalles,
-            ip_inet=r.ip_inet,
-            fecha=r.fecha,
-        ))
+        items.append(
+            AuditoriaListadoItem(
+                id=int(r.id),
+                usuario_id=str(r.usuario_id) if r.usuario_id is not None else None,
+                usuario_email=email_map.get(str(r.usuario_id))
+                if r.usuario_id is not None
+                else None,
+                rol=r.rol,
+                accion=r.accion,
+                modulo=r.modulo,
+                registro_afectado=(
+                    str(r.registro_afectado)
+                    if r.registro_afectado is not None
+                    else None
+                ),
+                detalles=r.detalles,
+                ip_inet=r.ip_inet,
+                fecha=r.fecha,
+            )
+        )
 
     return AuditoriaListaResponse(total=int(total), items=items)

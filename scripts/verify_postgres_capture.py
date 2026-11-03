@@ -33,9 +33,9 @@ lo que nunca funciono porque `_pdf_to_images` importaba `fitz`.
 
 from __future__ import annotations
 
-import os
 import asyncio
 import io
+import os
 import sys
 import uuid
 from datetime import date
@@ -51,15 +51,15 @@ sys.path.insert(0, str(RAIZ))
 from app.api.tickets import _persist_extracted, get_review_queue  # noqa: E402
 from app.core.enums import (  # noqa: E402
     AUTO_APPROVE_CONFIDENCE,
-    UNKNOWN_PROVIDER,
     ConfidenceSource,
     ExtractionStatus,
     SourceType,
 )
 from app.models.company import CompanyModel  # noqa: E402
 from app.models.ticket import TicketModel  # noqa: E402
-from app.services.capture import confianza_por_campos, capture_ticket  # noqa: E402
+from app.services.capture import capture_ticket, confianza_por_campos  # noqa: E402
 from app.services.confidence_gate import compute_source_hash  # noqa: E402
+
 
 def _fatal(mensaje: str) -> str:
     """Sale con un mensaje, en vez de un KeyError sin pista."""
@@ -356,7 +356,8 @@ async def main() -> int:
         # que importa: que a la base llegue recortado, con las dos puntas.
         print("\n4c. El tope de raw_text")
         from app.services.parser_service import (
-            RAW_TEXT_MAX_CHARS, recortar_raw_text,
+            RAW_TEXT_MAX_CHARS,
+            recortar_raw_text,
         )
 
         enorme = "PROVEEDOR EN LA PRIMERA LINEA\n" + ("relleno " * 60_000) + \
