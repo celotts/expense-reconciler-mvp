@@ -180,7 +180,7 @@ services:
         required: false
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql+asyncpg://postgres:${password_inicial:?password_inicial no esta definida}@postgres-reconciler:5432/expense_db
+      - DATABASE_URL=postgresql+asyncpg://admin:${password_inicial:?password_inicial no esta definida}@postgres-reconciler:5432/expense_db
       - HF_HOME=/opt/hf-cache
       - OLLAMA_BASE_URL=http://ollama:11434
       - TICKETS_INPUT_DIR=/tickets

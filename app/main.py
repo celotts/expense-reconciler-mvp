@@ -10,8 +10,15 @@ from app.api.api_router import api_router
 from app.core.config import settings
 from app.core.database import get_db
 
+_es_produccion = settings.ENVIRONMENT.lower() == "production"
+_docs_url = None if _es_produccion else "/docs"
+_redoc_url = None if _es_produccion else "/redoc"
+
 app = FastAPI(
-    title=settings.PROJECT_NAME, version="0.1.0", docs_url="/docs", redoc_url="/redoc"
+    title=settings.PROJECT_NAME,
+    version="0.1.0",
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
 )
 
 app.add_middleware(

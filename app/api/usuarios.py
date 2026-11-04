@@ -173,7 +173,7 @@ async def actualizar_cuenta(
     usuario_id: UUID,
     datos: UsuarioUpdate,
     db: Sesion,
-    _: UsuarioVerificado,
+    actor: UsuarioVerificado,
 ) -> UsuarioResponse:
     """Cambia el nombre o da de baja la cuenta.
 
@@ -210,6 +210,16 @@ async def actualizar_cuenta(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No mandaste ningún campo que se pueda cambiar",
+        )
+
+    if ("perfil" in cambios or "grupo" in cambios) and actor.perfil not in (
+        "admin",
+        "develop",
+        "programador",
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo un administrador puede modificar perfiles o grupos de acceso.",
         )
 
     if cambios.get("is_active") is False:

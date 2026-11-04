@@ -910,6 +910,47 @@ class TestAdministrarCuentas:
         r = await async_client_sin_autenticar.post("/api/v1/usuarios", json=payload)
         assert r.status_code == 401
 
+    async def test_usuario_no_admin_no_puede_cambiar_su_propio_perfil(
+        self, async_client, usuario_de_prueba
+    ):
+        """Un usuario común (digitalizador) no puede autoasignarse perfil admin (403)."""
+        r = await async_client.patch(
+            f"/api/v1/usuarios/{usuario_de_prueba.id}",
+            json={"perfil": "admin"},
+            headers={"X-Contrasena-Actual": CONTRASENA},
+        )
+        assert r.status_code == 403
+        assert "Solo un administrador" in r.json()["detail"]
+
+    async def test_admin_si_puede_cambiar_perfil_de_otro(
+        self, async_client, db_session, usuario_de_prueba
+    ):
+        """Un usuario con rol admin sí puede actualizar el perfil de otra cuenta."""
+        from app.core.security import hashear_contrasena
+        from app.models.user import UserModel
+
+        # Promover temporalmente al actor a admin para esta prueba
+        usuario_de_prueba.perfil = "admin"
+        await db_session.commit()
+
+        otra = UserModel(
+            email=f"subordinado_{uuid4().hex[:6]}@empresa.mx",
+            nombre="Subordinado",
+            password_hash=hashear_contrasena(CONTRASENA),
+            perfil="digitalizador",
+        )
+        db_session.add(otra)
+        await db_session.commit()
+        await db_session.refresh(otra)
+
+        r = await async_client.patch(
+            f"/api/v1/usuarios/{otra.id}",
+            json={"perfil": "revisor"},
+            headers={"X-Contrasena-Actual": CONTRASENA},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["perfil"] == "revisor"
+
 
 # ---------------------------------------------------------------------------
 # Mapeos contables y conciliaciones

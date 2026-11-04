@@ -11,7 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.responses import FileResponse
 
 from app.core.deps import UsuarioActual
@@ -19,8 +19,19 @@ from app.core.deps import UsuarioActual
 router = APIRouter(tags=["Sistema"])
 
 
+def _borrar_archivo(path: Path) -> None:
+    """Elimina el archivo temporal del respaldo tras enviarlo."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 @router.get("/backup", summary="Descargar respaldo de la base de datos")
-async def descargar_backup(usuario: UsuarioActual) -> FileResponse:
+async def descargar_backup(
+    usuario: UsuarioActual,
+    background_tasks: BackgroundTasks,
+) -> FileResponse:
     """Descarga un archivo SQL con toda la base de datos.
 
     ## POR QUE EXISTE
@@ -92,6 +103,8 @@ async def descargar_backup(usuario: UsuarioActual) -> FileResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al generar el respaldo: {e.stderr}",
         ) from e
+
+    background_tasks.add_task(_borrar_archivo, ruta)
 
     return FileResponse(
         path=str(ruta),
