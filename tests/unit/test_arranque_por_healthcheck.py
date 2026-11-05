@@ -195,6 +195,42 @@ class TestElHealthcheckDePostgresPreguntaPorElEsquema:
             "queda unhealthy con `depends_on: service_healthy` esperandolo"
         )
 
+    def test_conecta_con_el_usuario_que_existe(self, compose):
+        """LA DEFENSA 4, y la que estaba rota.
+
+        MEDIDO el 2026-11-04: `environment:` declara `POSTGRES_USER: admin` y el
+        healthcheck hacia `psql -U postgres`. Ese rol no existe en esta base —el
+        entrypoint crea solo `POSTGRES_USER`—, asi que el `psql` moria con
+        `FATAL: role "postgres" does not exist`, el contenedor quedaba
+        `unhealthy` para siempre y `make up` acababa en `dependency
+        postgres-reconciler failed to start`, con la API sin arrancar.
+
+        Lo que hacia esto invisible es que `pg_isready -U postgres` **no
+        autentica**: devuelve 0 aunque el rol no exista. La mitad que delata el
+        error es el `psql`, y por eso el healthcheck parecia correcto.
+
+        Se exige `$$POSTGRES_USER` y no el literal `admin` a proposito: el
+        usuario ya esta declarado en `environment:`, y un segundo sitio donde
+        escribirlo es un sitio mas donde puede dejar de coincidir.
+        """
+        servicio = _servicio(compose, "postgres-reconciler")
+        test = _test_de_healthcheck(servicio)
+
+        assert "-U postgres" not in test, (
+            "el healthcheck no puede conectar como `postgres`: el rol lo crea "
+            "`POSTGRES_USER` (admin), no el entrypoint. MEDIDO: `FATAL: role "
+            '"postgres" does not exist` -> unhealthy para siempre'
+        )
+        assert test.count("$$POSTGRES_USER") == 2, (
+            "las DOS mitades del healthcheck tienen que usar el usuario de "
+            "`environment:`; si una lo escribe a mano, vuelve a divergir"
+        )
+        assert "POSTGRES_USER" in servicio["environment"], (
+            "`$$POSTGRES_USER` se expande DENTRO del contenedor: si el servicio "
+            "deja de declararla, el healthcheck se queda sin usuario y el "
+            "`psql` falla con un error que no menciona el healthcheck"
+        )
+
 
 class TestElHealthcheckDeLaApiConsultaLaBase:
 

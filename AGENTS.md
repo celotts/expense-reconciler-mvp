@@ -1223,7 +1223,7 @@ Lo que el modelo hace, y cada regla tiene su test:
 
 | Healthcheck | Antes | Ahora | Por qué importa |
 |---|---|---|---|
-| Postgres | `pg_isready` | + `to_regclass('public.tickets')` | durante el init la conexión responde **antes** de que existan las tablas |
+| Postgres | `pg_isready` | + `to_regclass('public.tickets')`, conectando como `$$POSTGRES_USER` | durante el init la conexión responde **antes** de que existan las tablas; y el usuario tiene que ser el que creó el entrypoint |
 | API | `curl /health` | `curl -fsS --max-time 5 /health`, y `/health` consulta la base | `-f` sin él: curl sale 0 ante un 503 y el healthcheck acepta la caída |
 | Front | **no tenía** | `wget -q -O /dev/null /` | sin él `--wait` no tiene nada que esperar en el front |
 
@@ -1234,6 +1234,14 @@ Lo que el modelo hace, y cada regla tiene su test:
 **`/health` NO comprueba el esquema.** `SELECT 1` pregunta *hay conexión*, no *está la base completa*. Una base sin `tickets` lo pasa y falla en todos los endpoints: por eso hay **dos** healthchecks y cada uno contesta una pregunta. `por_categoria` en el PDF lee `categoria`, que no existe en el JSON → ver `known-issues.md` §0.h.
 
 **El orden completo es `front → api → postgres`, y `make up` usa `--wait --wait-timeout 120`.** Sin `--wait`, `docker compose up -d` devuelve en cuanto los contenedores **existen**, y quien lo corre abre `localhost:3000` al segundo 2.
+
+**MEDIDO el 2026-11-04: el healthcheck de Postgres conectaba como `postgres` y el rol se llama `admin`.** `make up` moría en `Container expense_pgvector Error dependency postgres-reconciler failed to start`, con `expense_pgvector` en `Up (unhealthy)` y la API en `Created` sin llegar a arrancar. En el log, `FATAL: role "postgres" does not exist` cada 5 segundos.
+
+Lo introdujo `4a5954e` (2026-10-17) al añadir la mitad del `to_regclass`: el `pg_isready -U postgres` que ya estaba **no autentica** —devuelve 0 aunque el rol no exista—, así que el healthcheck parecía correcto hasta que se le puso al lado un `psql`, que es el primero que autentica. Y `psql -U postgres` contra una base cuyo superusuario es `admin` no puede funcionar nunca.
+
+Las dos mitades usan ahora `"$$POSTGRES_USER"` y `"$$POSTGRES_DB"`. El `$$` es el escape de Compose: la variable la expande el shell **dentro** del contenedor, así que el healthcheck lee el mismo `environment:` que creó la base en vez de repetir el usuario en un segundo sitio que puede dejar de coincidir. `test_conecta_con_el_usuario_que_existe` lo fija y falla si alguien vuelve a escribir el rol a mano, si una sola de las dos mitades lo escribe distinto, o si el servicio deja de declarar `POSTGRES_USER`.
+
+**Y el healthcheck de la API había perdido `-fsS --max-time 5`** —estaba en `curl -f http://127.0.0.1:8000/health || exit 1`—, con `test_tiene_timeout_para_no_colgarse` rojo desde entonces mientras la tabla de arriba decía lo contrario. Restaurado: un test rojo que nadie mira es la forma más silenciosa de que la documentación y el código dejen de decir lo mismo.
 
 > **Un test que mira el archivo entero no prueba el comando.** La primera versión de `test_up_usa_wait` hacía `"--wait" in makefile` y daba **verde con el arreglo quitado**: la palabra estaba en los comentarios de arriba, que sobreviven a la mutación. El test lee ahora la **receta** (`_lineas_de_receta`). MEDIDO: quitando `--wait` de la línea de comando, muere.
 >

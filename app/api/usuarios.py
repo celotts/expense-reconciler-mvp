@@ -149,12 +149,12 @@ async def registrar_usuario(
     db.add(nuevo_usuario)
     try:
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as err:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Ya existe una cuenta con el correo {correo}",
-        )
+        ) from err
 
     await db.refresh(nuevo_usuario)
     return UsuarioResponse.model_validate(nuevo_usuario)

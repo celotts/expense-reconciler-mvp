@@ -21,11 +21,22 @@ services:
       - pgvector_expense_data:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
     healthcheck:
+      # El usuario sale de `$$POSTGRES_USER`, NUNCA de un literal. MEDIDO el
+      # 2026-11-04: `environment:` declara `POSTGRES_USER: admin` y aqui decia
+      # `-U postgres`, un rol que esta base no tiene (el entrypoint crea solo
+      # `POSTGRES_USER`). El `psql` moria con `FATAL: role "postgres" does not
+      # exist`, el contenedor quedaba `unhealthy` para siempre y `make up`
+      # terminaba en `dependency postgres-reconciler failed to start`.
+      #
+      # Lo que lo hacia dificil de ver: `pg_isready -U postgres` NO autentica,
+      # asi que devolvia 0 con el rol inexistente. Solo la segunda mitad lo
+      # delata. `$$` es el escape de Compose: expande el shell DENTRO del
+      # contenedor, no Compose al parsear el YAML.
       test:
         - CMD-SHELL
         - >-
-          pg_isready -q -U postgres -d expense_db &&
-          psql -U postgres -d expense_db -tAc
+          pg_isready -q -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" &&
+          psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc
           "select to_regclass('public.tickets') is not null" | grep -qx t
       interval: 5s
       timeout: 5s
@@ -191,9 +202,17 @@ services:
       ollama:
         condition: service_started
       modelos:
-        condition: service_started
+        # `service_completed_successfully`, no `service_started`: aqui no vale
+        # "empezo a bajar", vale "termino". El script sale con 0 aunque no pueda
+        # descargar (la app sin modelo escanea igual con OCR), asi que esta
+        # espera no puede dejar el sistema sin levantar por una red caida.
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8000/health || exit 1"]
+      # `-f` hace que un 503 cuente como fallo: sin el, curl sale con 0 y el
+      # healthcheck acepta la caida. `--max-time 5` evita que un `/health`
+      # colgado se coma el `timeout` del healthcheck, que lo reporta como API
+      # caida. `-sS` deja el error en el log en vez de una salida vacia.
+      test: ["CMD-SHELL", "curl -fsS --max-time 5 http://127.0.0.1:8000/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5

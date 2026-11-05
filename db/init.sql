@@ -12,8 +12,10 @@ CREATE TABLE IF NOT EXISTS companies (
 
 -- Tabla de Cuentas con acceso
 --
--- Sin autorregistro: las crea scripts/crear_usuario.py, que pide la contrasena
--- por teclado. Esta tabla es el mismo DDL que emite app/models/user.py, y la
+-- Sin autorregistro: normalmente las crea scripts/crear_usuario.py, que pide
+-- la contrasena por teclado. El primer arranque de la app crea el admin usando
+-- `email` y `password_inicial` de `.env`; el hash scrypt no se escribe aqui.
+-- Esta tabla es el mismo DDL que emite app/models/user.py, y la
 -- razon de que esten los dos es la misma que la de tickets: una base creada
 -- desde cero y una base migrada tienen que terminar con las mismas reglas.
 CREATE TABLE IF NOT EXISTS users (

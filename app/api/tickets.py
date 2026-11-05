@@ -1,21 +1,34 @@
 import logging
-from datetime import date, datetime, timezone
+from datetime import timezone
+from decimal import Decimal
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Query, Response,
-    UploadFile, status,
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
 )
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from decimal import Decimal
-
 from app.core.archivo_real import media_type_real, resolver_tipo
-from app.core.subida import leer_ticket
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
-from app.core.enums import ConfidenceSource, ExtractionStatus, SourceType, SpotCheckStatus
+from app.core.enums import (
+    ConfidenceSource,
+    ExtractionStatus,
+    SourceType,
+    SpotCheckStatus,
+)
+from app.core.subida import leer_ticket
 from app.core.time import dias_desde, utcnow
 from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
@@ -26,32 +39,44 @@ from app.schemas.lectura import (
     VeredictoLecturaResponse,
 )
 from app.schemas.ticket import (
-    ClasificarLoteRequest, ClasificarLoteResponse,
+    ClasificarLoteRequest,
+    ClasificarLoteResponse,
     DocumentoHistorialResponse,
-    ExactitudPorOrigenResponse, ReporteExactitudResponse, SpotCheckItemResponse,
-    SpotCheckQueueResponse, SpotCheckRequest, TicketCreate, TicketResponse,
-    TicketReviewQueueResponse, TicketReviewRequest, TicketUpdate,
+    ExactitudPorOrigenResponse,
+    ReporteExactitudResponse,
+    SpotCheckItemResponse,
+    SpotCheckQueueResponse,
+    SpotCheckRequest,
+    TicketCreate,
+    TicketResponse,
+    TicketReviewQueueResponse,
+    TicketReviewRequest,
+    TicketUpdate,
 )
-from app.services.confidence_gate import gate_manual_ticket
+from app.services import vista_previa
 from app.services.accuracy_service import (
-    NIVEL_CONFIANZA, ORIGENES_A_REPORTAR, SLO_EXACTITUD, MedidaPorOrigen,
+    NIVEL_CONFIANZA,
+    ORIGENES_A_REPORTAR,
+    SLO_EXACTITUD,
+    MedidaPorOrigen,
     Veredicto,
 )
+from app.services.ai_extractor import ai_extractor
+from app.services.auditoria import registrar_auditoria
 from app.services.capture import ExtractionUnavailable, capture_ticket
+from app.services.confidence_gate import gate_manual_ticket
+from app.services.document_service import (
+    documento_de_ticket,
+    documentos_del_ticket,
+    reemplazar_documento,
+)
+from app.services.inventario_service import registrar_compra
 from app.services.lectura_diagnostico import (
     ResultadoLectura,
     diagnosticar_lectura,
 )
-from app.services.document_service import (
-    documento_de_ticket, documentos_del_ticket, guardar_documento,
-    reemplazar_documento,
-)
 from app.services.parser_service import TicketExtractionResult
-from app.services.ai_extractor import ai_extractor
-from app.services.inventario_service import registrar_compra
 from app.services.ticket_persistence import persistir_extraccion
-from app.services import vista_previa
-from app.services.auditoria import registrar_auditoria, registrar_login_auditoria, registrar_digitalizacion_auditoria
 
 router = APIRouter(tags=["Tickets"])
 
@@ -93,7 +118,7 @@ async def _extract_from_upload(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se pudo procesar el archivo: {exc}",
-        )
+        ) from exc
 
 
 def _a_diagnostico(resultado: ResultadoLectura) -> DiagnosticoLecturaResponse:
@@ -192,9 +217,7 @@ def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
 async def create_ticket(
-    ticket_in: TicketCreate,
-    usuario: UsuarioActual,
-    db: AsyncSession = Depends(get_db)
+    ticket_in: TicketCreate, usuario: UsuarioActual, db: AsyncSession = Depends(get_db)
 ) -> TicketModel:
     """Create a new ticket manually.
 
@@ -207,8 +230,7 @@ async def create_ticket(
     )
     if not company_result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La empresa no existe"
+            status_code=status.HTTP_404_NOT_FOUND, detail="La empresa no existe"
         )
 
     decision = gate_manual_ticket(
@@ -234,7 +256,7 @@ async def create_ticket(
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)
-    
+
     # La auditoria dice QUE PASO, no solo que algo se toco.
     #
     # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
@@ -247,14 +269,17 @@ async def create_ticket(
     # `usuario.perfil` y no `ticket.perfil`: el rol es el de quien OPERA, y sale
     # del token (regla 23), no de un cuerpo que el cliente pueda mandar.
     await registrar_auditoria(
-        accion='crear_ticket',
-        modulo='tickets',
+        accion="crear_ticket",
+        modulo="tickets",
         usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
-        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        detalles={
+            "provider_name": ticket.provider_name,
+            "total_amount": str(ticket.total_amount),
+        },
         rol=usuario.perfil,
     )
-    
+
     return ticket
 
 
@@ -322,8 +347,7 @@ async def extract_diagnostico(
 
 @router.post("/extract", response_model=TicketExtractionResult)
 async def extract_ticket(
-    file: UploadFile = File(...),
-    file_type: str = Form("pdf")
+    file: UploadFile = File(...), file_type: str = Form("pdf")
 ) -> TicketExtractionResult:
     """Extract ticket data from uploaded file (PDF/Image).
 
@@ -351,12 +375,16 @@ async def extract_ticket(
         ) from None
 
 
-@router.post("/extract-and-create", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/extract-and-create",
+    response_model=TicketResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def extract_and_create_ticket(
     file: UploadFile = File(...),
     company_id: UUID = Form(...),
     file_type: str = Form("pdf"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Extract ticket data from file and create ticket.
 
@@ -370,8 +398,7 @@ async def extract_and_create_ticket(
     )
     if not company_result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La empresa no existe"
+            status_code=status.HTTP_404_NOT_FOUND, detail="La empresa no existe"
         )
 
     content = await leer_ticket(file, file.filename or "")
@@ -394,7 +421,10 @@ async def extract_and_create_ticket(
         ) from None
 
     return await _persist_extracted(
-        db, company_id, extracted, content,
+        db,
+        company_id,
+        extracted,
+        content,
         # El `source_type` tambien sale de los bytes, no de la etiqueta del
         # cliente. Antes, ademas, un `text` caia al fallback y se guardaba como
         # "image": `text` no existe en el enum `SourceType`
@@ -472,10 +502,14 @@ async def list_tickets(
     if company_id:
         query = query.where(TicketModel.company_id == company_id)
     if only_open:
-        query = query.where(TicketModel.extraction_status.in_([
-            ExtractionStatus.REQUIERE_REVISION.value,
-            ExtractionStatus.PENDIENTE.value,
-        ]))
+        query = query.where(
+            TicketModel.extraction_status.in_(
+                [
+                    ExtractionStatus.REQUIERE_REVISION.value,
+                    ExtractionStatus.PENDIENTE.value,
+                ]
+            )
+        )
     elif extraction_status:
         query = query.where(TicketModel.extraction_status == extraction_status)
 
@@ -569,7 +603,9 @@ async def get_review_queue(
     counts_q = base.with_only_columns(
         TicketModel.extraction_status, func.count().label("n")
     ).group_by(TicketModel.extraction_status)
-    counts = {row.extraction_status: row.n for row in (await db.execute(counts_q)).all()}
+    counts = {
+        row.extraction_status: row.n for row in (await db.execute(counts_q)).all()
+    }
 
     # Antiguedad promedio de lo que se esta mostrando. Solo sobre filas con
     # fecha utilizable: created_at admite NULL y una fila sin fecha no puede
@@ -636,7 +672,13 @@ async def clasificar_lote(
     )
     await db.commit()
 
-    return ClasificarLoteResponse(actualizados=resultado.rowcount, pedidos=len(ids))
+    # `AsyncSession.execute` se anota como `Result[Any]`, que no declara
+    # `rowcount`; un `UPDATE` devuelve un `CursorResult`, que si lo tiene. El
+    # cast no cambia lo que corre, es lo que pyright necesita para leer la unica
+    # cifra que esta respuesta reporta.
+    actualizados = cast(CursorResult[Any], resultado).rowcount
+
+    return ClasificarLoteResponse(actualizados=actualizados, pedidos=len(ids))
 
 
 @router.patch("/{ticket_id}/review", response_model=TicketResponse)
@@ -655,7 +697,9 @@ async def review_ticket(
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
 
     # Correcciones aplicadas durante la revision.
     corrections = review_in.model_dump(
@@ -791,7 +835,7 @@ async def review_ticket(
 
     await db.commit()
     await db.refresh(ticket)
-    
+
     # La auditoria dice QUE PASO, no solo que algo se toco.
     #
     # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
@@ -811,17 +855,18 @@ async def review_ticket(
     # un nombre generico hace que la pregunta "quien aprobo esto" no se pueda
     # formular.
     await registrar_auditoria(
-        accion='revisar_ticket',
-        modulo='tickets',
+        accion="revisar_ticket",
+        modulo="tickets",
         usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
-        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        detalles={
+            "provider_name": ticket.provider_name,
+            "total_amount": str(ticket.total_amount),
+        },
         rol=usuario.perfil,
     )
-    
+
     return ticket
-
-
 
 
 # =====================================================================
@@ -902,25 +947,32 @@ async def get_spot_check_queue(
     # Sin `status` explicito se trabaja lo pendiente. Un `status` explicito pide
     # ese estado, que es como se llega al historico de veredictos.
     base = base.where(
-        TicketModel.spot_check_status == (status_filter or SpotCheckStatus.PENDIENTE.value)
+        TicketModel.spot_check_status
+        == (status_filter or SpotCheckStatus.PENDIENTE.value)
     )
 
-    rows = (await db.execute(
-        base.order_by(TicketModel.created_at.asc()).limit(limit)
-    )).scalars().all()
+    rows = (
+        (await db.execute(base.order_by(TicketModel.created_at.asc()).limit(limit)))
+        .scalars()
+        .all()
+    )
 
     # Los conteos se hacen con una consulta aparte y SIN filtro de estado: el
     # `total_pendientes` que se muestra arriba de la lista tiene que contar todo
     # lo pendiente, no solo lo que cabe en `limit`. Con 200 pendientes y
     # limit=50, la pantalla tiene que decir 200, no 50.
     async def _contar(estado: str) -> int:
-        return await db.scalar(
-            select(func.count()).select_from(TicketModel)
-            .where(
-                TicketModel.spot_check_status == estado,
-                *([TicketModel.company_id == company_id] if company_id else []),
+        return (
+            await db.scalar(
+                select(func.count())
+                .select_from(TicketModel)
+                .where(
+                    TicketModel.spot_check_status == estado,
+                    *([TicketModel.company_id == company_id] if company_id else []),
+                )
             )
-        ) or 0
+            or 0
+        )
 
     pendientes = await _contar(SpotCheckStatus.PENDIENTE.value)
     aciertos = await _contar(SpotCheckStatus.CORRECTO.value)
@@ -928,12 +980,14 @@ async def get_spot_check_queue(
 
     antiguedad = None
     if pendientes:
-        mas_viejo = (await db.execute(
-            select(func.min(TicketModel.created_at)).where(
-                TicketModel.spot_check_status == SpotCheckStatus.PENDIENTE.value,
-                *([TicketModel.company_id == company_id] if company_id else []),
+        mas_viejo = (
+            await db.execute(
+                select(func.min(TicketModel.created_at)).where(
+                    TicketModel.spot_check_status == SpotCheckStatus.PENDIENTE.value,
+                    *([TicketModel.company_id == company_id] if company_id else []),
+                )
             )
-        )).scalar()
+        ).scalar()
         if mas_viejo is not None:
             # `dias_desde` normaliza la zona. La columna esta declarada con
             # zona horaria, asi que Postgres devuelve el instante con tz y la
@@ -980,18 +1034,19 @@ async def registrar_veredicto(
     mide algo. Un ticket en la cola no se puede "dar por correcto": su estado
     ya lo decidio el gate.
     """
-    row = (await db.execute(
-        select(TicketModel).where(TicketModel.id == ticket_id)
-    )).scalar_one_or_none()
+    row = (
+        await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="El ticket no existe")
 
-    if row.extraction_status != ExtractionStatus.AUTO_APROBADO.value:
+    extraction_status = row.extraction_status
+    if extraction_status != ExtractionStatus.AUTO_APROBADO.value:
         raise HTTPException(
             status_code=409,
             detail=(
                 "solo se puede verificar lo que el sistema aprobo solo. Este "
-                f"ticket esta en {row.extraction_status}, asi que su lectura ya "
+                f"ticket esta en {extraction_status}, asi que su lectura ya "
                 "la reviso una persona y no mide el automatismo"
             ),
         )
@@ -1007,7 +1062,8 @@ async def registrar_veredicto(
         )
 
     row.spot_check_status = (
-        SpotCheckStatus.CORRECTO.value if payload.correct
+        SpotCheckStatus.CORRECTO.value
+        if payload.correct
         else SpotCheckStatus.INCORRECTO.value
     )
     row.spot_checked_at = utcnow()
@@ -1055,28 +1111,33 @@ async def get_reporte_exactitud(
     # Una sola consulta agrupada: el reporte lee toda la evidencia de la
     # empresa y la cuenta en memoria. Con miles de tickets revisados, trae solo
     # lo que el indice parcial ix_tickets_spot_check_report cubre.
-    filas = (await db.execute(
-        select(
-            TicketModel.confidence_source,
-            TicketModel.spot_check_status,
-            func.count(),
+    filas = (
+        await db.execute(
+            select(
+                TicketModel.confidence_source,
+                TicketModel.spot_check_status,
+                func.count(),
+            )
+            .where(
+                TicketModel.spot_check_status.is_not(None),
+                *condiciones,
+            )
+            .group_by(TicketModel.confidence_source, TicketModel.spot_check_status)
         )
-        .where(
-            TicketModel.spot_check_status.is_not(None),
-            *condiciones,
-        )
-        .group_by(TicketModel.confidence_source, TicketModel.spot_check_status)
-    )).all()
+    ).all()
 
     # Los campos que mas fallan, por origen. Es la parte que convierte una
     # estadistica en una lista de que arreglar.
-    campos = (await db.execute(
-        select(TicketModel.confidence_source, TicketModel.spot_check_wrong_fields)
-        .where(
-            TicketModel.spot_check_status == SpotCheckStatus.INCORRECTO.value,
-            *condiciones,
+    campos = (
+        await db.execute(
+            select(
+                TicketModel.confidence_source, TicketModel.spot_check_wrong_fields
+            ).where(
+                TicketModel.spot_check_status == SpotCheckStatus.INCORRECTO.value,
+                *condiciones,
+            )
         )
-    )).all()
+    ).all()
 
     medidas: dict[str, MedidaPorOrigen] = {}
     for origen in ORIGENES_A_REPORTAR:
@@ -1085,7 +1146,9 @@ async def get_reporte_exactitud(
         medidas.setdefault(origen_extra, MedidaPorOrigen(origen=origen_extra))
 
     for origen, estado, cantidad in filas:
-        medida = medidas.setdefault(origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido"))
+        medida = medidas.setdefault(
+            origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido")
+        )
         if estado == SpotCheckStatus.PENDIENTE.value:
             medida.pendientes += cantidad
         else:
@@ -1098,7 +1161,9 @@ async def get_reporte_exactitud(
     for origen, anotados in campos:
         if not anotados:
             continue
-        medida = medidas.setdefault(origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido"))
+        medida = medidas.setdefault(
+            origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido")
+        )
         for campo in anotados.split(","):
             campo = campo.strip()
             if campo:
@@ -1140,7 +1205,6 @@ def _veredicto_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
     objetivo. Promediar las dos daria algo intermedio y esconderia justo la via
     que hay que arreglar, que es la que manda.
     """
-    from app.services.accuracy_service import Veredicto
 
     veredictos = [m.veredicto for m in por_origen if m.revisados > 0]
     if not veredictos:
@@ -1159,7 +1223,7 @@ def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
     salio, y casi siempre termina creyendolo. Peor: "INCONCLUYENTE" sin mas se
     lee como "algo fallo", y no es lo mismo que "hace falta medir mas".
     """
-    from app.services.accuracy_service import Motivo, Veredicto
+    from app.services.accuracy_service import Motivo
 
     con_datos = [m for m in por_origen if m.revisados > 0]
     if not con_datos:
@@ -1177,9 +1241,7 @@ def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
 
     if _veredicto_global(con_datos) == Veredicto.NO_CUMPLE:
         malos = [m for m in con_datos if m.veredicto == Veredicto.NO_CUMPLE]
-        detalle = ", ".join(
-            f"{m.origen} ({m.aciertos}/{m.revisados})" for m in malos
-        )
+        detalle = ", ".join(f"{m.origen} ({m.aciertos}/{m.revisados})" for m in malos)
         return (
             f"El automatismo esta por debajo de {int(SLO_EXACTITUD * 100)}% en: "
             f"{detalle}. Revisar mas no lo arregla: hay que corregir el extractor."
@@ -1236,6 +1298,7 @@ def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
 @router.get("/{ticket_id}/documento", response_class=Response)
 async def get_documento(
     ticket_id: UUID,
+    _: UsuarioActual,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Los bytes del comprobante, tal como los subio la persona.
@@ -1249,13 +1312,20 @@ async def get_documento(
     cliente. Ver `app.models.ticket_document.content_type_servible`: servir
     `text/html` con bytes sin revisar seria XSS desde el propio dominio, con
     sesion iniciada, disparado por alguien de confianza de la empresa.
+
+    **Requiere autenticacion.** Sin ella, cualquier cliente externo que conozca
+    (o adivine) un UUID de ticket puede descargar el comprobante fiscal de una
+    empresa sin haber iniciado sesion. Es un BOLA clasico: el recurso existia y
+    el unico control era que el id fuera dificil de adivinar, que no es un
+    control de acceso. Los UUIDs v4 son largos pero no secretos: aparecen en
+    URLs, logs y respuestas de otros endpoints autenticados.
     """
     # El ticket primero. Sin el, el `404` seria indistinguible del "no hay
     # documento", y quien llama no podria saber si se equivoco en el id o si el
     # ticket es de captura manual.
-    ticket = (await db.execute(
-        select(TicketModel).where(TicketModel.id == ticket_id)
-    )).scalar_one_or_none()
+    ticket = (
+        await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
+    ).scalar_one_or_none()
     if ticket is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
@@ -1274,7 +1344,7 @@ async def get_documento(
                 "Este ticket no tiene documento guardado. "
                 + (
                     "Es de captura manual, asi que no hay ningun archivo que revisar."
-                    if ticket.source_type == SourceType.MANUAL.value
+                    if str(ticket.source_type or "") == SourceType.MANUAL.value
                     else "Vuelve a subir el comprobante para poder revisarlo."
                 )
             ),
@@ -1307,6 +1377,7 @@ async def get_documento(
 @router.get("/{ticket_id}/documento/vista-previa", response_class=Response)
 async def get_vista_previa(
     ticket_id: UUID,
+    _: UsuarioActual,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """El comprobante en un formato que el navegador SI puede pintar.
@@ -1340,9 +1411,9 @@ async def get_vista_previa(
     hay vista previa", nunca "no hay comprobante"; esas dos cosas piden acciones
     distintas y confundirlas hace que el revisor busque un archivo que si existe.
     """
-    ticket = (await db.execute(
-        select(TicketModel).where(TicketModel.id == ticket_id)
-    )).scalar_one_or_none()
+    ticket = (
+        await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
+    ).scalar_one_or_none()
     if ticket is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
@@ -1414,9 +1485,7 @@ async def listar_documentos(
     los bytes que quedaron.
     """
     existe = (
-        await db.execute(
-            select(TicketModel.id).where(TicketModel.id == ticket_id)
-        )
+        await db.execute(select(TicketModel.id).where(TicketModel.id == ticket_id))
     ).scalar_one_or_none()
     if existe is None:
         raise HTTPException(
@@ -1490,9 +1559,9 @@ async def put_documento(
     hay exactamente uno vigente: es un cambio de papel, no un agregado. El
     historial se consulta en `GET /tickets/{id}/documentos`.
     """
-    ticket = (await db.execute(
-        select(TicketModel).where(TicketModel.id == ticket_id)
-    )).scalar_one_or_none()
+    ticket = (
+        await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
+    ).scalar_one_or_none()
     if ticket is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
@@ -1505,7 +1574,9 @@ async def put_documento(
     contenido = await leer_ticket(file, file.filename or "")
 
     guardado = await reemplazar_documento(
-        db, ticket_id, contenido,
+        db,
+        ticket_id,
+        contenido,
         actor=usuario.email,
         motivo=motivo,
         content_type=file.content_type,
@@ -1537,7 +1608,7 @@ async def put_documento(
 
     await db.commit()
     await db.refresh(ticket)
-    
+
     # La auditoria dice QUE PASO, no solo que algo se toco.
     #
     # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
@@ -1554,14 +1625,17 @@ async def put_documento(
     # evidencia— y compartia nombre con una correccion de campos. Con nombres
     # distintos, "quien cambio el papel" es una consulta y no una busqueda.
     await registrar_auditoria(
-        accion='actualizar_documento',
-        modulo='tickets',
+        accion="actualizar_documento",
+        modulo="tickets",
         usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
-        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        detalles={
+            "provider_name": ticket.provider_name,
+            "total_amount": str(ticket.total_amount),
+        },
         rol=usuario.perfil,
     )
-    
+
     return ticket
 
 
@@ -1585,16 +1659,14 @@ def _nombre_seguro(nombre: str | None) -> str:
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(
-    ticket_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    ticket_id: UUID, db: AsyncSession = Depends(get_db)
 ) -> TicketModel:
     """Get a ticket by ID."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="El ticket no existe"
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
     return ticket
 
@@ -1604,15 +1676,14 @@ async def update_ticket(
     ticket_id: UUID,
     ticket_in: TicketUpdate,
     usuario: UsuarioActual,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Update a ticket."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="El ticket no existe"
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
 
     update_data = ticket_in.model_dump(exclude_unset=True)
@@ -1640,7 +1711,10 @@ async def update_ticket(
         # guardar; `_sin_decimal` es ese mismo paso y se hace aqui para que el
         # objeto que se devuelve en la respuesta sea el mismo que quedo guardado.
         # Sin esto, la respuesta y la fila discreparían en el formato del importe.
-        lineas = [{k: str(v) if isinstance(v, Decimal) else v for k, v in l.items()} for l in lineas]
+        lineas = [
+            {k: str(v) if isinstance(v, Decimal) else v for k, v in linea.items()}
+            for linea in lineas
+        ]
         ticket.items = lineas
 
     # Un ticket en cola se revalida con los datos nuevos. Si ahora ya cuadran,
@@ -1700,12 +1774,14 @@ async def update_ticket(
         if compra is not None:
             logger.info(
                 "Ticket %s abrio la compra %s en %s al corregirlo a mano.",
-                ticket.id, compra.id, compra.estado,
+                ticket.id,
+                compra.id,
+                compra.estado,
             )
 
     await db.commit()
     await db.refresh(ticket)
-    
+
     # La auditoria dice QUE PASO, no solo que algo se toco.
     #
     # Antes las cuatro llamadas de este router usaban `accion='update_ticket'`
@@ -1720,30 +1796,29 @@ async def update_ticket(
     # MEDIDO: se registraba como `update_ticket`, igual que la creacion y que la
     # revision. Son tres hechos distintos y el rastro no los distinguia.
     await registrar_auditoria(
-        accion='actualizar_ticket',
-        modulo='tickets',
+        accion="actualizar_ticket",
+        modulo="tickets",
         usuario_id=str(usuario.id),
         registro_afectado=str(ticket.id),
-        detalles={'provider_name': ticket.provider_name, 'total_amount': str(ticket.total_amount)},
+        detalles={
+            "provider_name": ticket.provider_name,
+            "total_amount": str(ticket.total_amount),
+        },
         rol=usuario.perfil,
     )
-    
+
     return ticket
 
 
 @router.delete("/{ticket_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ticket(
-    ticket_id: UUID,
-    db: AsyncSession = Depends(get_db)
-) -> None:
+async def delete_ticket(ticket_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
     """Delete a ticket."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="El ticket no existe"
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
-    
+
     await db.delete(ticket)
     await db.commit()

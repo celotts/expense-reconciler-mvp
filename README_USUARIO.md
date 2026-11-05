@@ -16,7 +16,7 @@ los concilia contra el extracto bancario y exporta a Excel/CONTPAQI.
 5. Abre http://localhost:3000 en tu navegador
 
 ## Primer uso
-1. Ingresa con `sos@empresa.mx` / `SosTesting123`
+1. Ingresa con el `email` configurado en `.env` y la contraseña de `password_inicial` (por defecto: `admin@localhost.com`)
 2. **Cambia la contraseña** en la sección de usuarios
 3. Crea tu empresa (nombre y RFC)
 4. Sube tu primer comprobante (foto o PDF)

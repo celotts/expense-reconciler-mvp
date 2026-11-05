@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.core.database import get_db
 
 _es_produccion = settings.ENVIRONMENT.lower() == "production"
+logger = logging.getLogger(__name__)
 _docs_url = None if _es_produccion else "/docs"
 _redoc_url = None if _es_produccion else "/redoc"
 
@@ -36,21 +38,12 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 async def _sembrar_sos() -> None:
     """Crea el usuario inicial si no existe ninguno.
 
-    ## POR QUE NO HAY CONTRASENA POR DEFECTO
-
-    MEDIDO: antes se creaba `sos@empresa.mx` / `SosTesting123` en cada
-    arranque. Eso es un backdoor: cualquier persona que sepa el repo sabe la
-    contraseña del primer admin. Para un producto que se vende, eso es inaceptable.
-
-    Ahora: si no hay NINGUN usuario, se crea uno con email `admin@localhost`
-    y contraseña aleatoria de 16 caracteres. La contraseña se imprime UNA VEZ
-    en el log del arranque. Si ya hay usuarios, no se toca nada.
-
-    El usuario la cambia en el primer login (el frontend lo fuerza).
+    Usa exactamente los valores `email` y `password_inicial` del entorno. El
+    password no se genera ni se imprime: quien instala la herramienta elige la
+    clave en `.env` y esta función solo guarda su hash. Si ya hay usuarios, no
+    se toca nada.
     """
     try:
-        import secrets
-
         from sqlalchemy import func, select
 
         from app.core.database import AsyncSessionLocal
@@ -65,20 +58,13 @@ async def _sembrar_sos() -> None:
             if total == 0:
                 load_dotenv()
 
-                # Obtiene las variables desde el archivo .env o .env.local
-                alfabeto = os.getenv("password_inicial")
-                username = os.getenv("email", "admin@localhost.com")
+                password_inicial = os.getenv("password_inicial")
+                username = os.getenv("email", "admin@localhost.com").strip().lower()
 
-                # Verificación de que el alfabeto se cargó correctamente
-                if not alfabeto:
+                if not password_inicial:
                     raise ValueError(
                         "Error: No se encontró la variable 'password_inicial' en el archivo .env"
                     )
-
-                print("Alfabeto cargado con éxito para generar la clave inicial.")
-
-                # Genera una contraseña aleatoria de 16 caracteres usando el alfabeto del .env
-                password_inicial = "".join(secrets.choice(alfabeto) for _ in range(16))
 
                 admin = UserModel(
                     email=username,
@@ -91,16 +77,17 @@ async def _sembrar_sos() -> None:
                 db.add(admin)
                 await db.commit()
 
-                # Se imprime UNA vez. No se vuelve a imprimir porque total != 0.
                 print("=" * 60)
                 print("  PRIMER ARRANQUE: usuario inicial creado")
                 print(f"  Email:      {username}")
-                print(f"  Contraseña: {password_inicial}")
+                print("  Contraseña: la definida en password_inicial del .env")
                 print("  Cambiala en el primer login.")
                 print("=" * 60)
     except Exception:  # noqa: BLE001
-        # No abortar el arranque si el esquema aun no esta listo.
-        pass
+        # No abortar el arranque si el esquema aun no esta listo, pero deja
+        # el fallo visible: un admin que no se crea deja a quien instala sin
+        # forma de entrar.
+        logger.exception("No se pudo crear el usuario inicial")
 
 
 @app.get("/health", tags=["Health Check"])

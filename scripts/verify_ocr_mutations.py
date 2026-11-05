@@ -229,7 +229,7 @@ MUTACIONES = [
         "crudos y pytesseract lanza 'TypeError: Unsupported image object', que "
         "no menciona HEIC",
         OCR,
-        "from app.core import heif as _heif  # noqa: F401\n",
+        "from app.core import heif as _heif\n",
         "",
         TESTS_OCR,
     ),

@@ -61,8 +61,8 @@ class LecturaPuntuada:
         self.lineas = ()
 
 
-def _motor_que_devuelve(lecturas, registro=None):
-    """Un `obtener_motor` de mentira que entrega lecturas en orden.
+def _motor_que_devuelve(registro=None):
+    """Un `obtener_motor` de mentira que cuenta cuantas lecturas se piden.
 
     `registro` es la lista donde se anota cada lectura, que es lo que permite
     afirmar que la binarizacion **no se intento** cuando la lectura normal fue
@@ -86,11 +86,9 @@ def _motor_que_devuelve(lecturas, registro=None):
         def image_to_data(self, imagen, lang=None, config=None, output_type=None):
             if self.registro is not None:
                 self.registro.append({"config": config})
-            # El numero de rotaciones se resuelve leyendo el ancho/alto, que es
-            # como `_variantes` produce imagenes distintas: si la lectura se
-            # agota se devuelve la ultima, para que el test pueda quedarse sin
-            # decisiones y solo verificar la ausencia de la lectura extra.
-            puntos = lecturas[self.i] if self.i < len(lecturas) else lecturas[-1]
+            # Cada llamada cuenta como una lectura. El doble devuelve siempre
+            # el mismo dict vacio; lo que estos tests miden es CUANTAS lecturas
+            # ocurren, no cual gana.
             self.i += 1
             # El motor devuelve el DICT de `image_to_data`, no una `Lectura`.
             # `_una_lectura` arma la `Lectura` con `_puntuar` sobre el texto; el
@@ -184,9 +182,24 @@ def con_cv2(monkeypatch):
 
 
 def _imagen(ancho=200, alto=80):
-    from PIL import Image
+    """Imagen sintetica CON tinta, para ejercitar la etapa de binarizado.
 
-    return Image.new("L", (ancho, alto), 255)
+    El blanco puro ya no sirve como imagen de prueba: `_leer_tesseract` tiene
+    una guarda que devuelve la lectura vacia sin llamar al motor cuando no hay
+    tinta (ver `test_guarda_imagen_vacia_ocr.py`). Con un lienzo en blanco estos
+    tests medirian la guarda en vez de la etapa que quieren mirar, y fallarian
+    por una razon que no es la suya.
+
+    El rectangulo ocupa ~1% del area, por encima del 0.5% que exige la guarda,
+    y NO cambia ninguna dimension: lo unico que agrega es tinta.
+    """
+    from PIL import Image, ImageDraw
+
+    imagen = Image.new("L", (ancho, alto), 255)
+    ImageDraw.Draw(imagen).rectangle(
+        (0, 0, max(1, ancho // 10), max(1, alto // 10)), fill=0
+    )
+    return imagen
 
 
 # --- La garantia principal: no empeora ------------------------------------
@@ -199,7 +212,7 @@ class TestLaBinarizacionNoEmpeora:
         Se compara el texto, no la excepcion: el fallo feo de una dependencia
         opcional no es que avise, es que devuelva otra cosa sin avisar.
         """
-        with patch.object(mod, "obtener_motor", lambda n: _motor_que_devuelve([5])):
+        with patch.object(mod, "obtener_motor", lambda n: _motor_que_devuelve()):
             with patch.object(mod, "_cv2", lambda: None):
                 with patch.object(mod, "_preparar", lambda d: _imagen()):
                     resultado = mod.leer_imagen(b"imagen-falsa")
@@ -358,7 +371,7 @@ class TestCuandoSeIntentaLaBinarizacion:
             return puntos
 
         with patch.object(mod, "obtener_motor",
-                          lambda n: _motor_que_devuelve(puntos_por_lectura, llamadas)):
+                          lambda n: _motor_que_devuelve(llamadas)):
             with patch.object(mod, "_preparar", lambda d: _imagen()):
                 with patch.object(mod, "_binarizar",
                                   lambda im: _imagen() if con_cv2 else None):
@@ -471,18 +484,33 @@ class TestElOcrRegistraElDecodificadorDeHeic:
             "menciona HEIC ni los bytes."
         )
 
-    def test_importar_heif_no_es_una_dependencia_dura(self):
-        """La linea nueva no consulta nada: solo importa.
+    def test_sin_pillow_heif_el_ocr_degrada_y_lo_dice(self, con_pillow, caplog, monkeypatch):
+        """Sin `pillow-heif` el OCR sigue leyendo: degrada y lo dice en el log.
 
-        `app/core/heif.py` degrada a `DISPONIBLE=False` si falta `pillow-heif`.
-        Si `ocr.py` empezara a usar ese booleano o a levantar, el modulo que mas
-        fotos procesa habria ganado una dependencia que antes no tenia, y una
-        maquina sin el paquete habria dejado de leer fotos.
+        El import de `app.core.heif` existe por su efecto —registrar el
+        decodificador—, pero `_preparar` SI consulta `DISPONIBLE` al fallar.
+        Eso no lo vuelve una dependencia dura, y este test es la prueba: con el
+        decodificador ausente y un archivo que Pillow no identifica, se devuelven
+        los bytes originales en vez de levantar, y el log nombra la causa.
+
+        La alternativa —un `import` que nadie lee— es la que se borra un dia
+        "porque no se usa", y con el se va el registro de HEIC.
         """
-        from app.core import heif
+        import logging
+        from types import SimpleNamespace
 
-        assert isinstance(heif.DISPONIBLE, bool)
+        monkeypatch.setattr(
+            mod, "_heif", SimpleNamespace(DISPONIBLE=False, MOTIVO="falta pillow-heif")
+        )
+        with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+            salida = mod._preparar(b"esto no es una imagen")
 
+        assert salida == b"esto no es una imagen", (
+            "sin pillow-heif el OCR tiene que seguir con los bytes originales"
+        )
+        assert any("pillow-heif" in r.getMessage() for r in caplog.records), (
+            "el log no dice que falta el decodificador de HEIC"
+        )
 
 # --- La geometria del reescalado -----------------------------------------
 

@@ -1,11 +1,12 @@
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP, Boolean, CheckConstraint, Column, Date, ForeignKey, Index, Numeric, String, Text, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.core.enums import OPEN_STATUSES, SETTLED_STATUSES, ExtractionStatus, SourceType
@@ -116,6 +117,23 @@ class TicketModel(Base):
         ),
     )
 
+    # --- Por que algunas columnas llevan `Mapped[T]` ---------------------
+    #
+    # Este modelo sigue en `Column(...)` legacy, como nueve de los doce. La
+    # anotacion se pone SOLO en las columnas que pyright lee como `Column[T]` en
+    # un sitio donde eso hace dano: asignaciones desde el router
+    # (`ticket.extraction_status = "..."`) y condiciones (`if not
+    # ticket.validation_errors:`). Sin anotacion, esos dos casos salen como error
+    # de tipo y una sola causa llena el panel con 28 avisos en `api/tickets.py`.
+    # Y un panel lleno de ruido es un panel que nadie lee, que es como se apagan
+    # las reglas que si avisan (`reportAttributeAccessIssue` dio con `.rotate`
+    # sobre un `object` en `ocr.py`).
+    #
+    # No es una migracion del modelo y NO cambia el DDL: `Mapped[str] =
+    # mapped_column(String(20))` declara exactamente la misma columna que
+    # `Column(String(20))`. Es el mismo criterio que `user.py` usa para
+    # `is_active`, `perfil` y `last_login_at`: corregir el tipo en el origen en
+    # vez de silenciar la regla.
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     provider_name = Column(String(150), nullable=False)
@@ -166,7 +184,9 @@ class TicketModel(Base):
     # es JSON. Con `JSON` a secas, un INSERT de cualquier factura CON detalle de
     # partidas revienta con "Object of type Decimal is not JSON serializable" y el
     # ticket se pierde como `accion=ERROR`. Ver `app/core/json_decimal.py`.
-    items = Column(JSONConDecimal(none_as_null=True), nullable=True)
+    items: Mapped[list[dict] | None] = mapped_column(
+        JSONConDecimal(none_as_null=True), nullable=True
+    )
     expense_date = Column(Date, nullable=False)
 
     # ## SI ESTA FECHA VIENE DEL PAPEL
@@ -199,7 +219,9 @@ class TicketModel(Base):
     # Quien la limpia: una persona. La automaticidad NUNCA la limpia, porque una
     # relectura que no encuentra fecha no esta confirmando la anterior, esta
     # escribiendo otra vez la del dia.
-    fecha_provisional = Column(Boolean, nullable=False, default=False)
+    fecha_provisional: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
     category = Column(String(100), nullable=True)
 
@@ -244,23 +266,27 @@ class TicketModel(Base):
     # La confianza que la IA ya calculaba se descartaba. Ahora se persiste y
     # gobierna el flujo: es lo que permite medir exactitud real en vez de
     # suponerla.
-    confidence = Column(Numeric(4, 3), nullable=True)
-    confidence_source = Column(String(20), nullable=True)
-    extraction_status = Column(
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
+    confidence_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    extraction_status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=ExtractionStatus.PENDIENTE.value,
     )
-    source_type = Column(String(20), nullable=True, default=SourceType.MANUAL.value)
+    source_type: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, default=SourceType.MANUAL.value
+    )
     source_file = Column(String(500), nullable=True)
     source_hash = Column(String(64), nullable=True)
 
     # Checks deterministas que fallo. Guardarlos permite ver donde se
     # concentra el error (OCR, vision, reglas) en vez de suponerlo.
-    validation_errors = Column(Text, nullable=True)
+    validation_errors: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- Revision humana -----------------------------------------------
-    reviewed_by = Column(String(100), nullable=True)
-    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    review_notes = Column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- Muestreo de exactitud (0003) -----------------------------------
     # La diferencia con lo de arriba: la revision humana corrige UN ticket. El
@@ -269,12 +295,14 @@ class TicketModel(Base):
     # puede alterar un gasto, solo la medicion de como se leyeron los gastos.
     #
     # NULL = fuera de la muestra. Ver SpotCheckStatus en app/core/enums.py.
-    spot_check_status = Column(String(20), nullable=True)
-    spot_checked_at = Column(TIMESTAMP(timezone=True), nullable=True)
-    spot_check_notes = Column(Text, nullable=True)
+    spot_check_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    spot_checked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    spot_check_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Que campos estaban mal, no solo que estaban mal. "96% correcto" no dice
     # que arreglar; "el 3% que falla es casi todo la fecha" si.
-    spot_check_wrong_fields = Column(Text, nullable=True)
+    spot_check_wrong_fields: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Quien registro el veredicto. Sale del token, no de un texto fijo: el
     # reporte de exactitud promedia veredictos de varias personas, y sin saber
     # cuales, "el sistema es 96% exacto" es un promedio sin dueño.
@@ -283,7 +311,7 @@ class TicketModel(Base):
     # `is_active = false`, pero si alguien termina borrando la cuenta, el
     # veredicto que firmo tiene que seguir diciendo quien fue. Con ON DELETE
     # SET NULL se perderia justo ese dato.
-    spot_checked_by = Column(String(255), nullable=True)
+    spot_checked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # `passive_deletes=True`: la FK ya es `ON DELETE CASCADE` en la base
     # (`db/init.sql:63`), asi que el borrado en cascada lo sabe hacer Postgres.

@@ -44,9 +44,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-from app.core.config import settings
+from typing import TYPE_CHECKING, Protocol, cast
 
 # Importar `app.core.heif` ES registrar el decodificador de HEIC: el
 # `register_heif_opener()` corre al importarse ese modulo, no al llamarse.
@@ -76,8 +74,13 @@ from app.core.config import settings
 # el unico path que las lee es este.
 #
 # Es una linea y no una dependencia dura: `heif.py` degrada a `DISPONIBLE=False`
-# si falta `pillow-heif`, y aqui no se consulta — solo se importa.
-from app.core import heif as _heif  # noqa: F401
+# si falta `pillow-heif`. Por eso `_preparar` SI lo consulta al fallar: sin
+# `pillow-heif`, una foto de iPhone no se abre, y el log tiene que decir eso en
+# vez de "no se pudo preprocesar la imagen" a secas. Sin esa consulta el import
+# solo existiria por su efecto — y un import que nadie lee es el que un dia
+# alguien borra "porque no se usa", llevandose el registro del decodificador.
+from app.core import heif as _heif
+from app.core.config import settings
 
 if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
     # Pillow se importa DENTRO de `_preparar`, y por una razon que no es de
@@ -154,6 +157,26 @@ class ResultadoOCR:
 
 _CACHES: dict[str, object] = {}
 _CANDADO = threading.Lock()
+
+
+class LectorDeCajas(Protocol):
+    """Lo minimo que este modulo le pide a un motor que devuelve cajas.
+
+    Existe porque `obtener_motor` devuelve dos cosas de tipos distintos: el
+    modulo de pytesseract o la instancia de un `easyocr.Reader`. EasyOCR se
+    importa de forma perezosa y no esta instalado en el interprete que abre el
+    editor, asi que sin esta forma pyright solo sabe que el resultado es un
+    `object` y `lector.readtext` sale como "atributo inexistente".
+
+    El cast en `_leer_easyocr` no comprueba nada en ejecucion: declara la forma
+    que ese camino usa, y por eso `readtext` deja de ser un acceso a ciegas sin
+    apagar `reportAttributeAccessIssue`, que es la regla que si encontro
+    defectos reales en este mismo archivo.
+    """
+
+    def readtext(
+        self, imagen: object, *, detail: int = ..., paragraph: bool = ...
+    ) -> list[object]: ...
 
 
 def _motor_tesseract():
@@ -402,7 +425,20 @@ def _preparar(datos: bytes) -> "Image.Image | bytes":
             # estira lo que hay.
             return ImageOps.autocontrast(imagen)
     except Exception as exc:
-        logger.warning("no se pudo preprocesar la imagen (%s); se usa original", exc)
+        # `pillow-heif` no siempre esta, y cuando falta el sintoma es este
+        # `except`: Pillow no identifica la imagen y devuelve los bytes crudos.
+        # Se acota a `UnidentifiedImageError` a proposito: es el unico fallo
+        # que el decodificador ausente puede causar. Agregar la pista a
+        # cualquier excepcion seria decir "es HEIC" ante un JPEG truncado.
+        if not _heif.DISPONIBLE and isinstance(exc, Image.UnidentifiedImageError):
+            logger.warning(
+                "no se pudo preprocesar la imagen (%s); se usa original. "
+                "Las fotos HEIC no se abren sin pillow-heif: %s",
+                exc,
+                _heif.MOTIVO,
+            )
+        else:
+            logger.warning("no se pudo preprocesar la imagen (%s); se usa original", exc)
         return datos
 
 
@@ -636,10 +672,11 @@ def _variantes(imagen: "object") -> list[tuple[int, "object"]]:
     # imagen no se pudo abrir. En ese caso no hay a quien rotar, y las cuatro
     # "variantes" serian la misma entrada leida cuatro veces: se devuelve solo
     # una, con su rotacion en cero, y el flujo sigue igual.
-    if not hasattr(imagen, "rotate"):
+    rotar = getattr(imagen, "rotate", None)
+    if not callable(rotar):
         return [(0, imagen)]
 
-    return [(g, imagen if g == 0 else imagen.rotate(g, expand=True)) for g in ROTACIONES]
+    return [(g, imagen if g == 0 else rotar(g, expand=True)) for g in ROTACIONES]
 
 
 @dataclass(frozen=True)
@@ -795,8 +832,63 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
     para por que se puntua con evidencia del documento y no con la confianza de
     Tesseract.
     """
-    pytesseract = obtener_motor("tesseract")
     base = _preparar(datos)
+
+    # GUARDA DE IMAGEN VACÍA O CASI-BLANCA
+    # ======================================
+    #
+    # Medido: una imagen completamente en blanco (o con < 0.5% de píxeles
+    # oscuros) hace que Tesseract lance hasta 16 llamadas —4 rotaciones × 2 PSMs
+    # alternativos × etapa de binarización— con un costo de ~19 segundos y cero
+    # texto útil. La imagen es blanca en las cuatro orientaciones, así que las
+    # 15 llamadas adicionales son trabajo tirado.
+    #
+    # La guarda mira la imagen PREPARADA (ya en gris) y cuenta la fracción de
+    # píxeles menores a 128 (oscuros = tinta). Si hay menos del 0.5%, la imagen
+    # no tiene texto que leer: Tesseract lo confirmaría igualmente, pero a un
+    # coste 16x mayor.
+    #
+    # El umbral 0.5% viene de que incluso un ticket muy desvaído ocupa varias
+    # líneas de texto fino; menos de eso es ruido o fondo puro. En la práctica
+    # lo que llega aquí es una foto del techo, un archivo en blanco, o la imagen
+    # que `_preparar` no pudo abrir y devolvió como bytes: en ese último caso
+    # la guarda se salta sin trabajo extra.
+    #
+    # El early-exit devuelve ResultadoOCR vacío. Con 0 puntos el gate emite
+    # `total_not_positive`: el ticket va a la cola con su motivo, igual que hoy,
+    # pero en < 50 ms en vez de en ~19 s.
+    _FRACCION_OSCUROS_MINIMA = 0.005  # 0.5%
+    # `bytearray` y `memoryview` van en la tupla aunque `_preparar` declare
+    # `bytes`: sin ellos el type checker no descarta los tipos buffer y
+    # `base.convert(...)` queda como acceso a un `bytearray`, que no lo tiene.
+    # En ejecucion no cambia nada —`_preparar` solo devuelve `bytes` o una
+    # imagen—, y en el editor es la diferencia entre 0 avisos y dos que parecen
+    # un bug.
+    if not isinstance(base, (bytes, bytearray, memoryview)):
+        try:
+            import numpy as np
+
+            _gris_arr = np.array(base.convert("L"))
+            _fraccion_oscuros = float((_gris_arr < 128).mean())
+            if _fraccion_oscuros < _FRACCION_OSCUROS_MINIMA:
+                logger.info(
+                    "OCR: imagen casi en blanco (%.2f%% pixeles oscuros); "
+                    "se devuelve lectura vacia sin llamar a Tesseract",
+                    _fraccion_oscuros * 100,
+                )
+                return ResultadoOCR(texto="", motor="tesseract", confianza_media=None)
+        except Exception as _exc_guarda:  # numpy ausente u otro fallo inesperado
+            logger.debug(
+                "guarda de imagen vacia no disponible (%s); se continua", _exc_guarda
+            )
+
+    # El motor se resuelve DESPUES de la guarda, y no antes: si la imagen no
+    # tiene tinta, no hay nada que Tesseract pueda leer y pedir el motor solo
+    # sirve para gastar el primer `import` (o para lanzar `OCRNoDisponible` en
+    # una maquina sin el binario) en un archivo que ya se sabe vacio. La guarda
+    # promete < 50 ms y cero llamadas al motor; resolverlo arriba rompia las dos
+    # cosas.
+    pytesseract = obtener_motor("tesseract")
 
     mejor: Lectura | None = None
     psm_por_usar = settings.OCR_PSM
@@ -999,6 +1091,7 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
         # Aqui el fallo se registra como lo que es: la palabra entra al texto,
         # sin caja. `parser_lineas.py` working con menos geometria es mejor que
         # perder la confianza de una lectura que si funciono.
+        x0 = y0 = w = h = None
         try:
             x0 = int(datos_ocr["left"][i])
             y0 = int(datos_ocr["top"][i])
@@ -1006,7 +1099,10 @@ def _una_lectura(pytesseract, imagen, rotacion: int, psm: int | None = None) -> 
             h = int(datos_ocr["height"][i])
         except (TypeError, ValueError, KeyError, IndexError):
             x0 = None
-        if x0 is not None:
+            y0 = None
+            w = None
+            h = None
+        if x0 is not None and y0 is not None and w is not None and h is not None:
             geometria.setdefault(clave, []).append(
                 {"x0": x0, "x1": x0 + w, "texto": limpio}
             )
@@ -1180,7 +1276,7 @@ def _lineas_desde_cajas(detecciones: list) -> tuple[str, float | None, tuple[dic
 
 
 def _leer_easyocr(datos: bytes) -> ResultadoOCR:
-    lector = obtener_motor("easyocr")
+    lector = cast(LectorDeCajas, obtener_motor("easyocr"))
 
     # EasyOCR acepta una ruta, bytes o un array de numpy. Una imagen de Pillow
     # NO la acepta, y la version actual lo dice:
@@ -1204,7 +1300,7 @@ def _leer_easyocr(datos: bytes) -> ResultadoOCR:
     # `_preparar` devuelve los bytes sin tocar cuando Pillow no esta, y EasyOCR
     # no los acepta. Decirlo aqui evita que el error salga como "'bytes' object
     # has no attribute 'convert'" debajo de un mensaje que habla de la imagen.
-    if isinstance(imagen, bytes):
+    if isinstance(imagen, (bytes, bytearray, memoryview)):
         raise OCRNoDisponible("EasyOCR necesita Pillow para preparar la imagen")
     try:
         rgb = np.array(imagen.convert("RGB"), dtype=np.uint8)
@@ -1212,7 +1308,11 @@ def _leer_easyocr(datos: bytes) -> ResultadoOCR:
         raise OCRNoDisponible(f"EasyOCR no pudo preparar la imagen: {exc}") from exc
 
     try:
-        detecciones = lector.readtext(rgb, detail=1, paragraph=False)
+        # `lector` esta tipado con `LectorDeCajas`: `obtener_motor` devuelve
+        # motores distintos segun el nombre, y su tipo estatico incluye
+        # pytesseract, que no expone `readtext`.
+        readtext = lector.readtext
+        detecciones = readtext(rgb, detail=1, paragraph=False)
     except Exception as exc:
         raise OCRNoDisponible(f"EasyOCR no pudo leer la imagen: {exc}") from exc
 
