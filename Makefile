@@ -1,6 +1,9 @@
 .PHONY: build up up-force down logs ps stats disk clean prune insomnia insomnia-check \
         migrar migrar-list migrar-estado up-dev up-qa up-prod up_dev up_qa
 
+# Forzar el socket correcto de Docker en macOS si Docker Desktop lo requiere
+export DOCKER_HOST ?= unix://$(HOME)/.docker/run/docker.sock
+
 # Ambiente: prod (default), dev o qa. Se puede usar con `make up ENV=dev`.
 ENV ?= prod
 COMPOSE_FILES := -f docker-compose.yml
