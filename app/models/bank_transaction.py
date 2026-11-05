@@ -1,10 +1,20 @@
 import uuid
-from datetime import datetime, date
-from decimal import Decimal
-from sqlalchemy import Column, String, Text, Numeric, Date, Boolean, ForeignKey, TIMESTAMP
+
+from sqlalchemy import (
+    TIMESTAMP,
+    Boolean,
+    Column,
+    Date,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
+from app.core.time import utcnow
 
 
 class BankTransactionModel(Base):
@@ -16,8 +26,13 @@ class BankTransactionModel(Base):
     amount = Column(Numeric(12, 2), nullable=False)
     description = Column(Text, nullable=False)
     reference = Column(String(100), nullable=True)
-    is_reconciled = Column(Boolean, default=False)
-    created_at = Column(TIMESTAMP(timezone=True), default=datetime.utcnow)
+    is_reconciled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
-    company = relationship("CompanyModel", backref="bank_transactions")
+    # `passive_deletes=True`: la FK es `ON DELETE CASCADE` en la base, y sin
+    # este `True` el ORM manda `UPDATE bank_transactions SET company_id=NULL`
+    # antes del DELETE. Ver el mismo argumento en `app/models/ticket.py`.
+    company = relationship(
+        "CompanyModel", backref="bank_transactions", passive_deletes=True
+    )
     reconciliations = relationship("ReconciliationModel", back_populates="bank_transaction")

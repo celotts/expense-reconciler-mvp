@@ -1,23 +1,172 @@
+# Cuotas de memoria: la VM de Docker en este equipo tiene 7.7GB asignados
+# (host: 11 CPUs / 18GB RAM). El presupuesto total de abajo suma ~7.2GB, dejando
+# aire para que el sistema no entre en swap. Si un servicio se pasa del limite,
+# Docker lo mata (OOMKilled) en vez de congelar la laptop.
 services:
   postgres-reconciler:
     image: pgvector/pgvector:pg16
     container_name: expense_pgvector
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
     environment:
       POSTGRES_DB: expense_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: CAMBIA_ESTA_PASSWORD
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${password_inicial:?password_inicial no esta definida. Copia .env.example a .env y rellenala}
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - pgvector_expense_data:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d expense_db"]
+      # El usuario sale de `$$POSTGRES_USER`, NUNCA de un literal. MEDIDO el
+      # 2026-11-04: `environment:` declara `POSTGRES_USER: admin` y aqui decia
+      # `-U postgres`, un rol que esta base no tiene (el entrypoint crea solo
+      # `POSTGRES_USER`). El `psql` moria con `FATAL: role "postgres" does not
+      # exist`, el contenedor quedaba `unhealthy` para siempre y `make up`
+      # terminaba en `dependency postgres-reconciler failed to start`.
+      #
+      # Lo que lo hacia dificil de ver: `pg_isready -U postgres` NO autentica,
+      # asi que devolvia 0 con el rol inexistente. Solo la segunda mitad lo
+      # delata. `$$` es el escape de Compose: expande el shell DENTRO del
+      # contenedor, no Compose al parsear el YAML.
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -q -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" &&
+          psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc
+          "select to_regclass('public.tickets') is not null" | grep -qx t
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 60s
+    mem_limit: 768m
+    mem_reservation: 128m
+    cpus: 1.0
+    restart: unless-stopped
     networks:
       - expense_network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: expense_ollama
+    ports:
+      # Igual que Postgres: sin el prefijo, Ollama queda accesible desde la red
+      # local, y cualquiera que llegue al puerto puede meter y sacar modelos y
+      # leer los que ya estan.
+      #
+      # El puerto del HOST es 11435 y no 11434 por un motivo concreto: en esta
+      # maquina hay un Ollama nativo corriendo en 127.0.0.1:11434, y publicar el
+      # mismo puerto en loopback no arranca. La app NO usa este puerto: habla con
+      # Ollama por la red interna (`http://ollama:11434`, ver `OLLAMA_BASE_URL`).
+      # Este mapeo es solo para poder mirar el contenedor desde la maquina.
+      - "127.0.0.1:11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    # MEDIDO el 2026-10-13 en esta maquina: 18 GB de RAM (`hw.memsize`).
+    #
+    # `mem_limit` es un MAXIMO, no una reserva: en reposo Ollama usa ~75 MiB y
+    # los cuatro servicios juntos ~1.3 GB. Solo sube cuando un modelo infiere.
+    #
+    # POR QUE SUBE de 4g a 8g: `ocr.py:290` tiene medido que `moondream` (1.7 GB)
+    # "degenera en repeticiones y no lee el comprobante, y un modelo que si lo
+    # lee necesita 8-11 GB de RAM". O sea: el escalon de vision de la cascada
+    # EXISTE y se consulta cuando el OCR no alcanza, pero el modelo que estaba
+    # configurado no podia hacer el trabajo dentro de 4g. Era una cascada con un
+    # ultimo escalon apuntando a una herramienta que no lee papel.
+    #
+    # OJO, Y ESTO ES LO IMPORTANTE: 18 GB con Docker, un VM de virtualizacion
+    # (1.4 GB) y el resto de apps deja poco margen. MEDIDO el mismo dia, con el
+    # modelo CARGADO: `PhysMem: 17G usados, 110M unused`, `compressor: 8825M` y
+    # el swap del sistema al 93% (7.6 de 8 GB). macOS estaba comprimiendo
+    # memoria de forma activa, o sea PRESION REAL, no teorica.
+    #
+    # Consecuencia honesta: `qwen2.5vl:3b` carga en 3.5 GB de los 8g que se le
+    # permiten, asi que el techo NO es lo que aprieta. Si al escanear el equipo
+    # se pone lento, la causa es esta maquina, no el limite. Lo que aligera de
+    # verdad es `OLLAMA_KEEP_ALIVE` (bajarlo a 5m devuelve la RAM al sistema
+    # tras cada tanda) o limitar la concurrencia del escaner.
+    #
+    # Y por que BAJA expense-api: el comentario de abajo ya lo pedia ("sube esto
+    # a 5g y baja expense-api a 1.5g"). Con un modelo de embeddings cargado la
+    # api va a ~1.4 GB, asi que 1750m sigue con margen.
+    mem_limit: 8g
+    mem_reservation: 512m
+
+    # El tiempo de leer una foto con el modelo NO es el modelo: es EVALUAR LA
+    # IMAGEN. MEDIDO el 2026-10-16: con vision activada, una foto tarda 7 a 9
+    # minutos en esta maquina, y de ese tiempo la mayor parte son los ~2300
+    # tokens que la imagen ocupa al entrar. Eso es CPU, y va en serie.
+    #
+    # HISTORIA DE ESTE LIMITE, porque el numero solo no dice nada:
+    #   - Con `cpus: 2.0` una foto tardaba ~500 s, y el escaneo de 8 no terminaba
+    #     en 11 minutos. El calor que se reportaba no era este limite: era
+    #     `keep_alive: 30m`, que dejaba el modelo cargado 3.2 GB cuando ya no hacia
+    #     falta. Eso si se corrigio (ver `OLLAMA_KEEP_ALIVE`).
+    #   - Con `cpus: 4.0` una foto tardaba ~250 s, que era el estado de antes.
+    #   - MEDIDO el 2026-10-16: la VM de Docker tiene **8 CPUs** y la mitad
+    #     estaba ociosa mientras la foto esperaba. Subir a **6.0** bajo el tiempo
+    #     por foto **sin tocar el modelo ni la imagen**, o sea sin coste de
+    #     exactitud. A 8 no mejora: se pelea con `expense-api`, que tambien pide
+    #     4, y la suma no cabe en las 8 de la VM. Seis es donde anadir CPU deja
+    #     de pagar.
+    #
+    # Y esto es lo que hace usable `IMAGENES_VISION_PRIMERO`: sin CPU de sobra,
+    # leer 8 comprobantes pasaba de una hora.
+    cpus: 6.0
+    restart: unless-stopped
+    networks:
+      - expense_network
+
+  # Descarga los modelos de IA declarados en la `.env`, si no estan.
+  #
+  # MEDIDO el 2026-10-15: la `.env` declaraba `qwen2.5vl:3b` y el volumen de
+  # Ollama no tenia NINGUN modelo (32 KB, `ollama list` vacio). El sistema
+  # escaneaba solo con Tesseract y su techo de exactitud era el del OCR, sin que
+  # ninguna pantalla lo dijera: `/scan/ia` reportaba `faltan: []` porque para
+  # Ollama el calculo estaba cortocircuitado con un `pass`, y el cartel del front
+  # —que solo sale si hay algo que arreglar— no aparecia.
+  #
+  # Que esto sea un SERVICIO y no un paso del Makefile es lo que hace que no se
+  # pueda olvidar: `make up` levanta la app, y la app no levanta hasta que esto
+  # termina. Un paso manual en un README es un paso que no se da.
+  #
+  # Comparte el volumen `ollama_data` con el servicio `ollama`, que es donde se
+  # guardan los pesos del modelo: descargar en otro volumen seria descargar dos
+  # veces y que ninguna de las dos sirviera.
+  #
+  # `restart: "no"` porque es un trabajo que se acaba: un `pull` que se repite en
+  # bucle porque falla seria peor que no tener modelo.
+  #
+  # Y el script sale con 0 aunque no pueda descargar: la app sin modelo escanea
+  # igual con OCR, mas lento y menos exacto pero funciona, y `/scan/ia` dice
+  # cual falta. Un `pull` fallido por red no puede dejar sin sistema a alguien
+  # que solo quiere escanear sus comprobantes. Ver `scripts/instalar_modelos.sh`.
+  modelos:
+    image: ollama/ollama:latest
+    container_name: expense_modelos
+    depends_on:
+      ollama:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./scripts/instalar_modelos.sh:/instalar_modelos.sh:ro
+    entrypoint: ["/bin/sh", "/instalar_modelos.sh"]
+    networks:
+      - expense_network
+    mem_limit: 512m
+    restart: "no"
 
   expense-api:
     build:
@@ -27,39 +176,81 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     working_dir: /app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
+      - hf_cache:/opt/hf-cache
+      - ${TICKETS_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_app}:/tickets:rw
+      - ${TICKETS_SCAN_OUTPUT_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_Scan}:/tickets_scan:rw
+      - ${TICKETS_EXPORT_HOST_DIR:-/Users/carloslott/Documents/Tickets/comprobantes}:/tickets_export:rw
+      - ${TICKETS_VERDAD_HOST_DIR:-/Users/carloslott/Documents/Tickets/verdad}:/verdad:ro
     env_file:
-      - .env.dev
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@postgres-reconciler:5432/expense_db
+      - DATABASE_URL=postgresql+asyncpg://admin:${password_inicial:?password_inicial no esta definida}@postgres-reconciler:5432/expense_db
+      - HF_HOME=/opt/hf-cache
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - TICKETS_INPUT_DIR=/tickets
+      - TICKETS_SCAN_OUTPUT_DIR=/tickets_scan
     depends_on:
       postgres-reconciler:
         condition: service_healthy
+      ollama:
+        condition: service_started
+      modelos:
+        # `service_completed_successfully`, no `service_started`: aqui no vale
+        # "empezo a bajar", vale "termino". El script sale con 0 aunque no pueda
+        # descargar (la app sin modelo escanea igual con OCR), asi que esta
+        # espera no puede dejar el sistema sin levantar por una red caida.
+        condition: service_completed_successfully
+    healthcheck:
+      # `-f` hace que un 503 cuente como fallo: sin el, curl sale con 0 y el
+      # healthcheck acepta la caida. `--max-time 5` evita que un `/health`
+      # colgado se coma el `timeout` del healthcheck, que lo reporta como API
+      # caida. `-sS` deja el error en el log en vez de una salida vacia.
+      test: ["CMD-SHELL", "curl -fsS --max-time 5 http://127.0.0.1:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1750m
+    mem_reservation: 512m
+    cpus: 4.0
+    restart: unless-stopped
     networks:
       - expense_network
 
   expense-front:
     build:
       context: .
-      dockerfile: front/Dockerfile
+      dockerfile: front/Dockerfile.prod
     container_name: expense_front_service
     ports:
-      - "5173:5173"
-    volumes:
-      - ./front:/app
-      - /app/node_modules
-    environment:
-      - VITE_API_URL=http://localhost:8000/api/v1
+      - "127.0.0.1:3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - expense-api
+      expense-api:
+        condition: service_healthy
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: 0.5
+    restart: unless-stopped
     networks:
       - expense_network
 
 volumes:
   pgvector_expense_data:
+  ollama_data:
+  hf_cache:
 
 networks:
   expense_network:

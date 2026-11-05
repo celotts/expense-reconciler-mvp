@@ -167,18 +167,163 @@ class TestExportService:
         assert "Importe Total" in df.columns
 
     def test_transform_to_contpaqi_applies_mapping(self):
+        # 14 campos de entrada: se agrega `IEPS` entre el IVA y el Total, asi
+        # que la fila tiene 14. El orden importa: `_transform_to_contpaqi` los
+        # positionalmente, y un campo corrido escribe el IEPS donde va el Total.
         sample_data = [
-            ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO", 215.40, 34.46, 249.86,
-             "15/01/2025", "PAGO WALMART", "REF123", "PERFECT", "0.00", 0]
+            ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO", 215.40, 34.46, 0.0,
+             249.86, "15/01/2025", "PAGO WALMART", "REF123", "PERFECT", "0.00", 0]
         ]
-        
+
         # Sin mapping - usa defaults
         result = _transform_to_contpaqi(sample_data, None)
         assert len(result) == 1
-        assert len(result[0]) == 16  # 16 columnas CONTPAQI
+        assert len(result[0]) == 17  # 17 columnas CONTPAQI
         assert result[0][0] == "15/01/2025"  # Fecha
         assert result[0][1] == "SUPERMERCADO"  # Concepto (categoría)
         assert result[0][2] == "WAL910101XXX"  # RFC
         assert result[0][3] == "WALMART"  # Nombre
-        assert result[0][12] == "MXN"  # Moneda (index 12)
-        assert result[0][13] == "1.0000"  # TipoCambio (index 13)
+
+    @pytest.mark.parametrize(
+        "columna",
+        [
+            "TipoComprobante",
+            "Serie",
+            "Folio",
+            "Moneda",
+            "TipoCambio",
+            "MetodoPago",
+            "UsoCFDI",
+        ],
+    )
+    def test_sin_mapping_no_se_inventa_ninguna_celda(self, columna):
+        """Sin mapping configurado, estas columnas van VACIAS. No inventadas.
+
+        El defecto que esto cierra: cada una traia un literal fijo
+        (`Moneda="MXN"`, `TipoCambio="1.0000"`, `TipoComprobante="I"`) que se
+        escribia en todas las filas. Un comprobante en USD salia con tipo de
+        cambio 1.0000 y sin marca de error, y el contador lo subia a CONTPAQI
+        creyendolo.
+
+        Para un contador una celda vacia dice "no lo se" y se corrige a mano.
+        Una celda con 1.0000 dice "lo se", y eso no se ve ni se corrige.
+
+        El indice sale de `CONTPAQI_COLUMNS`, no de un numero escrito aqui: la
+        primera version de este test los llevo escritos a mano, uno corrido, y
+        el parametro se comio el valor de `Referencia` (`"REF123"`) sin que se
+        notara. Un indice fijo en un test sobre columnas ordenadas es una
+        bomba de reloj.
+        """
+        from app.services.export_service import CONTPAQI_COLUMNS
+
+        indice = CONTPAQI_COLUMNS.index(columna)
+        fila = ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO",
+                215.40, 34.46, 249.86, "15/01/2025", "PAGO WALMART", "REF123",
+                "PERFECT", "0.00", 0]
+        result = _transform_to_contpaqi([fila], None)
+        assert result[0][indice] == "", (
+            f"{columna} salio como {result[0][indice]!r} sin que nadie lo haya "
+            "configurado. El sistema esta afirmando algo que no lee de "
+            "ningun lado."
+        )
+
+    def test_con_mapping_las_columnas_siguen_aceptando_valores(self):
+        """Quitar el default NO quita la capacidad de llenarlas.
+
+        El camino para poner TipoCambio o Serie es `AccountingMapping`, que es
+        una decision del contador y queda registrada en el mapeo. Lo que se
+        quito es que el sistema lo decidiera por el.
+        """
+        from app.services.export_service import CONTPAQI_COLUMNS
+
+        fila = ["15/01/2025", "WALMART", "WAL910101XXX", "SUPERMERCADO",
+                215.40, 34.46, 249.86, "15/01/2025", "PAGO WALMART", "REF123",
+                "PERFECT", "0.00", 0]
+        mapping = AccountingMappingModel(
+            company_id=uuid4(),
+            software_name="CONTPAQI",
+            column_mappings={
+                "TipoComprobante": "E",
+                "Moneda": "USD",
+                "TipoCambio": "17.5230",
+                "Cuenta": "6000",
+            },
+        )
+        result = _transform_to_contpaqi([fila], mapping)
+        assert result[0][CONTPAQI_COLUMNS.index("Cuenta")] == "6000"
+        assert result[0][CONTPAQI_COLUMNS.index("TipoComprobante")] == "E"
+        assert result[0][CONTPAQI_COLUMNS.index("Moneda")] == "USD"
+        assert result[0][CONTPAQI_COLUMNS.index("TipoCambio")] == "17.5230"
+
+class TestLoQueSeExporta:
+    """`only_reconciled` decide que entra al reporte contable. No estaba
+    probado en ninguna parte, y es justo el filtro que impide que una
+    conciliacion que no cuadra llegue al archivo que se manda a contabilidad.
+    """
+
+    @pytest.fixture
+    async def una_conciliada_y_una_no(self, db_session, test_company):
+        hechas = []
+        for proveedor, estado in (("WALMART", "PERFECT"), ("RENTA", "DISCREPANCY")):
+            ticket = TicketModel(
+                company_id=test_company.id,
+                provider_name=proveedor,
+                total_amount=Decimal("100.00"),
+                expense_date=date(2025, 1, 15),
+            )
+            db_session.add(ticket)
+            await db_session.flush()
+
+            banco = BankTransactionModel(
+                company_id=test_company.id,
+                transaction_date=date(2025, 1, 15),
+                amount=Decimal("-100.00"),
+                description=f"PAGO {proveedor}",
+            )
+            db_session.add(banco)
+            await db_session.flush()
+
+            db_session.add(
+                ReconciliationModel(
+                    ticket_id=ticket.id,
+                    bank_transaction_id=banco.id,
+                    match_status=estado,
+                )
+            )
+            hechas.append((proveedor, estado))
+        await db_session.commit()
+        return hechas
+
+    @pytest.mark.asyncio
+    async def test_por_defecto_solo_sale_lo_conciliado(self, db_session, test_company, una_conciliada_y_una_no):
+        content = await export_to_excel(db_session, test_company.id)
+
+        df = pd.read_excel(BytesIO(content))
+
+        assert len(df) == 1
+        assert df.iloc[0]["Proveedor"] == "WALMART"
+        assert "DISCREPANCY" not in df["Estatus Conciliacion"].tolist()
+
+    @pytest.mark.asyncio
+    async def test_sin_el_filtro_salen_las_dos(self, db_session, test_company, una_conciliada_y_una_no):
+        """Con `only_reconciled=False` la discrepancia si aparece. El filtro es
+        una decision de quien exporta, no un forgets de que existe."""
+        content = await export_to_excel(
+            db_session, test_company.id, only_reconciled=False
+        )
+
+        df = pd.read_excel(BytesIO(content))
+
+        assert len(df) == 2
+        assert "DISCREPANCY" in df["Estatus Conciliacion"].tolist()
+
+    @pytest.mark.asyncio
+    async def test_contpaqi_tampoco_se_lleva_una_discrepancia(self, db_session, test_company, una_conciliada_y_una_no):
+        """CONTPAQI es el archivo que se carga al sistema contable. Ahi una
+        fila sin cuadrar es un descuadre invisible hasta que alguien descubre
+        el mes cerr mal."""
+        content = await export_to_contpaqi(db_session, test_company.id)
+
+        assert isinstance(content, bytes)
+        assert b"DISCREPANCY" not in content
+        assert b"RENTA" not in content

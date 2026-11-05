@@ -1,0 +1,285 @@
+"""Persistir una extraccion: el gate, y el ticket que sale de el.
+
+Vive en `services/` y no en `app/api/tickets.py` por una razon concreta: el
+escaneo de carpeta (`app/services/scan_service.py`) necesita exactamente la
+misma operacion y no puede importar de un router. Importar un router desde un
+service invierte la capa, y lo que se acaba teniendo son dos implementaciones
+de "crear un ticket desde una extraccion" que divergen: una con el muestreo de
+exactitud y otra sin el, y el Scanner guarda tickets que no se pueden medir.
+
+`app/api/tickets.py:_persist_extracted` se queda como delegacion de una linea
+para no romper los tres archivos de test que la importan desde ahi, y para que
+la ruta que ya existe siga siendo la misma ruta: no hay dos caminos de
+persistencia, hay uno y dos nombres.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from decimal import Decimal
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.enums import (
+    UNKNOWN_PROVIDER,
+    ExtractionStatus,
+    SourceType,
+    SpotCheckStatus,
+)
+from app.models.ticket import TicketModel
+from app.services.accuracy_service import en_muestra
+from app.services.confidence_gate import compute_source_hash, gate_ticket
+from app.services.document_service import guardar_documento
+from app.services.inventario_service import registrar_compra
+from app.services.parser_service import TicketExtractionResult
+
+logger = logging.getLogger(__name__)
+
+
+# El maximo de `NUMERIC(12,2)`: nueve mil millones novecientos noventa y nueve
+# mil novecientos noventa y nueve con noventa y nueve centimos. Se calcula en vez
+# de escribirse a mano para que el dia que la columna cambie, este numero no
+# pueda quedar viejo y volver a permitir el INSERT que tumba la transaccion.
+_MAX_NUMERIC_12_2 = Decimal("9999999999.99")
+
+
+def _al_rango_de_la_columna(
+    valor: Decimal | None, *, cero_si_no_aplica: bool = False
+) -> Decimal | None:
+    """Un importe que la columna pueda guardar, o `None`.
+
+    POR QUE EXISTE, MEDIDO
+    ======================
+    El 2026-10-12, con `IMG_4415.heic` de esta maquina: el OCR devolvio
+    `Decimal('750047801456')` como total. El `INSERT` en una `NUMERIC(12,2)`
+    revienta con un error de PostgreSQL, la transaccion **entera** hace rollback
+    —con ella la fila de `scan_files`—, el comprobante desaparece de todos los
+    lados y `POST /api/v1/scan/` responde **200 OK**.
+
+    El modo de fallo no es "un total equivocado": es **un comprobante perdido en
+    silencio**. Quien digitalizo abre la pantalla, ve que todo bien, y no vuelve
+    a subirlo porque no tiene ninguna razon para pensar que se perdio. Ese es el
+    unico resultado que `capture.capture_ticket` declara inaceptable, y aqui se
+    estaba perdiendo justo asi.
+
+    POR QUE NO SE CORRIGE EL DATO
+    =============================
+    Un total de 750 mil millones **no es un total**: es ruido de OCR leido como
+    numero. Y un importe no se "arregla" mas cerca de la verdad, porque el papel
+    no dice 750 millones — el papel dice algo que el sistema no leyo. Poner un
+    numero inventado aqui seria repetir, en el total, la misma mentira que se
+    corrigio en la fecha con `fecha_provisional`, pero **sin la marca que la
+    sostiene**.
+
+    `cero_si_no_aplica` existe por las columnas `total_amount` y `tax_amount`,
+    que son `NOT NULL`. Sin el, un `None` ahi es un error de base de datos —y no
+    un dato ausente bien representado— y se perderia el comprobante igual que
+    antes, pero por otra razon: eso lo descubrio el test de integracion de este
+    cambio, y por eso el parametro existe en vez de decidirlo aqui.
+
+    Que el total acabe en `0.00` **no lo vuelve creible**: el gate ya lo marco
+    con `total_out_of_range` y `0.00` no pasa `total_not_positive`, asi que no
+    hay forma de aprobarlo sin que alguien escriba el importe de verdad. El
+    `0.00` es un hueco visible, no un dato.
+    """
+    if valor is None:
+        return Decimal("0.00") if cero_si_no_aplica else None
+
+    # Se compara con el maximo POSITIVO porque aqui todos los importes de un
+    # comprobante son magnitudes: el signo lo lleva el movimiento bancario, no el
+    # gasto. Un `tax_amount` negativo lo atrapa el gate (`tax_negative`) y llega
+    # aqui como negativo, y ahi si interesa que se guarde para poder mirarlo.
+    if valor <= _MAX_NUMERIC_12_2:
+        return valor
+
+    logger.warning(
+        "importe fuera del rango de la columna, se guarda como no leido: %s "
+        "(maximo %s); el gate lo marco como total_out_of_range",
+        valor, _MAX_NUMERIC_12_2,
+    )
+    return Decimal("0.00") if cero_si_no_aplica else None
+
+
+async def persistir_extraccion(
+    db: AsyncSession,
+    company_id: UUID,
+    extracted: TicketExtractionResult,
+    content: bytes,
+    source_type: SourceType,
+    source_file: str | None = None,
+    content_type: str | None = None,
+) -> TicketModel:
+    """Gate + persistencia. Unico camino de entrada para datos extraidos.
+
+    `content` es el archivo original y `extracted` lo que se entendio de el. Los
+    dos se guardan, y son cosas distintas: el segundo sin el primero no se puede
+    revisar ni auditar. Ver `app/services/document_service.py`.
+    """
+    # El origen lo decide la ruta de captura, no esta funcion. Antes todo se
+    # guardaba como `llm` porque el gate recibia su default, y con eso la
+    # columna `confidence_source` miente sobre de donde salio el dato: un PDF
+    # leido con regex aparecia como lectura de modelo. Sin esa verdad no hay
+    # forma de medir la exactitud de la IA, porque se promedia la IA con un
+    # regex que casi nunca falla.
+    decision = gate_ticket(
+        provider_name=extracted.provider_name,
+        total_amount=extracted.total_amount,
+        tax_amount=extracted.tax_amount,
+        # Un documento sin fecha no se fecha con la de hoy: se guarda con la
+        # fecha que se va a resolver en la cola. Fabricar la de hoy esconde un
+        # gasto de marzo en el cierre de septiembre, que es el error que este
+        # producto no puede cometer.
+        expense_date=extracted.expense_date,
+        provider_tax_id=extracted.provider_tax_id,
+        subtotal=extracted.subtotal,
+        # Sin esto, un comprobante con IVA e IEPS bien leidos llega al gate como
+        # si solo tuviera IVA y se rechaza por `subtotal_plus_tax_mismatch`.
+        ieps_amount=extracted.ieps_amount,
+        confidence=extracted.confidence,
+        source=extracted.confidence_source,
+    )
+    source_hash = compute_source_hash(content)
+
+    # Idempotencia de carga masiva: el mismo archivo no crea dos tickets.
+    #
+    # El filtro por `company_id` no es un refinamiento, es la garantia de que el
+    # hash significa algo. `source_hash` es el SHA-256 del archivo y no lleva
+    # empresa dentro, asi que el mismo comprobante subido por dos empresas es el
+    # mismo hash. Buscando solo por hash, la segunda empresa se encontraba con el
+    # ticket de la primera y lo devolvia: el gasto no se registraba para ella y
+    # ademas le mostraba un ticket ajeno, de otra empresa. Por eso el indice
+    # unico es `(company_id, source_hash)`, no `source_hash` solo.
+    existing = await db.execute(
+        select(TicketModel).where(
+            TicketModel.source_hash == source_hash,
+            TicketModel.company_id == company_id,
+        )
+    )
+    dup = existing.scalar_one_or_none()
+    if dup is not None:
+        return dup
+
+    ticket = TicketModel(
+        company_id=company_id,
+        provider_name=extracted.provider_name or UNKNOWN_PROVIDER,
+        provider_tax_id=extracted.provider_tax_id,
+        # Los importes pasan por `_al_rango_de_la_columna`. Ver la razon entera
+        # en esa funcion: el problema que evita NO es un total equivocado, es un
+        # **comprobante perdido en silencio**.
+        total_amount=_al_rango_de_la_columna(extracted.total_amount, cero_si_no_aplica=True),
+        tax_amount=_al_rango_de_la_columna(extracted.tax_amount, cero_si_no_aplica=True),
+        # Se guarda, aunque antes no se guardara. Es el campo con el que el
+        # gate valido que `subtotal + IVA == total`, asi que sin el no se puede
+        # auditar por que el ticket se aprobo. Va como None cuando el
+        # documento no trae subtotal: un 0 seria un dato falso con apariencia
+        # de dato, y haria que la cuenta pareciera cuadrar sin comprobar nada.
+        subtotal=_al_rango_de_la_columna(extracted.subtotal),
+        # El IEPS del comprobante, en pesos. `None` cuando el papel no lo trae:
+        # ver la razon de por que no es `0.00` en `ai_extractor.ExtractedInvoice`.
+        ieps_amount=_al_rango_de_la_columna(extracted.ieps_amount),
+        # Las lineas, crudas. Antes no se guardaban porque no habia donde: el
+        # inventario no existia. Ahora si, y sin ellas una compra no tiene
+        # contenido — un comprobante dice que se gasto $4,093.80, no que se
+        # compro. Ver db/migrations/0010_inventario.sql.
+        items=extracted.items,
+        category=extracted.category,
+        raw_text=extracted.raw_text,
+        confidence=decision.persisted_confidence,
+        confidence_source=decision.confidence_source.value,
+        extraction_status=decision.status.value,
+        source_type=source_type.value,
+        source_file=source_file,
+        source_hash=source_hash,
+        # `expense_date` es NOT NULL, asi que un documento sin fecha necesita
+        # un valor. `date.today()` es la unica fecha que si se sabe de cierto, y
+        # `fecha_provisional` es lo que evita que esto sea una mentira.
+        #
+        # Con solo `date.today()`, un comprobante de marzo digitalizado en
+        # septiembre aparecia en el cierre de septiembre con la misma autoridad
+        # que un gasto real de septiembre. MEDIDO el 2026-10-12: 5 de 8
+        # comprobantes de esta maquina tenian `expense_date = 2026-10-12` con
+        # `date_missing` al lado, porque la exactitud del OCR en la fecha es de
+        # 33%. No es un caso raro: es el MAS FRECUENTE.
+        #
+        # La fila se guarda igual, y esto no es un retroceso de la decision
+        # anterior: lo que cambia es que el informe ya puede CONTAR las que no
+        # pertenecen al periodo en vez de sumarlas. Perder el comprobante no es
+        # una opcion —quien digitaliza no volveria a subirlo—, y un dato al que
+        # se le puede preguntar "de donde salio este dia" no es un dato
+        # inventado: es un dato marcado.
+        #
+        # `date.today()` y no `utcnow().date()`. No es indistinto: `utcnow()` es
+        # lo correcto para `created_at`, que es un instante, y lo equivocado
+        # aqui, que es una fecha de negocio. Un servidor en UTC-6 que corre a
+        # las 20:00 del dia 27 ya esta en el dia 28 en UTC, y el ticket
+        # quedaria fechado manana. Eso es el mismo error que se esta
+        # corrigiendo aqui, con un dia de diferencia.
+        expense_date=extracted.expense_date or date.today(),
+        fecha_provisional=extracted.expense_date is None,
+        validation_errors=decision.validation.as_text(),
+        # Muestreo de exactitud: se marca al insertar, por hash de contenido, y
+        # solo si el gate aprobo solo. Tres condiciones, y cada una importa:
+        #
+        # - Solo AUTO_APROBADO. Un ticket que esta en la cola no se puede medir:
+        #   su exactitud ya la decidio el gate, no el extractor. Y meterlo
+        #   inflaria el promedio con casos que nunca fueron automaticos.
+        # - Solo si tiene hash. La captura manual no es automatismo.
+        # - La decision va por el contenido, no al azar, para que sea
+        #   reproducible y no se pueda elegir la muestra a conveniencia.
+        spot_check_status=(
+            SpotCheckStatus.PENDIENTE.value
+            if decision.status == ExtractionStatus.AUTO_APROBADO
+            and en_muestra(source_hash)
+            else None
+        ),
+    )
+    db.add(ticket)
+    await db.flush()
+
+    # El documento va antes del commit, en la misma transaccion.
+    #
+    # El orden importa y no es cosmetico. Un `commit` aqui seguido de un guardado
+    # del documento dejaria una ventana en la que el ticket existe y el papel no,
+    # y en esa ventana un ticket de la cola aparece sin nada que revisar sin que
+    # se pueda distinguir de "nunca se subio". Con el guardado antes, el ticket
+    # llega con su documento o no llega ninguno de los dos.
+    #
+    # Y si el guardado falla, el ticket NO se pierde: `guardar_documento` usa un
+    # savepoint y devuelve False. Perder un gasto que se leyo bien por un
+    # problema de almacenamiento seria peor que un gasto sin comprobante adjunto,
+    # que ademas queda visible.
+    await guardar_documento(
+        db, ticket, content,
+        content_type=content_type,
+        nombre_archivo=source_file,
+    )
+
+    # La orden de compra entra SIEMPRE en EN_REVISION, nunca en PROCESADO.
+    #
+    # Va despues de `guardar_documento` y antes del commit, para que salga en la
+    # misma transaccion que el ticket: una compra sin ticket es un huerfano, y un
+    # commit intermedio dejaria esa ventana abierta.
+    #
+    # Y va antes del commit, no despues, por la razon del documento: si falla,
+    # `registrar_compra` devuelve None (por ejemplo, `items` es NULL porque la
+    # ruta OCR no extrae lineas) y el ticket se guarda igual. Perder el gasto
+    # entero porque no habia detalle de productos seria peor que guardar el
+    # gasto sin su compra, que ademas se ve en la cola de inventario.
+    #
+    # `None` no es un fallo y no se avisa como error: es el caso normal de un
+    # comprobante leido por Tesseract, que no produce lineas.
+    compra = await registrar_compra(db, ticket)
+    if compra is not None:
+        logger.info(
+            "Ticket %s abrio la compra %s en %s.",
+            ticket.id,
+            compra.id,
+            compra.estado,
+        )
+
+    await db.commit()
+    await db.refresh(ticket)
+    return ticket

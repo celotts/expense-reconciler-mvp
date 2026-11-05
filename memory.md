@@ -53,7 +53,7 @@ Built complete backend for expense reconciliation MVP from empty `/app` folder s
 - CORS configured from settings
 
 ## Configuration
-- `Settings` class with `pydantic-settings` reading from `.env.dev`
+- `Settings` class with `pydantic-settings` reading from `.env` then `.env.local`
 - `DATABASE_URL` for asyncpg connection
 - `CORS_ORIGINS` for frontend integration
 

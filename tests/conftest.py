@@ -1,6 +1,7 @@
 import pytest
 import tempfile
 import shutil
+from sqlalchemy import event
 from pathlib import Path
 from uuid import uuid4
 from httpx import AsyncClient, ASGITransport
@@ -10,7 +11,10 @@ from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.core.database import get_db, Base
 from app.core.config import settings
+from app.core.deps import get_current_user
+from app.core.security import hashear_contrasena
 from app.models.company import CompanyModel
+from app.models.user import UserModel
 
 
 # Base de datos en memoria para tests
@@ -26,6 +30,25 @@ async def test_engine():
         poolclass=StaticPool,
         connect_args={"check_same_thread": False}
     )
+
+    # `PRAGMA foreign_keys=ON`. SQLite ignora las llaves foraneas por omision, y
+    # sin esto los tests mienten sobre lo que hace la base.
+    #
+    # Por que se activo AHORA y no antes: `ticket_documents` solia borrarse desde
+    # el ORM (`cascade="all, delete-orphan"` en la relationship), asi que el
+    # borrado en cascada lo hacia Python y nunca se noto que SQLite no lo hacia.
+    # Con `0009_documento_inmutable.sql` la relationship paso a `viewonly` y el
+    # borrado es del `ON DELETE CASCADE` de la llave foranea, que en SQLite exige
+    # este PRAGMA.
+    #
+    # Sin el, borrar un ticket dejaba el comprobante huerfano en los tests y no
+    # en produccion: el test pasaba por el motivo equivocado.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _activar_llaves_foraneas(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
@@ -47,16 +70,66 @@ async def test_company(db_session):
     return company
 
 @pytest.fixture
-async def async_client(db_session):
+async def usuario_de_prueba(db_session):
+    """La cuenta con la que corre la suite.
+
+    Existe como fila de verdad en la base de prueba, no como un objeto
+    manufactured: si los endpoints guardan el correo de quien reviso, el test
+    tiene que poder leer esa columna de la base y compararla con algo. Un
+    `MagicMock` de usuario no serviria para eso.
+    """
+    correo = f"operador{uuid4().hex[:8]}@test.local"
+    usuario = UserModel(
+        email=correo,
+        nombre="Operador de Prueba",
+        password_hash=hashear_contrasena("contrasena-de-prueba"),
+    )
+    db_session.add(usuario)
+    await db_session.commit()
+    await db_session.refresh(usuario)
+    return usuario
+
+
+@pytest.fixture
+async def async_client(db_session, usuario_de_prueba):
     async def override_get_db():
         yield db_session
-    
+
+    async def override_get_current_user():
+        return usuario_de_prueba
+
     app.dependency_overrides[get_db] = override_get_db
-    
+    # El cliente HTTP entra como un usuario ya autenticado, porque casi todos
+    # los tests prueban otra cosa y no el login. Los que SI prueban el login
+    # (tests/unit/test_auth.py) no piden este fixture, o piden
+    # `async_client_sin_autenticar`, y asi se prueba la dependencia de verdad.
+    app.dependency_overrides[get_current_user] = override_get_current_user
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-    
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client_sin_autenticar(db_session):
+    """Cliente con la sesion real: sin token, con token caducado, con token
+    falsificado. Es el unico camino por el que se puede probar la proteccion.
+
+    A diferencia de `async_client`, NO sobrescribe `get_current_user`. Si lo
+    hiziera, todos los tests de seguridad estarian probando el override, que
+    siempre deja pasar, y no el codigo que decide.
+    """
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
     app.dependency_overrides.clear()
 
 @pytest.fixture(scope="session")
@@ -97,3 +170,35 @@ TOTAL:              $249.86
 METODO PAGO: TARJETA DEBITO
 REF: 123456789012
 """
+
+# ---------------------------------------------------------------------------
+# El archivado, aislado para TODAS las pruebas
+# ---------------------------------------------------------------------------
+#
+# `autouse=True` y aqui, y no en cada archivo, por la razon de siempre: una
+# defensa puesta en un solo lugar no se puede olvidar. Ponerlo en un solo archivo
+# de tests deja los otros escribiendo en el disco real.
+#
+# Son DOS cosas y las dos hacen falta:
+#
+# 1. **DONDE.** `TICKETS_SCAN_OUTPUT_DIR` a un tmp. Sin esto, la carpeta de
+#    escaneados se resuelve como hermana de `TICKETS_INPUT_DIR` —que en un test
+#    es el tmp de pytest, asi que esto casi nunca falla— pero si el ajuste trae
+#    una ruta absoluta de contenedor, `mkdir` en macOS da "Read-only file
+#    system". Medido: 24 tests caidos.
+#
+# 2. **SI.** Los dos apagones en False. Un test de LECTURA no debe mover
+#    archivos: `test_reprocesar_un_archivo_lo_relee` falla si el archivo ya no
+#    esta donde lo dejo, y el archivado se lo llevo. Medido: 3 tests caidos.
+#    Los tests que EXPLICITAMENTE prueban el archivado lo encienden.
+@pytest.fixture(autouse=True)
+def _aislar_el_archivado(tmp_path, monkeypatch):
+    from app.core.config import settings
+
+    destino = tmp_path / "escaneados"
+    destino.mkdir(exist_ok=True)
+    monkeypatch.setattr(settings, "TICKETS_SCAN_OUTPUT_DIR", str(destino))
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR", False)
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR", False)
+    monkeypatch.setattr(settings, "TICKETS_SCAN_ARCHIVAR_AL_CONFIRMAR", False)
+    return destino
