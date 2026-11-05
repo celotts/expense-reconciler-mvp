@@ -66,6 +66,31 @@ class TicketCreate(TicketBase):
     company_id: UUID
 
 
+class LineaTicketUpdate(BaseModel):
+    """Una linea del comprobante, tal como la escribe una persona.
+
+    `Decimal` y no `float` por la convencion del proyecto, y porque aqui la
+    aritmetica decide si la compra cuadra con su total: `0.1 + 0.2` en binario no
+    es `0.3`.
+
+    Todos los campos del importe son opcionales y se guardan tal cual, en
+    `Decimal`, sin normalizar a dos decimales. Cutrar un importe a dos decimales
+    es una decision de negocio y no del que transcribe; lo que hace
+    `inventario_service.interpretar_items` es rejecting lo que no se puede leer, no
+    inventar el que falta.
+    """
+
+    description: str | None = Field(None, max_length=300)
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    total: Decimal | None = None
+
+    @field_validator("description")
+    @classmethod
+    def _descripcion_no_vacia_si_esta(cls, v: str | None) -> str | None:
+        return v.strip() or None if v is not None else None
+
+
 class TicketUpdate(BaseModel):
     provider_name: str | None = Field(None, min_length=1, max_length=150)
     provider_tax_id: str | None = Field(None, max_length=50)
@@ -74,6 +99,42 @@ class TicketUpdate(BaseModel):
     expense_date: date | None = None
     category: str | None = Field(None, max_length=100)
     raw_text: str | None = None
+    # El subtotal entra en la correccion porque es lo que permite comprobar
+    # `subtotal + IVA == total` DESPUES de que una persona corrigio el total. Sin
+    # el, corregir el total a mano deja el ticket sin forma de verificar su propia
+    # aritmetica, que es el unico check que no depende de nada externo.
+    subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    # El IEPS entra en la correccion por la misma razon que el subtotal, y por
+    # una mas: en un comprobante con IVA e IEPS es el unico dato que hace que
+    # `subtotal + IVA + IEPS == total` cuadre. Sin el, la persona tendria que
+    # resolver un `subtotal_plus_tax_mismatch` usando un numero que el
+    # comprobante SI imprime: es escribir a mano lo que el OCR no lee.
+    ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+
+    # LAS LINEAS, Y POR QUE ESTAN AQUI
+    # -------------------------------
+    # `PATCH /tickets/{id}` aceptaba el encabezado y NO las lineas. Eso hacia
+    # imposible cerrar el circulo de inventario: la ruta OCR llega con
+    # `items=NULL`, `registrar_compra` devuelve `None` por eso, y la unica forma de
+    # que una persona aportara las lineas —leyendo el papel— era escribirlas en un
+    # lado que la API no guardaba.
+    #
+    # Sin esto, el inventario por foto no tiene entrada: no por falta de datos en
+    # el papel, sino porque no habia por donde meterlos.
+    #
+    # Y `None` NO borra: es "no me digas nada de las lineas". Para vaciarlas hay
+    # que mandar `[]` explicito, que es una distincion que hace falta porque
+    # `exclude_unset` no distingue "no lo mande" de "lo mande vacio".
+    items: list[LineaTicketUpdate] | None = None
+
+    @field_validator("items")
+    @classmethod
+    def _limita_las_lineas(cls, v: list[LineaTicketUpdate] | None) -> list[LineaTicketUpdate] | None:
+        # Un ticket real con 500 lineas no existe, y un JSON de 50 000 si puede
+        # llegar. El tope es de pedido, no una regla fiscal.
+        if v is not None and len(v) > 500:
+            raise ValueError("Un comprobante no tiene 500 lineas. Revisa el archivo.")
+        return v
 
     @field_validator("provider_name")
     @classmethod
@@ -116,6 +177,45 @@ class TicketUpdate(BaseModel):
         return self
 
 
+class ClasificarLoteRequest(BaseModel):
+    """Clasificar varios tickets de golpe.
+
+    Existe porque la alternativa no es mas comoda, es inviable: la barra gris del
+    tablero puede ser de 200 tickets, y a uno por uno son 200 peticiones y 200
+    esperas. Quien tiene esa barra abierta no esta eligiendo categoria por
+    categoria, esta reconociendo que veinte comprobantes de la ferreteria son
+    HERRAMIENTAS, y eso es una sola decision.
+
+    Acepta cadena vacia para **desclasificar**. Un ticket mal clasificado es
+    peor que uno sin clasificar: el primero se suma a un rubro que no es el suyo
+    sin que nada lo señale, y sin esta via de salida el error de captura no se
+    puede corregir nunca.
+    """
+
+    ticket_ids: list[UUID] = Field(..., min_length=1, max_length=500)
+    category: str | None = Field(None, max_length=100)
+
+    @field_validator("category")
+    @classmethod
+    def _limpia(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        limpio = v.strip()
+        # Cadena vacia y solo espacios significan lo mismo: "no lo se". Se
+        # guarda como NULL y no como '', para que el filtro `sin_categoria` del
+        # listado los encuentre sin tener que buscar las dos formas.
+        return limpio or None
+
+
+class ClasificarLoteResponse(BaseModel):
+    actualizados: int
+    # cuantos se pedian y cuantos se tocaron. `pedidos` != `actualizados` no es un
+    # error: un id que no existe simplemente no se cuenta, y en un lote de 200
+    # que uno haya sido borrado entre la pantalla y el envio es lo normal. Lo que
+    # no se hace es mentir diciendo "200" cuando se tocaron 198.
+    pedidos: int
+
+
 class TicketResponse(BaseModel):
     """Forma de LECTURA de un ticket.
 
@@ -141,9 +241,35 @@ class TicketResponse(BaseModel):
     # El revisor tendria que buscarlo dentro de `raw_text`, que en la ruta de
     # vision es lo que devolvio el modelo y no siempre lo trae.
     subtotal: Decimal | None = None
+    # El IEPS separado del IVA, igual que en la tabla. Va en la respuesta porque
+    # sin el, quien mira el ticket ve `Subtotal 217.27 / IVA 8.14 / Total 234.00`
+    # y no tiene donde poner los 8.59 que sobran: el descuadre se ve pero no se
+    # explica, y eso es peor que un dato de mas.
+    #
+    # Y lo necesita el muestreo, igual que el subtotal: sin el, la pregunta de
+    # "se leyo bien el IEPS" no tiene con que compararse.
+    ieps_amount: Decimal | None = None
     expense_date: date
     category: str | None = None
     raw_text: str | None = None
+    # LAS LINEAS DEL COMPROBANTE, y por que van en la respuesta.
+    #
+    # `list[dict] | None` y NO un modelo de linea: las lineas se guardan CRUDAS
+    # (`tickets.items` es JSON sin normalizar y `compra_items` es la version
+    # revisada, que todavia no existe). Tiparlas aqui afirmaria una estructura
+    # que el sistema nunca verifico, y con OCR al 33% esa afirmacion seria falsa
+    # seguido.
+    #
+    # `None` y `[]` NO son lo mismo y la distincion viaja: `None` es "el lector no
+    # produjo lineas" —la ruta OCR no las extrae, solo el LLM— y `[]` es "produjo
+    # lineas y no eran ninguna". Con las dos en `[]` no se puede distinguir "este
+    # comprobante no tiene detalle" de "no lo sabemos", y la segunda es la que
+    # obliga a mirar el papel.
+    #
+    # Y sin esto en la respuesta, el formulario de revision no puede sembrarse con
+    # las lineas que ya estan: habria que recargar el papel y volver a escribirlas
+    # para corregir un rfc.
+    items: list[dict] | None = None
     # La columna admite NULL, asi que la respuesta lo admite. Declararla
     # obligatoria convertia una fila con created_at nulo en un 500 al serializar,
     # y la fila con created_at nulo es justamente la que uno no quiere perder:
@@ -155,12 +281,134 @@ class TicketResponse(BaseModel):
     extraction_status: str
     source_type: str | None = None
     source_file: str | None = None
+    # El SHA-256 de los bytes del comprobante, y por que va en la respuesta.
+    #
+    # `source_hash` es lo que hace idempotente la carga: el mismo archivo subido
+    # dos veces devuelve el mismo ticket en vez de duplicar el gasto. Y es lo que
+    # permite VERIFICAR que el comprobante guardado en `ticket_documents` es
+    # exactamente el mismo archivo y no una version distinta.
+    #
+    # Eso ultimo es lo que usa `_retirar_si_esta_respaldo` para decidir si puede
+    # borrar un archivo de la carpeta de entrada: si el sha256 del documento
+    # guardado no coincide, NO borra. Y si ese numero no se puede ver desde la
+    # API, la razon por la que un archivo se borro —"tiene la misma copia
+    # verificada"— es invisible para quien consulta.
+    source_hash: str | None = None
+    # Si el comprobante original esta guardado, y cuanto pesa.
+    #
+    # Sin esto, la UI no puede distinguir tres cosas que se ven igual en una
+    # tabla: un ticket de captura manual (que no tiene documento y no deberia),
+    # un ticket de una captura antigua (que deberia tenerlo y se puede volver a
+    # subir), y uno al que se le pudo archivar mal. Con el booleano, la pantalla
+    # puede decir "no hay documento" sin que el revisor crea que el sistema
+    # fallo, que es la lectura que hace que se dejen de confiar en la cola.
+    #
+    # `documento_url` va relativo a proposito, sin el host: el front y la API se
+    # sirven en el mismo origen en desarrollo y pueden no estarlo en produccion.
+    # Un host hardcodeado aqui seria una URL que funciona hoy y se rompe el dia
+    # que se pongan detras de un proxy.
+    tiene_documento: bool = False
+    documento_url: str | None = None
+    documento_tamano: int | None = None
     validation_errors: str | None = None
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     review_notes: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derivar_documento(cls, datos):
+        """Lee la relacion del ticket y arma los tres campos del documento.
+
+        Va en `before` y no en `after` por una razon mecanica: la relacion
+        `documento` del modelo NO es un campo de este schema, asi que en
+        `after` ya no esta disponible - se leyo del ORM pero no quedo en el
+        schema. En `before` todavia esta, porque `datos` es el objeto del ORM
+        o el diccionario que se esta validando.
+
+        Se deriva en el schema y no en cada endpoint porque la regla es una sola
+        y repetirla en la cola, en el muestreo, en el listado y en el detalle son
+        cuatro oportunidades de que una se olvide. Una pantalla que no pone el
+        enlace cuando el documento existe es una pantalla donde el revisor
+        revisa a ciegas, y no lo va a delatar ninguna prueba de la API: la API
+        responde bien.
+
+        Y la URL va con el id en la ruta y sin query params para que un
+        `<img src>` o un `window.open` funcionen sin Javascript: la imagen del
+        comprobante tiene que poder abrirse con un clic y nada mas.
+        """
+        documento = (
+            datos.get("documento") if isinstance(datos, dict)
+            else getattr(datos, "documento", None)
+        )
+        if documento is None:
+            return datos
+
+        # Se copian los campos DECLARADOS de este schema, no los de `datos`.
+        # `datos` es un TicketModel (una clase de SQLAlchemy, sin `model_fields`)
+        # o un diccionario, y usar las columnas de cualquiera de los dos meteria
+        # en la respuesta cosas que no estan declaradas aqui, que es como un
+        # `from_attributes` empieza a filtrar columnas por accidente.
+        #
+        # Y se copia en vez de sustituir por un dict nuevo con los tres campos,
+        # porque el `id` viene de ahi: si se construyera un dict con solo
+        # `tiene_documento` y `documento_tamano`, la URL saldria vacia y el
+        # enlace no existiria. Falla en silencio, que es la peor forma.
+        if isinstance(datos, dict):
+            enriched = dict(datos)
+        else:
+            enriched = {
+                campo: getattr(datos, campo, None)
+                for campo in cls.model_fields  # type: ignore[attr-defined]
+            }
+
+        # La URL se arma aqui y no en un validador `after` por una razon concreta:
+        # en `before` el `id` todavia esta a mano, y en `after` habria que
+        # reasignar un campo ya construido, que Pydantic v2 no hace sin
+        # `object.__setattr__`. Con eso, el `documento_url` se queda en None sin
+        # avisar: el schema valida, la respuesta sale con el campo en blanco y
+        # el enlace no existe. Es el fallo mas dificil de ver de los tres, y el
+        # unico que necesita un test que mire el campo, no el endpoint.
+        #
+        # El prefijo `/api/v1` va aqui, no sale de `settings`: el schema no
+        # deberia importar la configuracion para armar una URL, y si el prefijo
+        # cambiara, la respuesta y el router tendrian que cambiar juntos, que es
+        # justo lo que hace este string.
+        enriched["tiene_documento"] = True
+        enriched["documento_tamano"] = documento.tamano
+        if enriched.get("id") is not None:
+            enriched["documento_url"] = (
+                f"/api/v1/tickets/{enriched['id']}/documento"
+            )
+        return enriched
+
+
+class DocumentoHistorialResponse(BaseModel):
+    """UNA version del comprobante, sin los bytes.
+
+    El historial responde "¿que papel guardamos y como llegamos a el?". Los bytes
+    NO van aqui: se descargan del vigente, y meterlos en un listado de historial
+    seria una forma de bajar 10 MB sin querer.
+
+    `vigente` es lo que hace util la lista sin tener que deducirlo de las fechas:
+    la version vigente es la que no fue reemplazada, y es la unica que se
+    descarga y la unica contra la que se contrasta una lectura.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    version: int
+    sha256: str | None = None
+    tamano: int
+    content_type: str | None = None
+    nombre_archivo: str | None = None
+    actor: str | None = None
+    motivo: str | None = None
+    created_at: datetime
+    vigente: bool
 
 
 class TicketReviewRequest(BaseModel):
@@ -180,6 +428,15 @@ class TicketReviewRequest(BaseModel):
     tax_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
     expense_date: date | None = None
     category: str | None = Field(None, max_length=100)
+    # El subtotal y el IEPS faltaban aqui, y el endpoint de revision es por donde
+    # una persona corrige de verdad: es la pantalla de la cola de pendientes.
+    #
+    # Sin ellos, aprobar un ticket con IVA e IEPS es imposible: el gate corre
+    # `subtotal + IVA + IEPS == total` sobre datos que la persona no tiene forma
+    # de escribir, y el `422` no dice que falta un numero que el comprobante si
+    # imprime. El ticket se queda en la cola para siempre.
+    subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
 
 
 class TicketReviewQueueResponse(BaseModel):

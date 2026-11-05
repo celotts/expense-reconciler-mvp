@@ -527,7 +527,7 @@ export function CameraCapture({ onCapture, onCancel, autoCapture = true }: Camer
 
   if (error) {
     return (
-      <Card className="p-6 text-center">
+      <Card className="text-center">
         <p className="text-red-600 mb-4">{error}</p>
         <Button variant="secondary" onClick={onCancel}>Cancelar</Button>
       </Card>
@@ -535,7 +535,7 @@ export function CameraCapture({ onCapture, onCancel, autoCapture = true }: Camer
   }
 
   return (
-    <Card className="p-4 space-y-4">
+    <Card className="space-y-4">
       {!captured ? (
         <>
           <div className="relative aspect-video bg-gray-900 rounded-lg overflow-hidden">

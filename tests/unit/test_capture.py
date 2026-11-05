@@ -12,7 +12,6 @@ no. La politica es lo que se decide aqui.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 from datetime import date
 from decimal import Decimal
@@ -20,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.config import settings
 from app.core.enums import (
     AUTO_APPROVE_CONFIDENCE,
     UNKNOWN_PROVIDER,
@@ -29,12 +29,14 @@ from app.services import capture
 from app.services.ai_extractor import ExtractedInvoice
 from app.services.capture import (
     ExtractionUnavailable,
+    _nombre_parece_basura,
     capture_ticket,
     confianza_por_campos,
     invoice_to_result,
     motivo_de_fallo_del_modelo,
 )
-from app.services.parser_service import TicketExtractionResult, extract_pdf_text, render_pdf_pages
+from app.services.parser_service import extract_pdf_text, render_pdf_pages
+from app.services.ocr import OCRNoDisponible
 
 RAIZ = Path(__file__).resolve().parents[2]
 
@@ -46,6 +48,23 @@ SUBTOTAL 964.00
 IVA (16%) 136.00
 TOTAL 1,100.00
 """
+
+
+def _ocr_no_instalado(datos: bytes):
+    """Un OCR que se declara ausente, para aislar el escalon de vision.
+
+    Un PDF escaneado pasa PRIMERO por OCR local (`_vision_pdf` ->
+    `_ocr_de_paginas`). Sin inyectar esto, estos tests dependen de si el binario
+    de Tesseract esta instalado en la maquina que corre la suite: aqui lo esta,
+    el OCR lee la pagina renderizada y vision **nunca** se llama, asi que las
+    aserciones sobre `espia.llamadas` y sobre los motivos del modelo dejan de
+    medir lo que dicen medir.
+
+    `OCRNoDisponible` es la forma honesta de decirlo: "no hay quien lea", que
+    `_ocr_de_paginas` trata como "pasa al siguiente escalon" igual que una
+    maquina sin Tesseract. Ver el docstring de `capture._ocr_por_defecto`.
+    """
+    raise OCRNoDisponible("sin tesseract en esta prueba")
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +187,7 @@ class Espia:
         self.invoice = invoice
         self.llamadas: list[bytes] = []
 
-    async def imagen(self, datos: bytes, mime_type: str = "image/png") -> ExtractedInvoice:
+    async def imagen(self, datos: bytes) -> ExtractedInvoice:
         self.llamadas.append(datos)
         if isinstance(self.invoice, Exception):
             raise self.invoice
@@ -201,7 +220,7 @@ def _invoice(**kw) -> ExtractedInvoice:
 
 
 class TestPdfConTexto:
-    async def test_se_lee_con_reglas_y_no_se_llama_al_modelo(self, pdf_impreso):
+    async def test_sin_escalar_un_pdf_no_toca_el_modelo(self, pdf_impreso, monkeypatch):
         """El caso que hace que esto valga la pena.
 
         Un PDF impreso tiene el texto ahi, al alcance. Mandarlo a un modelo
@@ -209,7 +228,25 @@ class TestPdfConTexto:
         equivoca. Ademas se pierde la trazabilidad: si se guardara como lectura
         de modelo, no habria forma de medir la exactitud de la IA porque el
         regex se contaria como acierto de la IA.
+
+        Con `ESCALAR_A_IA_SIN_LINEAS=false` ese comportamiento se conserva: las
+        reglas aciertan el encabezado y no se paga un modelo. Es la politica
+        "una foto buena no toca ningun modelo", y sigue disponible.
         """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        # MEDIDO el 2026-10-15: tambien el orden. Sin esto, con
+        # `IMAGENES_VISION_PRIMERO=true` en la `.env` del operador, esta clase
+        # empezó a fallar sin que cambiara el codigo. Un test que depende de un
+        # ajuste del entorno no prueba la politica: prueba el entorno.
+        monkeypatch.setattr(settings, "IMAGENES_VISION_PRIMERO", False)
+        # Sin lineas de producto, por omision se le pregunta al modelo y esto
+        # mediria la confianza DEL MODELO, que no es lo que mide este test.
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        # MEDIDO el 2026-10-15: tambien el orden. Sin esto, con
+        # `IMAGENES_VISION_PRIMERO=true` en la `.env` del operador, esta clase
+        # empezó a fallar sin que cambiara el codigo. Un test que depende de un
+        # ajuste del entorno no prueba la politica: prueba el entorno.
+        monkeypatch.setattr(settings, "IMAGENES_VISION_PRIMERO", False)
         espia = Espia(_invoice())
         resultado = await capture_ticket(
             pdf_impreso, "pdf",
@@ -217,7 +254,7 @@ class TestPdfConTexto:
             extract_from_text=espia.texto,
         )
 
-        assert espia.llamadas == [], "un PDF con texto no debe tocar el modelo"
+        assert espia.llamadas == [], "sin escalar, un PDF con texto no toca el modelo"
         # Mayuscula inicial, no versalitas: asi los emite un sistema de
         # facturacion de verdad, y es justo el caso que el parser perdia.
         assert resultado.provider_name == "Tiendas Ramirez SA de CV"
@@ -225,7 +262,7 @@ class TestPdfConTexto:
         assert resultado.expense_date == date(2025, 3, 15)
         assert resultado.confidence_source is ConfidenceSource.PDF_TEXT
 
-    async def test_el_origen_y_la_confianza_no_se_confunden(self, pdf_impreso):
+    async def test_el_origen_y_la_confianza_no_se_confunden(self, pdf_impreso, monkeypatch):
         """`pdf_text` con una confianza de reglas, no de modelo.
 
         El numero de confianza sale de lo que el parser encontro, no de una
@@ -233,6 +270,14 @@ class TestPdfConTexto:
         muestra para medir el 96%, los tickets de regex tienen que ser
         separables de los de la IA, o la medicion no mide nada.
         """
+        # Sin lineas de producto, por omision se le pregunta al modelo y esto
+        # mediria la confianza DEL MODELO, que no es lo que mide este test.
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        # MEDIDO el 2026-10-15: tambien el orden. Sin esto, con
+        # `IMAGENES_VISION_PRIMERO=true` en la `.env` del operador, esta clase
+        # empezó a fallar sin que cambiara el codigo. Un test que depende de un
+        # ajuste del entorno no prueba la politica: prueba el entorno.
+        monkeypatch.setattr(settings, "IMAGENES_VISION_PRIMERO", False)
         espia = Espia(_invoice())
         resultado = await capture_ticket(pdf_impreso, "pdf", extract_from_text=espia.texto)
 
@@ -241,7 +286,20 @@ class TestPdfConTexto:
         assert resultado.confidence == confianza_por_campos(True, True, True)
         assert resultado.confidence >= AUTO_APPROVE_CONFIDENCE
 
-    async def test_confianza_menor_cuando_encuentra_menos(self, pdf_impreso):
+    async def test_confianza_menor_cuando_encuentra_menos(self, pdf_impreso, monkeypatch):
+        """Compara reglas-contra-reglas, asi que la escalada no interviene.
+
+        Sin lineas, por omision se le preguntaria al modelo y `completo` traeria
+        la confianza de un modelo de mentira, mas alta que la de las reglas, y la
+        comparacion no diria nada. Se apaga la escalada para que las dos puntas
+        de la comparacion sean del mismo lector.
+        """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        # MEDIDO el 2026-10-15: tambien el orden. Sin esto, con
+        # `IMAGENES_VISION_PRIMERO=true` en la `.env` del operador, esta clase
+        # empezó a fallar sin que cambiara el codigo. Un test que depende de un
+        # ajuste del entorno no prueba la politica: prueba el entorno.
+        monkeypatch.setattr(settings, "IMAGENES_VISION_PRIMERO", False)
         espia = Espia(_invoice())
         completo = await capture_ticket(pdf_impreso, "pdf", extract_from_text=espia.texto)
 
@@ -265,6 +323,7 @@ class TestPdfEscaneado:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
 
         assert len(espia.llamadas) == 1, "debe mandarse la pagina renderizada"
@@ -311,7 +370,11 @@ class TestPdfEscaneado:
         """
         espia = Espia(_invoice())
         contenido = pdf_escaneado if paginas_en_el_pdf == 1 else pdf_escaneado_largo
-        await capture_ticket(contenido, "pdf", extract_from_image=espia.imagen)
+        await capture_ticket(
+            contenido, "pdf",
+            extract_from_image=espia.imagen,
+            ocr_reader=_ocr_no_instalado,
+        )
         assert len(espia.llamadas) == esperadas
 
     async def test_el_pdf_largo_si_tiene_texto_va_por_reglas(
@@ -404,6 +467,7 @@ class TestFallosDelSistema:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
         assert resultado.provider_name == UNKNOWN_PROVIDER
         assert "extractor de IA esta apagado" in resultado.raw_text
@@ -414,6 +478,7 @@ class TestFallosDelSistema:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
         assert "no se pudo interpretar" in resultado.raw_text
 
@@ -431,6 +496,7 @@ class TestFallosDelSistema:
             pdf_escaneado, "pdf",
             extract_from_image=espia.imagen,
             extract_from_text=espia.texto,
+            ocr_reader=_ocr_no_instalado,
         )
         assert resultado.provider_name == UNKNOWN_PROVIDER
         assert "connection reset" in resultado.raw_text
@@ -478,6 +544,40 @@ class TestTiposDeArchivo:
         )
         assert espia.llamadas == []
         assert resultado.confidence_source is ConfidenceSource.RULES
+
+    async def test_xml_usa_reglas_con_origen_xml(self, monkeypatch):
+        """Un CFDI entra por la ruta de texto digital y las reglas leen el XML.
+
+        `file_type=xml` no es una ruta nueva de lectura con politica nueva: es
+        texto con firma de CFDI, y la fuente que se reporta es `xml`. Eso manda
+        al reporte de exactitud y al muestreo: un CFDI leido por reglas es una
+        lectura determinista, no una del modelo, y mezclarlos contaria la
+        exactitud con datos que el modelo no hizo.
+        """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        espia = Espia(_invoice())
+        resultado = await capture_ticket(
+            TICKET_IMPRESO.encode(), "xml", extract_from_text=espia.texto
+        )
+        assert espia.llamadas == [], "el XML se lee con las reglas, no se pide un modelo"
+        assert resultado.confidence_source is ConfidenceSource.XML
+        assert resultado.total_amount == Decimal("1100.00")
+
+    async def test_un_xml_que_las_reglas_no_alcanzan_pide_al_texto(self):
+        """Si el XML no trae el vocabulario de etiquetas, se le pregunta al modelo.
+
+        Misma cascada que el `.txt`: las reglas primero, el modelo solo si las
+        reglas no pueden responder. Un CFDI con tags que el parser no conoce cae
+        al modelo de texto, que es quien lee el XML crudo.
+        """
+        espia = Espia(_invoice(provider_name="LEIDO POR EL MODELO"))
+        resultado = await capture_ticket(
+            b"<cfdi:Comprobante><cfdi:Concepto/></cfdi:Comprobante>",
+            "xml",
+            extract_from_text=espia.texto,
+        )
+        assert espia.llamadas, "habia XML y las reglas no alcanzaron: se pide al modelo"
+        assert resultado.provider_name == "LEIDO POR EL MODELO"
 
     async def test_imagen_siempre_vision(self):
         espia = Espia(_invoice())
@@ -743,3 +843,284 @@ class TestLaMarcaDeMuestreoLlegaDesdeLaRutaReal:
         decision_original = en_muestra(compute_source_hash(contenido))
         decision_renombrado = en_muestra(compute_source_hash(contenido))
         assert decision_original == decision_renombrado
+
+
+class TestLaFotoQueSeContradiceSeRelee:
+    """Una lectura que se desmenta a si misma no se devuelve, aunque "parezca" completa.
+
+    MEDIDO el 2026-10-15 con `qwen2.5vl:3b` sobre las 3 fotos rotuladas de esta
+    maquina:
+
+    | archivo   | papel   | OCR    | vision | desglose del OCR | ESCALA |
+    |-----------|---------|--------|--------|------------------|--------|
+    | IMG_4398  | 193.65  | 193.65 | 193.65 | no              | **no** |
+    | IMG_4407  | 234.00  | 234    | 234.0  | no              | **no** |
+    | IMG_4409  | 279.93  | 219.93 | 279.93 | **si, y no suma** | **si** |
+
+    El caso que motiva esto: el OCR leyo el **subtotal bien** (`279.93`, la
+    verdad) y el **total mal** (`219.93`). O sea que el documento se contradice,
+    y el sistema tiene esa contradiccion a la vista sin pedirle nada a nadie.
+
+    Antes se guardaba `219.93` con confianza y sin marca de error: un numero que
+    **la propia lectura del comprobante desmentia**. Con vision primero las tres
+    salen bien, pero MEDIDO: 260 a 490 s por foto contra los ~81 s del OCR, y se
+    paga eso tambien en las fotos que el OCR ya leia bien. Con esta regla el
+    modelo se consulta **1 de 3** y el resultado es el mismo.
+    """
+
+    # El texto OCR REAL de `IMG_4409.heic`, recortado a las lineas que deciden.
+    # La verdad: subtotal 279.93, IVA 0.00, total 279.93. El OCR leyo el
+    # subtotal bien y el total como `219.93` — el `30.08` de la linea de ahorro
+    # se le coló al total, que es el modo de fallo de siempre: un numero suelto
+    # que parece un importe.
+    #
+    # Recortado y no entero a proposito: el nombre que produce este texto ("TYSON
+    # TIENDAS DEL SOL") NO dispara `_nombre_parece_basura`, y con un nombre
+    # inventado la lectura se declara "no util" por otra razon y la regla de
+    # relectura deja de ser la que decide. Un test que pasa por un motivo
+    # distinto del que dice no prueba lo que dice.
+    TEXTO_QUE_SE_CONTRADICE = (
+        "TYSON TIENDAS DEL SAI\n"
+        "PANT24034 PANTALON SAB 279.93 1\n"
+        "-30.08 Usted \u201dahorra. $119.97 de $399.90 .\n"
+        "| SUBTOTAL 279.93 ES\n"
+        "TOTAL. 219.93 OS\n"
+        "\u2018Usted ahorra en Total: $119.97 > E\n"
+    )
+
+    # Un texto que se contradice Y ADEMAS el documento no puede explicar la
+    # contradiccion: trae linea de impuesto, asi que `subtotal != total` es lo
+    # normal y `_total_mas_corroborado` no toca nada (con IVA, tomar el subtotal
+    # perderia el impuesto).
+    #
+    # MEDIDO el 2026-10-16: sin este texto, la regla de relectura se quedaba
+    # sin caso. `_total_mas_corroborado` resuelve la contradiccion de DSW
+    # leyendo el papel —que ya decia la respuesta dos veces— y entonces la
+    # relectura no se dispara NUNCA en esa foto. Una defense que solo tiene el
+    # caso que otra defense ya resolvio es una defense a punto de ser codigo
+    # muerto, y no se puede dejar asi: hay que darle el caso que si le toca.
+    TEXTO_QUE_NO_SE_EXPLICA = (
+        "TIENDAS DEL SOL\n"
+        "RFC: SOL010101XX0\n"
+        "SUBTOTAL 100.00\n"
+        "IVA 16.00\n"
+        "TOTAL 150.00\n"
+    )
+
+    # El texto OCR REAL de `IMG_4398.heic`. La verdad: total 193.65. No trae
+    # desglose, y por eso NO se relee aunque el total este bien.
+    TEXTO_QUE_CUADRA = (
+        "PANADERIA LA ESPERANZA\n"
+        "Total $ 193.65 =\n"
+        "oe Nenta total 5 (c) 19S Be\n"
+        "Total despues del ahorro $ 193 65\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def _configuracion_de_la_app(self, monkeypatch):
+        """`ESCALAR_A_IA_SIN_LINEAS=False`, que es lo que CORRE la app.
+
+        MEDIDO el 2026-10-15, y es la razon de que estos tests existieran mal:
+        el default de `config.py` es `True` y el `.env` lo apaga. Con el default,
+        `_exige_items` dice que toda foto sin lineas tiene que ir al modelo, la
+        cascada escala SIEMPRE, y **la regla de relectura no decide nada** —
+        los tests pasaban igual con ella puesta y sin ella.
+
+        Eso es la trampa de "una defensa que nunca decide nada se lee como una
+        garantia": aqui no era una garantia, era codigo muerto, y el unico
+        sintoma era que quitarlo no rompia nada. Con el ajuste real de la
+        `.env` debajo, la regla decide y se puede mutar.
+        """
+        monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", False)
+        # MEDIDO el 2026-10-15: tambien el orden. Sin esto, con
+        # `IMAGENES_VISION_PRIMERO=true` en la `.env` del operador, esta clase
+        # empezó a fallar sin que cambiara el codigo. Un test que depende de un
+        # ajuste del entorno no prueba la politica: prueba el entorno.
+        monkeypatch.setattr(settings, "IMAGENES_VISION_PRIMERO", False)
+
+    @staticmethod
+    def _ocr_que_devuelve(texto: str):
+        def reader(_datos: bytes):
+            from app.services.ocr import ResultadoOCR
+
+            return ResultadoOCR(texto=texto, motor="tesseract", confianza_media=80.0)
+
+        return reader
+
+    async def test_una_contradiccion_que_el_documento_explica_no_se_relee(self):
+        """MEDIDO el 2026-10-16, y es el cambio de contrato.
+
+        `TEXTO_QUE_SE_CONTRADICE` es el caso de DSW: subtotal `279.93` y total
+        `219.93`, que se contradicen. **El papel imprime `279.93` dos veces mas**
+        (linea de partida y `SUBTOTAL`) y la diferencia (`60.00`) no aparece en
+        ninguna parte: el documento ya decia la respuesta.
+
+        Antes esto costaba ~100 s de modelo. Ahora el parser lo resuelve leyendo
+        el papel, y el modelo **no se consulta**: mismo numero, sin la llamada.
+        Ver `_total_mas_corroborado`.
+        """
+        espia = Espia(_invoice(provider_name="TIENDAS DEL SOL",
+                               total=Decimal("279.93"),
+                               subtotal=Decimal("279.93"),
+                               tax_amount=Decimal("0.00")))
+
+        resultado = await capture_ticket(
+            b"bytes-de-una-foto",
+            "image",
+            extract_from_image=espia.imagen,
+            ocr_reader=self._ocr_que_devuelve(self.TEXTO_QUE_SE_CONTRADICE),
+        )
+
+        assert resultado.total_amount == Decimal("279.93")
+        assert espia.llamadas == [], (
+            "el papel imprime 279.93 dos veces mas y la diferencia no aparece "
+            "en ningun lado: la contradiccion esta resuelta SIN preguntar a "
+            "nadie. Consultar al modelo aqui es pagar 100 s por un numero que "
+            "ya esta en la mano."
+        )
+
+    async def test_una_contradiccion_que_el_documento_no_explica_se_relee(self):
+        """EL CASO QUE LE TOCA A ESTA REGLA, y es el que la mantiene viva.
+
+        El documento trae linea de impuesto, asi que `subtotal != total` es lo
+        normal y el parser **no** puede corregirlo (con IVA, tomar el subtotal
+        perderia el impuesto). La contradiccion queda sin explicar, y ahi si hay
+        que preguntarle a alguien que mire el papel.
+        """
+        espia = Espia(_invoice(provider_name="TIENDAS DEL SOL",
+                               total=Decimal("150.00"),
+                               subtotal=Decimal("134.00"),
+                               tax_amount=Decimal("16.00")))
+
+        resultado = await capture_ticket(
+            b"bytes-de-una-foto",
+            "image",
+            extract_from_image=espia.imagen,
+            ocr_reader=self._ocr_que_devuelve(self.TEXTO_QUE_NO_SE_EXPLICA),
+        )
+
+        assert espia.llamadas, (
+            "100.00 + 16.00 = 116.00 y el papel dice 150.00: el documento se "
+            "desmiente y no hay forma de saber cual de los tres leyo mal. Eso "
+            "no lo resuelve un regex, lo resuelve mirar el papel."
+        )
+        assert resultado.total_amount == Decimal("150.00")
+
+    async def test_una_lectura_que_no_tiene_desglose_no_se_relee(self):
+        """EL LADO IMPORTANTE, y el que hace que esto no sea "preguntar siempre".
+
+        Sin desglose no hay nada que comprobar, y eso NO es una duda: es que el
+        OCR simplemente no lo leyo. Escalar ahi seria pagar 300 s por cada ticket
+        de supermercado, que es donde el total si se lee bien.
+        """
+        espia = Espia(_invoice(total=Decimal("999.00")))
+
+        resultado = await capture_ticket(
+            b"bytes-de-una-foto",
+            "image",
+            extract_from_image=espia.imagen,
+            ocr_reader=self._ocr_que_devuelve(self.TEXTO_QUE_CUADRA),
+        )
+
+        assert espia.llamadas == [], (
+            "esta lectura no se contradice: no hay nada que comprobar y el "
+            "total es el que dice el papel. Preguntar al modelo aqui es lo que "
+            "convierte la regla en 'vision primero'"
+        )
+        assert resultado.total_amount == Decimal("193.65")
+
+    async def test_una_lectura_sin_total_si_se_relee(self):
+        """Sin total no hay gasto. No es "dudoso": es no leido."""
+        espia = Espia(_invoice(total=Decimal("51.50")))
+        texto = "OXXO S.A. DE C.V.\nRFC: OXX010101XXX\nFECHA: 01/10/2026\n"
+
+        resultado = await capture_ticket(
+            b"bytes-de-una-foto",
+            "image",
+            extract_from_image=espia.imagen,
+            ocr_reader=self._ocr_que_devuelve(texto),
+        )
+
+        assert espia.llamadas
+        assert resultado.total_amount == Decimal("51.50")
+
+    async def test_la_lectura_del_ocr_no_se_tira_al_releer(self):
+        """El OCR se conserva para comparar, no se descarta.
+
+        Sin esto, un modelo que devuelve `total 0.00` —un caso MEDIDO en los 7
+        comprobantes reales— deja la foto sin total, cuando el OCR ya habia leido
+        bien. Re-leer no puede ser "replace".
+        """
+        espia = Espia(_invoice(provider_name=UNKNOWN_PROVIDER, total=Decimal("0")))
+
+        resultado = await capture_ticket(
+            b"bytes-de-una-foto",
+            "image",
+            extract_from_image=espia.imagen,
+            ocr_reader=self._ocr_que_devuelve(self.TEXTO_QUE_NO_SE_EXPLICA),
+        )
+
+        assert resultado.total_amount == Decimal("150.00"), (
+            "el modelo no devolvio nada util: la lectura del OCR sigue siendo el "
+            "mejor dato que hay, y descartar una lectura correcta por una mala es "
+            "el fallo que `_mejor_de` existe para evitar"
+        )
+
+
+# ---------------------------------------------------------------------------
+# El nombre del proveedor: que es ruido y que es un comercio
+# ---------------------------------------------------------------------------
+
+class TestElNombreDelProveedor:
+    """`_nombre_parece_basura` decide si una lectura vale o si hay que releer.
+
+    Rechaza de mas a proposito (un falso positivo cuesta una relectura, un falso
+    negativo deja un ticket que afirma que el gasto fue en "CANT. TOTAL"). Aun
+    asi, rechazar un comercio real es caro: MEDIDO el 2026-10-31, un PDF **con
+    capa de texto** que las reglas leian bien (`4094.80`) se escalaba al modelo y
+    acababa con `confidence_source=llm`, saltandose la regla 3 de `AGENTS.md`.
+
+    La causa era la `y` de `PAPELERIA Y SUMINISTROS`: la regla de "una letra
+    suelta es ruido de OCR" la tomaba por un glifo roto. En espanol `y`, `o`, `e`
+    y `u` son palabras, no ruido.
+    """
+
+    @pytest.mark.parametrize("nombre", [
+        # Las dos que mueren si se quita la excepcion de las conjunciones: sin
+        # ella, la letra suelta las declara basura y son comercios legitimos.
+        "DISTRIBUIDORA O SUMINISTROS DEL NORTE",
+        "Abarrotes E Insumos",
+        # El caso medido. Es el nombre del PDF de `test-files/`.
+        "PAPELERIA Y SUMINISTROS CENTRAL SA DE CV",
+        "TIENDAS DEL SOL",
+        "La Esquina",
+        "7 Eleven",
+        "OXXO SA DE CV",
+        # Formas con sufijo legal escrito con puntos: el mismo comercio, la misma
+        # lectura, distinta grafia. Sin el strip del sufijo, la puntuacion dejaba
+        # tokens de una sola letra y el comercio se declaraba basura (P0.1).
+        "OXXO S.A. DE C.V.",
+        "WALMART DE MEXICO S.A.B. DE C.V.",
+        "GRUPO COMERCIAL DSW S.A. DE C.V.",
+        # Una palabra buena con un encabezado pegado no es ruido.
+        "TOTAL FITNESS",
+    ])
+    def test_un_comercio_de_verdad_no_es_ruido(self, nombre):
+        assert _nombre_parece_basura(nombre) is False
+
+    @pytest.mark.parametrize("nombre", [
+        "",                                    # sin nombre
+        "UNKNOWN",                             # centinela del modelo (SENTINELS_SIN_PROVEEDOR)
+        "AI_DISABLED",
+        "gt Edson Nte hunera 1235",            # una direccion como proveedor
+        "AAA AI",                              # ruido de caja, todo corto
+        "CANT. TOTAL",                         # encabezados de casilla
+        "PAPELERIA CENTRAL 1235",              # un numero que no abre el nombre
+    ])
+    def test_el_ruido_sigue_siendo_ruido(self, nombre):
+        """La excepcion es para las conjunciones, no para aflojar la regla.
+
+        Si alguien borra el resto del criterio para "dejar pasar nombres
+        reales", estos casos mueren.
+        """
+        assert _nombre_parece_basura(nombre) is True

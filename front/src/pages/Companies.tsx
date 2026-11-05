@@ -75,7 +75,7 @@ export function Companies() {
     { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
     { key: 'actions', header: 'Acciones', render: (c: Company) => (
       <div className="flex gap-2">
-        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
+        <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
         <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}>Eliminar</Button>
       </div>
     )},

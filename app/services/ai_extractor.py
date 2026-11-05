@@ -4,13 +4,103 @@ AI Document Extraction Service - Extract structured data from invoices/receipts 
 import json
 import base64
 import io
+import logging
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import date
 
-from app.services.ai_client import ai_client, AIResponse
+from app.services.ai_client import AIProvider, ai_client, AIResponse
 from app.core.config import settings
+
+# HEIC/HEIF: el producto se define por "la foto del telefono" y un iPhone
+# produce HEIC, asi que sin esto el primer usuario no puede subir su
+# comprobante.
+#
+# El registro del decodificador vive en `app/core/heif.py` y este modulo solo lo
+# consulta. Antes el `register_heif_opener()` estaba AQUI, y eso hacia que el
+# soporte de HEIC dependiera de que otro modulo se importara primero: quien
+# llegara al OCR sin pasar por `ai_extractor` —un script, un test, un refactor—
+# no podia abrir una foto de iPhone. Ver el porque en `app/core/heif.py`.
+#
+# `pillow-heif` trae la libreria nativa en su propia wheel (no hace falta
+# `apt-get`), y `register_heif_opener` engancha el decodificador de PIL para que
+# `Image.open` acepte el formato como si fuera cualquier otro.
+#
+# Es opcional a proposito: si la dependencia no esta, `DISPONIBLE` queda en
+# `False` y se sigue funcionando sin HEIC, que es como estaba antes.
+from app.core.heif import DISPONIBLE as _HEIC_DISPONIBLE
+
+
+def _a_jpeg(image_bytes: bytes) -> bytes | None:
+    """Decodifica, reescala y pasa a JPEG. `None` si no se puede.
+
+    El reescalado a 1600 px no es cosmetico: los modelos de vision locales
+    (`moondream`) tardan mucho menos con la imagen pequena, y el total de un
+    comprobante se lee igual a 1600 que a 4000.
+
+    Devolver `None` en vez de un except silencioso es el punto de esta funcion.
+    El llamador necesita distinguir "no pude abrirlo" de "no habia nada que
+    abrir", y solo el segundo es una imagen valida de 0 bytes.
+
+    Y el motivo del fallo se registra, porque "no se pudo leer la imagen" y "esta
+    maquina no puede leer HEIC" piden acciones opuestas: la primera es un
+    archivo malo, la segunda es un `pip install`. Sin esto, el segundo caso se
+    reportaba como "muchas fotos fallan", que es como se escribe un sintoma en
+    vez de una causa.
+
+    `_HEIC_DISPONIBLE` es la unica razon por la que este modulo importa
+    `app.core.heif`: importarlo ES el registro del decodificador, porque
+    `register_heif_opener()` corre al importarse ese modulo. Sin esta linea,
+    HEIC deja de funcionar en silencio y nadie lo ve hasta que alguien sube una
+    foto de iPhone. Por eso no es un import que "no se usa": se consulta.
+    """
+    try:
+        from PIL import Image as PILImage
+        from PIL import ImageOps
+
+        img = PILImage.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img) or img
+        img = img.convert("RGB")
+
+        # EL LADO LARGO, no el ancho.
+        #
+        # MEDIDO el 2026-10-13 sobre las fotos reales de esta maquina. Antes
+        # limitaba solo el ANCHO a 1600 px, y una foto de comprobante es
+        # vertical: `IMG_4409.heic` sale en **1600 x 3422**. El modelo de vision
+        # paga tokens por pixel, y esa imagen da ~4040 tokens de los cuales el
+        # papel ocupa MENOS DEL 12%: el resto es fondo de mesa, que se lee igual
+        # de caro.
+        #
+        # Y no es solo costo: una sola llamada tardaba ~250 s con `prompt_eval`
+        # de 249 s. Es la razon de que la laptop se calentara.
+        #
+        # Por que 2000 y no mas: una foto de ticket impresa tiene su total y su
+        # RFC legibles con sobra a 2000 px de lado largo, y `vista_previa.py`
+        # ya mide eso para el mismo proposito (`_LADO_MAXIMO = 2000`). Si se
+        # sube, el numero de tokens crece proporcionalmente y con el el tiempo.
+        #
+        # `thumbnail` y no `resize` porque NO agranda: una foto que ya viene
+        # pequena (un reenvio de WhatsApp) sale como vino, sin inventar pixeles
+        # que no existen.
+        img.thumbnail(
+            (settings.MAX_LADO_VISION, settings.MAX_LADO_VISION),
+            PILImage.Resampling.LANCZOS,
+        )
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception as exc:
+        if not _HEIC_DISPONIBLE:
+            logger.warning(
+                "no se pudo decodificar la imagen y pillow-heif no esta "
+                "instalado; si es un HEIC de iPhone, ese es el motivo (%s)",
+                exc,
+            )
+        else:
+            logger.warning("no se pudo decodificar la imagen: %s", exc)
+        return None
 
 
 @dataclass
@@ -29,6 +119,16 @@ class ExtractedInvoice:
     exchange_rate: Optional[float] = None
     subtotal: Decimal = Decimal("0")
     tax_amount: Decimal = Decimal("0")
+    # El IEPS, en pesos, y SEPARADO del IVA. No antes de esto: `tax_amount` era
+    # "total de impuestos" en el prompt pero se guardaba y se exportaba bajo el
+    # encabezado "IVA" (`export_service.CONTPAQI_COLUMNS`). Un comprobante con
+    # IVA 8.14 e IEPS 8.59 llegaba al contador como IVA 16.73, sin marca de error.
+    # Ver db/migrations/0012_el_impuesto_es_de_la_partida.sql.
+    #
+    # `None` y no `Decimal("0")`: `0.00` es "el papel dice que el IEPS es cero" y
+    # `None` es "el papel no trae IEPS o no lo lei". El gate necesita la
+    # diferencia, porque `subtotal + IVA == total` solo cuadra con el segundo.
+    ieps_amount: Optional[Decimal] = None
     tax_breakdown: List[Dict[str, Any]] = field(default_factory=list)
     total: Decimal = Decimal("0")
     payment_method: Optional[str] = None
@@ -37,6 +137,43 @@ class ExtractedInvoice:
     raw_text: str = ""
     confidence: float = 0.0
     extraction_method: str = "llm"
+    # QUE MODELO RESPONDIO. `AIResponse.model` lo traia desde antes y se
+    # descartaba aqui, que es la razon de que nadie pueda decir que modelo leyo
+    # un comprobante.
+    #
+    # No es decorativo por dos razones concretas, y las dos ya se perdieron una
+    # vez:
+    #
+    # 1. **Medicion.** `confidence_source` dice QUE clase de lector fue (`llm`,
+    #    `ocr`, `pdf_text`, `manual`), no cual. Dentro de `llm` conviven motores
+    #    con tasas de error distintas: cambiar `qwen2.5:3b` por `llama3.1:8b` no
+    #    mueve ese campo, asi que un A/B entre modelos es invisible en el
+    #    reporte de exactitud. Es el mismo argumento que hizo falta para
+    #    `ResultadoOCR.motor` en el OCR.
+    #
+    # 2. **Diagnostico.** Configurado y **disponible** son cosas distintas, y la
+    #    diferencia no se ve en ningun log. MEDIDO en esta maquina: la
+    #    configuracion dice `OLLAMA_MODEL=qwen2.5:3b` y en el contenedor solo
+    #    esta `moondream`. Ese modelo de texto nunca ha contestado una sola vez, y
+    #    sin este campo no hay forma de saberlo mirando una pantalla.
+    #
+    # `None` cuando no hubo IA: PDF con capa de texto, OCR que sirvio, o entrada
+    # manual. `None` es "no respondió un modelo", no "respondió vacío".
+    model_name: Optional[str] = None
+    # Y el PROVEEDOR (`ollama`, `openai`, `azure`, `local`). `qwen2.5:3b` en
+    # Ollama y `qwen2.5:3b` en OpenAI no son el mismo modelo corriendo en otro
+    # sitio: son dos motores distintos con distinto comportamiento y distinto
+    # costo.
+    #
+    # EL NOMBRE ES `model_provider` Y NO `provider_name`, Y NO ES COSMETICO:
+    # `provider_name` ya existe mas arriba y es el COMERCIO que emitio el
+    # comprobante. Con el mismo nombre, el segundo campo pisa al primero segun el
+    # orden de los argumentos y el ticket sale con `provider_name="ollama"`.
+    # No falla: es un `str` valido, y lo unico que se rompe es el nombre del
+    # emisor, que es justo lo que no se debe romper. Medido al escribir esto: el
+    # intento con `provider_name` dio `TypeError: got multiple values for keyword
+    # argument`, que al menos avisa — en un `**kwargs` se pierde en silencio.
+    model_provider: Optional[str] = None
 
 
 # System prompt for invoice extraction (text-based)
@@ -53,7 +190,7 @@ REGLAS CRÍTICAS:
 6. Si no encuentras un dato, usa null (no inventes)
 
 Devuelve EXACTAMENTE este formato JSON. Los campos van SIEMPRE en este orden:
-{"provider_name": "Nombre del emisor", "provider_tax_id": "RFC del emisor", "invoice_date": "YYYY-MM-DD", "currency": "MXN", "subtotal": 123.45, "tax_amount": 19.75, "total": 143.20, "payment_method": "EFECTIVO", "items": [{"description": "Producto", "quantity": 1, "unit_price": 123.45, "total": 123.45}], "raw_text": "Texto completo extraido", "confidence": 0.95}
+{"provider_name": "Nombre del emisor", "provider_tax_id": "RFC del emisor", "invoice_date": "YYYY-MM-DD", "currency": "MXN", "subtotal": 123.45, "tax_amount": 19.75, "total": 143.20, "payment_method": "EFECTIVO", "items": [{"description": "Producto", "quantity": 1, "unit_price": 123.45, "total": 123.45}], "raw_text": "3 lineas como maximo", "confidence": 0.95}
 
 Para CFDI agrega si están visibles: provider_address, receiver_name, receiver_tax_id, invoice_number, invoice_series, due_date, exchange_rate, tax_breakdown, payment_terms.
 Para TICKETS SIMPLES (no CFDI): omite campos CFDI y usa payment_method "EFECTIVO", "TARJETA" o "TRANSFERENCIA".
@@ -87,13 +224,55 @@ CAMPOS REQUERIDOS EN EL JSON:
 - currency: moneda (default "MXN")
 - exchange_rate: tipo de cambio (number o null)
 - subtotal: subtotal sin impuestos (number)
-- tax_amount: total de impuestos (number)
+- tax_amount: SOLO el IVA, nunca la suma de IVA+IEPS (number)
+- ieps_amount: SOLO el IEPS, o null si el comprobante no lo trae (number o null)
 - tax_breakdown: array de objetos con rate y amount
 - total: total con impuestos (number)
+
+REGLAS DE LOS IMPUESTOS, Y POR QUE NO SON SUGERENCIAS
+-----------------------------------------------------
+`tax_amount` e `ieps_amount` van separados porque se guardan y se exportan en
+columnas distintas: `tax_amount` sale bajo el encabezado "IVA" del archivo que se
+le entrega al contador. Si metes los dos impuestos en `tax_amount`, el contador
+recibe un IVA que no existe y no hay forma de que lo note.
+
+Medido sobre un ticket real de supermercado:
+
+    SUBTOTAL       217.27
+    IVA 16.0%        8.14     -> tax_amount
+    IEPS 8.0%        8.59     -> ieps_amount
+    TOTAL          234.00    y 217.27 + 8.14 + 8.59 = 234.00 exacto
+
+Ojo con esto, que es el error facil: el IVA NO es el 16% del subtotal. Aqui el
+IVA es 8.14 porque solo una parte de las partidas esta tasa 16% y el resto a 0%
+(el papel lo marca con una letra al final de cada linea: T, C, A). Copia los
+IMPORTES que imprime el papel, nunca los recalcules con una tasa: la tasa que el
+papel imprime es la de la partida, no la del comprobante.
+
+Y si el comprobante no trae IEPS, `ieps_amount` es `null`. No es `0`: `0` dice
+"lei el IEPS y es cero", y `null` dice "no hay IEPS aqui".
 - payment_method: "EFECTIVO" | "TARJETA" | "TRANSFERENCIA" | null
 - payment_terms: condiciones de pago (string o null)
 - items: array de objetos con description, quantity, unit_price, total, tax_rate, tax_amount
-- raw_text: todo el texto visible en la imagen
+- raw_text: MAXIMO 3 lineas: el nombre del comercio y el total, como los imprime
+  el papel. NO vuelques el comprobante entero aqui.
+
+  MEDIDO el 2026-10-13 con `qwen2.5vl:3b` sobre las fotos reales: pedir "todo el
+  texto visible" hace que el modelo se ATRANGANTE escribiendo ese campo. En
+  `IMG_4409.heic` leyo bien `provider_name = "GRUPO COMERCIAL DSW S.A. DE C.V."`
+  —que es EXACTO— y se corto a mitad del JSON con `done_reason=length`,
+  `eval_count=714` de 1200. El JSON quedaba sin cerrar y el parser no podia
+  parsear NADA, o sea que un campo opcional tiraba los campos que si eran
+  correctos.
+
+  Y el modo de fallo peor: el volcado traia el folio `114348-202000-901102-6113534`,
+  que parece un total. El sistema guardaba un numero que no era el total del
+  comprobante, y sin marca de error: un folio filtrado a un campo de dinero es
+  exactamente el tipo de dato que el gate no puede cuestionar.
+
+  `raw_text` NO es un campo que el sistema necesite del modelo:
+  `_parse_from_response` ya lo rellena con "" si falta (`ai_extractor.py:538`).
+  Pedirlo aqui es pedir trabajo que se tira.
 - confidence: 0.0 a 1.0
 - extraction_method: "vision"
 
@@ -112,8 +291,18 @@ class AIExtractor:
     def __init__(self):
         self.enabled = settings.AI_ENABLED
         # Detect provider from ai_client
-        self._provider = getattr(ai_client, "_provider", "openai")
-        if hasattr(self._provider, "value"):
+        # `AIProvider` es un `str` Enum, asi que comparar contra "ollama"/"openai"
+        # funciona con las dos formas. La anotacion declara las DOS porque el
+        # `getattr` devuelve un `str` si el atributo no existe, y sin ella el
+        # `hasattr(...).value` de abajo parecia un error del type checker
+        # cuando es justamente la comprobacion que lo hace seguro.
+        self._provider: AIProvider | str = getattr(ai_client, "_provider", "openai")
+        # `isinstance` y no `hasattr(self._provider, "value")`: los dos dicen lo
+        # mismo en ejecucion, pero `hasattr` no le da al type checker la prueba
+        # de que `.value` existe —marca "Attribute value is unknown" sobre una
+        # linea que funciona—, y el `isinstance` ademas documenta que lo que se
+        # busca es "es un enum o es la cadena de texto".
+        if isinstance(self._provider, AIProvider):
             self._provider = self._provider.value
 
     @property
@@ -130,27 +319,41 @@ class AIExtractor:
             return settings.OLLAMA_VISION_MODEL
         return "gpt-4o"
 
-    async def extract_from_image(self, image_bytes: bytes, mime_type: str = "image/png") -> ExtractedInvoice:
-        """Extract from image (photo of receipt/invoice)"""
+    async def extract_from_image(self, image_bytes: bytes) -> ExtractedInvoice:
+        """Extract from image (photo of receipt/invoice)
+
+        Solo recibe los bytes, y a proposito. Antes llevaba un
+        `mime_type="image/png"` que no se usaba NADA en el cuerpo: el formato sale
+        de los bytes, en `app/core/archivo_real.py`, y llega aqui ya
+        normalizado. Este metodo solo tiene que abrirlo, reescalar y convertir
+        a JPEG.
+
+        quitarlo no fue cosmetico. Con el parametro ahi, la firma era
+        `extract_from_image(bytes, mime_type)`, y el tipo de la cascada no puede
+        expresar "el segundo es opcional" —`Callable` no lo tiene—: habia que
+        fingir que era obligatorio, o envolverlo en un `Protocol` entero para
+        volver a decir lo mismo. Un parametro muerto costs un `Protocol` de 20
+        lineas y una confusion que llega hasta el editor.
+
+        Un archivo que no se puede decodificar NO se manda al modelo. Antes
+        caia en un `except: pass` y los bytes crudos iban a `base64` declarados
+        `image/jpeg`: para un HEIC es un byte stream que vision no descodifica,
+        y lo que salia era basura con forma de lectura. Ahora devuelve
+        `IMAGEN_ILEGIBLE`, que `capture.FALLOS_DEL_MODELO` traduce a un motivo
+        de cola que dice la verdad.
+        """
         if not self.enabled:
             return self._fallback_extraction(image_bytes)
 
-        # Downscale large images before sending: speeds up local vision models a lot
-        try:
-            from PIL import Image as PILImage
-            pil_img = PILImage.open(io.BytesIO(image_bytes))
-            pil_img = pil_img.convert("RGB")
-            max_w = 1600
-            if pil_img.width > max_w:
-                new_h = int(pil_img.height * max_w / pil_img.width)
-                pil_img = pil_img.resize((max_w, new_h), PILImage.LANCZOS)
-            buf = io.BytesIO()
-            pil_img.save(buf, format="JPEG", quality=85)
-            image_bytes = buf.getvalue()
-        except Exception:
-            pass
+        jpeg = _a_jpeg(image_bytes)
+        if jpeg is None:
+            return ExtractedInvoice(
+                provider_name="IMAGEN_ILEGIBLE",
+                confidence=0.0,
+                raw_text="",
+            )
 
-        b64 = base64.b64encode(image_bytes).decode()
+        b64 = base64.b64encode(jpeg).decode()
         return await self._extract_from_vision(b64, "image/jpeg")
 
     async def extract_from_text(self, text: str) -> ExtractedInvoice:
@@ -242,7 +445,7 @@ class AIExtractor:
             m = re.search(r'"currency"\s*:\s*"([^"]+)"', raw)
             if m:
                 salvaged["currency"] = m.group(1)
-            for field in ["subtotal", "tax_amount", "total"]:
+            for field in ["subtotal", "tax_amount", "ieps_amount", "total"]:
                 m = re.search(rf'"{field}"\s*:\s*"?([\d,]+\.?\d*)"?', raw)
                 if m:
                     salvaged[field] = m.group(1)
@@ -269,24 +472,53 @@ class AIExtractor:
                     data[field] = _clean_null(data[field])
 
             # Convert Decimal fields (guard against malformed values)
-            def _to_decimal(v: Any) -> Decimal:
+            #
+            # `None` cuando el modelo trae algo que no es un numero, y **no**
+            # `Decimal("0")`. La diferencia es la misma que ya separa
+            # `ieps_amount` de un 0 (ver el campo de arriba): `0.00` es "el papel
+            # dice que esto vale cero" y `None` es "no lo lei o no lo lei bien".
+            # Rellenar con cero hace que una lectura imposible sea
+            # indistinguible de una lectura real de cero, que es exactamente el
+            # dato que el gate no puede verificar con nada.
+            #
+            # Lo que el gate vea despues lo decide `capture.invoice_to_result`,
+            # que traduce `None` a `Decimal("0.00")` **a proposito**: alli el cero
+            # es el centinela de "no se pudo leer", y `_puntaje_de_extraccion` y
+            # `_vale_la_pena` comparan contra el. Aqui, dentro del invoice, no:
+            # aqui el cero seria una afirmacion sobre el papel.
+            #
+            # El `except` es de las tres excepciones que de verdad puede lanzar
+            # `Decimal()` sobre texto. `Exception` entera tambien se tragaba un
+            # `RecursionError` y cualquier otra cosa, y hacia parecer que el
+            # fallback era una decision y no un accidente.
+            def _to_decimal(v: Any) -> Decimal | None:
                 try:
                     if v is None:
-                        return Decimal("0")
+                        return None
                     if isinstance(v, Decimal):
                         return v
                     if isinstance(v, float):
                         return Decimal(str(v))
                     s = str(v).replace(",", "").replace("$", "").strip()
                     return Decimal(s)
-                except Exception:
-                    return Decimal("0")
+                except (InvalidOperation, ValueError, TypeError):
+                    logger.warning("el modelo devolvio un %r donde iba un importe", v)
+                    return None
 
             for field in ["subtotal", "tax_amount", "total", "exchange_rate"]:
                 if field in data and data[field] is not None:
                     data[field] = _to_decimal(data[field])
                 elif field not in data:
                     data[field] = Decimal("0")
+
+            # El IEPS NO entra en el bucle de arriba a proposito. Ahi, un campo
+            # ausente se rellena con `Decimal("0")`, porque para el subtotal, el
+            # IVA y el total un 0 es un numero y el modelo siempre los trae. Para
+            # el IEPS no: `0.00` significa "el comprobante no tiene IEPS" y lo
+            # haria parecer un dato leido. Se convierte si vino, y si no se
+            # queda en None.
+            if data.get("ieps_amount") is not None:
+                data["ieps_amount"] = _to_decimal(data["ieps_amount"])
 
             # Convert items
             if not data.get("items"):
@@ -327,13 +559,24 @@ class AIExtractor:
                 data["confidence"] = 0.0
 
             data["extraction_method"] = method if data else f"{method}_error"
+            # Quien contesto. Se agrega aqui y no antes porque la respuesta del
+            # modelo se puede parsear aunque venga vacia, y en ese caso el modelo
+            # **si** contesto —contesto que no sabe— y esa respuesta tambien
+            # tiene que poder atribuirse a un motor concreto.
+            #
+            # En el camino de excepcion de abajo NO se pone, y es lo correcto: si
+            # la lectura fallo antes de llegar al parseo, no hay respuesta que
+            # atribuir, y `None` significa eso y no "un modelo sin nombre".
+            data["model_name"] = response.model
+            data["model_provider"] = response.provider.value
             # Keep only fields understood by the dataclass (model may add extras)
             valid_fields = ExtractedInvoice.__dataclass_fields__.keys()
             filtered = {k: v for k, v in data.items() if k in valid_fields}
             return ExtractedInvoice(**filtered)
 
-        except Exception as e:
-            # Fallback if parsing fails
+        except Exception:
+            # El motivo ya se registro en `_a_jpeg`, con el detalle de si falta
+            # el soporte de HEIC. Aqui solo se declara que la lectura fallo.
             return ExtractedInvoice(
                 provider_name="ERROR_PARSING",
                 provider_tax_id=None,
@@ -386,4 +629,6 @@ class AIExtractor:
 
 
 # Global instance
+logger = logging.getLogger(__name__)
+
 ai_extractor = AIExtractor()

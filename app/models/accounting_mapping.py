@@ -17,4 +17,9 @@ class AccountingMappingModel(Base):
     column_mappings = Column(JSON, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
-    company = relationship("CompanyModel", backref="accounting_mappings")
+    # `passive_deletes=True`: la FK es `ON DELETE CASCADE` en la base y sin este
+    # `True` el ORM manda `UPDATE ... SET company_id=NULL` antes del DELETE.
+    # Mismo argumento que en `app/models/ticket.py`.
+    company = relationship(
+        "CompanyModel", backref="accounting_mappings", passive_deletes=True
+    )

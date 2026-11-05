@@ -30,7 +30,11 @@ class TestCompaniesAPI:
         )
         
         assert response.status_code == 409
-        assert "already exists" in response.json()["detail"]
+        # El mensaje va en espanol y con tilde: es lo unico que ve el
+        # usuario de un 409, y decia "Company with this tax_id already exists"
+        # —en ingles, y con el nombre del campo (`tax_id`), que en la
+        # pantalla no existe. Ver `docs/known-issues.md` §29.
+        assert response.json()["detail"] == "Ya hay una empresa con ese RFC"
 
     @pytest.mark.asyncio
     async def test_list_companies(self, async_client: AsyncClient):

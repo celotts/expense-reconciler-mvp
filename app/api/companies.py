@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -23,7 +24,7 @@ async def create_company(
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Company with this tax_id already exists"
+            detail="Ya hay una empresa con ese RFC"
         )
     
     company = CompanyModel(**company_in.model_dump())
@@ -53,7 +54,7 @@ async def get_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     return company
 
@@ -70,7 +71,7 @@ async def update_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
     update_data = company_in.model_dump(exclude_unset=True)
@@ -85,7 +86,7 @@ async def update_company(
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Company with this tax_id already exists"
+                detail="Ya hay una empresa con ese RFC"
             )
     
     for field, value in update_data.items():
@@ -107,8 +108,22 @@ async def delete_company(
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found"
+            detail="La empresa no existe"
         )
     
-    await db.delete(company)
-    await db.commit()
+    # Si la empresa tiene hijos (tickets, productos, movimientos), el DELETE
+    # revienta con un IntegrityError. En vez de dejar que salga como 500,
+    # se traduce a 409 con un mensaje que dice qué hacer.
+    #
+    # MEDIDO: sin este manejo, `DELETE /companies/{id}` devuelve 500 para
+    # toda empresa con datos, y el usuario no tiene forma de saber por qué.
+    try:
+        await db.delete(company)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La empresa tiene datos asociados (comprobantes, productos, "
+                   "movimientos). Elimínelos primero o dé de baja la empresa.",
+        )

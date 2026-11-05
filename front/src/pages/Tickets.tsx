@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult } from '../services/api';
 import { companiesApi, type Company } from '../services/api';
+import type { Categoria } from '../types/dashboard';
 import { 
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload, CameraCapture 
 } from '../components/ui';
@@ -8,17 +9,44 @@ import {
   validateTicketForm, hasErrors, normalizeTicketForm,
   type TicketFormErrors, UNKNOWN_PROVIDER,
 } from '../utils/validation';
+import { dinero, fecha } from '../utils/format';
+import { VeredictoTicket } from '../components/VeredictoTicket';
+import { ComprobanteAlLado } from '../components/ComprobanteAlLado';
 
-export function Tickets() {
+/** Como se filtra esta pantalla.
+ *
+ *  `sinClasificar` existe por el camino que llega desde el tablero: la barra
+ *  gris a la que se le da clic. Es un filtro mas y no una pantalla aparte, y a
+ *  proposito: clasificar un ticket es editarlo, y tener dos pantallas para lo
+ *  mismo obliga a mantener dos listas, dos tablas y dos caminos para el mismo
+ *  PATCH. */
+type Filtro = 'todos' | 'sinClasificar' | 'clasificados';
+
+export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCompany, setSelectedCompany] = useState<string>('');
+  const [filtro, setFiltro] = useState<Filtro>(filtroInicial ?? 'todos');
+  // Que se abre en la pantalla que se acaba de llegar. Se sincroniza con
+  // `filtroInicial` para que el clic en la barra gris del tablero abra aqui en
+  // modo "sin clasificar" y no en la lista completa, que es lo que pasaria si
+  // solo se usara el estado inicial: seLee una vez y nunca mas.
+  useEffect(() => {
+    if (filtroInicial) setFiltro(filtroInicial);
+  }, [filtroInicial]);
+
+  // Seleccion multiple para clasificar en lote.
+  const [seleccionados, setSeleccionados] = useState<Set<string>>(new Set());
+  const [clasificando, setClasificando] = useState(false);
+  const [categoriaLote, setCategoriaLote] = useState('');
+
   const [showModal, setShowModal] = useState(false);
   const [editingTicket, setEditingTicket] = useState<Ticket | null>(null);
-  const [formData, setFormData] = useState<TicketCreate>({ 
-    company_id: '', provider_name: '', total_amount: '', expense_date: '' 
+  const [formData, setFormData] = useState<TicketCreate>({
+    company_id: '', provider_name: '', total_amount: '', expense_date: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [extracting, setExtracting] = useState(false);
@@ -30,16 +58,47 @@ export function Tickets() {
   const [deleteTarget, setDeleteTarget] = useState<Ticket | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [formErrors, setFormErrors] = useState<TicketFormErrors>({});
+  // El archivo original del que salio la extraccion.
+  //
+  // Antes se perdia: handleExtract hacia la peticion de preview y luego soltaba
+  // el File. El ticket se creaba despues por POST /tickets/, que es captura
+  // manual y no guarda comprobante. Resultado: por la UI ningun ticket tenia el
+  // original, y el muestreo de exactitud no tenia contra que contrastar.
+  //
+  // Se retiene aqui y se adjunta despues de crear, para no quitar el paso de
+  // revision: el usuario confirma y corrige lo que leyó la IA antes de que exista
+  // como registro contable.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [avisoDocumento, setAvisoDocumento] = useState<string | null>(null);
+  // Aviso de que editar cambia el significado del ticket. Sin el, elegir
+  // "revisar y editar" parece la version menos completa de la misma accion.
+  const [avisoEdicionManual, setAvisoEdicionManual] = useState<string | null>(null);
+  // El veredicto del gate tras aceptar una lectura, para enseñarlo de inmediato.
+  // Antes de esto el usuario creaba un ticket automatico y no se enteraba de que
+  // habia pasado por el gate, ni de si habiaauto-aprobado o no.
+  const [ultimoVeredicto, setUltimoVeredicto] = useState<Ticket | null>(null);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [companiesData, ticketsData] = await Promise.all([
+      // El filtro se pide al servidor y no se filtra en el navegador. Filtrar en
+      // el cliente significaria traer los 500 tickets para descartar 400, y con
+      // el limite del endpoint (100 por pagina) la cuenta seria falsa: "no hay
+      // sin clasificar" cuando en realidad no salio en la primera pagina.
+      const [empresasData, ticketsData, categoriasData] = await Promise.all([
         companiesApi.list(),
-        selectedCompany ? ticketsApi.list(selectedCompany) : Promise.resolve([])
+        selectedCompany
+          ? ticketsApi.list(selectedCompany, {
+              sinCategoria: filtro === 'sinClasificar',
+              conCategoria: filtro === 'clasificados',
+              limit: 500,
+            })
+          : Promise.resolve([] as Ticket[]),
+        ticketsApi.categorias(),
       ]);
-      setCompanies(companiesData);
+      setCompanies(empresasData);
       setTickets(ticketsData);
+      setCategorias(categoriasData);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al cargar datos');
@@ -50,7 +109,71 @@ export function Tickets() {
 
   useEffect(() => {
     loadData();
-  }, [selectedCompany]);
+  }, [selectedCompany, filtro]);
+
+  // Al cambiar de filtro o de empresa, la seleccion se vacia. Sin esto, se
+  // seleccionan cinco tickets en "sin clasificar", se cambia a "clasificados" y
+  // la barra dice "5 seleccionados" sobre tickets que ya no estan en pantalla:
+  // se clasifican cinco cosas que la persona no vio, y el resultado no se puede
+  // explicar.
+  useEffect(() => {
+    setSeleccionados(new Set());
+  }, [selectedCompany, filtro]);
+
+  const alternarSeleccion = (id: string) => {
+    setSeleccionados((prev) => {
+      const siguiente = new Set(prev);
+      if (siguiente.has(id)) siguiente.delete(id);
+      else siguiente.add(id);
+      return siguiente;
+    });
+  };
+
+  const alternarTodos = () => {
+    setSeleccionados((prev) =>
+      prev.size === tickets.length ? new Set() : new Set(tickets.map((t) => t.id)),
+    );
+  };
+
+  /** Clasifica lo seleccionado de golpe.
+   *
+   *  Se manda la categoria y nada mas: el endpoint no toca el estado de
+   *  extraccion ni mete nada en la cola. Clasificar es un dato del gasto, no una
+   *  aprobacion, y si se mezclaran las dos cosas "ya lo clasifique" pareceria
+   *  una entrada mas de trabajo pendiente. */
+  const clasificarSeleccion = async () => {
+    if (seleccionados.size === 0) return;
+    const ids = Array.from(seleccionados);
+    // Cadena vacia = desclasificar. Se permite a proposito: corregir una
+    // clasificacion equivocada tiene que ser tan facil como poner la correcta,
+    // y si no hay salida, la gente deja de clasificar por miedo a equivocarse.
+    const destino = categoriaLote.trim() === '' ? null : categoriaLote.trim();
+
+    try {
+      setClasificando(true);
+      setError(null);
+      const r = await ticketsApi.clasificarLote(ids, destino);
+      // Si el servidor toco menos de los pedidos, se dice. Puede pasar sin que
+      // haya un fallo: alguien borro un ticket entre que se abrio la pantalla
+      // y se envio el PATCH. Decir "clasificados 200" cuando fueron 198 deja a
+      // la persona creyendo que hay dos que se le quedaron, y no hay forma de
+      // saber cuales.
+      if (r.actualizados < r.pedidos) {
+        setError(
+          `Se clasificaron ${r.actualizados} de ${r.pedidos}: ` +
+          `${r.pedidos - r.actualizados} ya no existían.`,
+        );
+      }
+      setSeleccionados(new Set());
+      setCategoriaLote('');
+      await loadData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No se pudo clasificar');
+    } finally {
+      setClasificando(false);
+    }
+  };
+
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +188,24 @@ export function Tickets() {
       if (editingTicket) {
         await ticketsApi.update(editingTicket.id, normalized);
       } else {
-        await ticketsApi.create(normalized);
+        const creado = await ticketsApi.create(normalized);
+
+        // El comprobante original se sube DESPUES de crear, y su fallo no
+        // deshace el ticket. El backend guarda la fila y los bytes con un
+        // SAVEPOINT separado justamente para esto: perder el archivo es
+        // recuperable (se vuelve a subir con PUT /tickets/{id}/documento),
+        // perder el gasto no lo es.
+        if (pendingFile) {
+          try {
+            await ticketsApi.subirDocumento(creado.id, pendingFile);
+            setAvisoDocumento(null);
+          } catch (e) {
+            setAvisoDocumento(
+              'El ticket se guardó, pero el comprobante original no se pudo adjuntar. ' +
+              'Vuelve a subirlo desde la ficha del ticket.'
+            );
+          }
+        }
       }
       setShowModal(false);
       resetForm();
@@ -89,6 +229,9 @@ export function Tickets() {
     });
     setEditingTicket(null);
     setFormErrors({});
+    // Sin esto, el comprobante del ticket anterior se adjuntaria al siguiente.
+    setPendingFile(null);
+    setExtractionResult(null);
   };
 
   const openCreateModal = () => {
@@ -133,9 +276,13 @@ export function Tickets() {
     try {
       setExtracting(true);
       setError(null);
+      setAvisoDocumento(null);
       const result = await ticketsApi.extract(file, fileType);
       setExtractionResult(result);
       setExtractionWarnings(collectExtractionWarnings(result));
+      // Se retiene el archivo para adjuntarlo al ticket cuando el usuario
+      // confirme. El endpoint de preview no persiste nada.
+      setPendingFile(file);
       setShowExtractModal(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al extraer datos');
@@ -170,7 +317,7 @@ export function Tickets() {
     return warnings;
   };
 
-  const useExtractedData = () => {
+  const abrirFormularioConExtraccion = () => {
     if (!extractionResult) return;
     setFormErrors({});
     setFormData({
@@ -187,13 +334,107 @@ export function Tickets() {
     setShowModal(true);
   };
 
+  /** Cierra el modal de extraccion dejando la pantalla como estaba. */
+  const cerrarExtraccion = () => {
+    setShowExtractModal(false);
+    setShowCamera(false);
+    setExtractionResult(null);
+    setExtractionWarnings([]);
+  };
+
+  /**
+   * Via 1: el usuario ACEPTA la lectura tal cual.
+   *
+   * Pasa por `POST /tickets/extract-and-create`, que corre el confidence gate de
+   * verdad: el ticket nace con `confidence`, `confidence_source` y el veredicto
+   * que la evidencia sostiene, y si sale AUTO_APROBADO entra al muestreo del 5%.
+   * Eso es lo que hace medible el SLO de exactitud por el camino que la gente
+   * usa, que antes no pasaba por aqui.
+   *
+   * Se elige con un boton explicito, no comparando el formulario contra la
+   * extraccion. Un diff de strings se rompe por cosas que no son correccion:
+   * "4094.80" contra "4094.8", una fecha con otro formato, un rfc con espacios.
+   * Ademas el usuario tiene que saber que esta eligiendo, porque las dos vias
+   * ended en tickets con significado distinto.
+   *
+   * Si esta via falla (4xx), se degrada a la manual en vez de dejar al usuario
+   * sin ticket: un ticket guardado con su comprobante vale mas que una lectura
+   * perfecta que se perdio.
+   */
+  const aceptarLecturaDeIA = async () => {
+    if (!pendingFile || !selectedCompany) return;
+    const file = pendingFile;
+    const fileType: 'pdf' | 'image' = file.type.startsWith('image/') || /\.(png|jpe?g)$/i.test(file.name)
+      ? 'image' : 'pdf';
+    try {
+      setSubmitting(true);
+      setError(null);
+      setAvisoDocumento(null);
+      const creado = await ticketsApi.extractAndCreate(file, selectedCompany, fileType);
+      setUltimoVeredicto(creado);
+      cerrarExtraccion();
+      setShowModal(false);
+      resetForm();
+      await loadData();
+    } catch (e) {
+      // No se pierde la lectura: se vuelve a la via manual con el formulario
+      // ya lleno, que es exactamente lo que el usuario iba a hacer.
+      setError(
+        'No se pudo guardar la lectura automática (' +
+        (e instanceof Error ? e.message : 'error desconocido') +
+        '). Se.abre el formulario para que la revises y la guardes a mano.'
+      );
+      abrirFormularioConExtraccion();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /**
+   * Via 2: el usuario quiere EDITAR antes de guardar.
+   *
+   * Se registra como captura manual a proposito. Si una persona corrige a la IA,
+   * el resultado ya no es lectura automatica, y contarlo como si lo fuera
+   * inflaria la exactitud medida con datos que el sistema no leyo solo. El
+   * formulario lo dice, para que no parezca un fallo.
+   */
+  const editarAntesDeGuardar = () => {
+    setAvisoEdicionManual(
+      'Vas a corregir estos datos, así que el ticket se guardará como captura manual ' +
+      'y no contará para la medición de exactitud de la IA.'
+    );
+    abrirFormularioConExtraccion();
+  };
+
+  // ¿Este modal tiene un comprobante que mostrar al lado? Solo al editar uno que
+  // ya existe: al crear no hay papel todavia, y abrir el ancho del modal para
+  // dejar una columna vacia seria una mudanza de diseno sin motivo.
+  const conPapel = Boolean(editingTicket?.tiene_documento);
+
   const columns = [
+    {
+      key: 'seleccion',
+      header: '',
+      render: (t: Ticket) => (
+        <input
+          type="checkbox"
+          checked={seleccionados.has(t.id)}
+          onChange={() => alternarSeleccion(t.id)}
+          onClick={(e) => e.stopPropagation()}
+          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          aria-label={`Seleccionar ${t.provider_name}`}
+        />
+      ),
+    },
     { key: 'provider_name', header: 'Proveedor', render: (t: Ticket) => <span className="font-medium">{t.provider_name}</span> },
     { key: 'provider_tax_id', header: 'RFC Proveedor', render: (t: Ticket) => t.provider_tax_id ? <code className="text-sm">{t.provider_tax_id}</code> : <span className="text-gray-400">-</span> },
-    { key: 'total_amount', header: 'Total', render: (t: Ticket) => <span className="font-medium text-green-700">${Number(t.total_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-    { key: 'tax_amount', header: 'IVA', render: (t: Ticket) => <span className="text-gray-600">${Number(t.tax_amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}</span> },
-    { key: 'expense_date', header: 'Fecha', render: (t: Ticket) => new Date(t.expense_date).toLocaleDateString('es-MX') },
-    { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-gray-400">-</span> },
+    { key: 'total_amount', header: 'Total', render: (t: Ticket) => <span className="font-medium text-green-700">{dinero(t.total_amount)}</span> },
+    { key: 'tax_amount', header: 'IVA', render: (t: Ticket) => <span className="text-gray-600">{dinero(t.tax_amount)}</span> },
+    // `fecha()`, no `new Date(...).toLocaleDateString()`. El segundo pinta el
+    // dia ANTERIOR en cualquier zona detras de UTC: un gasto del 1 de octubre
+    // sale como 30 de septiembre. MEDIDO el 2026-10-12. Ver `utils/format.ts`.
+    { key: 'expense_date', header: 'Fecha', render: (t: Ticket) => fecha(t.expense_date) },
+    { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-red-500 text-xs uppercase">SIN CLASIFICAR</span> },
     { key: 'actions', header: 'Acciones', render: (t: Ticket) => (
       <div className="flex gap-2">
         <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
@@ -201,6 +442,18 @@ export function Tickets() {
       </div>
     )},
   ];
+
+  // Cuanto dinero esta seleccionado. Con solo el conteo, alguien puede clasificar
+  // veinte comprobantes de 50 pesos sin saber que son 1,000. El monto va
+  // porque la pregunta "que estoy a punto de cambiar" es de dinero.
+  const montoSeleccionado = useMemo(
+    () => tickets
+      .filter((t) => seleccionados.has(t.id))
+      .reduce((a, t) => a + Number(t.total_amount || 0), 0),
+    [tickets, seleccionados],
+  );
+
+  const sinClasificarCount = tickets.filter((t) => !t.category || t.category.trim() === '').length;
 
   return (
     <div className="p-6 space-y-6">
@@ -223,18 +476,48 @@ export function Tickets() {
         </div>
       </div>
 
-      <Card className="p-4">
+      <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
             <select
               value={selectedCompany}
               onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Seleccionar empresa...</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
             </select>
+          </div>
+
+          {/* El filtro de clasificacion. Es lo que hace que la barra gris del
+              tablero sea accionable en vez de decorativa. */}
+          <div className="min-w-[240px]">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Mostrar</label>
+            <div className="flex rounded-lg overflow-hidden border border-gray-300">
+              {([
+                { k: 'todos', l: 'Todos' },
+                { k: 'sinClasificar', l: 'Sin clasificar' },
+                { k: 'clasificados', l: 'Clasificados' },
+              ] as const).map((o, i) => (
+                <button
+                  key={o.k}
+                  onClick={() => setFiltro(o.k)}
+                  // `py-3` en movil: medido 36px, luego 40 con `py-2.5`, y son tres botones de filtro
+                  // que se pulsan en serie — el patron de uso mas frecuente de
+                  // esta pantalla.
+                  className={`px-3 py-3 sm:py-2 text-sm transition-colors ${
+                    i > 0 ? 'border-l border-gray-300' : ''
+                  } ${
+                    filtro === o.k
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </Card>
@@ -246,21 +529,114 @@ export function Tickets() {
         </div>
       )}
 
+      {/* Distinto del error: el ticket SI se guardo. Por eso va en ambar y no en
+          rojo, y por eso no se limpia con el error. */}
+      {avisoDocumento && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center justify-between">
+          <span>{avisoDocumento}</span>
+          <Button variant="ghost" size="sm" onClick={() => setAvisoDocumento(null)}>×</Button>
+        </div>
+      )}
+
+      {/* Que va a pasar con la medicion, dicho antes de que pase y no despues. */}
+      {avisoEdicionManual && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center justify-between">
+          <span>{avisoEdicionManual}</span>
+          <Button variant="ghost" size="sm" onClick={() => setAvisoEdicionManual(null)}>×</Button>
+        </div>
+      )}
+
+      {/* El veredicto del gate, apenas se acepta una lectura. Antes de esto se
+          creaba un ticket automatico sin que nadie se enterara de si habia
+          pasado la verificacion o no. */}
+      {ultimoVeredicto && (
+        <div className="space-y-2">
+          <VeredictoTicket ticket={ultimoVeredicto} />
+          <button
+            type="button"
+            onClick={() => setUltimoVeredicto(null)}
+            className="text-sm text-gray-500 hover:text-gray-700 underline"
+          >
+            Entendido
+          </button>
+        </div>
+      )}
+
+      {/* La barra de lote. Solo aparece con algo seleccionado, porque una barra
+          vacia con un desplegable de categorias es ruido en la pantalla de todos
+          los dias. */}
+      {seleccionados.size > 0 && (
+        <div className="sticky top-0 z-20 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+          <div>
+            <p className="text-sm font-medium text-blue-900">
+              {seleccionados.size} {seleccionados.size === 1 ? 'ticket seleccionado' : 'tickets seleccionados'}
+            </p>
+            <p className="text-xs text-blue-700">
+              {dinero(montoSeleccionado)} en total
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={categoriaLote}
+              onChange={e => setCategoriaLote(e.target.value)}
+              className="px-3 py-3 sm:py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+            >
+              <option value="">Sin clasificar (quitar categoría)</option>
+              {categorias.map(c => (
+                <option key={c.clave} value={c.clave}>{c.etiqueta}</option>
+              ))}
+            </select>
+            <Button onClick={clasificarSeleccion} disabled={clasificando}>
+              {clasificando ? 'Clasificando...' : 'Aplicar a seleccionados'}
+            </Button>
+            <Button variant="ghost" onClick={() => setSeleccionados(new Set())}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+
       {selectedCompany ? (
         <Card>
           {loading ? (
             <Loading message="Cargando tickets..." />
           ) : tickets.length === 0 ? (
-            <EmptyState 
-              message="No hay tickets. Crea uno manualmente o extrae datos de un PDF."
-              icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>}
+            <EmptyState
+              message={
+                filtro === 'sinClasificar'
+                  ? 'No queda nada sin clasificar. Todo el gasto de esta empresa está en una categoría.'
+                  : filtro === 'clasificados'
+                    ? 'Ninguno de los tickets de esta empresa está clasificado todavía.'
+                    : 'No hay tickets. Crea uno manualmente o extrae datos de un PDF.'
+              }
+              action={
+                filtro !== 'todos' ? { label: 'Ver todos', onClick: () => setFiltro('todos') } : undefined
+              }
             />
           ) : (
-            <Table
-              columns={columns}
-              data={tickets}
-              keyField="id"
-            />
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={seleccionados.size > 0 && seleccionados.size === tickets.length}
+                    onChange={alternarTodos}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  Seleccionar todos ({tickets.length})
+                </label>
+                {filtro === 'sinClasificar' && sinClasificarCount > 0 && (
+                  <span className="text-xs text-amber-600">
+                    {sinClasificarCount} sin categoría
+                  </span>
+                )}
+              </div>
+              <Table
+                columns={columns}
+                data={tickets}
+                keyField="id"
+              />
+            </>
           )}
         </Card>
       ) : (
@@ -272,9 +648,83 @@ export function Tickets() {
         </Card>
       )}
 
-      {/* Modal Crear/Editar Ticket */}
-      <Modal isOpen={showModal} onClose={() => { setShowModal(false); resetForm(); }} title={editingTicket ? 'Editar Ticket' : 'Nuevo Ticket'}>
+      {/* Modal Crear/Editar Ticket
+       *
+       * EL COMPROBANTE VA AL LADO, NO COMO ENLACE
+       * ---------------------------------------------
+       * Antes este modal decia "Comprobante adjunto" y ponia un enlace que
+       * abria el archivo en otra pestana. Es la peor de las dos formas: para
+       * corregir un importe hay que cambiar de ventana, y la memoria de una
+       * persona no aguanta 40 de esos viajes por lote.
+       *
+       * `ReviewQueue.tsx` ya lo hace bien con `ComprobanteAlLado`, y se REUSA
+       * ese componente en vez de escribir uno aqui: el `Blob` autenticado, el
+       * `<img>` en vez de `<object>` para PDF, el fallback y el limite de altura
+       * son cosas que ya estan probadas, y duplicarlas es como se rompe.
+       *
+       * EL ANCHO SE ABRE SOLO CUANDO HAY PAPEL. Un modal de "Nuevo Ticket" —no
+       * hay comprobante que ver porque todavia no existe— se queda en
+       * `max-w-2xl`. Ensanchar siempre dejaria una columna vacia al lado de un
+       * formulario normal, que es peor que un modal estrecho.
+       *
+       * Y el papel va a la IZQUIERDA, que es lo que ya hace `ReviewQueue` y lo
+       * que dice el docstring de `ComprobanteAlLado`. Ver la nota de disposicion
+       * dentro del formulario: la razon de que sea ahi y no a la derecha es que
+       * las dos pantallas que revisan un importe tienen que enseñar lo mismo en
+       * el mismo orden.
+       */}
+      <Modal
+        isOpen={showModal}
+        onClose={() => { setShowModal(false); resetForm(); }}
+        title={editingTicket ? 'Editar Ticket' : 'Nuevo Ticket'}
+        className={conPapel ? 'max-w-5xl' : ''}
+      >
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          {/* LA MISMA DISPOSICION QUE `ReviewQueue.tsx`, y esa es la razon de que
+              * sea esta y no la que yo primero escribi.
+              *
+              * El componente `ComprobanteAlLado` dice en su docstring que "en
+              * escritorio son dos columnas: el papel a la izquierda, los campos a
+              * la derecha", y `ReviewQueue` lo cumple: el papel es `lg:order-1`.
+              * Ponerlo a la derecha en este modal hacia que la MISMA tarea —leer
+              * un importe contra el papel— tuviera dos disposiciones distintas en
+              * dos pantallas, y aprender una sola vez es justo lo que hace rapido
+              * un lote de 40.
+              *
+              * En movil el papel va SEGUNDO, que es lo que hace `ReviewQueue`
+              * tambien: en un celu no caben dos columnas y el orden Util es
+              * tocar el campo que ya esta en pantalla.
+              */}
+          <div className={conPapel ? 'grid grid-cols-1 lg:grid-cols-[400px_minmax(0,1fr)] gap-5' : ''}>
+          {/* El comprobante, al lado de los campos que se corrigen.
+              *
+              * `ComprobanteAlLado` ya acota su propia altura a `70vh` con scroll
+              * interno, asi que una foto de ticket —que es alta— no estira el
+              * modal: el modal tambien tiene `max-h-[90vh] overflow-y-auto`, y
+              * los dos scrolls estan donde toca, en el papel y en el formulario.
+              *
+              * `lg:sticky lg:self-start` es lo que hace que el papel NO se vaya
+              * mientras se hace scroll en los campos: sin esto, corregir el ultimo
+              * campo de la lista obliga a volver arriba a ver el papel, que es
+              * el viaje que esta disposicion existe para evitar.
+              */}
+          {conPapel && editingTicket && (
+            <div className="order-2 lg:order-1 lg:sticky lg:top-0 lg:self-start lg:border-r lg:border-gray-200 lg:pr-5">
+              <ComprobanteAlLado ticket={editingTicket} />
+              <a
+                href={`/ticket/${editingTicket.id}/documento`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-block text-xs text-blue-600 underline"
+              >
+                Abrir el comprobante en otra pestaña (para verlo en grande)
+              </a>
+            </div>
+          )}
+          <div className={conPapel ? 'order-1 lg:order-2' : ''}>
+          {/* El veredicto de como se leyo este ticket. Solo al editar uno que ya
+              existe: al crear, todavia no hay nada que veredicto. */}
+          {editingTicket && <VeredictoTicket ticket={editingTicket} />}
           <div className="grid grid-cols-2 gap-4">
             <Input
               label="Empresa" disabled
@@ -314,6 +764,8 @@ export function Tickets() {
               error={formErrors.category} placeholder="Ej: SUPERMERCADO" maxLength={100}
             />
           </div>
+          </div>
+          </div>
           <div className="flex justify-end gap-3 pt-4 border-t">
             <Button variant="secondary" type="button" onClick={() => { setShowModal(false); resetForm(); }}>Cancelar</Button>
             <Button type="submit" disabled={submitting}>{submitting ? 'Guardando...' : (editingTicket ? 'Actualizar' : 'Crear')}</Button>
@@ -336,16 +788,33 @@ export function Tickets() {
               </div>
               <FileUpload 
                 inputId="ticket-file-input"
-                accept=".pdf,.png,.jpg,.jpeg" 
+                accept=".pdf,.png,.jpg,.jpeg,.heic,.heif,.tif,.tiff"
                 onChange={files => {
                   const file = files[0];
                   if (!file) return;
-                  const isImage = file.type.startsWith('image/') || /\.(png|jpe?g)$/i.test(file.name);
-                  handleExtract(file, isImage ? 'image' : 'pdf');
+                  // El `file_type` ya no decide nada: el backend deduce el
+                  // formato de los bytes (`app/core/archivo_real.py`). Se sigue
+                  // mandando por compatibilidad con la API, asi que se manda la
+                  // extension del archivo y no una heuristica al vuelo.
+                  //
+                  // La heuristica anterior era `file.type.startsWith('image/') ||
+                  // /\.(png|jpe?g)$/i`, y ese regex no cubria ni `.heic` ni
+                  // `.tiff`: un TIFF que el selector de ARRIBA ya aceptaba
+                  // salia etiquetado como `pdf`. Inofensivo con el backend de
+                  // hoy, y exactamente el residuo del bug que cerro el commit
+                  // del sniffing. Si alguien "limpia" el backend y vuelve a
+                  // usar lo declarado, el front reintroduce el problema sin que
+                  // nada lo delate.
+                  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+                  const esImagen = file.type.startsWith('image/')
+                    || ['heic', 'heif', 'tif', 'tiff', 'png', 'jpg', 'jpeg'].includes(ext);
+                  handleExtract(file, esImagen ? 'image' : 'pdf');
                 }}
                 label="Arrastrar PDF o imagen de factura"
               />
-              <p className="text-sm text-gray-500 text-center">Formatos soportados: PDF, PNG, JPG (máx 10MB)</p>
+              <p className="text-sm text-gray-500 text-center">
+                PDF, PNG, JPG, HEIC y TIFF (máx 10MB)
+              </p>
             </>
           ) : showCamera ? (
             <CameraCapture 
@@ -380,9 +849,28 @@ export function Tickets() {
                       <div><span className="text-gray-500">Categoría:</span> <span>{extractionResult.category || '-'}</span></div>
                     </div>
                   </div>
+                  {/* Las dos vias. La separacion no es estetica: guardar por
+                      `extract-and-create` hace que el ticket pase por el gate y
+                      entre al muestreo, y guardar por el formulario lo deja como
+                      captura manual. Elegir sin entender la diferencia seria elegir
+                      al azar, asi que se explica antes de elegir. */}
+                  <div className="bg-blue-50 border border-blue-200 text-blue-900 px-4 py-3 rounded-lg text-sm">
+                    <p className="font-medium mb-1">¿Los datos están correctos?</p>
+                    <p>
+                      Si sí, se guardan con la verificación de la IA activada: el sistema
+                      comprueba que la aritmética del comprobante cuadre y, si la lectura
+                      es segura, la aprueba sin que nadie la revise (y entra al muestreo
+                      para poder medirla). Si corriges algo, se guarda como captura manual.
+                    </p>
+                  </div>
                   <div className="flex gap-3 justify-end">
-                    <Button variant="secondary" onClick={() => { setExtractionResult(null); setExtractionWarnings([]); }}>Nueva extracción</Button>
-                    <Button onClick={useExtractedData}>Continuar con estos datos</Button>
+                    <Button variant="ghost" onClick={() => { setExtractionResult(null); setExtractionWarnings([]); }}>Nueva extracción</Button>
+                    <Button variant="edit" onClick={editarAntesDeGuardar}>
+                      Revisar y corregir
+                    </Button>
+                    <Button onClick={aceptarLecturaDeIA} disabled={submitting || !pendingFile}>
+                      {submitting ? 'Verificando...' : 'Aceptar y verificar con IA'}
+                    </Button>
                   </div>
                 </>
               )}

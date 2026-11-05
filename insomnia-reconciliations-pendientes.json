@@ -1,0 +1,211 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-10-02T00:00:00.000Z",
+  "__export_version": "2026-10-02",
+  "resources": [
+    {
+      "_id": "wrk_reconciliations_pend",
+      "parentId": null,
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Expense Reconciler MVP — Reconciliations pendientes",
+      "description": "Las 5 rutas de app/api/reconciliations.py que faltaban en la colección de Insomnia. Importar y arrastrar el grupo al workspace 'Expense Reconciler MVP'; la importacion crea una coleccion aparte y no fusiona sola.",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_pend",
+      "parentId": "wrk_reconciliations_pend",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Base Environment",
+      "description": "Mismas variables que la colección actual, mas token y mapping_id que las 5 rutas nuevas necesitan.",
+      "data": {
+        "base_url": "http://localhost:8000/api/v1",
+        "company_id": "",
+        "ticket_id": "",
+        "bank_tx_id": "",
+        "recon_id": "",
+        "mapping_id": "",
+        "token": ""
+      },
+      "scope": "environment",
+      "_type": "environment"
+    },
+    {
+      "_id": "fld_pend_reconciliations",
+      "parentId": "wrk_reconciliations_pend",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Reconciliations",
+      "description": "Complemento del grupo ya existente. Las 6 que ya estan (run, listar, export/excel, export/contpaqi, export/generic, POST mappings) NO se repiten aqui.",
+      "environment": {},
+      "environmentPropertyOrder": null,
+      "metaSortKey": -1759353600000,
+      "environmentType": "kv",
+      "preRequestScript": "",
+      "postRequestScript": "",
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_pend_get_mappings",
+      "parentId": "fld_pend_reconciliations",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Listar Plantillas CONTPAQI",
+      "description": "GET /reconciliations/mappings — reconciliations.py:216. company_id es opcional; sin el devuelve todas las plantillas de todas las empresas (no hay multi-tenancy, ver AGENTS.md).",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/mappings",
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ _.company_id }}",
+          "disabled": false
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.token }}",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {},
+      "metaSortKey": -1759353600000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_pend_post_reconciliation",
+      "parentId": "fld_pend_reconciliations",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Crear Conciliación Manual",
+      "description": "POST /reconciliations/ — reconciliations.py:69. Enlaza a mano un ticket con un movimiento. 201 si sale, 404 si el ticket o el movimiento no existen, 409 si el movimiento ya esta conciliado. Al guardar marca is_reconciled=true en el movimiento; DELETE es lo unico que lo revierte.",
+      "method": "POST",
+      "url": "{{ _.base_url }}/reconciliations/",
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "disabled": false
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.token }}",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"ticket_id\": \"{{ _.ticket_id }}\",\n  \"bank_transaction_id\": \"{{ _.bank_tx_id }}\",\n  \"match_status\": \"MANUAL\"\n}"
+      },
+      "metaSortKey": -1759353599000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_pend_get_mapping_id",
+      "parentId": "fld_pend_reconciliations",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Obtener Plantilla CONTPAQI",
+      "description": "GET /reconciliations/mappings/{mapping_id} — reconciliations.py:228. 404 si el id no existe. Este id es el que consume export/contpaqi por el parametro mapping_id.",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/mappings/{{ _.mapping_id }}",
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.token }}",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {},
+      "metaSortKey": -1759353598000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_pend_get_reconciliation",
+      "parentId": "fld_pend_reconciliations",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Obtener Conciliación",
+      "description": "GET /reconciliations/{reconciliation_id} — reconciliations.py:261. Devuelve la conciliacion con ticket y bank_transaction embebidos. 404 si el id no existe. Ojo: en el servidor esta declarada AL FINAL a proposito, despues de /mappings y /export/* (reconciliations.py:244-260).",
+      "method": "GET",
+      "url": "{{ _.base_url }}/reconciliations/{{ _.recon_id }}",
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.token }}",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {},
+      "metaSortKey": -1759353597000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_pend_delete_reconciliation",
+      "parentId": "fld_pend_reconciliations",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Eliminar Conciliación",
+      "description": "DELETE /reconciliations/{reconciliation_id} — reconciliations.py:119. 204 sin cuerpo. Ademas de borrar la fila, pone is_reconciled=false en el movimiento que estaba conciliado.",
+      "method": "DELETE",
+      "url": "{{ _.base_url }}/reconciliations/{{ _.recon_id }}",
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.token }}",
+          "disabled": false
+        }
+      ],
+      "authentication": {},
+      "body": {},
+      "metaSortKey": -1759353596000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    }
+  ]
+}

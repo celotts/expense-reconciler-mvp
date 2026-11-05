@@ -29,8 +29,21 @@ from __future__ import annotations
 import math
 import zlib
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import SPOT_CHECK_RATE
+
+if TYPE_CHECKING:  # pragma: no cover - solo para el type checker
+    # `compute_accuracy_report` importa el schema DENTRO de la funcion, y por un
+    # motivo concreto: `app.schemas.ticket` arrastra los modelos, y este modulo
+    # se usa desde el dashboard. En tiempo de ejecucion no hace falta nada (las
+    # anotaciones no se evaluan, hay `from __future__ import annotations`), pero
+    # sin este import el type checker marca F821 sobre un nombre que la funcion
+    # si usa: el error sale en la linea de la anotacion, a cuatrocientas lineas
+    # del import que la resuelve.
+    from app.schemas.ticket import ReporteExactitudResponse
 
 # Intervalo al 95%. Es el nivel con el que se toma la decision de "cumple" o
 # "no cumple", asi que va aqui y no como parametro por defecto disperso: si
@@ -302,3 +315,160 @@ def campo_mas_fallido(campos: dict[str, int]) -> tuple[str, int] | None:
     if not campos:
         return None
     return max(campos.items(), key=lambda par: par[1])
+
+
+# ---------------------------------------------------------------------------
+# Función pública para reutilizar en el dashboard y en el endpoint de tickets
+# ---------------------------------------------------------------------------
+
+async def compute_accuracy_report(
+    db: AsyncSession,
+    company_id: UUID | None = None,
+) -> "ReporteExactitudResponse":
+    """Calcula el reporte de exactitud para una empresa (o global).
+
+    Extraído del endpoint `/tickets/accuracy` para que el dashboard pueda
+    reutilizar la misma lógica sin duplicar código.
+    """
+    # `SpotCheckStatus` viene de `app.core.enums`, NO de `app.models.ticket`. El
+    # enum vive en `enums.py` junto a los demas estados del dominio, y el modelo
+    # solo guarda la columna como `String`. Importarlo de aqui fallaba con
+    # ImportError, y como el endpoint del dashboard se traga las excepciones
+    # para no tumbar el tablero entero, el sintoma era que la exactitud salia
+    # `None` sin ninguna pista de por que: un bloque de codigo que nunca habia
+    # podido ejecutarse.
+    from app.core.enums import SpotCheckStatus
+    from app.models.ticket import TicketModel
+    from app.schemas.ticket import (
+        ReporteExactitudResponse, ExactitudPorOrigenResponse,
+    )
+    from app.services.accuracy_service import (
+        SLO_EXACTITUD, NIVEL_CONFIANZA, ORIGENES_A_REPORTAR,
+        MedidaPorOrigen, Veredicto, Motivo,
+    )
+    from sqlalchemy import select, func
+
+    condiciones = (
+        [TicketModel.company_id == company_id] if company_id is not None else []
+    )
+
+    # Una sola consulta agrupada: el reporte lee toda la evidencia de la
+    # empresa y la cuenta en memoria.
+    filas = (await db.execute(
+        select(
+            TicketModel.confidence_source,
+            TicketModel.spot_check_status,
+            func.count(),
+        )
+        .where(
+            TicketModel.spot_check_status.is_not(None),
+            *condiciones,
+        )
+        .group_by(TicketModel.confidence_source, TicketModel.spot_check_status)
+    )).all()
+
+    # Los campos que más fallan, por origen.
+    campos = (await db.execute(
+        select(TicketModel.confidence_source, TicketModel.spot_check_wrong_fields)
+        .where(
+            TicketModel.spot_check_status == SpotCheckStatus.INCORRECTO.value,
+            *condiciones,
+        )
+    )).all()
+
+    medidas: dict[str, MedidaPorOrigen] = {}
+    for origen in ORIGENES_A_REPORTAR:
+        medidas[origen] = MedidaPorOrigen(origen=origen)
+    for origen_extra in {f[0] for f in filas if f[0]}:
+        medidas.setdefault(origen_extra, MedidaPorOrigen(origen=origen_extra))
+
+    for origen, estado, cantidad in filas:
+        medida = medidas.setdefault(origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido"))
+        if estado == SpotCheckStatus.PENDIENTE.value:
+            medida.pendientes += cantidad
+        else:
+            medida.revisados += cantidad
+            if estado == SpotCheckStatus.CORRECTO.value:
+                medida.aciertos += cantidad
+            else:
+                medida.incorrectos += cantidad
+
+    for origen, anotados in campos:
+        if not anotados:
+            continue
+        medida = medidas.setdefault(origen or "desconocido", MedidaPorOrigen(origen=origen or "desconocido"))
+        for campo in anotados.split(","):
+            campo = campo.strip()
+            if campo:
+                medida.campos_fallidos[campo] = medida.campos_fallidos.get(campo, 0) + 1
+
+    por_origen = [
+        ExactitudPorOrigenResponse(
+            origen=m.origen,
+            revisados=m.revisados,
+            aciertos=m.aciertos,
+            incorrectos=m.incorrectos,
+            pendientes=m.pendientes,
+            exactitud=m.exactitud,
+            intervalo_inferior=(m.limites[0] if m.limites else None),
+            intervalo_superior=(m.limites[1] if m.limites else None),
+            veredicto=m.veredicto,
+            motivo_faltante=m.faltantes.razon,
+            total_revisiones_necesarias=m.faltantes.total_necesario,
+            campo_mas_fallido=(m.campo_mas_fallido[0] if m.campo_mas_fallido else None),
+            conteo_por_campo=m.campos_fallidos,
+        )
+        for m in medidas.values()
+    ]
+
+    def _veredicto_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
+        veredictos = [m.veredicto for m in por_origen if m.revisados > 0]
+        if not veredictos:
+            return Veredicto.SIN_EVIDENCIA
+        if Veredicto.NO_CUMPLE in veredictos:
+            return Veredicto.NO_CUMPLE
+        if Veredicto.CUMPLE in veredictos and Veredicto.INCONCLUYENTE not in veredictos:
+            return Veredicto.CUMPLE
+        return Veredicto.INCONCLUYENTE
+
+    def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
+        con_datos = [m for m in por_origen if m.revisados > 0]
+        if not con_datos:
+            return (
+                "No hay ninguna revision de muestreo todavia, asi que no se puede "
+                "afirmar nada sobre la exactitud. El objetivo sigue sin medirse, "
+                "que es distinto de cumplirse."
+            )
+
+        if _veredicto_global(con_datos) == Veredicto.CUMPLE:
+            return (
+                "La evidencia alcanza para afirmar que el automatismo esta por "
+                f"encima de {int(SLO_EXACTITUD * 100)}% en cada via de lectura."
+            )
+
+        if _veredicto_global(con_datos) == Veredicto.NO_CUMPLE:
+            malos = [m for m in con_datos if m.veredicto == Veredicto.NO_CUMPLE]
+            detalle = ", ".join(
+                f"{m.origen} ({m.aciertos}/{m.revisados})" for m in malos
+            )
+            return (
+                f"Al menos una via de lectura no alcanza el objetivo: {detalle}. "
+                "Arregla el extractor o aumenta la muestra para confirmar."
+            )
+
+        # INCONCLUYENTE
+        pendientes_total = sum(m.pendientes for m in con_datos)
+        return (
+            f"La evidencia actual no alcanza para afirmar ni que cumple ni que "
+            f"no cumple. Faltan {pendientes_total} revisiones pendientes por "
+            "resolver; el veredicto final depende de cómo salgan esas."
+        )
+
+    return ReporteExactitudResponse(
+        company_id=company_id,
+        objetivo=SLO_EXACTITUD,
+        nivel_confianza=NIVEL_CONFIANZA,
+        veredicto_global=_veredicto_global(por_origen),
+        explicacion=_explicacion_global(por_origen),
+        por_origen=por_origen,
+    )

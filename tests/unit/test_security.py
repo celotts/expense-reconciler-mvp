@@ -8,6 +8,7 @@ Igual que en el resto del proyecto, un test que pasa no prueba nada: lo que
 dice algo es `scripts/verify_auth_mutations.py`.
 """
 
+import hashlib
 import json
 import time
 from base64 import urlsafe_b64decode
@@ -19,8 +20,13 @@ import pytest
 from app.core.security import (
     ErrorDeToken,
     TokenCaducado,
+    _MAXMEM_SCRYPT,
+    _SCRYPT_N,
+    _SCRYPT_P,
+    _SCRYPT_R,
     _VERSION_HASH,
     _b64e,
+    _maxmem_para,
     crear_token,
     hash_de_trampa,
     hashear_contrasena,
@@ -98,7 +104,7 @@ class TestElHashDeContrasena:
         partes = hashear_contrasena("x").split("$")
 
         assert partes[0] == _VERSION_HASH
-        assert partes[1] == str(2**14)
+        assert partes[1] == str(_SCRYPT_N)
         assert partes[2] == "8"
         assert partes[3] == "1"
 
@@ -147,6 +153,36 @@ class TestElHashDeContrasena:
 
         assert hash_de_trampa() is hash_de_trampa()
 
+    def test_el_hash_antiguo_se_sigue_validando_despues_de_subir_n(self):
+        """El caso que hace falta cada vez que se sube el coste.
+
+        En la base hay contrasenas hasheadas con N=2**14. Si al subir N se
+        hubiera subido tambien `_VERSION_HASH`, TODOS esos usuarios
+        quedarian fuera con un "contrasena incorrecta" que no es cierto, y no
+        habria forma de distinguirlos de alguien que se equivoca al teclear.
+
+        Se construye el hash viejo aqui a proposito, con los parametros
+        hardcodeados, y no leyendo las constantes: si el test usara las
+        constantes, seguiria al cambio y no comprobaria nada.
+        """
+        sal = bytes(range(16))
+        derivada = hashlib.scrypt(
+            b"secreta",
+            salt=sal,
+            n=2**14,
+            r=8,
+            p=1,
+            dklen=32,
+            maxmem=132 * 1024 * 1024,
+        )
+        viejo = "$".join(
+            ["scrypt-v1", str(2**14), "8", "1", _b64e(sal), _b64e(derivada)]
+        )
+
+        assert verificar_contrasena("secreta", viejo) is True
+        assert verificar_contrasena("otra", viejo) is False
+
+
     def test_un_hash_de_otra_version_no_verifica(self):
         """El prefijo del formato es una promesa sobre con que parametros se
         calculo el hash.
@@ -169,6 +205,70 @@ class TestElHashDeContrasena:
             assert verificar_contrasena("secreta", hash_mentiroso) is False, (
                 f"un hash con la version {hash_mentiroso.split('$')[0]!r} paso"
             )
+
+
+class TestElCosteDeScrypt:
+    """N=2**17 con r=8 y p=1: la primera combinacion que lista OWASP."""
+
+    def test_n_es_el_de_la_guia_de_owasp(self):
+        """No es una preferencia de este proyecto: es el valor recomendado.
+
+        Y el valor ANTERIOR (2**14 con p=1) no era valido ni con la guia de
+        entonces: 2**14 solo aparece en la lista junto a p=5. Con p=1 eran 8
+        veces menos memoria que la recomendada, y el comentario del codigo
+        afirmaba que era el minimo de OWASP. Este test es el que impide que
+        vuelva a decir eso.
+
+        Se comprueban los TRES parametros y no solo N, porque la combinacion es
+        lo recomendado: N=2**17 con p=5 seguiria siendo 2**17, pero no es
+        ninguna de las cuatro que lista la guia, y el comentario del modulo
+        afirma usar la primera.
+        """
+        assert (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P) == (2**17, 8, 1)
+
+    def test_maxmem_alcanza_para_lo_que_pide_scrypt(self):
+        """`maxmem` corto hace que `hashlib.scrypt` lance `ValueError`, y el
+        login responde 500 en vez de verificar."""
+        assert _MAXMEM_SCRYPT >= 128 * 8 * _SCRYPT_N
+
+    def test_maxmem_se_calcula_con_los_parametros_del_hash(self):
+        """El techo de memoria se deriva de N y r, no es una constante fija.
+
+        Con una constante, un hash con N=2**17 verifica bien en un contenedor
+        con memoria de sobra y falla con ValueError en una maquina con menos.
+        Y al subir N sin subir el techo, todos los logins se rompen a la vez.
+        """
+        assert _maxmem_para(2**14, 8) == 128 * 8 * 2**14 + 32 * 1024 * 1024
+        assert _maxmem_para(2**17, 8) == 128 * 8 * 2**17 + 32 * 1024 * 1024
+
+    def test_un_hash_mas_caro_que_la_constante_tambien_verifica(self):
+        """Un hash con N mayor que el de las constantes necesita mas techo.
+
+        El caso de `ValueError` en un login, y el que hace que `maxmem` se
+        calcule en vez de ser una constante. Si alguien sube N otra vez dentro de
+        un ano, con una constante el techo se queda corto y TODOS los logins de
+        los hashes nuevos empiezan a dar 500, sin tocar nada de este archivo.
+        """
+        # N=2**18 pide 256 MiB; la constante de mas arriba son 192. Por eso este
+        # test dice algo que `test_maxmem_alcanza_para_lo_que_pide_scrypt` no.
+        assert _maxmem_para(2**18, 8) > _MAXMEM_SCRYPT
+
+        sal = bytes(range(16))
+        derivada = hashlib.scrypt(
+            b"secreta",
+            salt=sal,
+            n=2**18,
+            r=8,
+            p=1,
+            dklen=32,
+            maxmem=512 * 1024 * 1024,
+        )
+        futuro = "$".join(
+            ["scrypt-v1", str(2**18), "8", "1", _b64e(sal), _b64e(derivada)]
+        )
+
+        assert verificar_contrasena("secreta", futuro) is True
+
 
 
 class TestElToken:

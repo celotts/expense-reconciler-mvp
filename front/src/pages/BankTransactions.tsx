@@ -4,6 +4,7 @@ import { companiesApi, type Company } from '../services/api';
 import { 
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload 
 } from '../components/ui';
+import { fecha } from '../utils/format';
 
 export function BankTransactions() {
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
@@ -100,19 +101,53 @@ export function BankTransactions() {
     }
   };
 
+  /**
+   * MEDIDO el 2026-10-10: el boton "Importar y Guardar" hacia
+   * `handleImportCsv(previewData[0] as any)`.
+   *
+   * `previewData[0]` es una fila YA parseada (`{transaction_date, amount, ...}`),
+   * y `handleImportCsv` espera un `File`. `FormData.append` con un objeto plano
+   * lo convierte en la cadena `"[object Object]"`, el backend recibe texto donde
+   * espera `UploadFile` y contesta 422. **El boton no podia funcionar nunca.**
+   *
+   * Y no era un `as any` de una linea: `handlePreviewCsv` recibia el `File`, lo
+   * usaba para el preview y lo dejaba ir. No habia nada que reenviar. Por eso
+   * aqui se retiene el archivo en el estado en vez de intentar adivinarlo desde
+   * la previsualizacion.
+   */
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+
+  // ## POR QUE NO SE MANDAN NOMBRES DE COLUMNA NI FORMATO DE FECHA
+  //
+  // MEDIDO el 2026-10-12: este bloque mandaba `fecha`/`importe`/`concepto` y
+  // `%d/%m/%Y` FIJOS, y con eso tres de cuatro CSVs reales de banco mexicano
+  // daban 400. Un banco exporta `Fecha`, `Importe`, `Descripcion`; otro
+  // `05/10/2026`; otro `2026-10-05` con punto y coma. Los cuatro son el mismo
+  // archivo con distinta forma, y el unico que no podia leerlos era el que
+  // exigia una forma exacta.
+  //
+  // Ahora NO se mandan: el backend detecta el separador y el formato de la
+  // fecha sobre el contenido real, y dice cuales columnas encontró si falta
+  // alguna. Mandarlos desde aqui fijaba el problema en el cliente, que es donde
+  // no se puede ver el archivo.
+  //
+  // Los separadores de decimal y de miles SI se quedan, porque dependen de COMO
+  // esta escrito el numero en ese banco y no se deducen del encabezado:
+  //
+  //   1,234.56  -> decimal '.', miles ','   (estilo中美)
+  //   1.234,56  -> decimal ',', miles '.'   (estilo europeo)
+  //
+  // Mandar solo uno de los dos es peor que no mandar ninguno, porque convierte
+  // 1.234,56 en 1.234 — cien veces el importe real, sin error ni aviso.
   const handlePreviewCsv = async (file: File) => {
     try {
       setPreviewing(true);
-      const data = await bankTransactionsApi.importCsvPreview(file, {
-        date_column: 'fecha',
-        amount_column: 'importe',
-        description_column: 'concepto',
-        reference_column: 'referencia',
-        date_format: '%d/%m/%Y',
-        decimal_separator: '.',
-        thousands_separator: ',',
-      });
+      const data = await bankTransactionsApi.importCsvPreview(file, {});
       setPreviewData(data);
+      // El archivo se retiene para el paso de guardar. Sin esto, el unico
+      // "archivo" disponible es una fila de la previsualizacion, y eso no es
+      // un archivo.
+      setCsvFile(file);
       setShowPreviewModal(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al previsualizar CSV');
@@ -125,15 +160,9 @@ export function BankTransactions() {
     if (!selectedCompany) { setError('Selecciona una empresa primero'); return; }
     try {
       setImporting(true);
-      await bankTransactionsApi.importCsvAndCreate(file, selectedCompany, {
-        date_column: 'fecha',
-        amount_column: 'importe',
-        description_column: 'concepto',
-        reference_column: 'referencia',
-        date_format: '%d/%m/%Y',
-        decimal_separator: '.',
-        thousands_separator: ',',
-      });
+      // Sin columnas ni formato: los detecta el backend. Ver la razon en
+      // `handlePreviewCsv`, que es donde se explica por que NO se mandan.
+      await bankTransactionsApi.importCsvAndCreate(file, selectedCompany, {});
       setShowPreviewModal(false);
       loadData();
     } catch (e) {
@@ -155,14 +184,14 @@ export function BankTransactions() {
         </Button>
       </div>
 
-      <Card className="p-4">
+      <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
             <select
               value={selectedCompany}
               onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Seleccionar empresa...</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
@@ -198,7 +227,12 @@ export function BankTransactions() {
           ) : (
             <Table
               columns={[
-                { key: 'transaction_date', header: 'Fecha', render: (t: BankTransaction) => new Date(t.transaction_date).toLocaleDateString('es-MX') },
+                // `fecha()`, no `new Date(...)`. MEDIDO el 2026-10-12: un movimiento con
+                // `transaction_date = "2026-10-01"` se mostraba `30/9/2026`, porque
+                // `new Date('2026-10-01')` es medianoche UTC y Mexico es UTC-6.
+                // Y en una conciliación esa fecha es la que cruza el gasto con el
+                // banco. Ver `utils/format.ts`.
+                { key: 'transaction_date', header: 'Fecha', render: (t: BankTransaction) => fecha(t.transaction_date) },
                 { key: 'amount', header: 'Monto', render: (t: BankTransaction) => (
                   <span className={`font-medium ${Number(t.amount) >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                     ${Number(t.amount).toLocaleString('es-MX', {minimumFractionDigits: 2})}
@@ -213,7 +247,7 @@ export function BankTransactions() {
                 },
                 { key: 'actions', header: 'Acciones', render: (t: BankTransaction) => (
                   <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
+                    <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
                     <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Eliminar</Button>
                   </div>
                 )},
@@ -269,8 +303,11 @@ export function BankTransactions() {
               </div>
               {previewData.length > 20 && <p className="text-sm text-gray-500 text-center">Mostrando 20 de {previewData.length} transacciones</p>}
               <div className="flex justify-end gap-3 pt-4 border-t">
-                <Button variant="secondary" onClick={() => { setShowPreviewModal(false); setPreviewData([]); }}>Cancelar</Button>
-                <Button onClick={() => handleImportCsv(previewData[0] as any)} disabled={importing || !selectedCompany}>{importing ? 'Importando...' : 'Importar y Guardar'}</Button>
+                <Button variant="secondary" onClick={() => { setShowPreviewModal(false); setPreviewData([]); setCsvFile(null); }}>Cancelar</Button>
+                <Button
+                  onClick={() => csvFile && handleImportCsv(csvFile)}
+                  disabled={importing || !selectedCompany || !csvFile}
+                >{importing ? 'Importando...' : 'Importar y Guardar'}</Button>
               </div>
             </>
           ) : (

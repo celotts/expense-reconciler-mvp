@@ -29,10 +29,68 @@ MONEY_TOLERANCE = Decimal("0.01")
 MAX_FUTURE_DAYS = 2
 MAX_PAST_YEARS = 3
 
+# ## EL TECHO DEL TOTAL
+#
+# `total_amount` es `NUMERIC(12,2)`: el maximo representable son 9,999,999,999.99.
+# Un importe mayor no es un gasto grande, es **ruido de OCR leido como numero**.
+#
+# MEDIDO el 2026-10-12 en esta maquina, con `IMG_4415.heic`: el OCR devolvio
+# `Decimal('750047801456')`. Son 750 MIL MILLONES de pesos. El `INSERT` reventó
+# con un error de PostgreSQL, la transaccion entera hizo rollback —con ella la
+# fila de `scan_files`—, el comprobante **desaparecio sin dejar rastro en
+# ningun lado**, y `POST /api/v1/scan/` respondio **200 OK**.
+#
+# Eso es lo que este check evita, y por que importa mas de lo que parece: el
+# modo de fallo no es un total equivocado, es un **comprobante perdido en
+# silencio**. Quien digitalizo no sabe que tiene que volver a subirlo, porque
+# la pantalla dijo que todo bien.
+#
+# EL VALOR, Y POR QUE ESTE Y NO OTRO
+# ----------------------------------
+# El techo real de la columna es ~10 mil millones. Este es MUCHO mas bajo, a
+# proposito, porque el check no existe para proteger la columna sino para
+# marcar una lectura que no es creible. El comprobante mas caro que justifiable
+# para un freelance o un negocio pequeno es una renta o una remodelacion de
+# varios millones; 50 millones ya es del orden de un error de lectura.
+#
+# Y es un parametro, no una constante escondida, para que si en algun momento
+# hace falta aceitar un comprobante mayor se cambie el numero y no se desmonte
+# el mecanismo.
+#
+# Lo que NO hace este check, y por que: no corrige el total ni lo pone en cero.
+# Marca `total_out_of_range` y el ticket va a la cola. Quien lo mire ve el
+# numero absurdo y lo escribe bien. Ponerlo en cero seria **inventar un dato**
+# —`0.00` dice "el papel no trae importe", que es distinto de "el sistema leyo
+# basura"— y es la misma mentira que `date.today()` arreglamos con
+# `fecha_provisional`, pero sin la marca que la sostiene.
+MAX_TOTAL_PLAUSIBLE = Decimal("50000000")
+
 
 @dataclass
 class ValidationOutcome:
-    """Resultado de los checks deterministas sobre una extraccion."""
+    """Resultado de los checks deterministas sobre una extraccion.
+
+    SOLO DOS CUBOS, Y POR QUE NO HAY UN TERCIO
+    ==========================================
+
+    Se probo agregar `warnings` para decir "no me square, pero hay un impuesto que
+    no tengo en el modelo" sin tratarlo como error de lectura. **Se quito**,
+    porque la forma de decidir "hay un impuesto que no modelo" que se probo
+    (buscar una tasa conocida que explique la diferencia) es FALSA. Medido:
+
+        diferencia = 234.00 - 225.41 = 8.59
+        8.59 / 217.27 = 4.0%
+
+    El IEPS del ticket es de 8%, y 4.0% no es 8%: el impuesto se aplica a cada
+    PARTIDA, y en ese comprobante hubo lineas a 0%, a 16% y con IEPS. Buscar una
+    tasa sobre el subtotal no tiene fundamento, y en la practica marcaba como
+    "un impuesto raro" a cualquier total mal leido que se desviara alrededor del
+    4% — que es justo el caso que tiene que seguir fallando.
+
+    Un clasificador que hace pasar errores de lectura es peor que no clasificar.
+    Lo que se hizo en su lugar es el dato exacto: `ieps_amount`, y la suma
+    `subtotal + IVA + IEPS == total`. No adivina nada.
+    """
 
     passed: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
@@ -96,9 +154,16 @@ def validate_extraction(
     expense_date: date | None,
     provider_tax_id: str | None = None,
     subtotal: Decimal | None = None,
+    ieps_amount: Decimal | None = None,
 ) -> ValidationOutcome:
     """Checks deterministas. Cada uno atrapa un modo de falla concreto y
-    barato de detectar."""
+    barato de detectar.
+
+    `ieps_amount` es el IEPS del comprobante, en PESOS. Lo acepta `validate_extraction`
+    y NO lo acepta todavia `gate_ticket`, porque el lector todavia no lo produce: se
+    anade por el camino de correccion, que es donde una persona lo escribe mirando
+    el papel. Ver `db/migrations/0012_el_impuesto_es_de_la_partida.sql`.
+    """
     out = ValidationOutcome()
 
     name = (provider_name or "").strip()
@@ -109,6 +174,17 @@ def validate_extraction(
 
     if total_amount is None or total_amount <= 0:
         out.failures.append("total_not_positive")
+    elif total_amount > MAX_TOTAL_PLAUSIBLE:
+        # Ruido de OCR leido como numero, no un gasto grande. Ver
+        # `MAX_TOTAL_PLAUSIBLE`: el modo de fallo que esto evita NO es un total
+        # equivocado, es un comprobante perdido en silencio porque el INSERT no
+        # cabe en `NUMERIC(12,2)` y la pantalla dice 200 OK.
+        #
+        # Va DESPUES de `total_not_positive` y no junto a el porque son
+        # preguntas distintas: un total de cero dice "no lei importe" y uno de
+        # 750 millones dice "lei basura". Quien revisa tiene que saber cual de
+        # las dos corregir, y el orden del `if` dice el orden de la pregunta.
+        out.failures.append(f"total_out_of_range({total_amount})")
     else:
         out.passed.append("total_positive")
 
@@ -119,17 +195,38 @@ def validate_extraction(
     else:
         out.passed.append("tax_within_range")
 
-    # Aritmetica del documento. Solo si vino subtotal: no todos los tickets lo traen.
+    # --- Aritmetica del documento -----------------------------------------
+    #
+    # El caso de siempre, que es el que funciona: subtotal + IVA == total.
     if subtotal is not None and tax_amount is not None and total_amount is not None:
         esperado = subtotal + tax_amount
-        if abs(esperado - total_amount) > MONEY_TOLERANCE:
+        if abs(esperado - total_amount) <= MONEY_TOLERANCE:
+            out.passed.append("arithmetic_consistent")
+
+        elif ieps_amount is not None:
+            # CON IEPS leido. Es el caso de un comprobante con los dos
+            # impuestos, que es normal en supermercado: alimentos preparados y
+            # bebidas tienen IVA 16% y IEPS 8%.
+            #
+            # Antes esto caia en `subtotal_plus_tax_mismatch` aunque los tres
+            # numeros estuvieran bien leidos, porque el IEPS no tinha donde
+            # meterse. Medido: `217.27 + 8.14 + 8.59 = 234.00` exacto sobre un
+            # Walmart real, y el gate lo rechazaba.
+            esperado_con_ieps = esperado + ieps_amount
+            if abs(esperado_con_ieps - total_amount) <= MONEY_TOLERANCE:
+                out.passed.append("arithmetic_consistent_with_ieps")
+            else:
+                out.failures.append(
+                    f"subtotal_plus_tax_mismatch("
+                    f"leido={total_amount},esperado={esperado},ieps={ieps_amount})"
+                )
+
+        else:
             # Se guardan los dos numeros. Con solo el esperado, revisar 500
             # tickets es comparar a ciegas contra el documento original.
             out.failures.append(
                 f"subtotal_plus_tax_mismatch(leido={total_amount},esperado={esperado})"
             )
-        else:
-            out.passed.append("arithmetic_consistent")
 
     if provider_tax_id:
         from app.schemas.ticket import RFC_REGEX  # import local: evita ciclo
@@ -212,13 +309,14 @@ def gate_ticket(
     expense_date: date | None,
     provider_tax_id: str | None = None,
     subtotal: Decimal | None = None,
+    ieps_amount: Decimal | None = None,
     confidence: float | None = None,
     source: ConfidenceSource = ConfidenceSource.LLM,
 ) -> GateDecision:
     """Entrada unica: valida y decide en una sola llamada."""
     validation = validate_extraction(
         provider_name, total_amount, tax_amount, expense_date,
-        provider_tax_id, subtotal,
+        provider_tax_id, subtotal, ieps_amount,
     )
     return decide_status(confidence, validation, source)
 
@@ -229,15 +327,28 @@ def gate_manual_ticket(
     tax_amount: Decimal | None,
     expense_date: date | None,
     provider_tax_id: str | None = None,
+    subtotal: Decimal | None = None,
+    ieps_amount: Decimal | None = None,
 ) -> GateDecision:
     """Captura manual: una persona tecleo los datos, asi que no hay confianza
     que medir. Pasa los mismos checks por consistencia y queda APROBADO.
 
     La confianza se deja en None a proposito. Poner 1.0 seria mentir: la
     confianza mide lectura automatica, y un dedo humano no se mide.
+
+    `subtotal` entra y antes no pasaba, y eso era un agujero: una correccion con
+    `subtotal 97.56` y `total 234.00` con `IVA 0.00` llegaba a `APROBADO` sin que
+    nadie mirara que la aritmetica no cuadraba. `validate_extraction` ya hacia el
+    check `subtotal + IVA == total` — el unico que no depende de nada externo— y
+    se estaba aplicando solo porque aqui no le llegaba el subtotal.
+
+    Que el dato lo ponga una persona NO lo exime del check. El check no es "el
+    sistema lee bien": es "estas tres cifras dicen lo mismo", y eso no depende de
+    quien las escribio.
     """
     validation = validate_extraction(
-        provider_name, total_amount, tax_amount, expense_date, provider_tax_id,
+        provider_name, total_amount, tax_amount, expense_date,
+        provider_tax_id, subtotal, ieps_amount,
     )
     if validation.ok:
         return GateDecision(

@@ -15,6 +15,7 @@ persistencia idempotente, la cola de revision y la revision humana.
     python3 scripts/verify_postgres_gate.py
 """
 
+import os
 import asyncio
 import sys
 from datetime import date, timedelta
@@ -31,7 +32,20 @@ from app.api.tickets import _persist_extracted, get_review_queue, review_ticket
 from app.schemas.ticket import TicketReviewRequest
 from app.services.parser_service import TicketExtractionResult
 
-DSN = "postgresql+asyncpg://postgres:CAMBIA_ESTA_PASSWORD@localhost:5434/expense_db"
+def _fatal(mensaje: str) -> str:
+    """Sale con un mensaje, en vez de un KeyError sin pista."""
+    print(f"ERROR: {mensaje}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+# El DSN se lee del entorno, no se escribe aqui. Este archivo estuvo versionado
+# en un repositorio publico con la password escrita en esta linea, y eso permitia
+# a cualquiera entrar a la base de datos. Rotar la password no borra el archivo
+# viejo del historial: ademas de rotarla, la password deja de estar en el codigo.
+#     export POSTGRES_PASSWORD=...      (o ponla en .env.local)
+DSN = "postgresql+asyncpg://postgres:{}@localhost:5434/expense_db".format(
+    os.environ.get("POSTGRES_PASSWORD") or _fatal("POSTGRES_PASSWORD no esta definida.")
+)
 
 # La empresa que creo la corrida actual, para poder borrarla aunque el script
 # reviente a mitad. Ver `_limpiar_si_hubo_excepcion`.

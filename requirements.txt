@@ -4,10 +4,72 @@ sqlalchemy[asyncio]>=2.0.28
 asyncpg>=0.29.0
 pydantic>=2.6.4
 pydantic-settings>=2.2.1
+email-validator>=2.1.0
 python-multipart>=0.0.9
+python-dotenv>=1.0.0
 pandas>=2.2.1
 pdfplumber>=0.11.0
 openpyxl>=3.1.2
+
+# Lectura de imagenes y PDF
+#
+# Pillow y pypdfium2 YA se usaban en el codigo (app/services/parser_service.py
+# y app/services/ai_extractor.py) y llegaban arrastrados por pdfplumber. Se
+# declaran aqui porque un dia pdfplumber cambie sus dependencias y, sin esto,
+# `render_pdf_pages` deja de funcionar con un ImportError en produccion.
+Pillow>=10.0.0
+pypdfium2>=4.30.0
+
+# OCR local
+#
+# pytesseract es solo el ENVOLTORIO de Python: ademas hace falta el binario del
+# sistema, que no se instala con pip.
+#
+#   macOS:    brew install tesseract tesseract-lang
+#   Debian:   apt-get install tesseract-ocr tesseract-ocr-spa
+#
+# El Dockerfile lo instala. Sin el binario, `OCR_ENABLED=true` no falla al
+# arrancar: falla por cada foto, y el operador ve "fallo de OCR" en lugar de
+# "no instalaste tesseract". `GET /api/v1/scan/ocr` dice cual de los dos falta.
+# pytesseract devuelve arrays de numpy y los convierte con `image_to_data`.
+# Llega arrastrado por pandas y torch, pero se declara porque ahora el codigo de
+# captura lo necesita de forma directa.
+numpy>=1.26.0
+
+pytesseract>=0.3.10
+
+# easyocr: el SEGUNDO motor de OCR, apagado por omision.
+#
+# Tesseract es el que corre por omision y el que da el 98.5% sobre PDF. Sobre
+# fotos el medido es 33.3% (`AGENTS.md`), y easyocr esta ahi para contrastar los
+# dos motores antes de aceptar que 33.3% es el piso. Se mide con
+# `scripts/medir_dos_motores.py` y `scripts/diagnostico_easyocr.py`.
+#
+# `torchvision` NO se declara aqui aunque easyocr la pida, y esa es la parte
+# importante: se instala en el Dockerfile, desde el indice CPU, junto a torch.
+# torchvision fija una version exacta de torch; si llegara por este archivo pip
+# la resolveria desde PyPI, cuya build de torch trae CUDA, y reinstalaria torch
+# encima de la version CPU. Ver el comentario del Dockerfile.
+easyocr>=1.7.2
+
+# OpenCV: el umbral ADAPTATIVO del OCR. Opcional y degradado.
+#
+# `opencv-python-headless` y NO `opencv-python`: el primero no necesita `libGL`,
+# y el `Dockerfile` documenta que en `python:3.11-slim` `libgl1` NO esta instalado
+# a proposito. Con el flavor con ventana, `import cv2` revienta con
+# `libGL.so.1: cannot open shared object file`, y parece un bug de OpenCV cuando
+# es un paquete equivocado.
+#
+# Que sea OPCIONAL no es una cortesia: `ocr.py:_binarizar` devuelve `None` sin
+# el, y la lectura sigue siendo la de siempre. La etapa compite con la lectura
+# normal en `_puntuar` y solo gana si el documento sale mejor leido, asi que no
+# puede empeorar lo que ya funciona. `GET /api/v1/scan/ocr` dice si esta.
+#
+# Lo que NO se ha medido: si la binarizacion sube la exactitud. `docs/known-issues.md`
+# §21 descarta el preprocesado con medicion, pero solo midio UMBRALES GLOBALES y
+# filtros de nitidez; el adaptativo es otra pregunta y no esta medida todavia.
+# Se mide con `scripts/medir_precision_ocr.py` cuando haya `verdad.json`.
+opencv-python-headless>=4.9.0
 
 # AI / ML dependencies
 openai>=1.30.0
@@ -15,10 +77,32 @@ tiktoken>=0.7.0
 sentence-transformers>=3.0.0
 torch>=2.3.0
 scikit-learn>=1.4.0
-rapidfuzz>=3.8.0
+# `rapidfuzz` se borro el 2026-10-10 con `VendorNormalizer`, su unico consumidor:
+# la clase se instanciaba y nadie la llamaba. Ver `app/services/ai_client.py`.
+#
+# NO se borraron `torch` ni `sentence-transformers`, y esa es una decision
+# distinta: siguen siendo la unica razon de ser de `create_embedding`, que es
+# el B2 del contrato (docs/contrato-producto.md §6) y pide medir RAM con
+# `make stats` antes y despues. Ver `tests/unit/test_ai_client_imports.py`.
 
 # Test dependencies
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
 aiosqlite>=0.19.0
+# `tests/unit/test_arranque_por_healthcheck.py` parsea `docker-compose.yml` para
+# fijar la politica de arranque (los healthchecks y el orden de `depends_on`).
+#
+# PyYAML ya llegaba TRANSITIVA por `huggingface_hub`, `langchain` y `torch`, y
+# por eso el import funcionaba. Se declara igual: un test que depende de que otra
+# dependencia decida seguir instalando algo es un test que se rompe sin que nadie
+# haya tocado una linea de este repo.
+pyyaml>=6.0
+# Genera los PDF de muestra que usan los tests de captura (reglas vs modelo).
+# Vive aqui y no en un requirements de desarrollo porque el CI corre los tests
+# con esta misma lista: si se separa, el CI falla con ModuleNotFoundError.
+fpdf2>=2.7.9
+# HEIC/HEIF: la foto de un iPhone. Sin esto PIL no abre el archivo y la
+# imagen caia en un except silencioso (docs/known-issues.md 6). La wheel trae
+# la libreria nativa, no hace falta apt-get.
+pillow-heif>=0.18.0

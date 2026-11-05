@@ -123,10 +123,6 @@ export const CAMPOS_MUESTRABLES: ReadonlyArray<{
   { campo: 'total_amount', label: 'Total' },
 ];
 
-export function esCampoMuestrable(c: string): c is SpotCheckField {
-  return CAMPOS_MUESTRABLES.some(x => x.campo === c);
-}
-
 /** La etiqueta de un campo, o el texto crudo si no lo conozco.
  *
  *  Mismo motivo que en el resto del archivo: un campo nuevo que el backend

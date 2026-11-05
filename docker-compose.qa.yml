@@ -1,0 +1,4 @@
+services:
+  expense-api:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres-reconciler:5432/expense_db_qa

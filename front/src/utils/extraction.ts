@@ -173,6 +173,25 @@ function explicar(codigo: string): ValidationProblem {
           + 'si el total si se ve, escribelo a mano.',
       };
 
+    case 'total_out_of_range': {
+      /* Distinto de `total_not_positive`, y la accion lo es tambien: ahi el
+       * sistema no leyo importe y hay que buscarlo; aqui leyo algo que no es un
+       * importe —ruido de la foto— y hay que escribir el numero del papel.
+       *
+       * El valor va POSICIONAL (`total_out_of_range(750047801456)`) y no con
+       * clave, asi que se lee con `valorDe` y no con `argsDe`. Se muestra porque
+       * sin el no hay forma de saber si el problema es el papel o fue la lectura,
+       * y esa es exactamente la pregunta que se lleva la persona al comprobante. */
+      const leido = valorDe(codigo);
+      return {
+        code: codigo,
+        message: leido
+          ? `El sistema leyo ${leido} como importe, y eso no es un gasto real: es ruido `
+            + 'de la foto leido como numero. Escribe el total que aparece en el papel.'
+          : 'El importe leido no es creible. Escribe el total que aparece en el papel.',
+      };
+    }
+
     case 'tax_negative':
       return { code: codigo, message: 'El IVA es negativo, lo cual es imposible. Corrigelo o pon 0.00.' };
 
@@ -231,6 +250,54 @@ function explicar(codigo: string): ValidationProblem {
             + 'automatica. Revisalo desde cero contra el documento.',
         };
       }
+      /* Los fallos del modelo viajan como FRASE en espanol, no como codigo.
+       *
+       * `capture.motivo_de_fallo_del_modelo` devuelve `FALLOS_DEL_MODELO[clave]`,
+       * o sea el TEXTO, no la clave. Escrito a proposito: "el proveedor no se
+       * pudo leer" y "el extractor esta apagado" producen el mismo ticket, sin
+       * proveedor y en la cola, pero piden cosas opuestas -al primero se le busca
+       * otro escalon de lectura, al segundo se le enciende el extractor. Si los
+       * dos se reportan igual, el segundo se manifiesta como "muchos tickets
+       * raros" y nadie lo reconoce como una configuracion apagada.
+       *
+       * El coste es que esta pantalla traduce DOS vocabularios: codigos para los
+       * checks del gate y frases para los fallos del modelo. Los tres de abajo
+       * caian en `sinConocer`, que le decia al contador "Motivo no reconocido por
+       * esta version de la pantalla" sobre cosas que el backend si emite y que el
+       * contador si puede arreglar.
+       *
+       * Se comparan por FRAGMENTO y no contra la frase entera a proposito: la
+       * redaccion del backend puede cambiar sin que esta pantalla se entere, y
+       * un texto que no casa es un "no reconocido" que no ayuda a nadie.
+       *
+       * El `default` de mas abajo NO se quita. Sigue siendo lo correcto para lo
+       * desconocido de verdad, y por eso estos tres se nombran en vez de dejar
+       * que el default los cubra. */
+      if (codigo.includes('no se pudo decodificar')) {
+        return {
+          code: codigo,
+          message: 'El archivo no se pudo abrir como imagen. Puede ser un HEIC que necesita '
+            + 'convertirse, un escaneo danado, o un formato que el sistema no sabe leer. '
+            + 'Abre el comprobante y vuelve a subirlo como PDF o como foto.',
+        };
+      }
+      if (codigo.includes('no se pudo interpretar')) {
+        return {
+          code: codigo,
+          message: 'La IA leyo el documento pero su respuesta no se pudo interpretar. '
+            + 'Suele ser el modelo apagado o sin descargar. Revisa el documento y, si '
+            + 'tienes los datos, escribelos a mano.',
+        };
+      }
+      if (codigo.includes('apagado') || codigo.includes('no respondio')) {
+        return {
+          code: codigo,
+          message: 'El extractor de IA esta apagado o no respondio, asi que el documento '
+            + 'no se leyo. Es una configuracion, no un problema del comprobante: enciendela '
+            + 'y vuelve a subirlo.',
+        };
+      }
+
       return sinConocer(codigo);
   }
 }
