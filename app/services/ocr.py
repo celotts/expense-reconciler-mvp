@@ -261,12 +261,12 @@ def obtener_motor(nombre: str = "tesseract"):
 
 
 # La caja del papel, por brillo. Ver `_recortar_el_papel`.
-_UMBRAL_PAPEL = 140
+_UMBRAL_PAPEL = 135
 # Se descartan estos quantiles de cada borde. No es un margen arbitrario: el
 # marco de una pantalla o el borde de una mesa tambien son claros, y sin
 # descartarlos la caja se sale del papel. Medido sobre IMG_4316: con el 2% la caja
 # es de 1521x3664 sobre 3024x4032, y sin el la caja se come la pantalla entera.
-_QUANTILES_BORDE = 0.02
+_QUANTILES_BORDE = 0.015
 # Por debajo de esta fraccion del area, NO se recorta. Ver la guarda.
 _FRACCION_MINIMA = 0.15
 # Por ENCIMA tampoco se recorta, y esto se olvido en la primera version.
@@ -857,7 +857,7 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
     # El early-exit devuelve ResultadoOCR vacío. Con 0 puntos el gate emite
     # `total_not_positive`: el ticket va a la cola con su motivo, igual que hoy,
     # pero en < 50 ms en vez de en ~19 s.
-    _FRACCION_OSCUROS_MINIMA = 0.005  # 0.5%
+    _FRACCION_OSCUROS_MINIMA = 0.003  # 0.3%
     # `bytearray` y `memoryview` van en la tupla aunque `_preparar` declare
     # `bytes`: sin ellos el type checker no descarta los tipos buffer y
     # `base.convert(...)` queda como acceso a un `bytearray`, que no lo tiene.
