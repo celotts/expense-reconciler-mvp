@@ -1,9 +1,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, Boolean, Column, String
+from sqlalchemy import TIMESTAMP, Boolean, Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.core.time import utcnow
@@ -46,6 +46,21 @@ class UserModel(Base):
     # NO cambia el DDL: `Mapped[bool]` + `mapped_column(Boolean, nullable=False)`
     # declara exactamente la misma columna que declaraba `Column(Boolean, ...)` —
     # BOOLEAN NOT NULL. Por eso esto no necesita migracion.
+    # La empresa a la que pertenece este usuario (P0-1, multi-empresa).
+    # NULL = operador sin empresa asignada: ve solo lo que el cliente le
+    # pida explicitamente y nunca por defecto (ver `resolver_empresa` en
+    # `app/core/deps.py`). `SET NULL` y no `CASCADE`: borrar una empresa no
+    # puede borrar sus usuarios, que son la trazabilidad de quien firmo que.
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # La empresa a la que pertenece este usuario (P0-1, multi-empresa).
+    # `passive_deletes=True`: la FK es `ON DELETE SET NULL` y sin este
+    # `True` el ORM manda `UPDATE users SET company_id = NULL` antes del
+    # DELETE de la empresa, que es justo lo que la FK ya hace sola.
+    company = relationship("CompanyModel", backref="usuarios", passive_deletes=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     perfil: Mapped[str] = mapped_column(String(50), nullable=False, default='digitalizador')
     grupo: Mapped[str] = mapped_column(String(50), nullable=False, default='operaciones')

@@ -203,6 +203,16 @@ class TicketDocumentModel(Base):
         ForeignKey("tickets.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # La empresa del ticket al que pertenece este documento (P0-1). Se copia
+    # de `tickets.company_id` al guardarlo: sin ella, servir el comprobante
+    # de un ticket exige leer el ticket primero, y el control de acceso no
+    # puede ser una sola consulta. Nullable porque los documentos viejos se
+    # rellenan en la migracion 0020 desde el ticket.
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # La version anterior de esta misma cadena. `None` = vigente.
     #
     # `ON DELETE SET NULL` y no `CASCADE`: borrar un documento (que el trigger

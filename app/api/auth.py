@@ -20,6 +20,10 @@ fecha absoluta con la zona horaria del navegador.
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
+from uuid import uuid4
+
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import func, select
 
@@ -31,18 +35,24 @@ from app.core.rate_limit import (
 )
 from app.core.security import (
     crear_token,
+    hashear_contrasena,
     hash_de_trampa,
     verificar_contrasena,
 )
 from app.core.time import utcnow
+from app.models.company import PLAN_BASICO, CompanyModel
 from app.models.user import UserModel
-from app.schemas.auth import LoginRequest, TokenResponse, UsuarioResponse
+from app.schemas.auth import LoginRequest, RegistroRequest, TokenResponse, UsuarioResponse
 from app.services.auditoria import (
+    registrar_auditoria,
     registrar_intento_fallido_auditoria,
     registrar_login_auditoria,
 )
+from app.services.tipos_gasto_service import asegurar_catalogo
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _credenciales_malas() -> HTTPException:
@@ -181,7 +191,15 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
         ip=ip,
     )
 
-    token, segundos = crear_token(str(usuario.id), usuario.email, usuario.perfil, usuario.grupo)
+    token, segundos = crear_token(
+        str(usuario.id),
+        usuario.email,
+        usuario.perfil,
+        usuario.grupo,
+        # Informativo (ver `security.crear_token`): la autorizacion lee la
+        # empresa de la base en cada peticion, no del token.
+        company_id=str(usuario.company_id) if usuario.company_id else None,
+    )
 
     usuario.last_login_at = utcnow()
     await db.commit()
@@ -189,6 +207,105 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
 
     return TokenResponse(
         access_token=token,
+        expires_in=segundos,
+        user=UsuarioResponse.model_validate(usuario),
+    )
+
+
+@router.post(
+    "/registro",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Auth"],
+    summary="Registrarse y crear empresa",
+)
+async def registro(datos: RegistroRequest, request: Request, db: Sesion) -> TokenResponse:
+    """Autorregistro (P0-1): crea empresa + admin + trial de 30 dias.
+
+    Un registro crea tres cosas en una sola transaccion: la empresa (plan
+    'basico', prueba hasta hoy + 30 dias), su catalogo de tipos de gasto y
+    la cuenta admin de esa empresa. Si algo falla, no queda ninguna de las
+    tres a medias.
+
+    El 409 dice CUAL es el duplicado (correo o RFC). En el login no se dice
+    para no convertirlo en un buscador de correos; aqui el que se registra
+    es el dueno de los dos datos y necesita saber cual corregir.
+    """
+    correo = datos.correo_normalizado
+    ip = _ip(request)
+
+    existe_correo = (
+        await db.execute(select(UserModel).where(func.lower(UserModel.email) == correo))
+    ).scalar_one_or_none()
+    if existe_correo is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ese correo ya tiene cuenta",
+        )
+
+    tax_id = datos.tax_id.strip().upper() if datos.tax_id else f"SIN-RFC-{uuid4().hex[:8].upper()}"
+    existe_rfc = (
+        await db.execute(select(CompanyModel).where(CompanyModel.tax_id == tax_id))
+    ).scalar_one_or_none()
+    if existe_rfc is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ese RFC ya tiene empresa",
+        )
+
+    empresa = CompanyModel(
+        name=datos.empresa_nombre.strip(),
+        tax_id=tax_id,
+        plan=PLAN_BASICO,
+        trial_hasta=utcnow() + timedelta(days=30),
+        tickets_usados_este_mes=0,
+    )
+    db.add(empresa)
+    await db.flush()
+
+    # El catalogo de tipos de gasto es por empresa y se siembra aqui, no en
+    # una migracion (ver `tipos_gasto_service.asegurar_catalogo`).
+    await asegurar_catalogo(db, empresa.id)
+
+    usuario = UserModel(
+        email=correo,
+        nombre=datos.nombre.strip(),
+        password_hash=hashear_contrasena(datos.password),
+        perfil="admin",
+        grupo="administracion",
+        company_id=empresa.id,
+    )
+    db.add(usuario)
+    await db.commit()
+    await db.refresh(usuario)
+
+    # La auditoria no tumba el registro: la empresa y la cuenta ya estan
+    # confirmadas, y un fallo aqui dejaria al usuario con un error y una
+    # cuenta creada (el reintento daria 409). Ver `auditoria.py`.
+    try:
+        await registrar_auditoria(
+            accion="registro",
+            modulo="auth",
+            usuario_id=str(usuario.id),
+            registro_afectado=str(empresa.id),
+            detalles={"empresa": empresa.name, "plan": PLAN_BASICO},
+            rol="admin",
+            ip=ip,
+            db=db,
+        )
+    except Exception:
+        logger.exception("no se pudo registrar la auditoria del registro")
+
+    token, segundos = crear_token(
+        str(usuario.id),
+        usuario.email,
+        usuario.perfil,
+        usuario.grupo,
+        company_id=str(empresa.id),
+    )
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
         expires_in=segundos,
         user=UsuarioResponse.model_validate(usuario),
     )

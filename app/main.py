@@ -74,6 +74,17 @@ async def _sembrar_sos() -> None:
                     grupo="administracion",
                     is_active=True,
                 )
+                # P0-1: si hay EXACTAMENTE una empresa, el admin sembrado es
+                # de esa empresa. Si hay varias o ninguna, se queda sin
+                # empresa (operador de arranque) y un admin le asigna una
+                # despues: adivinar entre varias seria asignar datos ajenos.
+                from app.models.company import CompanyModel
+
+                empresas = (
+                    await db.execute(select(CompanyModel.id))
+                ).scalars().all()
+                if len(empresas) == 1:
+                    admin.company_id = empresas[0]
                 db.add(admin)
                 await db.commit()
 

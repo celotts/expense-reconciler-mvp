@@ -23,11 +23,10 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-logger = logging.getLogger(__name__)
-
-from app.core.deps import Sesion, UsuarioActual
+from app.core.deps import Escribir, Sesion, UsuarioActual, resolver_empresa
 from app.core.enums import EstadoCompra, ProductoOrigen
 from app.models.inventario import (
+    CompraItemModel,
     CompraModel,
     MovimientoInventarioModel,
     ProductoModel,
@@ -49,6 +48,8 @@ from app.schemas.inventario import (
     _item_a_dict,
 )
 from app.services import inventario_service as inv
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # POR QUE HAY `cast()` EN ESTE ARCHIVO
@@ -107,6 +108,57 @@ def _conflictos(exc: inv.ErrorDeInventario) -> HTTPException:
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=codigo, detail=str(exc))
+
+
+async def _compra_de_empresa_o_404(
+    db: Sesion, compra_id: UUID, empresa: UUID
+) -> CompraModel:
+    """La compra, o 404.
+
+    Una compra de otra empresa es 404 y no 403: un 403 confirmaria que hay
+    una compra con ese id en otra empresa. Ver `resolver_empresa` en
+    `app/core/deps.py`. Se carga con sus lineas porque quien la pide es el
+    mismo `_compra_a_response` de siempre.
+    """
+    compra = (
+        await db.execute(
+            select(CompraModel)
+            .where(CompraModel.id == compra_id)
+            .options(selectinload(CompraModel.items))
+        )
+    ).scalar_one_or_none()
+    if compra is None or cast(UUID, compra.company_id) != empresa:
+        raise HTTPException(status_code=404, detail="La compra no existe")
+    return compra
+
+
+async def _linea_de_empresa_o_404(
+    db: Sesion, item_id: UUID, empresa: UUID
+) -> tuple[CompraItemModel, CompraModel]:
+    """La linea y su compra, o 404.
+
+    La primera cerradura de `asignar_producto`: la linea tiene que ser de la
+    empresa resuelta, o no existe para quien pregunta. La segunda es el
+    servicio, que comprueba que el producto es de la misma empresa que la
+    linea; sin esta primera, un producto de la empresa propia asignado a una
+    linea ajena llegaria al servicio y saldria 409, que confirma que esa
+    linea existe en otra empresa.
+    """
+    item = (
+        await db.execute(
+            select(CompraItemModel).where(CompraItemModel.id == item_id)
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="La linea de compra no existe")
+    compra = (
+        await db.execute(
+            select(CompraModel).where(CompraModel.id == item.compra_id)
+        )
+    ).scalar_one_or_none()
+    if compra is None or cast(UUID, compra.company_id) != empresa:
+        raise HTTPException(status_code=404, detail="La linea de compra no existe")
+    return item, compra
 
 
 def _compra_a_response(compra: CompraModel) -> CompraResponse:
@@ -171,8 +223,8 @@ async def _archivar_el_comprobante(db: Sesion, ticket_id: UUID, usuario) -> None
 @router.get("/productos", response_model=list[ProductoConStock], tags=["Inventario"])
 async def listar_productos(
     db: Sesion,
-    _: UsuarioActual,
-    company_id: UUID = Query(...),
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     incluir_inactivos: bool = Query(False),
     solo_sin_verificar: bool = Query(
         False,
@@ -193,15 +245,19 @@ async def listar_productos(
     hace manejable el alta automatica: el inventario funciona desde el primer dia
     y a la vez hay una lista de lo que hay que limpiar. Ver
     db/migrations/0011_productos_origen.sql.
+
+    La empresa siempre es la resuelta (`resolver_empresa`): el `company_id`
+    del query solo vale si es la empresa del usuario; pedir otra es 404.
     """
-    consulta = select(ProductoModel).where(ProductoModel.company_id == company_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    consulta = select(ProductoModel).where(ProductoModel.company_id == empresa)
     if not incluir_inactivos:
         consulta = consulta.where(ProductoModel.activo.is_(True))
     if solo_sin_verificar:
         consulta = consulta.where(ProductoModel.verificado.is_(False))
     productos = list((await db.execute(consulta.order_by(ProductoModel.nombre))).scalars())
 
-    stocks = await inv.stock_de(db, company_id)
+    stocks = await inv.stock_de(db, empresa)
     salida = []
     for producto in productos:
         respuesta = ProductoConStock.model_validate(producto)
@@ -233,16 +289,22 @@ async def listar_productos(
     tags=["Inventario"],
 )
 async def crear_producto(
+    _: Escribir,
     datos: ProductoCreate,
     db: Sesion,
     usuario: UsuarioActual,
-    company_id: UUID = Query(...),
+    company_id: UUID | None = Query(None),
 ) -> ProductoResponse:
-    """Da de alta un producto. A mano, no desde una linea de OCR."""
+    """Da de alta un producto. A mano, no desde una linea de OCR.
+
+    La empresa es la resuelta (`resolver_empresa`): el producto nace en la
+    empresa del usuario, y pedir otra por query es 404.
+    """
+    empresa = await resolver_empresa(usuario, company_id, db)
     existe = (
         await db.execute(
             select(ProductoModel).where(
-                ProductoModel.company_id == company_id,
+                ProductoModel.company_id == empresa,
                 ProductoModel.codigo == datos.codigo,
             )
         )
@@ -259,7 +321,7 @@ async def crear_producto(
         )
 
     producto = ProductoModel(
-        company_id=company_id,
+        company_id=empresa,
         # Alta a mano: nace verificada y `MANUAL`, sin excepcion. Un producto que
         # puso una persona mirando el producto no necesita pasar por la cola de
         # revision. Ver `ProductoCreate`.
@@ -294,21 +356,23 @@ async def crear_producto(
 async def obtener_producto(
     producto_id: UUID,
     db: Sesion,
-    _: UsuarioActual,
-    company_id: UUID = Query(...),
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> ProductoConStock:
     """Un producto del catalogo, con el stock que le da el kardex.
 
-    El `company_id` es obligatorio y se comprueba contra el producto. No es
-    decorativo: `AGENTS.md` advierte que no hay multi-tenancy, asi que sin esta
-    comparacion un `producto_id` de otra empresa se leeria igual y el stock que
-    saliera en la respuesta seria el de la empresa equivocada —un 200 con el
-    numero de otro, que es peor que un 403 porque no parece un error.
+    El `company_id` del query solo vale si es la empresa del usuario
+    (`resolver_empresa`): un `producto_id` de otra empresa se responde 404,
+    no 403, para no confirmar que hay un producto con ese id en otra
+    empresa. Sin esta comparacion el stock que saldria en la respuesta seria
+    el de la empresa equivocada —un 200 con el numero de otro, que es peor
+    que un 403 porque no parece un error.
 
     Por que responde `ProductoConStock` y no `ProductoResponse`: el listado
     devuelve stock, y que el detalle no lo devuelva obliga al cliente a hacer una
     segunda llamada para saber el mismo numero.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
     producto = (
         await db.execute(
             select(ProductoModel).where(ProductoModel.id == producto_id)
@@ -316,7 +380,7 @@ async def obtener_producto(
     ).scalar_one_or_none()
     if producto is None:
         raise HTTPException(status_code=404, detail="El producto no existe")
-    if cast(UUID, producto.company_id) != company_id:
+    if cast(UUID, producto.company_id) != empresa:
         # 404 y no 403: el recurso no existe PARA esta empresa, y un 403
         # confirmaria que hay un producto con ese id en otra. Ver
         # `inventario_service.NoExiste`.
@@ -334,11 +398,12 @@ async def obtener_producto(
     summary="Renombrar, verificar, dar de baja o corregir el precio",
 )
 async def actualizar_producto(
+    _: Escribir,
     producto_id: UUID,
     datos: ProductoUpdate,
     db: Sesion,
-    _: UsuarioActual,
-    company_id: UUID = Query(...),
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> ProductoConStock:
     """Corrige el catalogo. Es lo que hace que la cola se pueda vaciar.
 
@@ -354,13 +419,17 @@ async def actualizar_producto(
 
     `exclude_unset=True` y no `exclude_none`: es la diferencia entre "no lo
     mandaron" y "lo mandaron en null". Ver `ProductoUpdate`.
+
+    El producto tiene que ser de la empresa resuelta: tocar el catalogo de
+    otra empresa es 404, no 403.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
     producto = (
         await db.execute(
             select(ProductoModel).where(ProductoModel.id == producto_id)
         )
     ).scalar_one_or_none()
-    if producto is None or cast(UUID, producto.company_id) != company_id:
+    if producto is None or cast(UUID, producto.company_id) != empresa:
         raise HTTPException(status_code=404, detail="El producto no existe")
 
     cambios = datos.model_dump(exclude_unset=True)
@@ -402,8 +471,8 @@ async def actualizar_producto(
 )
 async def cola_de_productos(
     db: Sesion,
-    _: UsuarioActual,
-    company_id: UUID = Query(...),
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> list[LineaSinProductoResponse]:
     """Las lineas de compra sin producto asignado.
 
@@ -411,13 +480,17 @@ async def cola_de_productos(
     consulta ES la cola, y es `compra_items WHERE producto_id IS NULL`. Una tabla
     mas seria una segunda fuente de verdad que se puede desincronizar de
     `compra_items`.
+
+    La cola es la de la empresa resuelta (`resolver_empresa`): la cola de otra
+    empresa no se lista ni se confirma.
     """
-    items = await inv.lineas_sin_producto(db, company_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    items = await inv.lineas_sin_producto(db, empresa)
     compras = {
         c.id: c
         for c in (
             await db.execute(
-                select(CompraModel).where(CompraModel.company_id == company_id)
+                select(CompraModel).where(CompraModel.company_id == empresa)
             )
         ).scalars()
     }
@@ -442,15 +515,17 @@ async def cola_de_productos(
 @router.get("/compras", response_model=list[CompraResponse], tags=["Inventario"])
 async def listar_compras(
     db: Sesion,
-    _: UsuarioActual,
-    company_id: UUID = Query(...),
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     estado: EstadoCompra | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
 ) -> list[CompraResponse]:
+    """Las compras de la empresa resuelta (`resolver_empresa`)."""
+    empresa = await resolver_empresa(usuario, company_id, db)
     consulta = (
         select(CompraModel)
-        .where(CompraModel.company_id == company_id)
+        .where(CompraModel.company_id == empresa)
         .options(selectinload(CompraModel.items))
     )
     if estado is not None:
@@ -470,17 +545,14 @@ async def listar_compras(
     "/compras/{compra_id}", response_model=CompraResponse, tags=["Inventario"]
 )
 async def obtener_compra(
-    compra_id: UUID, db: Sesion, _: UsuarioActual
+    compra_id: UUID,
+    db: Sesion,
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> CompraResponse:
-    compra = (
-        await db.execute(
-            select(CompraModel)
-            .where(CompraModel.id == compra_id)
-            .options(selectinload(CompraModel.items))
-        )
-    ).scalar_one_or_none()
-    if compra is None:
-        raise HTTPException(status_code=404, detail="La compra no existe")
+    """Una compra de la empresa resuelta, o 404 si es de otra."""
+    empresa = await resolver_empresa(usuario, company_id, db)
+    compra = await _compra_de_empresa_o_404(db, compra_id, empresa)
     return _compra_a_response(compra)
 
 
@@ -491,10 +563,12 @@ async def obtener_compra(
     summary="EN_REVISION -> PROCESADO. Aqui es donde el inventario suma.",
 )
 async def confirmar_compra(
+    _: Escribir,
     compra_id: UUID,
     cuerpo: ConfirmarCompraRequest,
     db: Sesion,
     usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> CompraResponse:
     """Autoriza la compra y hace que sus lineas entren al inventario.
 
@@ -502,7 +576,12 @@ async def confirmar_compra(
     por eso devuelve 409 y no 200 en los tres casos que importan: ya confirmada
     (no se vuelve a sumar), con lineas sin producto (el inventario quedaria
     incompleto sin rastro), o sin quien firmar.
+
+    Confirmar una compra de otra empresa es 404, no 403: ver
+    `_compra_de_empresa_o_404`.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
+    await _compra_de_empresa_o_404(db, compra_id, empresa)
     try:
         compra = await inv.confirmar_compra(db, compra_id, actor=_actor(usuario))
     except inv.ErrorDeInventario as exc:
@@ -534,10 +613,12 @@ async def confirmar_compra(
     summary="EN_REVISION -> RECHAZADO. Este comprobante no es una compra.",
 )
 async def rechazar_compra(
+    _: Escribir,
     compra_id: UUID,
     cuerpo: RechazarCompraRequest,
     db: Sesion,
     usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> CompraResponse:
     """Descarta una compra sin borrarla.
 
@@ -551,7 +632,12 @@ async def rechazar_compra(
     append-only, no hay forma de deshacerlo. El 409 dice que la via es el AJUSTE.
 
     Quien rechaza sale del token, nunca del body. Ver `RechazarCompraRequest`.
+
+    Rechazar una compra de otra empresa es 404, no 403: ver
+    `_compra_de_empresa_o_404`.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
+    await _compra_de_empresa_o_404(db, compra_id, empresa)
     try:
         compra = await inv.rechazar_compra(
             db, compra_id, actor=_actor(usuario), motivo=cuerpo.motivo
@@ -571,9 +657,11 @@ async def rechazar_compra(
     summary="RECHAZADO -> EN_REVISION. Deshace el rechazo, no la confirmacion.",
 )
 async def reabrir_compra(
+    _: Escribir,
     compra_id: UUID,
     db: Sesion,
     usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> CompraResponse:
     """Devuelve una compra rechazada a la cola de autorizacion.
 
@@ -581,7 +669,12 @@ async def reabrir_compra(
     proposito: uno que aceptara las dos necesitaria adivinar cual es cual, y el
     error —dar por reversible una compra que ya movio stock— es el que no tiene
     salida. Ver `inventario_service.reabrir_compra`.
+
+    Reabrir una compra de otra empresa es 404, no 403: ver
+    `_compra_de_empresa_o_404`.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
+    await _compra_de_empresa_o_404(db, compra_id, empresa)
     try:
         compra = await inv.reabrir_compra(db, compra_id, actor=_actor(usuario))
     except inv.ErrorDeInventario as exc:
@@ -599,17 +692,34 @@ async def reabrir_compra(
     summary="Le asigna un producto del catalogo a una linea",
 )
 async def asignar_producto_a_linea(
+    _: Escribir,
     item_id: UUID,
     datos: AsignarProductoRequest,
     db: Sesion,
     usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
 ) -> CompraItemResponse:
     """Resuelve una linea de la cola.
 
     Guarda QUIEN asigno y cuando: "lo eligio el sistema" y "lo eligio Ana" son
     respuestas distintas a "de donde salio este producto del catalogo", y sin la
     columna de actor la segunda no se puede reconstruir.
+
+    La linea y el producto tienen que ser de la empresa resuelta
+    (`resolver_empresa`): asignar un producto propio a una linea ajena, o un
+    producto ajeno a una linea propia, es 404 y no 409, para no confirmar que
+    esa linea o ese producto existen en otra empresa. El servicio vuelve a
+    comprobar que son de la misma empresa; esto es la primera cerradura.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
+    await _linea_de_empresa_o_404(db, item_id, empresa)
+    producto = (
+        await db.execute(
+            select(ProductoModel).where(ProductoModel.id == datos.producto_id)
+        )
+    ).scalar_one_or_none()
+    if producto is None or cast(UUID, producto.company_id) != empresa:
+        raise HTTPException(status_code=404, detail="El producto no existe")
     try:
         item = await inv.asignar_producto(
             db, item_id, datos.producto_id, actor=_actor(usuario)
@@ -637,10 +747,11 @@ async def asignar_producto_a_linea(
     summary="Registra una salida (venta) o un ajuste de conteo",
 )
 async def registrar_movimiento(
+    _: Escribir,
     cuerpo: MovimientoCreate,
     db: Sesion,
     usuario: UsuarioActual,
-    company_id: UUID = Query(...),
+    company_id: UUID | None = Query(None),
 ) -> MovimientoResponse:
     """Escribe una fila del kardex a mano.
 
@@ -658,13 +769,18 @@ async def registrar_movimiento(
     abrir la puerta a que alguien escriba `referencia_tipo='COMPRA'` a mano, y una
     fila con esa etiqueta es lo que `export_service` y las auditorias toman como
     "esto vino de una compra".
+
+    El movimiento se escribe en la empresa resuelta (`resolver_empresa`): el
+    servicio rechaza un producto de otra empresa, y aqui la empresa ya no es
+    la que dice el query.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
     referencia_tipo = "AJUSTE" if cuerpo.es_ajuste else "VENTA"
 
     try:
         movimiento = await inv.registrar_movimiento(
             db,
-            company_id=company_id,
+            company_id=empresa,
             producto_id=cuerpo.producto_id,
             tipo=cuerpo.tipo,
             cantidad=cuerpo.cantidad,
@@ -689,17 +805,22 @@ async def registrar_movimiento(
 )
 async def listar_movimientos(
     db: Sesion,
-    _: UsuarioActual,
-    company_id: UUID = Query(...),
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     producto_id: UUID | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
 ) -> list[MovimientoResponse]:
     """La linea de tiempo del inventario.
 
     Es la respuesta a "el conteo fisico no cuadra, que movio este producto".
+
+    El kardex es el de la empresa resuelta (`resolver_empresa`): pedir el de
+    otra empresa es 404, y un `producto_id` de otra empresa simplemente no
+    tiene movimientos aqui.
     """
+    empresa = await resolver_empresa(usuario, company_id, db)
     consulta = select(MovimientoInventarioModel).where(
-        MovimientoInventarioModel.company_id == company_id
+        MovimientoInventarioModel.company_id == empresa
     )
     if producto_id is not None:
         consulta = consulta.where(MovimientoInventarioModel.producto_id == producto_id)

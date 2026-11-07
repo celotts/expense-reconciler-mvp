@@ -241,6 +241,16 @@ class ScanEventModel(Base):
         nullable=False,
     )
 
+    # La empresa del archivo al que pertenece este evento (P0-1). Se copia
+    # de `scan_files.company_id` al registrarlo: el historico de escaneo es
+    # por empresa y sin esta columna no se puede filtrar sin un JOIN.
+    # Nullable porque los eventos viejos se rellenan en la migracion 0020.
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Que paso. La lista tiene que coincidir con la constraint de arriba.
     action = Column(String(20), nullable=False)
 

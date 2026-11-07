@@ -659,7 +659,7 @@ class TestAdministrarCuentas:
         )
         assert r.status_code == 401
 
-    async def test_dar_de_baja_con_la_contrasena_correcta(self, async_client, db_session, usuario_de_prueba):
+    async def test_dar_de_baja_con_la_contrasena_correcta(self, async_client, db_session, usuario_de_prueba, test_company):
         """Renombrar y dar de baja, que es lo que se hace en la practica.
 
         Hace falta una segunda cuenta activa: con una sola, el endpoint da 409 (ver
@@ -669,10 +669,13 @@ class TestAdministrarCuentas:
         from app.core.security import hashear_contrasena
         from app.models.user import UserModel
 
+        # P0-1: la segunda cuenta es de la misma empresa que el actor; si no
+        # tuviera empresa, el PATCH daria 404 (cuenta de otra empresa).
         otra = UserModel(
             email=f"ayudante{uuid4().hex[:8]}@test.local",
             nombre="Ayudante",
             password_hash=hashear_contrasena(CONTRASENA),
+            company_id=test_company.id,
         )
         db_session.add(otra)
         await db_session.commit()
@@ -923,7 +926,7 @@ class TestAdministrarCuentas:
         assert "Solo un administrador" in r.json()["detail"]
 
     async def test_admin_si_puede_cambiar_perfil_de_otro(
-        self, async_client, db_session, usuario_de_prueba
+        self, async_client, db_session, usuario_de_prueba, test_company
     ):
         """Un usuario con rol admin sí puede actualizar el perfil de otra cuenta."""
         from app.core.security import hashear_contrasena
@@ -933,11 +936,14 @@ class TestAdministrarCuentas:
         usuario_de_prueba.perfil = "admin"
         await db_session.commit()
 
+        # P0-1: la cuenta objetivo es de la misma empresa que el actor; si
+        # no tuviera empresa, el PATCH daria 404 (cuenta de otra empresa).
         otra = UserModel(
             email=f"subordinado_{uuid4().hex[:6]}@empresa.mx",
             nombre="Subordinado",
             password_hash=hashear_contrasena(CONTRASENA),
             perfil="digitalizador",
+            company_id=test_company.id,
         )
         db_session.add(otra)
         await db_session.commit()

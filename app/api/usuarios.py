@@ -21,12 +21,12 @@ Cada endpoint de escritura pide `UsuarioVerificado`, o sea token **y** la
 contrasena de quien lo hace (`X-Contrasena-Actual`). Un token robado no basta para
 dar de baja a otra cuenta ni para cambiar una contrasena.
 
-Lo que sigue SIN resolver, y conviene no olvidar: **no hay roles**. Cualquier
-cuenta autenticada puede dar de baja a otra, porque `users` no tiene columna de rol.
-Lo que hace `UsuarioVerificado` es acotar el dano —un atacante con un token robado
-tampoco tendria la contrasena—, no decidir quien puede tocar a quien. Eso necesita
-un modelo de roles que no existe. Ver la nota larga de
-`app/core/deps.py::get_current_user_verificado`.
+Lo que sigue SIN resolver, y conviene no olvidar: **crear empresas y el
+reset de escaneo siguen sin puerta de rol** (ver `app/core/deps.py`). Lo
+que SI existe desde P0-1 es el modelo de roles (`rol_de`, `PERMISOS_POR_ROL`)
+y la empresa por usuario: el listado de cuentas solo muestra la empresa del
+que llama, y cambiar el perfil, el grupo o la empresa de una cuenta exige
+rol admin. Ver la nota larga de `app/core/deps.py::get_current_user_verificado`.
 
 ORDEN DE LAS RUTAS
 ------------------
@@ -46,8 +46,9 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
+from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado, rol_de
 from app.core.security import hashear_contrasena, verificar_contrasena
+from app.models.company import CompanyModel
 from app.models.user import UserModel
 from app.schemas.auth import (
     CambioContrasenaRequest,
@@ -76,15 +77,34 @@ async def _cuenta(db: Sesion, usuario_id: UUID) -> UserModel:
     return cuenta
 
 
+def _misma_empresa_o_404(actor: UserModel, cuenta: UserModel) -> None:
+    """404 si la cuenta no es de la empresa del actor (P0-1).
+
+    El operador admin sin empresa puede tocar cualquiera; un usuario sin
+    empresa y sin rol admin no toca a nadie. 404 y no 403, para no confirmar
+    que existe una cuenta con ese id en otra empresa. Una cuenta sin empresa
+    (operador) tampoco la ve un usuario con empresa: no es de su empresa.
+    """
+    if actor.company_id is not None:
+        if cuenta.company_id != actor.company_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="La cuenta no existe"
+            )
+    elif rol_de(actor) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="La cuenta no existe"
+        )
+
+
 @router.get("", response_model=list[UsuarioResponse])
 async def listar_cuentas(
     db: Sesion,
-    _: UsuarioActual,
+    usuario: UsuarioActual,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     solo_activas: bool = Query(False),
 ) -> list[UsuarioResponse]:
-    """Las cuentas del sistema.
+    """Las cuentas de la empresa del que llama (P0-1).
 
     `UsuarioActual` y no `UsuarioVerificado`: ver la lista es un endpoint de lectura
     y no compromete a nadie. Pedir la contrasena para mirar una lista haria que el
@@ -93,8 +113,19 @@ async def listar_cuentas(
     `password_hash` no sale: `UsuarioResponse` no declara el campo, y con
     `from_attributes` eso es lo que lo mantiene fuera. Ver el modulo de
     `app/schemas/auth.py`.
+
+    Un usuario con empresa solo ve las cuentas de su empresa. El operador
+    admin sin empresa (arranque) las ve todas. Un usuario sin empresa y sin
+    rol admin no ve nada (404).
     """
     consulta = select(UserModel)
+    if usuario.company_id is not None:
+        consulta = consulta.where(UserModel.company_id == usuario.company_id)
+    elif rol_de(usuario) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tu cuenta no tiene empresa asignada",
+        )
     if solo_activas:
         consulta = consulta.where(UserModel.is_active.is_(True))
     cuentas = list(
@@ -138,6 +169,20 @@ async def registrar_usuario(
             detail=f"Ya existe una cuenta con el correo {correo}",
         )
 
+    # La empresa, si se pidio, tiene que existir (P0-1). Sin ella la cuenta
+    # nace sin empresa y no ve nada hasta que un admin se la asigne.
+    if datos.company_id is not None:
+        empresa = (
+            await db.execute(
+                select(CompanyModel).where(CompanyModel.id == datos.company_id)
+            )
+        ).scalar_one_or_none()
+        if empresa is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="La empresa no existe",
+            )
+
     nuevo_usuario = UserModel(
         email=correo,
         nombre=datos.nombre.strip(),
@@ -145,6 +190,7 @@ async def registrar_usuario(
         perfil=datos.perfil,
         grupo=datos.grupo,
         is_active=datos.is_active,
+        company_id=datos.company_id,
     )
     db.add(nuevo_usuario)
     try:
@@ -162,10 +208,17 @@ async def registrar_usuario(
 
 @router.get("/{usuario_id}", response_model=UsuarioResponse)
 async def obtener_cuenta(
-    usuario_id: UUID, db: Sesion, _: UsuarioActual
+    usuario_id: UUID, db: Sesion, usuario: UsuarioActual
 ) -> UsuarioResponse:
-    """Una cuenta por id. Sin hash, como todas."""
-    return UsuarioResponse.model_validate(await _cuenta(db, usuario_id))
+    """Una cuenta por id. Sin hash, como todas.
+
+    P0-1: un usuario con empresa solo puede ver cuentas de su empresa. El
+    operador admin sin empresa las ve todas. 404 y no 403, para no confirmar
+    que existe una cuenta con ese id en otra empresa.
+    """
+    cuenta = await _cuenta(db, usuario_id)
+    _misma_empresa_o_404(usuario, cuenta)
+    return UsuarioResponse.model_validate(cuenta)
 
 
 @router.patch("/{usuario_id}", response_model=UsuarioResponse)
@@ -204,6 +257,7 @@ async def actualizar_cuenta(
     recuperacion es entrar a Postgres a mano.
     """
     cuenta = await _cuenta(db, usuario_id)
+    _misma_empresa_o_404(actor, cuenta)
 
     cambios = datos.model_dump(exclude_unset=True)
     if not cambios:
@@ -212,14 +266,38 @@ async def actualizar_cuenta(
             detail="No mandaste ningún campo que se pueda cambiar",
         )
 
-    if ("perfil" in cambios or "grupo" in cambios) and actor.perfil not in (
+    # Cambiar la empresa de una cuenta es tan sensible como cambiar su
+    # perfil (P0-1): mueve a la persona a ver los datos de otra empresa.
+    # Solo un admin, y la empresa tiene que existir. Un `company_id: null`
+    # explicito se ignora: quitar la empresa es dar de baja la cuenta, no
+    # dejarla flotando sin empresa y sin que nadie lo note.
+    if "company_id" in cambios and cambios["company_id"] is None:
+        del cambios["company_id"]
+    if not cambios:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No mandaste ningún campo que se pueda cambiar",
+        )
+    if "company_id" in cambios:
+        empresa = (
+            await db.execute(
+                select(CompanyModel).where(CompanyModel.id == cambios["company_id"])
+            )
+        ).scalar_one_or_none()
+        if empresa is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="La empresa no existe",
+            )
+
+    if ("perfil" in cambios or "grupo" in cambios or "company_id" in cambios) and actor.perfil not in (
         "admin",
         "develop",
         "programador",
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo un administrador puede modificar perfiles o grupos de acceso.",
+            detail="Solo un administrador puede modificar perfiles, grupos o empresa de acceso.",
         )
 
     if cambios.get("is_active") is False:
@@ -253,7 +331,7 @@ async def cambiar_contrasena(
     usuario_id: UUID,
     cuerpo: CambioContrasenaRequest,
     db: Sesion,
-    _: UsuarioVerificado,
+    actor: UsuarioVerificado,
 ) -> None:
     """Rota la contrasena de una cuenta.
 
@@ -284,8 +362,11 @@ async def cambiar_contrasena(
 
     Cuando la cuenta es la propia, esto no importa: la sesion del que la rotó
     sigue viva, que es lo comodo. Cuando es otra, es lo que hay.
+
+    P0-1: solo se rota la contrasena de una cuenta de la propia empresa.
     """
     cuenta = await _cuenta(db, usuario_id)
+    _misma_empresa_o_404(actor, cuenta)
 
     if not verificar_contrasena(cuerpo.contrasena_actual, cuenta.password_hash):
         # 400 y no 401: el token es valido —si no, `UsuarioVerificado` ya habria

@@ -254,6 +254,10 @@ async def _escribir_documento(
 
         db.add(TicketDocumentModel(
             ticket_id=ticket.id,
+            # La empresa es la del ticket (P0-1). Sin ella, servir el
+            # comprobante exigiria leer el ticket primero y el control de
+            # acceso no podria ser una sola consulta.
+            company_id=ticket.company_id,
             contenido=contenido,
             content_type=content_type,
             nombre_archivo=nombre_archivo or ticket.source_file,

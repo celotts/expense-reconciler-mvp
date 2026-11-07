@@ -7,7 +7,15 @@ CREATE TABLE IF NOT EXISTS companies (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(150) NOT NULL,
     tax_id VARCHAR(50) UNIQUE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    -- Plan comercial (P0-1, migracion 0020): 'basico' por defecto, 'demo'
+    -- para la empresa de demostracion. El plan es hoy un dato, no una
+    -- cerradura: no bloquea nada hasta que exista facturacion.
+    plan VARCHAR(20) NOT NULL DEFAULT 'basico',
+    trial_hasta TIMESTAMP WITH TIME ZONE,
+    tickets_usados_este_mes INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_companies_plan CHECK (plan IN ('basico', 'demo')),
+    CONSTRAINT ck_companies_uso_no_negativo CHECK (tickets_usados_este_mes >= 0)
 );
 
 -- Tabla de Cuentas con acceso
@@ -23,6 +31,9 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) NOT NULL,
     nombre VARCHAR(120) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
+    -- La empresa de la cuenta (P0-1, migracion 0020). NULL = operador sin
+    -- empresa: no ve nada salvo que sea admin de arranque.
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     perfil VARCHAR(50) NOT NULL DEFAULT 'digitalizador',
     grupo VARCHAR(50) NOT NULL DEFAULT 'operaciones',
@@ -179,6 +190,9 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
 -- Tabla de Conciliación (Relación Ticket <-> Banco)
 CREATE TABLE IF NOT EXISTS reconciliations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    -- La empresa de la conciliacion (P0-1, migracion 0020). Copia de
+    -- tickets.company_id al crearla.
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     ticket_id UUID REFERENCES tickets(id) ON DELETE SET NULL,
     bank_transaction_id UUID REFERENCES bank_transactions(id) ON DELETE SET NULL,
     match_status VARCHAR(50) NOT NULL,
@@ -213,6 +227,12 @@ CREATE TABLE IF NOT EXISTS reconciliations (
 CREATE INDEX IF NOT EXISTS ix_reconciliations_revisadas
     ON reconciliations (revisado_at DESC)
     WHERE revisado_por IS NOT NULL;
+
+-- P0-1 (0020): la conciliacion, el evento y el documento se filtran por empresa.
+CREATE INDEX IF NOT EXISTS ix_users_company ON users (company_id);
+CREATE INDEX IF NOT EXISTS ix_reconciliations_company ON reconciliations (company_id);
+CREATE INDEX IF NOT EXISTS ix_scan_events_company ON scan_events (company_id);
+CREATE INDEX IF NOT EXISTS ix_ticket_documents_company ON ticket_documents (company_id);
 
 -- Tabla de Plantillas de Mapeo Contable
 CREATE TABLE IF NOT EXISTS accounting_mappings (
@@ -261,6 +281,9 @@ CREATE TABLE IF NOT EXISTS scan_files (
 CREATE TABLE IF NOT EXISTS scan_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     scan_file_id UUID NOT NULL REFERENCES scan_files(id) ON DELETE CASCADE,
+    -- La empresa del evento (P0-1, migracion 0020). Copia de
+    -- scan_files.company_id al registrarlo.
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     action VARCHAR(20) NOT NULL,
     detail TEXT,
     actor VARCHAR(255),
@@ -327,6 +350,9 @@ CREATE TABLE IF NOT EXISTS ticket_documents (
     -- `ix_ticket_documents_sin_bifurcar` más la regla de que el vigente es el
     -- de mayor `version`.
     ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    -- La empresa del documento (P0-1, migracion 0020). Copia de
+    -- tickets.company_id al guardarlo.
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     contenido BYTEA NOT NULL,
     -- Lo declara el cliente y NO se usa tal cual para servirlo: el endpoint
     -- responde desde una lista cerrada de tipos que el navegador no puede
@@ -1305,14 +1331,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Una base creada desde `init.sql` esta AL DIA con las 19 migraciones, porque
--- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 18
+-- Una base creada desde `init.sql` esta AL DIA con las 20 migraciones, porque
+-- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 19
 -- archivos sobre una base que ya tiene todo: `IF NOT EXISTS` los haria
 -- idempotentes, pero el operador veria "aplicando 0002..." y pensaria que su
 -- base estaba vieja. El registro tiene que decir la verdad, y la verdad es que
 -- esa base no necesita nada.
 --
--- Son 19 y no 12 porque la 0018 y la 0019 se anadieron despues. Esa omision es exactamente
+-- Son 20 y no 12 porque la 0018, la 0019 y la 0020 se anadieron despues. Esa omision es exactamente
 -- el fallo que `test_init_sql_espeja_los_modelos.py` existe para cazar, y lo
 -- cazó: faltaba la tabla `tipos_gasto` entera y no solo columnas. Si anades una
 -- migracion, la copias aqui Y agregas su fila a esta lista.
@@ -1337,5 +1363,49 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0016_perfil_usuario.sql'),
     ('0017_auditoria.sql'),
     ('0018_tipos_gasto.sql'),
-    ('0019_lotes.sql')
+    ('0019_lotes.sql'),
+    ('0020_usuario_empresa.sql')
 ON CONFLICT (nombre) DO NOTHING;
+
+
+-- =====================================================================
+-- Row Level Security: segunda cerradura (P0-1, migracion 0020)
+-- =====================================================================
+--
+-- Replica del apartado 6 de `0020_usuario_empresa.sql`. La politica es
+-- FAIL-OPEN: si `app.company_id` esta vacio (migraciones, siembra, respaldo,
+-- escaneo en segundo plano), deja pasar todo. La sesion de un usuario con
+-- empresa lleva el valor puesto por `_usuario_del_token` y solo ve sus filas.
+-- Las filas sin empresa (`company_id IS NULL`: inventario sin atribuir) las
+-- ve cualquiera. Ver la migracion para el porqué completo.
+DO $$
+DECLARE
+    tabla text;
+BEGIN
+    FOREACH tabla IN ARRAY ARRAY[
+        'tickets', 'bank_transactions', 'reconciliations',
+        'accounting_mappings', 'scan_files', 'scan_events',
+        'ticket_documents', 'cierres_periodo', 'productos', 'compras',
+        'movimientos_inventario', 'tipos_gasto', 'lotes', 'users', 'companies'
+    ] LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', tabla);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', tabla);
+        EXECUTE format('DROP POLICY IF EXISTS p_tenant ON %I', tabla);
+        IF tabla = 'companies' THEN
+            EXECUTE format($pol$
+                CREATE POLICY p_tenant ON %I USING (
+                    current_setting('app.company_id', true) IS NULL
+                    OR current_setting('app.company_id', true) = ''
+                    OR id::text = current_setting('app.company_id', true)
+                )$pol$, tabla);
+        ELSE
+            EXECUTE format($pol$
+                CREATE POLICY p_tenant ON %I USING (
+                    current_setting('app.company_id', true) IS NULL
+                    OR current_setting('app.company_id', true) = ''
+                    OR company_id IS NULL
+                    OR company_id::text = current_setting('app.company_id', true)
+                )$pol$, tabla);
+        END IF;
+    END LOOP;
+END $$;

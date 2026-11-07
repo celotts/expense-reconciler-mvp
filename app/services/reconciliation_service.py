@@ -1,7 +1,6 @@
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -275,7 +274,7 @@ async def _get_unreconciled_bank_transactions(
     query = select(BankTransactionModel).where(
         and_(
             BankTransactionModel.company_id == request.company_id,
-            BankTransactionModel.is_reconciled == False
+            BankTransactionModel.is_reconciled.is_(False)
         )
     )
 
@@ -436,6 +435,10 @@ async def _save_reconciliations(
     """
     for match in matches:
         reconciliation = ReconciliationModel(
+            # La empresa es la del ticket (P0-1). El motor solo enlaza
+            # ticket y movimiento de la misma empresa, asi que la del
+            # movimiento es la misma por construccion.
+            company_id=match.ticket.company_id,
             ticket_id=match.ticket.id,
             bank_transaction_id=match.bank_transaction.id,
             match_status=match.match_status.value,

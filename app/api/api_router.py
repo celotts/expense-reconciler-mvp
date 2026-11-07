@@ -13,6 +13,7 @@ from app.api.reports import router as reports_router
 from app.api.scans import router as scan_router
 from app.api.sistema import router as sistema_router
 from app.api.tickets import router as tickets_router
+from app.api.tipos_gasto import router as tipos_gasto_router
 from app.api.usuarios import router as usuarios_router
 from app.core.deps import get_current_user
 
@@ -66,6 +67,16 @@ api_router.include_router(
     tickets_router,
     prefix="/tickets",
     tags=["Tickets"],
+    dependencies=[Depends(get_current_user)],
+)
+# Tipos de gasto y autorizacion (P0-1, correccion del bug P0-6). Este router
+# existia pero NO estaba registrado aqui, asi que sus endpoints devolvian 404
+# y el bug `usuario.company_id` (500 en cada llamada) nunca se vio en vivo.
+# El prefijo `/tipos-gasto` ya lo declara el modulo, igual que `dashboard.py`:
+# ponerlo tambien aqui produciria `/tipos-gasto/tipos-gasto/`.
+api_router.include_router(
+    tipos_gasto_router,
+    tags=["Tipos de gasto"],
     dependencies=[Depends(get_current_user)],
 )
 # El escaner de carpeta. Mismo criterio que los demas: token obligatorio a nivel

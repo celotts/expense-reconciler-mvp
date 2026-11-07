@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import UsuarioActual, resolver_empresa
 from app.models.company import CompanyModel
 from app.services import analitica, hallazgos
 from app.services.accuracy_service import compute_accuracy_report
@@ -286,23 +286,25 @@ async def get_dashboard(
 ) -> DashboardResponse:
     """El tablero.
 
-    `usuario` se declara y no se usa: la proteccion la pone el router entero en
-    `api_router.py`, no este endpoint. Se deja para que quede a la vista que
-    aqui no hay puerta, y no porque sirva de algo.
+    P0-1: el tablero es SIEMPRE de una empresa, la resuelta del usuario.
+    Sin `company_id` vale la del usuario; con otra, 404. Nunca se agregan
+    los numeros de TODAS las empresas por defecto: un total sumado de
+    varias empresas no es el gasto de nadie.
     """
-    company_name = None
-    if company_id:
-        company = await db.get(CompanyModel, company_id)
-        company_name = company.name if company else None
+    # `resolver_empresa` y no el `company_id` del query sin mas: el query
+    # solo propone, la empresa del usuario dispone.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    company = await db.get(CompanyModel, empresa)
+    company_name = company.name if company else None
 
     ahora = analitica.utcnow()
     # El mes ya comparado lo pide el servicio: las dos ventanas se calculan
     # juntas para que un cambio de dia a mitad no compare meses distintos.
-    cifra = await analitica.cifra_periodo(db, company_id, ahora=ahora)
+    cifra = await analitica.cifra_periodo(db, empresa, ahora=ahora)
     mes_desde, mes_hasta = analitica.mes_actual(ahora)
     ant_desde, _ = analitica.mes_anterior(ahora)
 
-    tendencia = await analitica.tendencia_mensual(db, company_id, meses=meses, ahora=ahora)
+    tendencia = await analitica.tendencia_mensual(db, empresa, meses=meses, ahora=ahora)
     # El total historico usa la ventana mas amplia de la serie, no "todo": si
     # alguien pide 3 meses de tendencia, el historico tambien es de 3 meses. Un
     # "total" que no corresponde al rango dibujado hace que las barras no
@@ -310,9 +312,9 @@ async def get_dashboard(
     total_historico = sum((m["monto"] for m in tendencia), Decimal("0"))
     tickets_historico = sum(m["tickets"] for m in tendencia)
 
-    banco = await analitica.estado_del_banco(db, company_id)
-    por_estado = await analitica.por_estado(db, company_id)
-    por_estado_conc = await analitica.por_estado_conciliacion(db, company_id)
+    banco = await analitica.estado_del_banco(db, empresa)
+    por_estado = await analitica.por_estado(db, empresa)
+    por_estado_conc = await analitica.por_estado_conciliacion(db, empresa)
 
     # La cola de revision son los estados que todavia piden a una persona. Se
     # deriva de la lista de `enums.OPEN_STATUSES` y no de una copia escrita
@@ -325,13 +327,15 @@ async def get_dashboard(
     cola = {k: v for k, v in cola.items() if v}
 
     exactitud = None
-    if company_id:
+    # `empresa` siempre esta resuelta (P0-1), asi que el veredicto se calcula
+    # siempre y no solo cuando el query traia `company_id`.
+    if empresa:
         # El reporte de exactitud no tiene nada que ver con el gasto por
         # categoria y puede fallar por sus propios motivos. Que falle no puede
         # tumbar el dashboard entero, asi que se degrada a `null` y la pantalla
         # lo trata como "no hay veredicto", no como "error".
         try:
-            report = await compute_accuracy_report(db, company_id)
+            report = await compute_accuracy_report(db, empresa)
             exactitud = {
                 "objetivo": report.objetivo,
                 "veredicto_global": report.veredicto_global,
@@ -357,14 +361,14 @@ async def get_dashboard(
         except Exception:
             exactitud = None
 
-    resumen_mes = await _resumen_mes(db, company_id, ahora)
+    resumen_mes = await _resumen_mes(db, empresa, ahora)
 
     return DashboardResponse(
-        company_id=company_id,
+        company_id=empresa,
         company_name=company_name,
         mes=resumen_mes,
-        por_categoria=await analitica.por_categoria(db, company_id, mes_desde, mes_hasta, cifra.monto),
-        comparativo=await analitica.comparativo_mensual(db, company_id, meses=3, ahora=ahora),
+        por_categoria=await analitica.por_categoria(db, empresa, mes_desde, mes_hasta, cifra.monto),
+        comparativo=await analitica.comparativo_mensual(db, empresa, meses=3, ahora=ahora),
         hallazgos=[
             Hallazgo(**h)
             for h in hallazgos.hallazgos_tendencia(
@@ -376,12 +380,12 @@ async def get_dashboard(
             )
         ],
         tendencia=tendencia,
-        top_proveedores=await analitica.top_proveedores(db, company_id, mes_desde, mes_hasta),
+        top_proveedores=await analitica.top_proveedores(db, empresa, mes_desde, mes_hasta),
         por_estado=por_estado,
         por_estado_conciliacion=por_estado_conc,
         banco=Banco(**banco),
         cola_revision=cola,
-        sin_clasificar=SinClasificar(**await analitica.pendientes_de_clasificar(db, company_id)),
+        sin_clasificar=SinClasificar(**await analitica.pendientes_de_clasificar(db, empresa)),
         # "Hay datos" significa hay ALGO que mirar: un ticket o un movimiento. Con
         # cero de los dos, la pantalla esta de veras vacia y hay que decirlo, no
         # dejar seis tarjetas en cero que parecen un tablero que no carga.

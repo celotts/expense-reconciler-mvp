@@ -55,6 +55,16 @@ class ReconciliationModel(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # La empresa de esta conciliacion (P0-1). Se copia del ticket al crearla:
+    # una conciliacion no puede ser de dos empresas a la vez, y el enlace
+    # ticket <-> movimiento bancario solo vale si los dos son de la misma.
+    # Nullable porque las conciliaciones viejas se rellenan en la migracion
+    # 0020 desde el ticket; las nuevas siempre la llevan.
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("tickets.id", ondelete="SET NULL"), nullable=True)
     bank_transaction_id = Column(UUID(as_uuid=True), ForeignKey("bank_transactions.id", ondelete="SET NULL"), nullable=True)
     match_status: Mapped[str] = mapped_column(String(50), nullable=False)

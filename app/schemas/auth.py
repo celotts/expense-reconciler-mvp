@@ -58,6 +58,11 @@ class UsuarioCreate(BaseModel):
     perfil: str = Field(default="digitalizador", max_length=50)
     grupo: str = Field(default="operaciones", max_length=50)
     is_active: bool = Field(default=True)
+    # La empresa a la que pertenece la cuenta (P0-1). None = sin empresa:
+    # esa cuenta no ve nada hasta que un admin le asigne una. Solo un
+    # admin puede ponerla al crear; el registro publico la crea con la
+    # empresa nueva (ver `POST /auth/registro`).
+    company_id: UUID | None = None
 
     @property
     def correo_normalizado(self) -> str:
@@ -85,6 +90,9 @@ class UsuarioResponse(BaseModel):
     last_login_at: datetime | None = None
     perfil: str = "digitalizador"
     grupo: str = "operaciones"
+    # La empresa de la cuenta (P0-1). None = sin empresa asignada: no ve
+    # nada hasta que un admin le asigne una.
+    company_id: UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -110,6 +118,10 @@ class UsuarioUpdate(BaseModel):
     is_active: bool | None = None
     perfil: str | None = Field(default=None)
     grupo: str | None = Field(default=None)
+    # Cambiar la empresa de una cuenta es tan sensible como cambiar su
+    # perfil: solo un admin (ver `api/usuarios.py`). None explicito NO
+    # quita la empresa; para quitarla hace falta la baja de la cuenta.
+    company_id: UUID | None = Field(default=None)
 
 
 class CambioContrasenaRequest(BaseModel):
@@ -145,6 +157,29 @@ class CambioContrasenaRequest(BaseModel):
         if actual is not None and valor == actual:
             raise ValueError("La contrasena nueva es igual a la actual")
         return valor
+
+
+class RegistroRequest(BaseModel):
+    """El cuerpo del autorregistro (P0-1).
+
+    Un registro crea TRES cosas a la vez: la empresa, su catalogo de tipos
+    de gasto y la cuenta admin de esa empresa. `tax_id` es opcional: sin
+    RFC se guarda `SIN-RFC-XXXXXXXX` como marcador, y hay que poner el RFC
+    real antes de cualquier CFDI (P0-2). El marcador es visible a proposito:
+    un RFC inventado que pareciera real seria peor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(..., max_length=_CORREO_MAXIMO)
+    nombre: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=_CONTRASENA_MINIMA, max_length=256)
+    empresa_nombre: str = Field(..., min_length=1, max_length=150)
+    tax_id: str | None = Field(default=None, min_length=1, max_length=50)
+
+    @property
+    def correo_normalizado(self) -> str:
+        return self.email.strip().lower()
 
 
 class TokenResponse(BaseModel):

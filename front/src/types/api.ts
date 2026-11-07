@@ -17,6 +17,10 @@ export interface Usuario {
   last_login_at: string | null;
   perfil?: string;
   grupo?: string;
+  /** La empresa de la cuenta (P0-1). `null` = sin empresa asignada: esa
+   *  cuenta no ve nada hasta que un admin le asigne una. Lo emite el
+   *  backend en `UsuarioResponse.company_id` (`app/schemas/auth.py`). */
+  company_id: string | null;
 }
 
 /** Lo que devuelve `POST /auth/login`.

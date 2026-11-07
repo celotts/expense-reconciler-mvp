@@ -86,6 +86,7 @@ from app.core.enums import (
 )
 from app.core.time import utcnow
 from app.models.inventario import CompraModel
+from app.models.lote import LoteModel, es_extemporaneo, periodo_de_fecha
 from app.models.scan_file import ScanEventModel, ScanFileModel
 from app.models.ticket import TicketModel
 from app.services.ai_extractor import ai_extractor
@@ -97,6 +98,11 @@ from app.services.archivado_service import (
 from app.services.auditoria import (
     registrar_auditoria,
     registrar_digitalizacion_auditoria,
+)
+from app.services.lote_service import (
+    ACCION_AUDITORIA_EXTEMPORANEO,
+    ErrorLote,
+    resolver_lote_corrida,
 )
 from app.services.calidad_foto import revisar_calidad_foto
 from app.services.capture import ExtractionUnavailable, capture_ticket
@@ -347,6 +353,21 @@ class ResumenArchivo:
     status: ScanStatus = ScanStatus.PENDIENTE
     accion: str = "VISTO"
     ticket_id: UUID | None = None
+    # El lote en el que se escaneo este archivo en ESTA corrida. Un
+    # duplicado tambien lo lleva: el archivo se escaneo aqui aunque el
+    # ticket sea el del original, y el duplicado no suma al lote. En el
+    # atajo SIN_CAMBIOS es el lote que ya tenia el archivo, no el de la
+    # corrida: una segunda pasada no re-asigna.
+    lote_id: UUID | None = None
+    # `True` = la fecha del papel es anterior al periodo del lote de la
+    # corrida: el papel llego tarde. El ticket se queda en el lote de la
+    # corrida y su periodo contable sigue siendo el de la fecha del papel.
+    # Sin fecha en el papel no hay extemporaneo.
+    extemporaneo: bool = False
+    # La entrada de `ResumenEscaneo.extemporaneos` para este archivo, solo
+    # cuando `extemporaneo` es True. Es `dict` y no un schema, por la misma
+    # razon que `datos`: `services/` no importa de `schemas/`.
+    entrada_extemporaneo: dict | None = None
     confianza: float | None = None
     origen: ConfidenceSource | None = None
     detalle: str | None = None
@@ -562,6 +583,16 @@ class ResumenEscaneo:
     # corriendo.
     duracion_segundos: float | None = None
 
+    # --- El lote de la corrida -------------------------------------------
+    #
+    # `None` en el modo inventario (sin `company_id`): sin empresa no hay
+    # ticket, y sin ticket no hay lote. `extemporaneos` es lista y no
+    # numero, como `duplicados_por_contenido`: el numero no dice que papel
+    # llego tarde ni de cuando es.
+    lote_id: UUID | None = None
+    lote_folio: str | None = None
+    extemporaneos: list[dict] = field(default_factory=list)
+
     @property
     def leidos(self) -> int:
         return self.nuevos + self.actualizados
@@ -590,6 +621,10 @@ async def _registrar(
     db.add(
         ScanEventModel(
             scan_file_id=fila.id,
+            # La empresa del evento es la del archivo en este momento (P0-1).
+            # Si el archivo todavia no se atribuyo, queda NULL y se rellena
+            # en la migracion 0020 desde el archivo.
+            company_id=fila.company_id,
             action=accion,
             detail=detalle,
             actor=actor,
@@ -729,6 +764,138 @@ async def _actualizar_ticket(
     return ticket
 
 
+def _vincular_a_lote(
+    lote: LoteModel,
+    fila: ScanFileModel,
+    ticket: TicketModel | None,
+    *,
+    fecha_papel: date | None,
+    fecha_escaneo: date | None,
+    contar: bool,
+) -> bool:
+    """Pone `lote_id` en el archivo y en el ticket, y suma al cache del lote.
+
+    Solo muta en memoria: quien llama hace el commit, como con el resto
+    de los campos de la fila. `contar=True` SOLO cuando el ticket NACE en
+    esta llamada: un duplicado no crea ticket ni suma, una relectura no
+    vuelve a contar el mismo ticket, y una segunda pasada no llega aqui
+    (el atajo SIN_CAMBIOS vuelve antes).
+
+    Devuelve si el ticket es extemporaneo: su fecha de papel es anterior
+    al periodo del lote de la corrida. Sin fecha en el papel (`None`) no
+    hay extemporaneo: el ticket pertenece al periodo del lote de la
+    corrida, que es el periodo de escaneo. La marca durable no es una
+    columna nueva (ver `lote_service.py`): queda en la respuesta, en el
+    detalle del evento CREADO o ACTUALIZADO de `scan_events` y en
+    `auditoria`, y se vuelve a derivar de `ticket.expense_date` contra
+    `lote.fecha_inicio`.
+    """
+    fila.lote_id = lote.id
+    if ticket is not None:
+        ticket.lote_id = lote.id
+    if contar and ticket is not None:
+        lote.total_escaneado = (lote.total_escaneado or 0) + 1
+        lote.importe_total = (lote.importe_total or Decimal("0")) + (
+            ticket.total_amount or Decimal("0")
+        )
+    if fecha_papel is None or fecha_escaneo is None:
+        return False
+    return es_extemporaneo(fecha_papel, fecha_escaneo, lote.tipo_periodo)
+
+
+def _detalle_extemporaneo(fecha_papel: date, lote: LoteModel) -> str:
+    """El detalle del evento CREADO o ACTUALIZADO de un ticket que llego tarde.
+
+    Va como detalle de ese evento, no como accion nueva: la CHECK
+    `ck_scan_events_action` solo permite VISTO, CREADO, ACTUALIZADO,
+    SIN_CAMBIOS, OMITIDO, ERROR, REINTENTO y BORRADO, y anadir una accion
+    es un cambio de DDL (modelo + migracion + `init.sql`) para un dato que
+    ya cabe en el detalle. Se busca con `detail LIKE '%extemporaneo%'`.
+    """
+    return (
+        f"extemporaneo: fecha de papel {fecha_papel.isoformat()} anterior "
+        f"al periodo del lote {lote.folio} "
+        f"({lote.fecha_inicio.isoformat()}–{lote.fecha_fin.isoformat()}); "
+        "el ticket se queda en este lote y su periodo contable sigue "
+        "siendo el de la fecha del papel"
+    )
+
+
+async def _auditar_extemporaneo(entrada_ext: dict, actor: str) -> None:
+    """La marca del ticket que llego tarde en `auditoria`, donde viven
+    los eventos de los lotes (cerrar y reabrir ya escriben ahi).
+
+    Sin sesion propia: abre la suya, como la auditoria de digitalizacion
+    que ya se hace por archivo en `escanear`. Si no se puede escribir, la
+    funcion lo registra en el log y no tumba el escaneo: el ticket ya
+    quedo guardado y la marca tambien quedo en el detalle del evento
+    CREADO/ACTUALIZADO de `scan_events`.
+    """
+    await registrar_auditoria(
+        accion=ACCION_AUDITORIA_EXTEMPORANEO,
+        modulo="lotes",
+        usuario_id=actor,
+        registro_afectado=entrada_ext["ticket_id"],
+        detalles=dict(entrada_ext),
+    )
+
+
+def _entrada_extemporaneo(
+    relative_path: str,
+    ticket_id: UUID,
+    fecha_papel: date,
+    lote: LoteModel,
+) -> dict:
+    """La entrada de `ResumenEscaneo.extemporaneos` para un ticket.
+
+    Lleva el periodo contable (el de la fecha del papel) ademas del lote,
+    porque son las dos cosas que el contador tiene que ver juntas: donde
+    se digitalizo y de que mes es el gasto.
+    """
+    ejercicio, mes, _, _ = periodo_de_fecha(fecha_papel, lote.tipo_periodo)
+    return {
+        "archivo": relative_path,
+        "ticket_id": str(ticket_id),
+        "fecha_papel": fecha_papel.isoformat(),
+        "periodo_contable": f"{ejercicio}-{mes:02d}",
+        "lote_id": str(lote.id),
+        "lote_folio": lote.folio,
+    }
+
+
+def _lote_de_creado(
+    lote: LoteModel | None,
+    fila: ScanFileModel,
+    ticket: TicketModel,
+    fecha_papel: date | None,
+    fecha_escaneo: date | None,
+) -> tuple[bool, dict | None, str | None]:
+    """Vincula un ticket recien creado a su lote y arma la marca de tarde.
+
+    Devuelve `(llego_tarde, entrada, detalle)`: la entrada del resumen y
+    el detalle del evento se arman aqui, ANTES del commit, que es cuando
+    los datos del lote estan en memoria. Sin lote no hay nada que
+    vincular: `(False, None, None)`.
+    """
+    if lote is None:
+        return False, None, None
+    llego_tarde = _vincular_a_lote(
+        lote,
+        fila,
+        ticket,
+        fecha_papel=fecha_papel,
+        fecha_escaneo=fecha_escaneo,
+        contar=True,
+    )
+    if not llego_tarde or fecha_papel is None:
+        return llego_tarde, None, None
+    return (
+        llego_tarde,
+        _entrada_extemporaneo(fila.relative_path, ticket.id, fecha_papel, lote),
+        _detalle_extemporaneo(fecha_papel, lote),
+    )
+
+
 def _lector_fijo(resultado):
     """Un lector de OCR que siempre devuelve el resultado ya calculado.
 
@@ -764,6 +931,8 @@ async def procesar_archivo(
     *,
     forzar: bool = False,
     prelectura: dict | None = None,
+    lote: LoteModel | None = None,
+    fecha_escaneo: date | None = None,
 ) -> ResumenArchivo:
     """Lee UN archivo y deja su registro al dia. Nunca lanza por el archivo.
 
@@ -779,9 +948,21 @@ async def procesar_archivo(
     a correr y la imagen preparada se reutiliza para Vision y para el
     chequeo de calidad. `None` hace todo en linea, como antes: es el camino
     del reproceso de UN archivo, que no tiene corrida que paralelice.
+
+    `lote` es el lote de la corrida, resuelto por `escanear` (ver
+    `lote_service.resolver_lote_corrida`): el archivo y el ticket que nazca
+    aqui se vinculan a el, y su cache (`total_escaneado`, `importe_total`)
+    suma solo cuando el ticket es nuevo. Un duplicado se vincula como
+    archivo pero no suma; una segunda pasada no llega a vincular (el atajo
+    SIN_CAMBIOS vuelve antes); una relectura no vuelve a contar. `None`
+    es "sin lote": el modo inventario y las llamadas directas sin lote.
+    `fecha_escaneo` es el dia de la corrida, para decidir si el papel
+    llego tarde; `None` es hoy.
     """
     resumen = ResumenArchivo(relative_path=vista.relative_path)
     ahora = utcnow()
+    if fecha_escaneo is None:
+        fecha_escaneo = date.today()
 
     tipo = detectar_tipo_real(contenido)
 
@@ -891,6 +1072,9 @@ async def procesar_archivo(
             # digitalizados antes de que existiera el archivado quedarian en la
             # carpeta de entrada para siempre.
             resumen.ticket_id = fila.ticket_id
+            # Y el lote es el que YA tenia el archivo, no el de esta corrida:
+            # una segunda pasada no re-asigna ni re-cuenta.
+            resumen.lote_id = fila.lote_id
             resumen.detalle = "el contenido no cambio desde la ultima lectura"
             await _registrar(db, fila, "SIN_CAMBIOS", resumen.detalle, actor)
             return resumen
@@ -908,6 +1092,7 @@ async def procesar_archivo(
             resumen.scan_file_id = fila.id
             resumen.status = ScanStatus(fila.status)
             resumen.accion = "OMITIDO"
+            resumen.lote_id = fila.lote_id
             resumen.detalle = (
                 "el archivo cambio desde la ultima lectura; se relee solo con "
                 "reprocesar=true o con POST /scan/files/{id}/reprocess"
@@ -1081,7 +1266,7 @@ async def procesar_archivo(
             # reprocesa tiene su propia fila con el mismo hash, y contarse a si
             # mismo como duplicado haria que un reproceso nunca actualizara nada.
             ticket_hermano = await _ticket_de_otro_archivo(
-                db, fila.content_hash, vista.relative_path
+                db, fila.content_hash, vista.relative_path, company_id
             )
             if ticket_hermano is not None:
                 detalle = (
@@ -1091,6 +1276,11 @@ async def procesar_archivo(
                 fila.status = ScanStatus.DUPLICADO.value
                 fila.ticket_id = ticket_hermano
                 fila.company_id = company_id
+                # El archivo se escaneo en ESTA corrida, asi que su lote es
+                # el de la corrida, aunque el ticket sea el del original. No
+                # suma al cache: no hay ticket nuevo.
+                if lote is not None:
+                    fila.lote_id = lote.id
                 fila.read_by = extracted.confidence_source.value
                 fila.processed_at = ahora
                 fila.last_error = detalle
@@ -1098,6 +1288,7 @@ async def procesar_archivo(
                 resumen.status = ScanStatus.DUPLICADO
                 resumen.accion = "OMITIDO"
                 resumen.ticket_id = ticket_hermano
+                resumen.lote_id = fila.lote_id
                 resumen.detalle = detalle
                 await _registrar(db, fila, "OMITIDO", detalle, actor, resumen.confianza)
                 return resumen
@@ -1114,7 +1305,7 @@ async def procesar_archivo(
                     return await _marcar_duplicado_por_contenido(
                         db, fila, resumen,
                         company_id=company_id, actor=actor, extracted=extracted,
-                        existente=existente, ahora=ahora,
+                        existente=existente, ahora=ahora, lote=lote,
                     )
 
             ticket = await persistir_extraccion(
@@ -1128,11 +1319,26 @@ async def procesar_archivo(
             fila.read_by = extracted.confidence_source.value
             fila.processed_at = ahora
             fila.last_error = None
+            # El ticket nace aqui: entra al lote de la corrida y suma a su
+            # cache. La entrada y el detalle de extemporaneo se arman ANTES
+            # del commit, que es cuando los datos del lote estan en memoria.
+            llego_tarde, entrada_ext, detalle_ext = _lote_de_creado(
+                lote, fila, ticket, extracted.expense_date, fecha_escaneo
+            )
+            if lote is not None:
+                resumen.lote_id = lote.id
             await db.commit()
             resumen.status = ScanStatus.PROCESADO
             resumen.accion = "CREADO"
             resumen.ticket_id = ticket.id
-            await _registrar(db, fila, "CREADO", None, actor, resumen.confianza)
+            # La marca de extemporaneo va en el DETALLE del CREADO (una
+            # accion nueva no cabe en la CHECK de `scan_events`) y en
+            # `auditoria`. `detalle_ext` es None cuando no llego tarde.
+            await _registrar(db, fila, "CREADO", detalle_ext, actor, resumen.confianza)
+            if llego_tarde and entrada_ext is not None:
+                resumen.extemporaneo = True
+                resumen.entrada_extemporaneo = entrada_ext
+                await _auditar_extemporaneo(entrada_ext, actor)
             return resumen
 
         # El archivo ya estaba registrado y su contenido cambio: se relee el
@@ -1154,7 +1360,7 @@ async def procesar_archivo(
                     return await _marcar_duplicado_por_contenido(
                         db, fila, resumen,
                         company_id=company_id, actor=actor, extracted=extracted,
-                        existente=existente, ahora=ahora,
+                        existente=existente, ahora=ahora, lote=lote,
                     )
             ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
@@ -1162,11 +1368,23 @@ async def procesar_archivo(
                 source_file=vista.relative_path,
             )
             fila.ticket_id = ticket.id
+            llego_tarde, entrada_ext, detalle_ext = _lote_de_creado(
+                lote, fila, ticket, extracted.expense_date, fecha_escaneo
+            )
+            if lote is not None:
+                resumen.lote_id = lote.id
             await db.commit()
             resumen.status = ScanStatus.PROCESADO
             resumen.accion = "CREADO"
             resumen.ticket_id = ticket.id
-            await _registrar(db, fila, "CREADO", None, actor, resumen.confianza)
+            # La marca de extemporaneo va en el DETALLE del CREADO (una
+            # accion nueva no cabe en la CHECK de `scan_events`) y en
+            # `auditoria`. `detalle_ext` es None cuando no llego tarde.
+            await _registrar(db, fila, "CREADO", detalle_ext, actor, resumen.confianza)
+            if llego_tarde and entrada_ext is not None:
+                resumen.extemporaneo = True
+                resumen.entrada_extemporaneo = entrada_ext
+                await _auditar_extemporaneo(entrada_ext, actor)
             return resumen
 
         ticket = (
@@ -1185,7 +1403,7 @@ async def procesar_archivo(
                     return await _marcar_duplicado_por_contenido(
                         db, fila, resumen,
                         company_id=company_id, actor=actor, extracted=extracted,
-                        existente=existente, ahora=ahora,
+                        existente=existente, ahora=ahora, lote=lote,
                     )
             # El ticket se borro. Se crea uno nuevo con el contenido actual.
             nuevo_ticket = await persistir_extraccion(
@@ -1194,15 +1412,25 @@ async def procesar_archivo(
                 source_file=vista.relative_path,
             )
             fila.ticket_id = nuevo_ticket.id
+            llego_tarde, entrada_ext, detalle_ext = _lote_de_creado(
+                lote, fila, nuevo_ticket, extracted.expense_date, fecha_escaneo
+            )
+            if lote is not None:
+                resumen.lote_id = lote.id
             await db.commit()
             resumen.status = ScanStatus.PROCESADO
             resumen.accion = "CREADO"
             resumen.ticket_id = nuevo_ticket.id
+            detalle_creado = "el ticket anterior se habia borrado; se creo uno nuevo"
+            if detalle_ext is not None:
+                detalle_creado = f"{detalle_creado}; {detalle_ext}"
             await _registrar(
-                db, fila, "CREADO",
-                "el ticket anterior se habia borrado; se creo uno nuevo",
-                actor, resumen.confianza,
+                db, fila, "CREADO", detalle_creado, actor, resumen.confianza,
             )
+            if llego_tarde and entrada_ext is not None:
+                resumen.extemporaneo = True
+                resumen.entrada_extemporaneo = entrada_ext
+                await _auditar_extemporaneo(entrada_ext, actor)
             return resumen
 
         if _es_revisado_por_humano(ticket):
@@ -1221,17 +1449,86 @@ async def procesar_archivo(
             resumen.status = ScanStatus.PROCESADO
             resumen.accion = "OMITIDO"
             resumen.ticket_id = ticket.id
+            # El ticket no se toca —ni sus datos ni su lote—: una correccion
+            # humana no se mueve de lote porque el archivo haya cambiado. Si
+            # el ticket no tenia lote, sigue sin tenerlo hasta que alguien lo
+            # asigne; el reproceso con forzar es el que lo reubica.
+            resumen.lote_id = fila.lote_id
             resumen.detalle = detalle
             await _registrar(db, fila, "OMITIDO", detalle, actor, resumen.confianza)
             return resumen
 
+        # La relectura NO mueve el ticket de lote ni lo vuelve a contar: el
+        # ticket se digitalizo en su lote y ahi se queda, aunque la corrida
+        # de hoy sea de otro periodo. Lo que si cambia es el importe del
+        # cache de ESE lote, por la diferencia entre el total viejo y el
+        # nuevo. Y si el ticket todavia no tenia lote (digitalizado antes de
+        # que existieran), esta relectura lo estrena en el lote de la
+        # corrida y ahi si cuenta.
+        total_anterior = ticket.total_amount
+        lote_anterior_id = ticket.lote_id
         await _actualizar_ticket(db, ticket, extracted, contenido)
         fila.ticket_id = ticket.id
+        entrada_ext: dict | None = None
+        detalle_ext: str | None = None
+        if lote_anterior_id is None:
+            if lote is not None:
+                llego_tarde = _vincular_a_lote(
+                    lote,
+                    fila,
+                    ticket,
+                    fecha_papel=extracted.expense_date,
+                    fecha_escaneo=fecha_escaneo,
+                    contar=True,
+                )
+                resumen.lote_id = lote.id
+                if llego_tarde and extracted.expense_date is not None:
+                    entrada_ext = _entrada_extemporaneo(
+                        vista.relative_path,
+                        ticket.id,
+                        extracted.expense_date,
+                        lote,
+                    )
+                    detalle_ext = _detalle_extemporaneo(
+                        extracted.expense_date, lote
+                    )
+        else:
+            lote_viejo = await db.get(LoteModel, lote_anterior_id)
+            if lote_viejo is not None:
+                fila.lote_id = lote_anterior_id
+                resumen.lote_id = lote_anterior_id
+                delta = (ticket.total_amount or Decimal("0")) - (
+                    total_anterior or Decimal("0")
+                )
+                if delta != 0:
+                    lote_viejo.importe_total = (
+                        lote_viejo.importe_total or Decimal("0")
+                    ) + delta
+                if extracted.expense_date is not None and es_extemporaneo(
+                    extracted.expense_date,
+                    fecha_escaneo,
+                    lote_viejo.tipo_periodo,
+                ):
+                    entrada_ext = _entrada_extemporaneo(
+                        vista.relative_path,
+                        ticket.id,
+                        extracted.expense_date,
+                        lote_viejo,
+                    )
+                    detalle_ext = _detalle_extemporaneo(
+                        extracted.expense_date, lote_viejo
+                    )
         await db.commit()
         resumen.status = ScanStatus.PROCESADO
         resumen.accion = "ACTUALIZADO"
         resumen.ticket_id = ticket.id
-        await _registrar(db, fila, "ACTUALIZADO", None, actor, resumen.confianza)
+        # Igual que en CREADO: la marca va en el detalle del ACTUALIZADO
+        # y en `auditoria`, no en una accion nueva.
+        await _registrar(db, fila, "ACTUALIZADO", detalle_ext, actor, resumen.confianza)
+        if entrada_ext is not None:
+            resumen.extemporaneo = True
+            resumen.entrada_extemporaneo = entrada_ext
+            await _auditar_extemporaneo(entrada_ext, actor)
         return resumen
 
     except Exception as exc:
@@ -1413,8 +1710,14 @@ async def _marcar_duplicado_por_contenido(
     extracted,
     existente: TicketModel,
     ahora: datetime,
+    lote: LoteModel | None = None,
 ) -> ResumenArchivo:
-    """Marca el archivo DUPLICADO por contenido, sin crear ticket."""
+    """Marca el archivo DUPLICADO por contenido, sin crear ticket.
+
+    El archivo SI lleva el lote de la corrida (ahi se escaneo), pero no
+    suma a su cache: no hay ticket nuevo, y el original ya conto en su
+    lote cuando se creo.
+    """
     entrada = _entrada_duplicado_por_contenido(resumen.relative_path, extracted, existente)
     detalle = (
         "mismo contenido que otro ticket ya procesado "
@@ -1424,6 +1727,8 @@ async def _marcar_duplicado_por_contenido(
     fila.status = ScanStatus.DUPLICADO.value
     fila.ticket_id = existente.id
     fila.company_id = company_id
+    if lote is not None:
+        fila.lote_id = lote.id
     fila.read_by = extracted.confidence_source.value
     fila.processed_at = ahora
     fila.last_error = detalle
@@ -1431,6 +1736,7 @@ async def _marcar_duplicado_por_contenido(
     resumen.status = ScanStatus.DUPLICADO
     resumen.accion = "OMITIDO"
     resumen.ticket_id = existente.id
+    resumen.lote_id = fila.lote_id
     resumen.detalle = detalle
     resumen.duplicado_por_contenido = entrada
     await _registrar(db, fila, "OMITIDO", detalle, actor, resumen.confianza)
@@ -1438,7 +1744,7 @@ async def _marcar_duplicado_por_contenido(
 
 
 async def _ticket_de_otro_archivo(
-    db: AsyncSession, content_hash: str, relative_path: str
+    db: AsyncSession, content_hash: str, relative_path: str, company_id: UUID | None = None
 ) -> UUID | None:
     """El ticket de otro archivo con los MISMOS bytes, o `None`.
 
@@ -1446,16 +1752,24 @@ async def _ticket_de_otro_archivo(
     otro ARCHIVO salio este ticket", y esa informacion solo existe aqui: el
     ticket no guarda de que ruta vino mas que `source_file`, que es texto libre
     y no se indexa.
+
+    P0-1: el hermano tiene que ser de LA MISMA empresa. Sin el filtro, un
+    archivo escaneado para la empresa B se enlazaba al ticket de la empresa A
+    solo porque los bytes coinciden (el mismo comprobante en dos empresas es
+    un caso legitimo, ver `0005_source_hash_por_empresa.sql`).
     """
+    condiciones = [
+        ScanFileModel.content_hash == content_hash,
+        ScanFileModel.relative_path != relative_path,
+        ScanFileModel.ticket_id.is_not(None),
+        ScanFileModel.status == ScanStatus.PROCESADO.value,
+    ]
+    if company_id is not None:
+        condiciones.append(ScanFileModel.company_id == company_id)
     ticket_id = (
         await db.execute(
             select(ScanFileModel.ticket_id)
-            .where(
-                ScanFileModel.content_hash == content_hash,
-                ScanFileModel.relative_path != relative_path,
-                ScanFileModel.ticket_id.is_not(None),
-                ScanFileModel.status == ScanStatus.PROCESADO.value,
-            )
+            .where(*condiciones)
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -1535,6 +1849,8 @@ async def escanear(
     archivar: bool | None = None,
     simular: bool = False,
     confirmar: bool = False,
+    lote_id: UUID | None = None,
+    crear_lote: dict | None = None,
 ) -> ResumenEscaneo:
     """Recorre la carpeta y procesa lo que corresponda.
 
@@ -1550,6 +1866,10 @@ async def escanear(
         simular: decir que se moveria sin mover nada.
         confirmar: autorizar las compras de esta corrida en el mismo request.
             Apagado por omision; ver la nota larga de `confirmar_compras_de_corrida`.
+        lote_id: el lote al que van los archivos (ABIERTO o EN_REVISION).
+            `None` es reutilizar el del periodo de escaneo, o crearlo.
+        crear_lote: crear un lote nuevo para esta corrida (dict con `nombre`,
+            `ejercicio`, `mes` y `total_esperado`, opcionales).
 
     EL ARCHIVADO Y LA EMPRESA
     =========================
@@ -1618,6 +1938,34 @@ async def escanear(
             simular,
         )
         resumen.corrida_id = corrida.id
+
+        # El lote de la corrida se resuelve DENTRO del candado y ANTES de
+        # leer ningun archivo: dos corridas a la vez sobre el mismo periodo
+        # tienen que ver el mismo lote, y no crear uno cada una. Si el lote
+        # pedido esta cerrado o no existe, la corrida no empieza: se cierra
+        # el registro con el error y se relanza, para que el endpoint
+        # responda el 404/409 en vez de un resumen vacio.
+        fecha_escaneo = date.today()
+        lote: LoteModel | None = None
+        if company_id is not None:
+            try:
+                lote = await resolver_lote_corrida(
+                    db,
+                    company_id,
+                    fecha_escaneo=fecha_escaneo,
+                    actor=actor,
+                    lote_id=lote_id,
+                    crear_lote=crear_lote,
+                )
+            except ErrorLote as exc:
+                scan_registry.cerrar_corrida(
+                    corrida,
+                    {**_calcular_resumen([]), "error": exc.detail},
+                )
+                raise
+            if lote is not None:
+                resumen.lote_id = lote.id
+                resumen.lote_folio = lote.folio
 
         # FASE 0 — que archivos entran, y con que bytes. La lectura de disco y
         # los filtros baratos (tope, solo_pendientes, ilegible) son
@@ -1698,6 +2046,8 @@ async def escanear(
                 actor,
                 forzar=reprocesar,
                 prelectura=prelecturas.get(vista.relative_path),
+                lote=lote,
+                fecha_escaneo=fecha_escaneo,
             )
 
             # El registro de la corrida se actualiza con el resultado de cada
@@ -1957,6 +2307,12 @@ async def escanear(
                     }
                 )
 
+            # Los papeles que llegaron tarde, con su fecha de papel y su
+            # periodo contable. Sin esto, un ticket de octubre escaneado en
+            # noviembre entraria al lote de noviembre sin que nada lo dijera.
+            if detalle.entrada_extemporaneo is not None:
+                resumen.extemporaneos.append(detalle.entrada_extemporaneo)
+
             if detalle.accion == "CREADO":
                 resumen.nuevos += 1
             elif detalle.accion == "ACTUALIZADO":
@@ -2025,6 +2381,15 @@ async def escanear(
     # primer nivel de `ScanResponse`.
     resumen.resumen["duplicados_por_contenido"] = resumen.duplicados_por_contenido
     resumen.resumen["fotos_por_revisar"] = resumen.fotos_por_revisar
+    # El lote y los que llegaron tarde viajan tambien en el resumen de la
+    # corrida, por la misma razon que las dos listas de arriba: con el
+    # escaneo en segundo plano el POST responde 202 sin resultado, y el
+    # front sigue el progreso por `GET /scan/runs`.
+    resumen.resumen["lote_id"] = (
+        str(resumen.lote_id) if resumen.lote_id is not None else None
+    )
+    resumen.resumen["lote_folio"] = resumen.lote_folio
+    resumen.resumen["extemporaneos"] = resumen.extemporaneos
     scan_registry.cerrar_corrida(corrida, resumen.resumen)
     # Tiempo total: se lee DESPUES de cerrar, porque `cerrar_corrida` pone
     # `terminada_at` y `segundos` es `terminada - iniciada`. Antes de cerrar
@@ -2682,6 +3047,7 @@ async def _resolver_datos_de_tickets(
             "validation_errors": ticket.validation_errors,
             "reviewed_by": ticket.reviewed_by,
             "reviewed_at": ticket.reviewed_at,
+            "lote_id": ticket.lote_id,
         }
 
 
@@ -2913,8 +3279,21 @@ async def reprocesar_uno(
         mtime=datetime.fromtimestamp(info.st_mtime, tz=timezone.utc),
         extension=ruta.suffix.lower(),
     )
+    # El reproceso relee UN archivo, y su lote es el que ya tenia el
+    # archivo si lo tenia; si no tenia, el de la corrida de hoy. Un lote
+    # CERRADO no bloquea el reproceso: el ticket se queda en su lote y no
+    # se re-cuenta (ver `procesar_archivo`, rama ACTUALIZADO).
+    lote: LoteModel | None = None
+    if company_id is not None:
+        if fila.lote_id is not None:
+            lote = await db.get(LoteModel, fila.lote_id)
+        if lote is None:
+            lote = await resolver_lote_corrida(
+                db, company_id, fecha_escaneo=date.today(), actor=actor
+            )
     resumen = await procesar_archivo(
-        db, vista, ruta.read_bytes(), company_id, actor, forzar=True
+        db, vista, ruta.read_bytes(), company_id, actor, forzar=True,
+        lote=lote, fecha_escaneo=date.today(),
     )
     # El reproceso devuelve la misma `ScanItemResponse` que el escaneo, asi que
     # tiene que traer los mismos datos. Sin esto, la relectura de un archivo

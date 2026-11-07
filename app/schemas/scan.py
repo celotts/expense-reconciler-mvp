@@ -15,7 +15,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Las tablas que `POST /scan/reset` NO toca. Se devuelven en la respuesta para
 # que quien va a borrar lo lea ahi y no en la documentacion.
@@ -83,6 +83,11 @@ class DatosTicketResponse(BaseModel):
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
 
+    # El lote en el que se digitalizo este ticket. `None` = digitalizado antes
+    # de que existieran los lotes, o inventario sin lote. Va aqui para que el
+    # detalle del archivo no obligue a un segundo llamado por ticket.
+    lote_id: UUID | None = None
+
 class ScanFileResponse(BaseModel):
     """Un archivo del registro, tal como esta en la tabla."""
 
@@ -101,6 +106,9 @@ class ScanFileResponse(BaseModel):
     last_error: str | None = None
     ticket_id: UUID | None = None
     company_id: UUID | None = None
+    # El lote en el que se escaneo este archivo. `None` = escaneado antes de
+    # que existieran los lotes, o inventario sin empresa ni lote.
+    lote_id: UUID | None = None
     # Resumen del ticket asociado, para que el registro de archivos no obligue a
     # abrir cada uno. Ayuda a ver de un vistazo si la lectura funciono.
     ticket_negocio: str | None = None
@@ -128,6 +136,33 @@ class ScanFileDetailResponse(ScanFileResponse):
     """El archivo con su historico, para la pantalla de detalle."""
 
     events: list[ScanEventResponse] = Field(default_factory=list)
+
+
+class CrearLoteRequest(BaseModel):
+    """Que lote crear para esta corrida, si hace falta uno nuevo.
+
+    Todo opcional: lo que falte sale de la fecha de escaneo y de la
+    configuracion de la empresa (`tipo_periodo` de `lote_config`). El
+    folio NO se acepta: lo genera el servidor, secuencial por empresa y
+    mes, igual que en `POST /lotes`.
+
+    `ejercicio` y `mes` van juntos o no van: un mes sin ejercicio es un
+    periodo a medias, y el folio `LOT-2026-10-001` dice el periodo que
+    cubre.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str | None = Field(default=None, min_length=1, max_length=150)
+    ejercicio: int | None = Field(default=None, ge=1900, le=2100)
+    mes: int | None = Field(default=None, ge=1, le=12)
+    total_esperado: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _periodo_completo(self) -> CrearLoteRequest:
+        if (self.ejercicio is None) != (self.mes is None):
+            raise ValueError("ejercicio y mes van juntos o no van")
+        return self
 
 
 class ScanRequest(BaseModel):
@@ -219,6 +254,30 @@ class ScanRequest(BaseModel):
             "resultado."
         ),
     )
+    lote_id: UUID | None = Field(
+        None,
+        description=(
+            "El lote al que van los archivos de esta corrida. Tiene que "
+            "existir, ser de la misma empresa y estar ABIERTO o EN_REVISION: "
+            "un lote CERRADO responde 409. Si no viene, la corrida usa el "
+            "lote ABIERTO del periodo de escaneo, o crea uno si no hay "
+            "ninguno. No va con `crear_lote`."
+        ),
+    )
+    crear_lote: CrearLoteRequest | None = Field(
+        None,
+        description=(
+            "Crear un lote nuevo para esta corrida, con lo que se pida aqui. "
+            "Lo que falte (periodo, nombre) sale de la fecha de escaneo. No "
+            "va con `lote_id`."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _lote_o_crear_no_los_dos(self) -> ScanRequest:
+        if self.lote_id is not None and self.crear_lote is not None:
+            raise ValueError("lote_id y crear_lote no van juntos: elige uno")
+        return self
 
 
 class ScanResetRequest(BaseModel):
@@ -309,6 +368,16 @@ class ScanItemResponse(BaseModel):
     status: str
     accion: str
     ticket_id: UUID | None = None
+    # El lote en el que se escaneo este archivo en ESTA corrida. Un
+    # duplicado tambien lo lleva: el archivo se escaneo aqui aunque el
+    # ticket sea el del original, y el duplicado no suma al lote.
+    lote_id: UUID | None = None
+    # `True` = la fecha del papel es anterior al periodo del lote de la
+    # corrida: el papel llego tarde. El ticket se queda en el lote de la
+    # corrida (el lote dice cuando se digitalizo) y el periodo contable
+    # sigue siendo el de la fecha del papel. Sin fecha en el papel no hay
+    # extemporaneo: el ticket pertenece al periodo del lote de la corrida.
+    extemporaneo: bool = False
     confianza: float | None = None
     origen: str | None = None
     detalle: str | None = None
@@ -489,6 +558,16 @@ class ScanResponse(BaseModel):
     # decidir si el escaneo va bien. `None` solo si la corrida no se registro.
     duracion_segundos: float | None = None
 
+    # --- El lote de la corrida -------------------------------------------
+    #
+    # `None` en el modo inventario (sin `company_id`): sin empresa no hay
+    # ticket, y sin ticket no hay lote. `extemporaneos` es lista y no
+    # numero, como `duplicados_por_contenido`: el numero no dice que papel
+    # llego tarde ni de cuando es.
+    lote_id: UUID | None = None
+    lote_folio: str | None = None
+    extemporaneos: list[dict] = Field(default_factory=list)
+
     # --- La autorizacion de la corrida -------------------------------------
     #
     # Solo se llenan con `{"confirmar": true}` en el request. En una corrida normal
@@ -625,6 +704,20 @@ class ResumenScan(BaseModel):
     # ofrecer un boton que lleve a donde hay que actuar; con ids, cada pantalla
     # tiene que construir su propia URL y se desincroniza de la API.
     colas: dict[str, str] = Field(default_factory=dict)
+
+    # --- El lote de la corrida -------------------------------------------
+    #
+    # Viaja tambien aqui (y no solo en `ScanResponse`) por la misma razon
+    # que `duplicados_por_contenido` y `fotos_por_revisar`: con el escaneo
+    # en segundo plano el POST responde 202 sin resultado, y el front sigue
+    # el progreso por `GET /scan/runs`, donde el resumen de la corrida es
+    # lo unico que hay. `None` en el modo inventario, sin empresa.
+    lote_id: UUID | None = None
+    lote_folio: str | None = None
+    # Los tickets que llegaron tarde en esta corrida, cada uno con archivo,
+    # fecha de papel, periodo contable y lote. Lista y no numero, como
+    # `ilegibles`: el numero no dice que papel llego tarde.
+    extemporaneos: list[dict] = Field(default_factory=list)
 
 
 class ScanStatsResponse(BaseModel):

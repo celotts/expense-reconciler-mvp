@@ -11,11 +11,13 @@ La asignacion de tickets y archivos a un lote NO vive aqui: la hace
   `lote.importe_total`. Esos dos son un CACHE; la cuenta en vivo esta en
   `GET /lotes/{id}`.
 
-Sobre `company_id`, que viene del query o del cuerpo como en `scans.py`:
-el usuario del token no lleva empresa (`UserModel` no tiene `company_id`) y
-no hay multi-tenant, asi que el cliente dice a que empresa pertenece cada
-lote. No es auth nueva y no es un permiso: es el mismo criterio que
-`POST /scan` usa hoy.
+Sobre `company_id` (P0-1, multi-empresa): la empresa la decide el usuario
+del token, no el cliente. Cada endpoint resuelve la empresa con
+`resolver_empresa` (`app/core/deps.py`): el `company_id` del query o del
+cuerpo solo vale si coincide con la empresa del usuario; pedir otra es 404,
+no 403, para no confirmar que esa otra empresa existe ni que tiene lotes.
+Un usuario sin empresa y sin rol admin no ve nada. El operador admin sin
+empresa pide la empresa explicita por query o cuerpo.
 
 Sobre la auditoria: cerrar y reabrir escriben en `auditoria` (la tabla que ya
 existe, `0017`), con `modulo="lotes"`. No se inventa tabla nueva: la
@@ -38,7 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import Escribir, UsuarioActual, resolver_empresa
 from app.core.time import utcnow
 from app.models.auditoria import Auditoria
 from app.models.company import CompanyModel
@@ -90,6 +92,24 @@ async def _empresa_o_404(db: AsyncSession, company_id: UUID) -> CompanyModel:
             detail="La empresa indicada no existe",
         )
     return empresa
+
+
+async def _lote_de_empresa_o_404(
+    db: AsyncSession, lote_id: UUID, empresa: UUID
+) -> LoteModel:
+    """El lote, o 404.
+
+    Un lote de otra empresa es 404 y no 403: un 403 confirmaria que existe
+    un lote con ese id en otra empresa, y la tenencia se protege no
+    confirmando nada. Ver `resolver_empresa` en `app/core/deps.py`.
+    """
+    lote = await _lote_o_404(db, lote_id)
+    if lote.company_id != empresa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El lote indicado no existe",
+        )
+    return lote
 
 
 async def _siguiente_folio(
@@ -195,11 +215,14 @@ async def listar_lotes(
     limit: int = Query(50, ge=1, le=TOPE_PAGINA),
     offset: int = Query(0, ge=0),
 ) -> list[LoteResponse]:
-    """Los lotes, filtrados y paginados, del mas reciente al mas viejo."""
-    del usuario
-    consulta = select(LoteModel)
-    if company_id is not None:
-        consulta = consulta.where(LoteModel.company_id == company_id)
+    """Los lotes, filtrados y paginados, del mas reciente al mas viejo.
+
+    La empresa siempre es la resuelta (`resolver_empresa`), nunca "todas por
+    defecto": un listado sin `company_id` devuelve solo los lotes de la
+    empresa del usuario, y pedir otra empresa es 404.
+    """
+    empresa = await resolver_empresa(usuario, company_id, db)
+    consulta = select(LoteModel).where(LoteModel.company_id == empresa)
     if ejercicio is not None:
         consulta = consulta.where(LoteModel.ejercicio == ejercicio)
     if mes is not None:
@@ -230,6 +253,7 @@ async def listar_lotes(
 
 @router.post("", response_model=LoteResponse, status_code=status.HTTP_201_CREATED)
 async def crear_lote(
+    _: Escribir,
     datos: LoteCreate,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
@@ -240,8 +264,12 @@ async def crear_lote(
     mes segun `tipo_periodo`. Si la empresa exige `total_esperado` en su
     `lote_config` y no viene, es 422: un lote sin expectativa no se puede
     declarar completo despues.
+
+    La empresa del cuerpo se resuelve contra el usuario (`resolver_empresa`):
+    crear un lote en otra empresa es 404, no 403.
     """
     empresa = await _empresa_o_404(db, datos.company_id)
+    empresa_id = await resolver_empresa(usuario, datos.company_id, db)
     config = config_lote_para(empresa)
     if config["exige_total_esperado"] and datos.total_esperado is None:
         raise HTTPException(
@@ -257,10 +285,10 @@ async def crear_lote(
         fecha_inicio, fecha_fin = datos.fecha_inicio, datos.fecha_fin
 
     folio = await _siguiente_folio(
-        db, datos.company_id, datos.ejercicio, datos.mes, config["prefijo_folio"]
+        db, empresa_id, datos.ejercicio, datos.mes, config["prefijo_folio"]
     )
     lote = LoteModel(
-        company_id=datos.company_id,
+        company_id=empresa_id,
         folio=folio,
         nombre=datos.nombre,
         ejercicio=datos.ejercicio,
@@ -291,27 +319,37 @@ async def detalle_lote(
     lote_id: UUID,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> LoteDetalleResponse:
-    """Un lote con sus conteos en vivo (archivos, tickets, importe, duplicados)."""
-    del usuario
-    lote = await _lote_o_404(db, lote_id)
+    """Un lote con sus conteos en vivo (archivos, tickets, importe, duplicados).
+
+    El `company_id` del query es solo para el operador admin sin empresa; un
+    usuario con empresa no lo necesita y pedir otra es 404.
+    """
+    empresa = await resolver_empresa(usuario, company_id, db)
+    lote = await _lote_de_empresa_o_404(db, lote_id, empresa)
     conteos = await _conteos(db, lote)
     return LoteDetalleResponse.model_validate({**lote.__dict__, **conteos})
 
 
 @router.post("/{lote_id}/cerrar", response_model=LoteResponse)
 async def cerrar_lote(
+    _: Escribir,
     lote_id: UUID,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> LoteResponse:
     """Cierra un lote ABIERTO o EN_REVISION.
 
     Un lote CERRADO no acepta mas archivos: `scan_service` lo comprueba antes
     de asignar (ver el docstring del modulo). Cerrar un lote ya CERRADO es
     409, no un 200 que finja haber hecho algo.
+
+    Cerrar un lote de otra empresa es 404, no 403: ver `_lote_de_empresa_o_404`.
     """
-    lote = await _lote_o_404(db, lote_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    lote = await _lote_de_empresa_o_404(db, lote_id, empresa)
     if lote.estado not in (ESTADO_ABIERTO, ESTADO_EN_REVISION):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -330,10 +368,12 @@ async def cerrar_lote(
 
 @router.post("/{lote_id}/reabrir", response_model=LoteResponse)
 async def reabrir_lote(
+    _: Escribir,
     lote_id: UUID,
     datos: ReabrirRequest,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> LoteResponse:
     """Reabre un lote CERRADO. Exige motivo, y que la empresa lo permita.
 
@@ -342,8 +382,11 @@ async def reabrir_lote(
     formada cuando lo que esta es prohibido por configuracion. El motivo
     queda en `lote.motivo` y en `auditoria`, que es donde se busca despues
     quien reabrio y por que.
+
+    Reabrir un lote de otra empresa es 404, no 403: ver `_lote_de_empresa_o_404`.
     """
-    lote = await _lote_o_404(db, lote_id)
+    empresa_id = await resolver_empresa(usuario, company_id, db)
+    lote = await _lote_de_empresa_o_404(db, lote_id, empresa_id)
     empresa = await _empresa_o_404(db, lote.company_id)
     if not config_lote_para(empresa)["permite_reapertura"]:
         raise HTTPException(
@@ -370,10 +413,12 @@ async def reabrir_lote(
     status_code=status.HTTP_201_CREATED,
 )
 async def crear_complementario(
+    _: Escribir,
     lote_id: UUID,
     usuario: UsuarioActual,
     datos: ComplementarioRequest | None = None,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> LoteResponse:
     """Crea el lote complementario (o de alcance) de uno que ya existe.
 
@@ -381,9 +426,12 @@ async def crear_complementario(
     llama "Complemento de {folio}" salvo que se mande otro nombre. Nace
     ABIERTO con su propio folio secuencial del mes, aunque el padre este
     CERRADO: para eso existe, para lo que llego despues del cierre.
+
+    El padre tiene que ser de la empresa resuelta: ver `_lote_de_empresa_o_404`.
     """
     datos = datos or ComplementarioRequest()
-    padre = await _lote_o_404(db, lote_id)
+    empresa_id = await resolver_empresa(usuario, company_id, db)
+    padre = await _lote_de_empresa_o_404(db, lote_id, empresa_id)
     empresa = await _empresa_o_404(db, padre.company_id)
     config = config_lote_para(empresa)
     folio = await _siguiente_folio(

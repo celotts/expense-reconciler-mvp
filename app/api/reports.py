@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import UsuarioActual, resolver_empresa
 from app.schemas.reporte import ReporteCierreMensual
 from app.services import reporte_cierre
 from app.services.reporte_cierre import PATRON_PERIODO, PeriodoInvalido
@@ -55,10 +55,14 @@ async def _reporte(
     vacio se lee como "este mes no gastaste", y eso es una afirmacion distinta, y
     falsa.
     """
+    # P0-1: la empresa del query se resuelve contra la del usuario antes
+    # de construir nada. Pedir otra empresa es 404, y `firmado_por` sigue
+    # saliendo del token, nunca del cuerpo.
+    empresa = await resolver_empresa(usuario, company_id, db)
     try:
         return await reporte_cierre.construir_reporte(
             db,
-            company_id=company_id,
+            company_id=empresa,
             periodo=periodo,
             firmado_por=usuario.email,
             # El corte del periodo es una fecha de NEGOCIO (Mexico, UTC-6): se pasa

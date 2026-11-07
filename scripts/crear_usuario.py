@@ -13,8 +13,12 @@ despues de eso la unica forma de limpiarla es rotar la contrasena.
 
 Uso:
     PYTHONPATH=. python3 scripts/crear_usuario.py --email ana@empresa.mx
+    PYTHONPATH=. python3 scripts/crear_usuario.py --email ana@empresa.mx --empresa MTA123456789
     PYTHONPATH=. python3 scripts/crear_usuario.py --email ana@empresa.mx --desactivar
     PYTHONPATH=. python3 scripts/crear_usuario.py --listar
+
+`--empresa` es el RFC o el UUID de la empresa (P0-1). Sin ella la cuenta
+nace sin empresa y no ve nada hasta que un admin se la asigne.
 
 Idempotente en el sentido de que reintentar no crea un segundo usuario ni
 cambia la contrasena del primero: si el correo ya existe, dice que existe y
@@ -70,7 +74,7 @@ def _nombre_por_defecto(correo: str) -> str:
     return correo.split("@")[0].replace(".", " ").replace("_", " ").title() or "Usuario"
 
 
-async def _crear(email: str, nombre: str, contrasena: str) -> int:
+async def _crear(email: str, nombre: str, contrasena: str, empresa: str | None = None) -> int:
     async with AsyncSessionLocal() as session:
         existe = (
             await session.execute(
@@ -84,10 +88,32 @@ async def _crear(email: str, nombre: str, contrasena: str) -> int:
             print("Para dar de baja:          --desactivar")
             return 0
 
+        # P0-1: la empresa se busca por RFC o por UUID. Sin ella la cuenta
+        # nace sin empresa y no ve nada hasta que un admin se la asigne.
+        company_id = None
+        if empresa:
+            from uuid import UUID as _UUID
+
+            from app.models.company import CompanyModel
+
+            try:
+                empresa_id = _UUID(empresa)
+                condicion = CompanyModel.id == empresa_id
+            except ValueError:
+                condicion = func.upper(CompanyModel.tax_id) == empresa.strip().upper()
+            encontrada = (
+                await session.execute(select(CompanyModel).where(condicion))
+            ).scalar_one_or_none()
+            if encontrada is None:
+                print(f"No existe ninguna empresa con RFC o id '{empresa}'.")
+                return 1
+            company_id = encontrada.id
+
         usuario = UserModel(
             email=email,
             nombre=nombre,
             password_hash=hashear_contrasena(contrasena),
+            company_id=company_id,
         )
         session.add(usuario)
         try:
@@ -156,23 +182,38 @@ async def _listar() -> int:
         cuentas = (
             await session.execute(select(UserModel).order_by(UserModel.email))
         ).scalars().all()
+        # Los nombres de las empresas en UNA consulta (P0-1): una por
+        # cuenta seria N consultas para una tabla que lee una persona.
+        from app.models.company import CompanyModel
+
+        empresas = (
+            await session.execute(select(CompanyModel.id, CompanyModel.name))
+        ).all()
+        nombres = {fila[0]: fila[1] for fila in empresas}
 
     if not cuentas:
         print("No hay ninguna cuenta. Crea la primera:")
         print("  PYTHONPATH=. python3 scripts/crear_usuario.py --email tu@empresa.mx")
         return 0
 
-    print(f"{'correo':40} {'nombre':22} {'activo':7} ultimo acceso")
-    print("-" * 92)
+    print(f"{'correo':40} {'nombre':22} {'activo':7} {'empresa':20} ultimo acceso")
+    print("-" * 112)
     for cuenta in cuentas:
         acceso = (
             cuenta.last_login_at.strftime("%Y-%m-%d %H:%M")
             if cuenta.last_login_at
             else "nunca"
         )
+        # La empresa por nombre, no por UUID: un UUID en una tabla que lee
+        # una persona no dice a que empresa pertenece la cuenta.
+        empresa = (
+            nombres.get(cuenta.company_id, "sin empresa")
+            if cuenta.company_id is not None
+            else "sin empresa"
+        )
         print(
             f"{cuenta.email:40} {cuenta.nombre:22} "
-            f"{('si' if cuenta.is_active else 'no'):7} {acceso}"
+            f"{('si' if cuenta.is_active else 'no'):7} {empresa:20} {acceso}"
         )
     return 0
 
@@ -181,6 +222,11 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description="Administracion de cuentas")
     parser.add_argument("--email", help="Correo de la cuenta")
     parser.add_argument("--nombre", help="Nombre que se muestra en la interfaz")
+    parser.add_argument(
+        "--empresa",
+        help="RFC o UUID de la empresa a la que pertenece la cuenta (P0-1). "
+        "Sin ella la cuenta nace sin empresa y no ve nada.",
+    )
     grupo = parser.add_mutually_exclusive_group()
     grupo.add_argument(
         "--cambiar", action="store_true", help="Cambiar la contrasena de una cuenta"
@@ -219,7 +265,7 @@ async def main() -> int:
         return 1
 
     nombre = args.nombre or _nombre_por_defecto(email)
-    return await _crear(email, nombre, contrasena)
+    return await _crear(email, nombre, contrasena, empresa=args.empresa)
 
 
 if __name__ == "__main__":

@@ -26,22 +26,33 @@ Lo que si hay es un endpoint que relee un archivo ya registrado, y ese `id` es
 un UUID de la base, no una ruta. La ruta se reconstruye desde
 `TICKETS_INPUT_DIR` en el servicio y se vuelve a comprobar que cae dentro de
 la carpeta.
+
+P0-1 (multi-empresa): la empresa la decide el usuario del token, no el
+cliente. Cada endpoint resuelve la empresa con `resolver_empresa`
+(`app/core/deps.py`): el `company_id` del query o del cuerpo solo vale si
+coincide con la empresa del usuario; pedir otra es 404, no 403, para no
+confirmar que esa otra empresa existe ni que tiene archivos. Los archivos
+sin empresa son el buzon compartido —todavia sin atribuir— y los ve
+cualquier usuario autenticado, que es lo que permite atribuirlos despues
+con `reprocess`. Las corridas (`/runs`) no se pueden filtrar: el registro
+es en memoria y no guarda empresa; ver la nota en esos endpoints.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, get_db
-from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
+from app.core.deps import Escribir, Sesion, UsuarioActual, UsuarioVerificado, resolver_empresa
 from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
@@ -64,6 +75,7 @@ from app.schemas.scan import (
     ScanStatsResponse,
 )
 from app.services import scan_registry, scan_reset, scan_service
+from app.services.lote_service import ErrorLote, resolver_lote_corrida
 from app.services.scan_reset import FRASE_CONFIRMACION
 from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ai_client import disponibilidad as disponibilidad_ia
@@ -106,6 +118,44 @@ async def _archivo_o_404(db: AsyncSession, file_id: UUID) -> ScanFileModel:
     return fila
 
 
+def _alcance_empresa(empresa: UUID):
+    """El filtro de tenencia para `scan_files`: la empresa resuelta, o sin empresa.
+
+    Los archivos sin `company_id` son el buzon compartido: se leyeron en modo
+    inventario, todavia sin atribuir a ninguna empresa, y por eso los ve
+    cualquier usuario autenticado. Lo que NUNCA se ve aqui es un archivo con
+    empresa distinta: ese es el dato de otra empresa, y filtrarlo es lo que
+    cierra la fuga. El mismo criterio se aplica en el detalle por id
+    (`_archivo_de_empresa_o_404`) y en `stats`: un buzon que no se puede
+    listar no se puede atribuir, y un archivo atribuido a otra empresa no
+    se puede ni contar.
+    """
+    return or_(
+        ScanFileModel.company_id == empresa,
+        ScanFileModel.company_id.is_(None),
+    )
+
+
+async def _archivo_de_empresa_o_404(
+    db: AsyncSession, file_id: UUID, empresa: UUID
+) -> ScanFileModel:
+    """El archivo, o 404.
+
+    Un archivo con empresa distinta es 404 y no 403, con el mismo mensaje que
+    si no existiera: un 403 confirmaria que hay un archivo con ese id en otra
+    empresa. Un archivo SIN empresa (buzon compartido, sin ticket atribuido)
+    si lo ve cualquier usuario autenticado: todavia no es de nadie, y
+    esconderlo dejaria el inventario sin forma de atribuirse.
+    """
+    fila = await _archivo_o_404(db, file_id)
+    if fila.company_id is not None and fila.company_id != empresa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ese archivo no está en el historial de escaneos",
+        )
+    return fila
+
+
 def _de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
     """El dataclass del servicio al schema de la API, en un solo lugar."""
     return ScanItemResponse(
@@ -114,6 +164,8 @@ def _de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
         status=detalle.status.value,
         accion=detalle.accion,
         ticket_id=detalle.ticket_id,
+        lote_id=detalle.lote_id,
+        extemporaneo=detalle.extemporaneo,
         confianza=detalle.confianza,
         origen=detalle.origen.value if detalle.origen is not None else None,
         detalle=detalle.detalle,
@@ -185,6 +237,9 @@ async def ver_una_corrida(corrida_id: str, usuario: UsuarioActual) -> dict:
     Un 404 aqui NO es "no existio": el registro es en memoria y se descarta a las
     dos horas, y tambien al reiniciar. El mensaje lo dice, para que el cliente no
     lo presente como un error del servidor.
+
+    LIMITACION P0-1: como en `listar_corridas`, el registro no guarda empresa y
+    la corrida no se puede comprobar contra la empresa resuelta. Ver la nota ahi.
     """
     del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
     corrida = scan_registry.consultar(corrida_id)
@@ -432,21 +487,35 @@ async def configuracion_del_escaneo(usuario: UsuarioActual) -> dict:
 async def estadisticas(
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> ScanStatsResponse:
     """Como va el escaneo: conteos por estado, por motor y por antiguedad.
 
     Va antes que `/files/{file_id}` por el orden de rutas. Sin eso,
     `GET /scan/stats` se buscaria como un UUID.
+
+    Los conteos son los de la empresa resuelta (`resolver_empresa`) MAS el
+    buzon sin atribuir (`company_id IS NULL`): ver `_alcance_empresa`. El
+    `company_id` del query es solo para el operador admin sin empresa.
     """
-    del usuario
-    return await _estadisticas(db)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    return await _estadisticas(db, empresa)
 
 
-async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
+async def _estadisticas(db: AsyncSession, empresa: UUID) -> ScanStatsResponse:
+    """Los conteos del escaneo, con el alcance de `_alcance_empresa`.
+
+    Cada conteo lleva el mismo filtro: la empresa resuelta, o sin empresa.
+    Un conteo sin el filtro mezclaria los archivos de todas las empresas en
+    un numero que el operador leeria como suyo.
+    """
+    alcance = _alcance_empresa(empresa)
+
     por_estado = {
         estado: cantidad
         for estado, cantidad in (await db.execute(
             select(ScanFileModel.status, func.count())
+            .where(alcance)
             .group_by(ScanFileModel.status)
         )).all()
     }
@@ -455,18 +524,24 @@ async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
         motor: cantidad
         for motor, cantidad in (await db.execute(
             select(ScanFileModel.read_by, func.count())
+            .where(alcance)
             .where(ScanFileModel.read_by.is_not(None))
             .group_by(ScanFileModel.read_by)
         )).all()
     }
 
     intentos = (
-        await db.execute(select(func.coalesce(func.sum(ScanFileModel.attempts), 0)))
+        await db.execute(
+            select(func.coalesce(func.sum(ScanFileModel.attempts), 0)).where(
+                alcance
+            )
+        )
     ).scalar_one()
 
     con_ticket = (
         await db.execute(
             select(func.count()).select_from(ScanFileModel)
+            .where(alcance)
             .where(ScanFileModel.ticket_id.is_not(None))
         )
     ).scalar_one()
@@ -497,6 +572,7 @@ async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
     desactualizados = (
         await db.execute(
             select(func.count()).select_from(ScanFileModel)
+            .where(alcance)
             .where(
                 ScanFileModel.status == ScanStatus.PROCESADO.value,
                 ScanFileModel.last_error.is_not(None),
@@ -507,7 +583,9 @@ async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
     ).scalar_one()
 
     mas_reciente = (
-        await db.execute(select(func.max(ScanFileModel.processed_at)))
+        await db.execute(
+            select(func.max(ScanFileModel.processed_at)).where(alcance)
+        )
     ).scalar_one_or_none()
 
     total = sum(por_estado.values())
@@ -535,6 +613,7 @@ async def diagnosticar_archivo(
     file_id: UUID,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> DiagnosticoLecturaResponse:
     """La lectura de un archivo ya escaneado, paso por paso, sin escribir nada.
 
@@ -561,11 +640,16 @@ async def diagnosticar_archivo(
     sobreescribir un ticket con correcciones humanas, y por eso es explicito. Este solo
     mira.
 
-    **No pide `company_id`.** No escribe nada, asi que no hay a quien atribuir el
-    ticket. Y el contraste con lo guardado sale del `ticket_id` que el propio registro
-    ya tiene, que es la atribucion que hizo el escaner.
+    **El `company_id` del query es solo para el operador admin sin empresa.**
+    No escribe nada, asi que no hay a quien atribuir el ticket, y un usuario
+    con empresa no lo necesita. Lo que si se comprueba es la tenencia: un
+    archivo de otra empresa es 404 (ver `_archivo_de_empresa_o_404`), y uno
+    del buzon sin atribuir se puede diagnosticar. Y el contraste con lo
+    guardado sale del `ticket_id` que el propio registro ya tiene, que es la
+    atribucion que hizo el escaner.
     """
-    fila = await _archivo_o_404(db, file_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    fila = await _archivo_de_empresa_o_404(db, file_id, empresa)
 
     # La comprobacion de contencion la hace `ruta_de_relativo`, con `is_relative_to`
     # DESPUES de resolver. Ver la nota larga de ahi: comprobar la cadena antes de
@@ -619,6 +703,8 @@ async def _escanear_en_segundo_plano(
     archivar: bool | None,
     simular: bool,
     confirmar: bool,
+    lote_id: UUID | None = None,
+    crear_lote: dict | None = None,
 ) -> None:
     """El trabajo de una corrida en segundo plano, con su propia sesion.
 
@@ -643,6 +729,8 @@ async def _escanear_en_segundo_plano(
                 archivar=archivar,
                 simular=simular,
                 confirmar=confirmar,
+                lote_id=lote_id,
+                crear_lote=crear_lote,
             )
         except Exception:
             logger.exception("el escaneo en segundo plano fallo")
@@ -677,9 +765,29 @@ async def escanear(
 
     Devuelve exactamente lo que moveria, con la ruta de destino de cada archivo
     y si su lectura quedo pendiente, y no mueve nada.
+
+    EL LOTE
+    =======
+
+    Cada corrida con empresa va a UN lote: el de `lote_id`, el que pide
+    `crear_lote`, o el ABIERTO del periodo de escaneo (reutilizado si ya
+    existe, creado si no). El lote se resuelve AQUI, antes de responder —
+    tambien en segundo plano — para que un lote CERRADO o inexistente sea
+    un 409/404 inmediato y no un fallo silencioso de la tarea en segundo
+    plano. La corrida vuelve a resolverlo dentro, y reutiliza este mismo
+    lote: resolver dos veces es a proposito, como las dos capas de la ruta.
     """
     actor = usuario.email or "sistema"
 
+    # P0-1: si el cuerpo trae empresa, tiene que ser la del usuario. La
+    # comprobacion de existencia va primero y conserva el 404 de siempre
+    # ("La empresa indicada no existe"); la de tenencia va despues: pedir
+    # una empresa que existe pero es de otro es 404 ("Empresa no
+    # encontrada"), no 403, para no confirmar que existe. Sin `company_id`
+    # no se resuelve nada: queda el modo inventario, como hoy, y por eso
+    # este camino no toca `usuario.company_id` ni `db` —los tests que
+    # llaman al handler directo con `db=None` y `company_id=None` siguen
+    # pasando—.
     if cuerpo.company_id is not None:
         existe = await db.get(CompanyModel, cuerpo.company_id)
         if existe is None:
@@ -687,6 +795,45 @@ async def escanear(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="La empresa indicada no existe",
             )
+        empresa_resuelta = await resolver_empresa(usuario, cuerpo.company_id, db)
+    else:
+        empresa_resuelta = None
+
+    # `lote_id` y `crear_lote` sin empresa no tienen sentido: el modo
+    # inventario no crea tickets y por tanto no tiene lote. Es 422 y no un
+    # lote ignorado en silencio.
+    crear = (
+        cuerpo.crear_lote.model_dump(exclude_none=True)
+        if cuerpo.crear_lote is not None
+        else None
+    )
+    if empresa_resuelta is None:
+        if cuerpo.lote_id is not None or crear is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "lote_id y crear_lote necesitan company_id: "
+                    "sin empresa no hay lote"
+                ),
+            )
+        lote_id_resuelto: UUID | None = None
+    else:
+        try:
+            lote_resuelto = await resolver_lote_corrida(
+                db,
+                empresa_resuelta,
+                fecha_escaneo=date.today(),
+                actor=actor,
+                lote_id=cuerpo.lote_id,
+                crear_lote=crear,
+            )
+        except ErrorLote as exc:
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.detail
+            ) from exc
+        lote_id_resuelto = (
+            lote_resuelto.id if lote_resuelto is not None else None
+        )
 
     # Segundo plano (OPT 2026-11-06): con fotos el escaneo tarda minutos y
     # nginx corta a los 300 s, asi que el cliente se quedaba sin respuesta
@@ -698,13 +845,14 @@ async def escanear(
     if cuerpo.segundo_plano:
         asyncio.create_task(
             _escanear_en_segundo_plano(
-                cuerpo.company_id,
+                empresa_resuelta,
                 actor,
                 reprocesar=cuerpo.reprocesar,
                 solo_pendientes=cuerpo.solo_pendientes,
                 archivar=cuerpo.archivar,
                 simular=cuerpo.simular,
                 confirmar=cuerpo.confirmar,
+                lote_id=lote_id_resuelto,
             )
         )
         return JSONResponse(
@@ -712,16 +860,25 @@ async def escanear(
             content=ScanAceptadoResponse().model_dump(mode="json"),
         )
 
-    resumen = await scan_service.escanear(
-        db,
-        cuerpo.company_id,
-        actor,
-        reprocesar=cuerpo.reprocesar,
-        solo_pendientes=cuerpo.solo_pendientes,
-        archivar=cuerpo.archivar,
-        simular=cuerpo.simular,
-        confirmar=cuerpo.confirmar,
-    )
+    try:
+        resumen = await scan_service.escanear(
+            db,
+            empresa_resuelta,
+            actor,
+            reprocesar=cuerpo.reprocesar,
+            solo_pendientes=cuerpo.solo_pendientes,
+            archivar=cuerpo.archivar,
+            simular=cuerpo.simular,
+            confirmar=cuerpo.confirmar,
+            lote_id=lote_id_resuelto,
+        )
+    except ErrorLote as exc:
+        # La resolucion de arriba ya valido el lote, pero el lote pudo
+        # cerrarse entre la resolucion y el escaneo: el servicio vuelve a
+        # comprobar y aqui se traduce a HTTP.
+        raise HTTPException(
+            status_code=exc.status_code, detail=exc.detail
+        ) from exc
 
     return ScanResponse(
         carpeta=resumen.carpeta,
@@ -760,6 +917,9 @@ async def escanear(
         resumen=resumen.resumen,
         corrida_id=resumen.corrida_id,
         duracion_segundos=resumen.duracion_segundos,
+        lote_id=resumen.lote_id,
+        lote_folio=resumen.lote_folio,
+        extemporaneos=resumen.extemporaneos,
     )
 
 
@@ -784,11 +944,16 @@ async def listar_registro(
     `limit` tiene tope porque no hay tope sin el: un `GET /files` sin limite
     sobre una carpeta de diez mil comprobantes devuelve diez mil filas y se come
     la memoria del proceso, que es el mismo proceso que sirve el resto de la API.
-    """
-    del usuario
 
-    consulta = select(ScanFileModel)
-    conteo = select(func.count()).select_from(ScanFileModel)
+    El listado es el de la empresa resuelta (`resolver_empresa`) MAS el buzon
+    sin atribuir: ver `_alcance_empresa`. El `company_id` del query es solo
+    para el operador admin sin empresa; pedir otra empresa es 404.
+    """
+    empresa = await resolver_empresa(usuario, company_id, db)
+
+    alcance = _alcance_empresa(empresa)
+    consulta = select(ScanFileModel).where(alcance)
+    conteo = select(func.count()).select_from(ScanFileModel).where(alcance)
 
     if estado is not None:
         # Se valida contra el enum y no se pasa la cadena a la consulta. Un
@@ -808,10 +973,6 @@ async def listar_registro(
         consulta = consulta.where(ScanFileModel.status == valido.value)
         conteo = conteo.where(ScanFileModel.status == valido.value)
 
-    if company_id is not None:
-        consulta = consulta.where(ScanFileModel.company_id == company_id)
-        conteo = conteo.where(ScanFileModel.company_id == company_id)
-
     total = (await db.execute(conteo)).scalar_one()
     archivos = (
         await db.execute(
@@ -822,13 +983,17 @@ async def listar_registro(
     ).scalars().all()
 
     # Resumen del ticket asociado a cada archivo, para que el listado muestre de
-    # una pasada negocio, fecha y total sin abrir cada comprobante.
+    # una pasada negocio, fecha y total sin abrir cada comprobante. Solo se
+    # enriquece con tickets de la empresa resuelta: un archivo del buzon cuyo
+    # ticket fuera de otra empresa no puede delatar su negocio, su fecha ni su
+    # total en este listado.
     tickets_ids = [f.ticket_id for f in archivos if f.ticket_id is not None]
     info_ticket: dict = {}
     if tickets_ids:
         q = await db.execute(
             select(TicketModel.id, TicketModel.provider_name, TicketModel.expense_date, TicketModel.total_amount)
             .where(TicketModel.id.in_(tickets_ids))
+            .where(TicketModel.company_id == empresa)
         )
         for tid, prov, fecha, total_amt in q.all():
             info_ticket[tid] = (prov, fecha, str(total_amt) if total_amt is not None else None)
@@ -856,15 +1021,19 @@ async def detalle_archivo(
     file_id: UUID,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
+    company_id: UUID | None = Query(None),
 ) -> ScanFileDetailResponse:
     """Un archivo con su historico completo.
 
     El historico va aqui y no en un endpoint aparte de auditoria porque la
     pregunta casi siempre es "que le paso a ESTE archivo", y separarla obliga a
     dos requests para la misma pantalla.
+
+    Un archivo de otra empresa es 404: ver `_archivo_de_empresa_o_404`. El
+    `company_id` del query es solo para el operador admin sin empresa.
     """
-    del usuario
-    fila = await _archivo_o_404(db, file_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    fila = await _archivo_de_empresa_o_404(db, file_id, empresa)
 
     # Los eventos se cargan con una consulta explicita, NO tocando
     # `fila.events`. En SQLAlchemy asincrono, tocar una relacion lazy desde un
@@ -889,6 +1058,7 @@ async def detalle_archivo(
 
 @router.post("/files/{file_id}/reprocess", response_model=ReprocessResponse)
 async def reprocesar_archivo(
+    _: Escribir,
     file_id: UUID,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
@@ -906,11 +1076,30 @@ async def reprocesar_archivo(
     Si el archivo ya no esta en el disco, devuelve 409 con el motivo y no un
     exito: reprocesar el registro de un archivo que alguien movio tiene que
     verse, no reportarse como leido.
+
+    La empresa a usar es la resuelta (`resolver_empresa`): un archivo que ya
+    tiene empresa distinta es 404, y uno del buzon sin atribuir se atribuye
+    a la empresa resuelta —que es para lo que esta el `company_id` del
+    query—.
     """
     actor = usuario.email or "sistema"
     fila = await _archivo_o_404(db, file_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if fila.company_id is not None and fila.company_id != empresa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ese archivo no está en el historial de escaneos",
+        )
 
-    resultado = await scan_service.reprocesar_uno(db, fila, company_id, actor)
+    try:
+        resultado = await scan_service.reprocesar_uno(db, fila, empresa, actor)
+    except ErrorLote as exc:
+        # El reproceso resuelve el lote cuando el archivo no tenia uno, y
+        # ahi puede fallar (por ejemplo, la empresa exige total_esperado):
+        # es un error del lote, no un 500 del reproceso.
+        raise HTTPException(
+            status_code=exc.status_code, detail=exc.detail
+        ) from exc
 
     if resultado.accion == "ERROR":
         raise HTTPException(

@@ -10,7 +10,6 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.core.database import get_db, Base
-from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.security import hashear_contrasena
 from app.models.company import CompanyModel
@@ -70,19 +69,25 @@ async def test_company(db_session):
     return company
 
 @pytest.fixture
-async def usuario_de_prueba(db_session):
+async def usuario_de_prueba(db_session, test_company):
     """La cuenta con la que corre la suite.
 
     Existe como fila de verdad en la base de prueba, no como un objeto
     manufactured: si los endpoints guardan el correo de quien reviso, el test
     tiene que poder leer esa columna de la base y compararla con algo. Un
     `MagicMock` de usuario no serviria para eso.
+
+    P0-1: pertenece a `test_company` (perfil digitalizador). Los endpoints
+    resuelven la empresa desde esta cuenta, asi que la suite prueba el
+    comportamiento de un usuario con empresa. Un usuario sin empresa y un
+    usuario de otra empresa se crean en `tests/unit/test_multitenancy.py`.
     """
     correo = f"operador{uuid4().hex[:8]}@test.local"
     usuario = UserModel(
         email=correo,
         nombre="Operador de Prueba",
         password_hash=hashear_contrasena("contrasena-de-prueba"),
+        company_id=test_company.id,
     )
     db_session.add(usuario)
     await db_session.commit()

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.archivo_real import media_type_real, resolver_tipo
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import Escribir, UsuarioActual, resolver_empresa
 from app.core.enums import (
     ConfidenceSource,
     ExtractionStatus,
@@ -30,7 +30,6 @@ from app.core.enums import (
 )
 from app.core.subida import leer_ticket
 from app.core.time import dias_desde, utcnow
-from app.models.company import CompanyModel
 from app.models.ticket import TicketModel
 from app.schemas.lectura import (
     DiagnosticoLecturaResponse,
@@ -217,21 +216,23 @@ def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
 async def create_ticket(
-    ticket_in: TicketCreate, usuario: UsuarioActual, db: AsyncSession = Depends(get_db)
+    ticket_in: TicketCreate,
+    usuario: UsuarioActual,
+    _: Escribir,
+    db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Create a new ticket manually.
 
     Una persona tecleo los datos, asi que no hay confianza que medir, pero si
     pasan los mismos checks deterministas que la IA. Escribirlos a mano no
     exime de que el total sea positivo.
+
+    P0-1: la empresa del cuerpo se resuelve contra la del usuario. Pedir otra
+    empresa es 404, no 403, para no confirmar que existe ni que tiene datos.
     """
-    company_result = await db.execute(
-        select(CompanyModel).where(CompanyModel.id == ticket_in.company_id)
-    )
-    if not company_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="La empresa no existe"
-        )
+    # `resolver_empresa` y no una consulta de existencia: que la empresa
+    # exista no basta, tiene que ser LA empresa del usuario.
+    await resolver_empresa(usuario, ticket_in.company_id, db)
 
     decision = gate_manual_ticket(
         provider_name=ticket_in.provider_name,
@@ -290,6 +291,7 @@ async def create_ticket(
     summary="Lee un comprobante y explica COMO se leyo. No guarda nada.",
 )
 async def extract_diagnostico(
+    usuario: UsuarioActual,
     file: UploadFile = File(...),
     file_type: str = Form("pdf"),
     db: AsyncSession = Depends(get_db),
@@ -334,6 +336,27 @@ async def extract_diagnostico(
     dijera "pasaria" con checks distintos a los del gate seria el fallo de "el sistema
     afirma mas de lo que sostiene", en el sitio donde mas dano hace.
     """
+    if ticket_id is not None:
+        # El diagnostico contrasta contra el ticket guardado (`_contrastar`
+        # lee su estado y su origen): sin este control, el id de un ticket
+        # de otra empresa bastaba para leer parte de su lectura. 404 y no
+        # 403, para no confirmar que ese ticket existe. Si el ticket no
+        # existe, no se hace nada: `diagnosticar_lectura` ya lo ignora.
+        fila = (
+            await db.execute(
+                select(TicketModel).where(TicketModel.id == ticket_id)
+            )
+        ).scalar_one_or_none()
+        if (
+            fila is not None
+            and usuario.company_id is not None
+            and fila.company_id != usuario.company_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="El ticket no existe",
+            )
+
     content = await leer_ticket(file, file.filename or "")
     resultado = await diagnosticar_lectura(
         db,
@@ -381,6 +404,8 @@ async def extract_ticket(
     status_code=status.HTTP_201_CREATED,
 )
 async def extract_and_create_ticket(
+    usuario: UsuarioActual,
+    _: Escribir,
     file: UploadFile = File(...),
     company_id: UUID = Form(...),
     file_type: str = Form("pdf"),
@@ -393,13 +418,8 @@ async def extract_and_create_ticket(
     cuadran, el ticket se guarda igual pero en estado pendiente de revision,
     nunca como aprobado.
     """
-    company_result = await db.execute(
-        select(CompanyModel).where(CompanyModel.id == company_id)
-    )
-    if not company_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="La empresa no existe"
-        )
+    # P0-1: la empresa del formulario se resuelve contra la del usuario.
+    empresa = await resolver_empresa(usuario, company_id, db)
 
     content = await leer_ticket(file, file.filename or "")
     tipo_real = _tipo_real_del_archivo(content, file_type)
@@ -422,7 +442,7 @@ async def extract_and_create_ticket(
 
     return await _persist_extracted(
         db,
-        company_id,
+        empresa,
         extracted,
         content,
         # El `source_type` tambien sale de los bytes, no de la etiqueta del
@@ -479,7 +499,8 @@ async def _persist_extracted(
 
 @router.get("/", response_model=list[TicketResponse])
 async def list_tickets(
-    company_id: UUID | None = None,
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     extraction_status: str | None = None,
     only_open: bool = False,
     sin_categoria: bool = False,
@@ -498,9 +519,11 @@ async def list_tickets(
     `sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto
     que cumpla las dos, y devolver vacio seria un fallo silencioso.
     """
-    query = select(TicketModel)
-    if company_id:
-        query = query.where(TicketModel.company_id == company_id)
+    # P0-1: el listado es SIEMPRE de una empresa, la resuelta del usuario.
+    # Sin `company_id` vale la del usuario; con otro, 404. Nunca se listan
+    # los tickets de todas las empresas por defecto.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    query = select(TicketModel).where(TicketModel.company_id == empresa)
     if only_open:
         query = query.where(
             TicketModel.extraction_status.in_(
@@ -546,7 +569,8 @@ async def list_tickets(
 
 @router.get("/review-queue", response_model=TicketReviewQueueResponse)
 async def get_review_queue(
-    company_id: UUID | None = None,
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     status: str | None = None,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
@@ -565,9 +589,8 @@ async def get_review_queue(
     de entrada quantos hay de cada tipo. El filtro es para trabajar, no para
     perder de vista el tamano de la cola.
     """
-    base = select(TicketModel)
-    if company_id:
-        base = base.where(TicketModel.company_id == company_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    base = select(TicketModel).where(TicketModel.company_id == empresa)
 
     # `open_states` se define SIEMPRE, antes del `if`, y no dentro.
     #
@@ -624,7 +647,7 @@ async def get_review_queue(
     avg_age = round(sum(ages) / len(ages), 1) if ages else None
 
     return TicketReviewQueueResponse(
-        company_id=company_id,
+        company_id=empresa,
         # `total_open` NO depende del filtro, por contrato: cuenta REQUIERE_REVISION
         # + PENDIENTE aunque ahora `tickets` venga filtrado por otro estado. Es lo
         # que hace que el encabezado no salte de 40 a 3 al cambiar el selector.
@@ -639,6 +662,8 @@ async def get_review_queue(
 async def clasificar_lote(
     datos: ClasificarLoteRequest,
     usuario: UsuarioActual,
+    _: Escribir,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> ClasificarLoteResponse:
     """Pone la misma categoria a varios tickets de una vez.
@@ -661,9 +686,15 @@ async def clasificar_lote(
     """
     ids = list(dict.fromkeys(datos.ticket_ids))  # sin repetidos, y conservando orden
 
+    # P0-1: el UPDATE lleva el filtro de empresa. Sin el, un lote con ids de
+    # otra empresa los clasificaria igual: el `IN (...)` no pregunta de quien
+    # es cada fila. Los de otra empresa simplemente no se tocan (y cuentan
+    # como no actualizados, no como error, para no confirmar que existen).
+    empresa = await resolver_empresa(usuario, company_id, db)
+
     resultado = await db.execute(
         update(TicketModel)
-        .where(TicketModel.id.in_(ids))
+        .where(TicketModel.id.in_(ids), TicketModel.company_id == empresa)
         .values(category=datos.category)
         # `synchronize_session=False` porque no hay objetos de ticket cargados en
         # la sesion: sin esto SQLAlchemy intenta refrescarlos uno por uno y con
@@ -686,6 +717,8 @@ async def review_ticket(
     ticket_id: UUID,
     review_in: TicketReviewRequest,
     usuario: UsuarioActual,
+    _: Escribir,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Revision humana de un ticket en cola.
@@ -697,6 +730,14 @@ async def review_ticket(
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    # P0-1: revisar es decidir sobre un gasto de una empresa. El de otra
+    # empresa no existe para este usuario (404, no 403).
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -897,8 +938,9 @@ def _campos_incorrectos_de(row: TicketModel) -> list[str]:
 
 @router.get("/spot-check", response_model=SpotCheckQueueResponse)
 async def get_spot_check_queue(
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
-    company_id: UUID | None = None,
+    company_id: UUID | None = Query(None),
     status_filter: str | None = Query(
         None,
         alias="status",
@@ -941,9 +983,8 @@ async def get_spot_check_queue(
     cuantos hay de cada clase. El filtro es para trabajar, no para perder de
     vista el tamano de la cola.
     """
-    base = select(TicketModel)
-    if company_id is not None:
-        base = base.where(TicketModel.company_id == company_id)
+    empresa = await resolver_empresa(usuario, company_id, db)
+    base = select(TicketModel).where(TicketModel.company_id == empresa)
     # Sin `status` explicito se trabaja lo pendiente. Un `status` explicito pide
     # ese estado, que es como se llega al historico de veredictos.
     base = base.where(
@@ -968,7 +1009,7 @@ async def get_spot_check_queue(
                 .select_from(TicketModel)
                 .where(
                     TicketModel.spot_check_status == estado,
-                    *([TicketModel.company_id == company_id] if company_id else []),
+                    TicketModel.company_id == empresa,
                 )
             )
             or 0
@@ -984,7 +1025,7 @@ async def get_spot_check_queue(
             await db.execute(
                 select(func.min(TicketModel.created_at)).where(
                     TicketModel.spot_check_status == SpotCheckStatus.PENDIENTE.value,
-                    *([TicketModel.company_id == company_id] if company_id else []),
+                    TicketModel.company_id == empresa,
                 )
             )
         ).scalar()
@@ -1000,7 +1041,7 @@ async def get_spot_check_queue(
             antiguedad = dias_desde(mas_viejo)
 
     return SpotCheckQueueResponse(
-        company_id=company_id,
+        company_id=empresa,
         total_pendientes=pendientes,
         total_revisados=revisados,
         aciertos=aciertos,
@@ -1024,6 +1065,8 @@ async def registrar_veredicto(
     ticket_id: UUID,
     payload: SpotCheckRequest,
     usuario: UsuarioActual,
+    _: Escribir,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> SpotCheckItemResponse:
     """Registra si la extraccion coincidia con el papel. No modifica el ticket.
@@ -1038,6 +1081,12 @@ async def registrar_veredicto(
         await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ).scalar_one_or_none()
     if row is None:
+        raise HTTPException(status_code=404, detail="El ticket no existe")
+
+    # P0-1: el veredicto de muestreo es de la empresa del ticket. El de otra
+    # empresa no existe para este usuario (404, no 403).
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if row.company_id != empresa:
         raise HTTPException(status_code=404, detail="El ticket no existe")
 
     extraction_status = row.extraction_status
@@ -1089,8 +1138,9 @@ async def registrar_veredicto(
 
 @router.get("/accuracy", response_model=ReporteExactitudResponse)
 async def get_reporte_exactitud(
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
-    company_id: UUID | None = None,
+    company_id: UUID | None = Query(None),
 ) -> ReporteExactitudResponse:
     """Lo que la muestra sostiene sobre el objetivo de exactitud.
 
@@ -1104,9 +1154,10 @@ async def get_reporte_exactitud(
     leido con un modelo se reportan por separado, porque mezclarlos sube el
     promedio con el metodo que casi no falla y esconde al que falla.
     """
-    condiciones = (
-        [TicketModel.company_id == company_id] if company_id is not None else []
-    )
+    # P0-1: el reporte es de UNA empresa, la resuelta. Sin filtro de
+    # empresa mezclaria las muestras de todas y el veredicto no seria de nadie.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    condiciones = [TicketModel.company_id == empresa]
 
     # Una sola consulta agrupada: el reporte lee toda la evidencia de la
     # empresa y la cuenta en memoria. Con miles de tickets revisados, trae solo
@@ -1189,7 +1240,7 @@ async def get_reporte_exactitud(
     ]
 
     return ReporteExactitudResponse(
-        company_id=company_id,
+        company_id=empresa,
         objetivo=SLO_EXACTITUD,
         nivel_confianza=NIVEL_CONFIANZA,
         veredicto_global=_veredicto_global(por_origen),
@@ -1298,7 +1349,8 @@ def _explicacion_global(por_origen: list[ExactitudPorOrigenResponse]) -> str:
 @router.get("/{ticket_id}/documento", response_class=Response)
 async def get_documento(
     ticket_id: UUID,
-    _: UsuarioActual,
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Los bytes del comprobante, tal como los subio la persona.
@@ -1327,6 +1379,15 @@ async def get_documento(
         await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ).scalar_one_or_none()
     if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    # P0-1: el comprobante es un documento fiscal de una empresa. Servirlo
+    # sin mirar de quien es era el BOLA que el docstring ya describe para el
+    # token; aqui se cierra para la empresa. 404 y no 403.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1377,7 +1438,8 @@ async def get_documento(
 @router.get("/{ticket_id}/documento/vista-previa", response_class=Response)
 async def get_vista_previa(
     ticket_id: UUID,
-    _: UsuarioActual,
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """El comprobante en un formato que el navegador SI puede pintar.
@@ -1415,6 +1477,15 @@ async def get_vista_previa(
         await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ).scalar_one_or_none()
     if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    # P0-1: el comprobante es un documento fiscal de una empresa. Servirlo
+    # sin mirar de quien es era el BOLA que el docstring ya describe para el
+    # token; aqui se cierra para la empresa. 404 y no 403.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1470,6 +1541,7 @@ async def get_vista_previa(
 async def listar_documentos(
     ticket_id: UUID,
     usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> list[DocumentoHistorialResponse]:
     """La cadena de papeles de un ticket, de la mas antigua a la vigente.
@@ -1484,8 +1556,17 @@ async def listar_documentos(
     dice quien lo cambio y por que, y el hash de cada version permite verificar
     los bytes que quedaron.
     """
+    # P0-1: el historial de versiones es parte del comprobante. El filtro
+    # de empresa va en la consulta: un ticket de otra empresa no existe para
+    # este usuario (404, no 403).
+    empresa = await resolver_empresa(usuario, company_id, db)
     existe = (
-        await db.execute(select(TicketModel.id).where(TicketModel.id == ticket_id))
+        await db.execute(
+            select(TicketModel.id).where(
+                TicketModel.id == ticket_id,
+                TicketModel.company_id == empresa,
+            )
+        )
     ).scalar_one_or_none()
     if existe is None:
         raise HTTPException(
@@ -1515,9 +1596,11 @@ async def listar_documentos(
 @router.put("/{ticket_id}/documento", response_model=TicketResponse)
 async def put_documento(
     ticket_id: UUID,
-    # `usuario` va antes que `file` porque en Python un parametro sin default no
-    # puede ir despues de uno que lo tiene, y `File(...)` cuenta como default.
+    # `usuario` y `_` van antes que `file` porque en Python un parametro sin
+    # default no puede ir despues de uno que lo tiene, y `File(...)` cuenta
+    # como default.
     usuario: UsuarioActual,
+    _: Escribir,
     file: UploadFile = File(...),
     motivo: str = Form(
         ...,
@@ -1526,6 +1609,7 @@ async def put_documento(
             "obligatorio: es la pregunta que un contador hace despues."
         ),
     ),
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """AGREGA una version nueva del documento. La anterior no se borra.
@@ -1563,6 +1647,13 @@ async def put_documento(
         await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ).scalar_one_or_none()
     if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+
+    # P0-1: cambiar el papel de un comprobante de otra empresa es 404.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1659,12 +1750,21 @@ def _nombre_seguro(nombre: str | None) -> str:
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(
-    ticket_id: UUID, db: AsyncSession = Depends(get_db)
+    ticket_id: UUID,
+    usuario: UsuarioActual,
+    company_id: UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Get a ticket by ID."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+    # P0-1: un ticket de otra empresa no existe para este usuario (404, no 403).
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1676,12 +1776,20 @@ async def update_ticket(
     ticket_id: UUID,
     ticket_in: TicketUpdate,
     usuario: UsuarioActual,
+    _: Escribir,
+    company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Update a ticket."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+    # P0-1: corregir un ticket de otra empresa es 404, no 403.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1811,11 +1919,25 @@ async def update_ticket(
 
 
 @router.delete("/{ticket_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ticket(ticket_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_ticket(
+    ticket_id: UUID,
+    usuario: UsuarioActual,
+    _: Escribir,
+    company_id: UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> None:
     """Delete a ticket."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
     if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
+        )
+    # P0-1: borrar un ticket de otra empresa es 404, no 403. Antes este
+    # endpoint ni siquiera tomaba el usuario: cualquiera autenticado podia
+    # borrar cualquier ticket conociendo su id.
+    empresa = await resolver_empresa(usuario, company_id, db)
+    if ticket.company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )

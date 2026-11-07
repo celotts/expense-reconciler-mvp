@@ -219,11 +219,19 @@ def hash_de_trampa() -> str:
 # ---------------------------------------------------------------------------
 
 
-def crear_token(usuario_id: str, email: str, perfil: str = "digitalizador", grupo: str = "operaciones", expira_en_minutos: int | None = None) -> tuple[str, int]:
+def crear_token(usuario_id: str, email: str, perfil: str = "digitalizador", grupo: str = "operaciones", expira_en_minutos: int | None = None, company_id: str | None = None) -> tuple[str, int]:
     """Firma un token HS256. Devuelve el token y los segundos de vida.
 
     El `exp` va DENTRO del token firmado, no en un header. Un header se puede
     cambiar sin invalidar la firma; un claim no.
+
+    `company_id` es INFORMATIVO: el control de acceso NUNCA lo lee del
+    token, porque un token vive 8 horas y la empresa de un usuario puede
+    cambiar antes. La fuente de verdad es la fila de `users` que
+    `_usuario_del_token` vuelve a leer en cada peticion (ver `deps.py`).
+    El claim existe para que el cliente sepa a que empresa pertenece sin
+    una llamada extra, y para que un token viejo sin el claim siga siendo
+    valido: `leer_token` no lo exige.
     """
     minutos = (
         expira_en_minutos
@@ -239,6 +247,9 @@ def crear_token(usuario_id: str, email: str, perfil: str = "digitalizador", grup
         "email": email,
         "perfil": perfil,
         "grupo": grupo,
+        # Informativo (ver el docstring): la autorizacion lee la empresa de
+        # la base en cada peticion, no de aqui. `None` = sin empresa.
+        "company_id": company_id,
         "iat": ahora,
         "exp": expira,
         # Marca el tipo de token. Un dia que haya refresh tokens, un access
