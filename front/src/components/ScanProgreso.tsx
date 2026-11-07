@@ -1,9 +1,10 @@
 /**
  * El progreso del escaneo, en vivo.
  *
- * `POST /scan` es SINCRONO y con fotos tarda minutos. Sin esto, la pantalla es
- * un "Escaneando..." de cuatro minutos del que no se sabe si va bien o se trabo
- * en el archivo 3 de 200. El backend ya expone el canal
+ * `POST /scan` con fotos tarda minutos: en segundo plano responde 202 y el
+ * trabajo sigue en el servidor. Sin esto, la pantalla es un "Escaneando..."
+ * de cuatro minutos del que no se sabe si va bien o se trabo en el archivo
+ * 3 de 200. El backend ya expone el canal
  * (`GET /scan/runs` y `GET /scan/runs/{id}`), asi que lo que faltaba era
  * pintarlo.
  *
@@ -57,7 +58,7 @@
  */
 
 import { useState } from 'react';
-import type { ScanCorrida, ScanProcesado } from '../types/scan';
+import type { DuplicadoContenido, FotoPorRevisar, ScanCorrida, ScanProcesado } from '../types/scan';
 import type { Ticket } from '../types/api';
 import { ticketsApi } from '../services/api';
 import { Modal } from '../components/ui';
@@ -181,6 +182,12 @@ function fechaLegible(iso: string | null): string | null {
  * pendiente de hacer.
  */
 function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
+  // Una foto por retomar no es un "omitido" generico: el motivo dice que
+  // corregir, y la etiqueta tiene que decirlo tambien. Va en amarillo y no
+  // en rojo: no es un error del sistema, es trabajo del operador.
+  if (p.motivo) {
+    return { tono: 'bg-yellow-100 text-yellow-800', etiqueta: 'revisar foto' };
+  }
   // ## POR QUE `ACCION` SE MIRA ANTES QUE EL ESTADO DE EXTRACCION
   //
   // MEDIDO: escaneando sin empresa, el feed llegaba VACIO (el backend solo
@@ -235,7 +242,21 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
 
 /** El progreso de una corrida, con el feed de lo que ya se leyo. */
 export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida; totalPosible?: number }) {
-  const procesados = [...(corrida.procesados ?? [])].reverse();
+  // La lista principal es de comprobantes UNICOS. Un duplicado copiaba el
+  // importe y el encabezado del ticket ORIGINAL y en el feed se veia como un
+  // segundo gasto pendiente, al lado del correcto. Por eso no es una fila
+  // principal: va solo a la seccion de duplicados, con su original y su
+  // regla. El backend ya no registra duplicados en el feed en corridas
+  // nuevas; este filtro cubre las corridas que ya estan en memoria, donde
+  // `es_duplicado` venia en `true` para todo OMITIDO: ahi solo se esconde
+  // cuando trae ticket (el duplicado apunta al original), y el OMITIDO sin
+  // ticket —escaneo sin empresa— sigue viendose.
+  const esFilaDuplicada = (p: ScanProcesado): boolean =>
+    p.accion === 'DUPLICADO' || (p.es_duplicado && p.ticket_id !== null);
+  const procesados = [...(corrida.procesados ?? [])]
+    .filter((p) => !esFilaDuplicada(p))
+    .reverse();
+  const duplicadosDelFeed = [...(corrida.procesados ?? [])].filter(esFilaDuplicada);
   const [ticketVer, setTicketVer] = useState<Ticket | null>(null);
   const [cargandoTicket, setCargandoTicket] = useState(false);
   async function abrirTicket(ticketId: string) {
@@ -256,8 +277,52 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
   // Y `con ticket` es una PREGUNTA DISTINTA a proposito: puede ser 0 con 9
   // leidos (escaneo sin empresa), y eso no es un fallo: es que se inventario sin
   // crear gastos, que es exactamente lo que promete ese boton.
-  const hechos = corrida.procesados?.length ?? 0;
+  // Sin duplicados: "leidos" cuenta comprobantes unicos, no intentos repetidos.
+  const hechos = procesados.length;
   const leidos = corrida.con_ticket ?? 0;
+
+  // Las dos listas del resumen, cuando la corrida ya cerro. Viajan en
+  // `corrida.resumen` porque con el escaneo en segundo plano el POST responde
+  // 202 sin resultado y este panel es lo unico que el operador ve al terminar.
+  // `resumen` es `Record<string, unknown>`, asi que se comprueba que sean
+  // listas antes de pintarlas: un resumen viejo no las trae y no es un error.
+  const duplicados = Array.isArray(corrida.resumen?.duplicados_por_contenido)
+    ? (corrida.resumen.duplicados_por_contenido as DuplicadoContenido[])
+    : [];
+  const fotos = Array.isArray(corrida.resumen?.fotos_por_revisar)
+    ? (corrida.resumen.fotos_por_revisar as FotoPorRevisar[])
+    : [];
+
+  // Duplicados para la seccion colapsada: los de contenido del resumen
+  // (con regla) mas los que venian en el feed de una corrida vieja
+  // (por hash o por contenido, sin regla en el feed). Sin repetir archivo.
+  const duplicadosSeccion: Array<{
+    archivo: string;
+    proveedor: string | null;
+    total: string | null;
+    fecha: string | null;
+    ticket_id: string | null;
+    regla: string | null;
+  }> = [
+    ...duplicados.map((d) => ({
+      archivo: d.archivo,
+      proveedor: d.proveedor,
+      total: d.total,
+      fecha: d.fecha,
+      ticket_id: d.ticket_id,
+      regla: d.regla ?? null,
+    })),
+    ...duplicadosDelFeed
+      .filter((p) => !duplicados.some((d) => d.archivo === p.relative_path))
+      .map((p) => ({
+        archivo: p.relative_path,
+        proveedor: p.proveedor,
+        total: p.monto,
+        fecha: p.fecha,
+        ticket_id: p.ticket_id,
+        regla: p.accion === 'DUPLICADO' ? 'mismos bytes' : 'mismo contenido',
+      })),
+  ];
 
   return (
     <>
@@ -439,13 +504,20 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
                   </div>
                 )}
 
-                {/* Archivos leidos pero sin ticket (p. ej. sin empresa asignada):
-                    se leyo pero no se creo nada, que es otra cosa que un fallo. */}
-                {!p.ticket_id && p.accion && /OMIT/i.test(p.accion) && (
-                  <p className="mt-1 text-[11px] text-gray-500 italic">
-                    leído correctamente, pero no se creó ticket (probablemente sin
-                    empresa; usa «Escanear y crear tickets» con una empresa elegida)
+                {/* El motivo de la foto, cuando lo hay: una foto por retomar no
+                    es un "omitido" generico ni un archivo leido sin empresa.
+                    Sin este mensaje, el `omitido` gris no diria que corregir. */}
+                {p.motivo ? (
+                  <p className="mt-1 text-[11px] text-yellow-800">
+                    📷 {p.motivo}
                   </p>
+                ) : (
+                  !p.ticket_id && p.accion && /OMIT/i.test(p.accion) && (
+                    <p className="mt-1 text-[11px] text-gray-500 italic">
+                      leído correctamente, pero no se creó ticket (probablemente sin
+                      empresa; usa «Escanear y crear tickets» con una empresa elegida)
+                    </p>
+                  )
                 )}
 
                 {/* Los motivos del gate. SIEMPRE visibles, sin plegar.
@@ -534,6 +606,59 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
                 checks. Los comprobantes están en la cola de revisión.
               </p>
             )}
+          {/* Duplicados y fotos por retomar, al cerrar la corrida. Van aqui
+              y no solo en la "Última pasada" porque con el escaneo en segundo
+              plano el POST responde 202 sin resultado y este pie es lo unico
+              que el operador ve al terminar. */}
+          {duplicadosSeccion.length > 0 && (
+            <details className="mt-3 rounded-md border border-blue-200 bg-blue-50 p-3">
+              <summary className="text-xs font-medium text-blue-800 cursor-pointer">
+                Duplicados detectados ({duplicadosSeccion.length}) — no se sumaron dos veces, el original se conserva.
+              </summary>
+              <ul className="mt-1.5 space-y-1">
+                {duplicadosSeccion.map((d) => (
+                  <li key={`${d.archivo}-${d.ticket_id ?? ''}`} className="text-xs text-blue-800">
+                    <span className="font-mono">{d.archivo}</span>
+                    {' — '}{d.proveedor ?? 'sin proveedor'}
+                    {d.total != null && (
+                      <span className="font-medium tabular-nums"> · {dinero(d.total)}</span>
+                    )}
+                    {d.fecha && <span> · {fechaLegible(d.fecha)}</span>}
+                    {d.regla && <span className="text-blue-600"> · {d.regla}</span>}
+                    {d.ticket_id && (
+                      <span className="text-blue-600"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
+                    )}
+                    {d.ticket_id && (
+                      <button
+                        type="button"
+                        onClick={() => abrirTicket(d.ticket_id!)}
+                        className="ml-2 text-blue-600 hover:text-blue-800 hover:underline"
+                      >
+                        Ver original
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {fotos.length > 0 && (
+            <div className="mt-3 rounded-md border border-yellow-200 bg-yellow-50 p-3">
+              <p className="text-xs font-medium text-yellow-800">
+                {fotos.length === 1
+                  ? 'Una foto hay que volver a tomarla:'
+                  : `${fotos.length} fotos hay que volver a tomarlas:`}
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {fotos.map((f) => (
+                  <li key={f.archivo} className="text-xs text-yellow-800">
+                    <span className="font-mono">{f.archivo}</span>
+                    <span className="text-yellow-600"> — {f.motivo ?? 'foto por revisar'}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </footer>
       )}
     </section>

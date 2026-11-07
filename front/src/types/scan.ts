@@ -25,7 +25,8 @@ export type ScanStatus =
   | 'PROCESADO'
   | 'DUPLICADO'
   | 'ERROR'
-  | 'NO_SOPORTADO';
+  | 'NO_SOPORTADO'
+  | 'REVISAR_FOTO'; // Foto claramente mala: hay que volver a tomarla.
 
 /** Un archivo de la carpeta, tal como esta en el registro.
  *
@@ -121,6 +122,16 @@ export interface ScanItem {
   respaldo_verificado?: boolean | null;
   /** Donde se recupera el comprobante original. */
   recuperable_desde?: string | null;
+  /** Calidad de la foto, solo en `REVISAR_FOTO`: motivos, mensaje y metricas.
+   * `null` es "paso el chequeo o no era una foto". */
+  calidad_foto?: {
+    motivos: string[];
+    mensaje: string;
+    metricas?: Record<string, number | string>;
+  } | null;
+  /** Lo que la lectura final contradice de si misma (total que no cuadra, RFC
+   * sin forma, fecha futura). Vacio es "se reviso y no hay ninguna". */
+  discrepancias?: string[];
 }
 
 /** Un archivo que el escaner ya termino de leer, con lo que leyo de el. */
@@ -189,6 +200,10 @@ export interface ScanProcesado {
   /** Por que el gate no lo aprueba. `;` separa varios. Es lo que convierte
    *  "pendiente" en algo accionable. */
   validation_errors: string | null;
+  /** El motivo en palabras, cuando el archivo no produjo ticket por una razon
+   * que hay que leer: una foto por retomar (`REVISAR_FOTO`) trae aqui su
+   * mensaje ("foto borrosa, vuelve a tomarla..."). `null` en los demas. */
+  motivo?: string | null;
 }
 
 /** El estado de una corrida mientras corre, y despues de terminar. */
@@ -213,8 +228,44 @@ export interface ScanCorrida {
   resumen?: Record<string, unknown> | null;
 }
 
+/** Un duplicado por CONTENIDO de la corrida (mismos proveedor+total+fecha
+ * con bytes distintos: el hash no lo atrapa).
+ *
+ *  `total` es texto y no numero: es un `Decimal` del servidor. `folio` es
+ *  `null` porque el sistema no tiene columna de folio todavia; `ticket_id`
+ *  es el ticket ORIGINAL al que duplica, el que ya estaba guardado. */
+export interface DuplicadoContenido {
+  archivo: string;
+  proveedor: string | null;
+  rfc: string | null;
+  total: string | null;
+  fecha: string | null;
+  fecha_provisional: boolean;
+  folio: string | null;
+  ticket_id: string | null;
+  regla: string;
+  tipo: string;
+}
+
+/** Una foto que hay que volver a tomar (`REVISAR_FOTO`).
+ *
+ *  `motivo` es el mensaje para el usuario ("foto borrosa, vuelve a tomarla
+ *  con más luz y sin reflejo"); `motivos` son las claves (`borrosa`,
+ *  `oscura`, `reflejo`, `baja_resolucion`, `sin_texto`). */
+export interface FotoPorRevisar {
+  archivo: string;
+  motivo: string | null;
+  motivos?: string[];
+}
+
 export interface ScanResultado {
   carpeta: string;
+  /** Tiempo total de la corrida en segundos, medido en el servidor
+   * (iniciada -> terminada). Es lo que el panel "Última pasada" muestra
+   * como "Tiempo total". `null` / ausente en respuestas viejas o cuando la
+   * conexion se corto antes de recibir el POST: en ese caso el front usa
+   * el tiempo medido en el cliente o `corrida.segundos`. */
+  duracion_segundos?: number | null;
   archivos_vistos: number;
   nuevos: number;
   actualizados: number;
@@ -229,9 +280,26 @@ export interface ScanResultado {
    * una carpeta ilegible se ve igual que una carpeta vacia.
    */
   ilegibles: { ruta: string; motivo: string }[];
+  /** Duplicados por CONTENIDO de esta corrida, con proveedor, total, fecha y
+   * el ticket original al que duplican. Los de hash no van aqui: ya se ven en
+   * `detalles` con estado DUPLICADO y el mismo `ticket_id`. */
+  duplicados_por_contenido?: DuplicadoContenido[];
+  /** Fotos por retomar en esta corrida (`REVISAR_FOTO`), con archivo y motivo. */
+  fotos_por_revisar?: FotoPorRevisar[];
   leidos: number;
   lecturas_por_motor: Record<string, number>;
   detalles: ScanItem[];
+}
+
+/** Lo que responde `POST /scan` con `{ segundo_plano: true }` (HTTP 202).
+ *
+ *  No es el resultado: es la confirmacion de que el trabajo empezo. El
+ *  progreso se sigue por `GET /scan/runs`, y el resumen con la duracion queda
+ *  en el registro de la corrida cuando termina. */
+export interface ScanAceptado {
+  aceptado: boolean;
+  corrida_id: string | null;
+  mensaje: string;
 }
 
 export interface ScanRequest {
@@ -249,6 +317,10 @@ export interface ScanRequest {
    *  la carpeta de escaneados. Lo que cambia es que sale de la bandeja de
    *  entrada, que es la que significa "lo que falta digitalizar". */
   archivar?: boolean | null;
+  /** Escanear en segundo plano: el servidor responde 202 de inmediato y el
+   * trabajo sigue; el progreso se sigue por `GET /scan/runs`. Sin esto el
+   * POST espera a que termine la corrida y nginx corta a los 300 s. */
+  segundo_plano?: boolean;
 }
 
 export interface ScanStats {

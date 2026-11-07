@@ -326,6 +326,11 @@ def registrar_procesado(
     ieps: Decimal | None = None,
     lineas: int | None = None,
     validation_errors: str | None = None,
+    # El motivo en palabras, cuando el archivo no produjo ticket por una razon
+    # que el operador tiene que LEER (una foto por retomar). Sin esto, un
+    # `REVISAR_FOTO` salia en el feed como un `omitido` gris sin decir por
+    # que, y habia que ir al registro del archivo a buscar el motivo.
+    motivo: str | None = None,
 ) -> None:
     """Un archivo terminado de leerse, con lo que el sistema leyo de el.
 
@@ -365,6 +370,7 @@ def registrar_procesado(
             "ieps": ieps,
             "lineas": lineas,
             "validation_errors": validation_errors,
+            "motivo": motivo,
         })
         if len(corrida.procesados) > MAX_PROCESADOS:
             del corrida.procesados[:-MAX_PROCESADOS]

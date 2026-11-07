@@ -158,6 +158,17 @@ class ScanFileModel(Base):
         nullable=True,
     )
 
+    # El lote en el que se escaneo este archivo. NULL = escaneado antes de
+    # que existieran los lotes, o inventario sin empresa ni lote. `SET NULL`
+    # por la misma razon que `company_id`: borrar un lote no borra el registro
+    # de que el archivo se leyo, que es lo que evita que el proximo escaneo
+    # vuelva a gastar OCR en el.
+    lote_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("lotes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     first_seen_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     last_scanned_at = Column(TIMESTAMP(timezone=True), nullable=True)
     processed_at = Column(TIMESTAMP(timezone=True), nullable=True)
@@ -175,6 +186,7 @@ class ScanFileModel(Base):
     # corrida no vuelva a gastar OCR en el, y `DELETE /scan/reset` lo borra a
     # proposito, no por accidente de un UPDATE.
     company = relationship("CompanyModel", lazy="selectin", passive_deletes=True)
+    lote = relationship("LoteModel", back_populates="archivos", lazy="selectin")
     # `lazy="selectin"` y no el `select` por omision. Con el diferido, tocar
     # `fila.events` desde un schema de Pydantic dispara IO en un punto donde
     # SQLAlchemy asincrono no puede esperar, y el error que sale es

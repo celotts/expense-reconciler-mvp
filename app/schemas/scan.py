@@ -206,6 +206,19 @@ class ScanRequest(BaseModel):
             "lineas sin producto deja el stock incompleto sin rastro."
         ),
     )
+    segundo_plano: bool = Field(
+        False,
+        description=(
+            "Escanear en segundo plano: el endpoint responde 202 de inmediato "
+            "con `ScanAceptadoResponse` y el trabajo sigue en el servidor; el "
+            "cliente sigue el progreso por `GET /scan/runs`. Sin esto el "
+            "endpoint espera a que termine la corrida, y con fotos eso tarda "
+            "minutos: nginx corta a los 300 s y el cliente se queda sin "
+            "respuesta aunque el escaneo siga. Apagado por omision para no "
+            "cambiar el comportamiento de quien ya llama esperando el "
+            "resultado."
+        ),
+    )
 
 
 class ScanResetRequest(BaseModel):
@@ -362,6 +375,16 @@ class ScanItemResponse(BaseModel):
     # pudo leer".
     datos: DatosTicketResponse | None = None
 
+    # --- Calidad de la foto y discrepancias ------------------------------
+    #
+    # `calidad_foto` solo viene cuando el archivo se marco `REVISAR_FOTO`:
+    # trae `motivos`, `mensaje` y `metricas`. `None` es "paso el chequeo o no
+    # era una foto". `discrepancias` es lo que la lectura final contradice de
+    # si misma (total que no cuadra, RFC sin forma, fecha futura); vacia es
+    # "se reviso y no hay ninguna".
+    calidad_foto: dict | None = None
+    discrepancias: list[str] = Field(default_factory=list)
+
 
 class ScanResponse(BaseModel):
     """El resumen de una corrida de escaneo."""
@@ -372,6 +395,17 @@ class ScanResponse(BaseModel):
     actualizados: int
     sin_cambios: int
     duplicados: int
+    # Duplicados por CONTENIDO de esta corrida (proveedor+total+fecha, o
+    # proveedor+total sin fecha), cada uno con archivo, proveedor, RFC, total,
+    # fecha, folio (None: el sistema no tiene columna de folio) y el ticket
+    # existente al que duplica. Lista y no numero, como `ilegibles`: el numero
+    # no dice que hacer con cada papel. Los duplicados por hash no van aqui:
+    # ya se ven en `detalles` con estado DUPLICADO y el mismo `ticket_id`.
+    duplicados_por_contenido: list[dict] = Field(default_factory=list)
+    # Fotos por retomar en esta corrida (estado `REVISAR_FOTO`), cada una con
+    # archivo, motivo y mensaje. Lista y no numero, como `ilegibles`: el numero
+    # no dice que foto retomar ni por que.
+    fotos_por_revisar: list[dict] = Field(default_factory=list)
     con_error: int
     no_soportados: int
     omitidos_por_tope: int
@@ -448,6 +482,12 @@ class ScanResponse(BaseModel):
     # que inventar una manera de correlacionar la corrida con su total: salen
     # juntos, y el total es el de ESTA corrida.
     corrida_id: str | None = None
+    # Tiempo total de la corrida en segundos (iniciada -> terminada), medido
+    # en el servidor. Es lo que el front muestra como "Tiempo total". Sin
+    # este campo la pantalla solo decia cuantos archivos se vieron, no cuanto
+    # tardo, y con HEIC + Vision eso es lo que el operador necesita para
+    # decidir si el escaneo va bien. `None` solo si la corrida no se registro.
+    duracion_segundos: float | None = None
 
     # --- La autorizacion de la corrida -------------------------------------
     #
@@ -467,6 +507,25 @@ class ScanResponse(BaseModel):
     # dice a que comprobante hay que ir a mirar.
     compras_confirmadas: int = 0
     compras_no_confirmadas: list[dict] = Field(default_factory=list)
+
+
+class ScanAceptadoResponse(BaseModel):
+    """Lo que responde `POST /scan` con `{"segundo_plano": true}` (HTTP 202).
+
+    No es el resultado: es la confirmacion de que el trabajo empezo. El
+    cliente sigue el progreso por `GET /scan/runs` y, cuando la corrida
+    termina, el `resumen` y la `duracion_segundos` estan en el registro de la
+    corrida, no en una segunda respuesta del POST. `corrida_id` es `None` solo
+    si el trabajo todavia no abrio su registro (el candado de escaneo estaba
+    ocupado por otra corrida); en ese caso el cliente busca la corrida en
+    curso en `GET /scan/runs`.
+    """
+
+    aceptado: bool = True
+    corrida_id: str | None = None
+    mensaje: str = (
+        "escaneo en segundo plano: sigue el progreso en GET /scan/runs"
+    )
 
 
 class ResumenScan(BaseModel):

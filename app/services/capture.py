@@ -36,8 +36,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import unicodedata
 from collections.abc import Awaitable, Callable
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
@@ -995,8 +997,13 @@ def _mejor_de(
 # ---------------------------------------------------------------------------
 
 
-def _ocr_por_defecto(datos: bytes) -> ResultadoOCR:
+def _ocr_por_defecto(datos: bytes, imagen_preparada=None) -> ResultadoOCR:
     """El OCR real. Se resuelve aqui y no al importar, por dos razones.
+
+    `imagen_preparada` es la imagen PIL que `ocr.preparar_imagen` ya
+    decodifico para esta foto (ver `capture_ticket`): cuando viene, el OCR
+    la reutiliza y no vuelve a decodificar el HEIC.
+
 
     Una: `app.services.ocr` no importa pytesseract ni EasyOCR al cargarse, pero
     si lo hiciera, importar `capture` arrastraria los dos. La app tiene que
@@ -1010,7 +1017,7 @@ def _ocr_por_defecto(datos: bytes) -> ResultadoOCR:
     """
     from app.services.ocr import leer_imagen
 
-    return leer_imagen(datos)
+    return leer_imagen(datos, imagen_preparada=imagen_preparada)
 
 
 async def capture_ticket(
@@ -1020,6 +1027,7 @@ async def capture_ticket(
     extract_from_image: ExtractFn | None = None,
     extract_from_text: ExtractTextFn | None = None,
     ocr_reader: OcrFn | None = None,
+    imagen_preparada=None,
 ) -> TicketExtractionResult:
     """Punto de entrada unico de un comprobante.
 
@@ -1032,6 +1040,10 @@ async def capture_ticket(
         ocr_reader: como leer texto de una foto. Por defecto el OCR local. Se
             inyecta para probar la politica de cascada sin un binario de
             Tesseract instalado.
+        imagen_preparada: la imagen PIL que `ocr.preparar_imagen` ya
+            decodifico para esta foto (solo `file_type="image"`). Cuando viene,
+            OCR y Vision la reutilizan y el HEIC se decodifica una sola vez.
+            `None` decodifica como antes.
 
     Returns:
         `TicketExtractionResult` con `confidence` y `confidence_source`
@@ -1044,7 +1056,14 @@ async def capture_ticket(
         ExtractionUnavailable: tipo de archivo desconocido.
     """
     if file_type == "image":
-        return await _desde_imagen(content, extract_from_image, ocr_reader)
+        resultado = await _desde_imagen(
+            content, extract_from_image, ocr_reader, imagen_preparada=imagen_preparada
+        )
+        # Las discrepancias viajan en el resultado para que el escaneo las
+        # muestre en el detalle del archivo. Se calculan aqui y no en cada
+        # escalon, porque son de la lectura FINAL, venga de OCR o de Vision.
+        resultado.discrepancias = _discrepancias_de_lectura(resultado)
+        return resultado
 
     if file_type == "text":
         texto = content.decode("utf-8", errors="replace")
@@ -1297,6 +1316,7 @@ async def _desde_imagen_con_vision(
     content: bytes,
     extract_from_image: ExtractFn,
     ocr_reader: OcrFn | None = None,
+    imagen_preparada=None,
 ) -> TicketExtractionResult:
     """Vision primero, y el OCR SOLO si el modelo no entrega algo utilizable.
 
@@ -1321,15 +1341,31 @@ async def _desde_imagen_con_vision(
     que hacia el camino de vision de antes. Lo unico que cambia es quien se
     consulta primero.
     """
-    vision = await _vision_de_imagen(content, extract_from_image)
+    vision = await _vision_de_imagen(
+        content, extract_from_image, imagen_preparada=imagen_preparada
+    )
 
-    if _es_extraccion_util(vision) and not _exige_items(vision):
+    # PERF 2026-11-06 (rama perf/scan-vision-solo-si-ocr-falla): para FOTOS no se
+    # exige items para aceptar la vision. `_exige_items` es True cuando faltan
+    # lineas y ESCALAR_A_IA_SIN_LINEAS=True, y eso forzaba OCR despues de vision
+    # (~21-81 s) en cada foto sin lineas, aunque total+proveedor ya estuvieran
+    # bien. Un gasto se contabiliza con proveedor+total; las lineas son inventario
+    # y no justifican pagar otro escalon. La decision de items se mantiene en
+    # `_cascada_texto` (PDF/texto, modelo de texto barato), no aqui (vision 250-440 s).
+    if _es_extraccion_util(vision) and not _necesita_relectura(vision):
+        logger.info(
+            "vision util sin relectura, se acepta sin OCR (vision_llamada=True)"
+        )
         return vision
 
     por_ocr: TicketExtractionResult | None = None
-    ocr = ocr_reader or _ocr_por_defecto
     try:
-        leido = ocr(content)
+        # El lector inyectado (tests) se llama como siempre, con solo los
+        # bytes. Solo el lector real recibe la imagen ya preparada.
+        if ocr_reader is not None:
+            leido = ocr_reader(content)
+        else:
+            leido = _ocr_por_defecto(content, imagen_preparada=imagen_preparada)
     except OCRNoDisponible as exc:
         logger.info("vision no util y OCR no disponible: %s", exc)
     except Exception as exc:
@@ -1344,6 +1380,49 @@ async def _desde_imagen_con_vision(
     if por_ocr is None:
         return vision
     return _mejor_de(por_ocr, vision)
+
+
+def _discrepancias_de_lectura(resultado: TicketExtractionResult) -> list[str]:
+    """Lo que ESTA lectura contradice de si misma, sin ningun modelo extra.
+
+    Son las validaciones baratas que el sistema ya puede hacer con lo leido,
+    y son las que en `_desde_imagen` disparan Vision cuando el OCR es dudoso:
+
+    - `total_no_cuadra`: subtotal + IVA + IEPS != total (tolerancia de un
+      centavo, la misma del gate). Es la que atrapa el caso medido IMG_4409,
+      donde el OCR leyo bien el subtotal y mal el total.
+    - `rfc_sin_formato`: hay algo en `provider_tax_id` pero no tiene forma de
+      RFC mexicano. No es "falta el RFC" (eso es normal en un ticket): es
+      "lo que se leyo como RFC no puede ser un RFC".
+    - `fecha_futura`: la fecha leida es posterior a hoy. Un gasto no puede
+      ser del futuro; es casi siempre un dia/mes leido al reves.
+    - `total_no_positivo`: total ausente o <= 0. Sin total no hay gasto.
+
+    La lista vacia NO es "no se reviso": es "se reviso y no hay ninguna". Y
+    no se inventa nada: un campo ausente (sin subtotal, sin RFC, sin fecha)
+    no es una discrepancia, es un dato que no se leyo, y eso ya lo dice el
+    gate con su propio motivo.
+
+    El folio repetido por proveedor NO va aqui: no existe campo `folio` en el
+    sistema (verificado 2026-11-06), asi que no hay nada que comprobar. Cuando
+    exista, su chequeo es contra la base y no contra esta lectura, y vivira en
+    el escaneo, no aqui.
+    """
+    motivos: list[str] = []
+    total = resultado.total_amount
+    if total is None or total <= 0:
+        motivos.append("total_no_positivo")
+    elif resultado.subtotal is not None and resultado.tax_amount is not None:
+        esperado = resultado.subtotal + resultado.tax_amount
+        if resultado.ieps_amount is not None:
+            esperado += resultado.ieps_amount
+        if abs(esperado - total) > Decimal("0.01"):
+            motivos.append("total_no_cuadra")
+    if resultado.provider_tax_id and _rfc_en_forma(resultado.provider_tax_id) is None:
+        motivos.append("rfc_sin_formato")
+    if resultado.expense_date is not None and resultado.expense_date > date.today():
+        motivos.append("fecha_futura")
+    return motivos
 
 
 def _necesita_relectura(resultado: TicketExtractionResult) -> bool:
@@ -1403,6 +1482,7 @@ async def _desde_imagen(
     content: bytes,
     extract_from_image: ExtractFn | None,
     ocr_reader: OcrFn | None = None,
+    imagen_preparada=None,
 ) -> TicketExtractionResult:
     """Foto o escaneo: el orden lo decide `IMAGENES_VISION_PRIMERO`.
 
@@ -1481,15 +1561,24 @@ async def _desde_imagen(
     siguiente escalon igual, que es lo que hacia que la app sirviera antes de
     que existiera este modulo.
     """
+    # PERF 2026-11-06: temporizador para medir OCR vs vision por foto. Ver logs
+    # con vision_llamada=True/False para el antes/después con los mismos 4 tickets.
+    _inicio = time.perf_counter()
     if settings.IMAGENES_VISION_PRIMERO and extract_from_image is not None:
-        return await _desde_imagen_con_vision(content, extract_from_image, ocr_reader)
+        return await _desde_imagen_con_vision(
+            content, extract_from_image, ocr_reader, imagen_preparada=imagen_preparada
+        )
 
-    ocr = ocr_reader or _ocr_por_defecto
     # Lo que el OCRReply leyo, para poder compararlo con lo que vea el modelo.
     por_ocr: TicketExtractionResult | None = None
 
     try:
-        leido = ocr(content)
+        # El lector inyectado (tests) se llama como siempre, con solo los
+        # bytes. Solo el lector real recibe la imagen ya preparada.
+        if ocr_reader is not None:
+            leido = ocr_reader(content)
+        else:
+            leido = _ocr_por_defecto(content, imagen_preparada=imagen_preparada)
     except OCRNoDisponible as exc:
         logger.info("OCR no disponible, se va directo a vision: %s", exc)
     except Exception as exc:
@@ -1519,11 +1608,43 @@ async def _desde_imagen(
             # El caso es `IMG_4409`: el OCR leyo el subtotal bien (`279.93`, la
             # verdad) y el total mal (`219.93`), y sin esto el sistema afirmaba
             # un numero que su propia lectura desmentia. Ver `_necesita_relectura`.
-            if (
-                _es_extraccion_util(resultado)
-                and not _exige_items(resultado)
-                and not _necesita_relectura(resultado)
+            # PERF 2026-11-06 (rama perf/scan-vision-solo-si-ocr-falla): NO se exige
+            # items para aceptar el OCR en FOTOS. `_exige_items` es True cuando
+            # faltan lineas y ESCALAR_A_IA_SIN_LINEAS=True (default), y eso mandaba
+            # CADA foto sin lineas a vision (~250-440 s por foto, MEDIDO: 4 tickets
+            # >8 min). Un gasto se contabiliza con proveedor+total sin contradiccion;
+            # las lineas son inventario y no justifican pagar vision. Se mantiene
+            # `_necesita_relectura` (sin total o aritmetica contradicha -> vision) y
+            # `_es_extraccion_util` (proveedor basura o sin total -> vision). El
+            # escalado por items se mantiene en `_cascada_texto` para PDF/texto,
+            # donde el modelo es de texto y barato, no vision.
+            # OPT 2026-11-06: las validaciones sin modelo son tambien un
+            # GATILLO para Vision. Si lo leido se contradice (total que no
+            # cuadra, RFC sin forma, fecha futura), el OCR es DUDOSO aunque
+            # traiga proveedor+total, y se va a Vision en vez de aceptarlo.
+            # `_necesita_relectura` ya cubre el total que no cuadra y el total
+            # ausente; esto agrega el RFC y la fecha, que antes se aceptaban
+            # sin mirar. Ver `_discrepancias_de_lectura`.
+            discrepancias = _discrepancias_de_lectura(resultado)
+            if discrepancias:
+                logger.info(
+                    "OCR dudoso por %s; se intenta vision "
+                    "(proveedor=%r total=%s)",
+                    discrepancias,
+                    resultado.provider_name,
+                    resultado.total_amount,
+                )
+            elif _es_extraccion_util(resultado) and not _necesita_relectura(
+                resultado
             ):
+                logger.info(
+                    "OCR util sin relectura, se acepta sin vision "
+                    "(vision_llamada=False total_ms=%.0f proveedor=%r total=%s items=%s)",
+                    (time.perf_counter() - _inicio) * 1000,
+                    resultado.provider_name,
+                    resultado.total_amount,
+                    "si" if resultado.items else "NO",
+                )
                 return resultado
             # Se guarda para comparar. Sin esto, lo que el modelo devuelva
             # REEMPLAZA a lo que el OCR leyo, sin mirar: medido en los 7
@@ -1538,19 +1659,42 @@ async def _desde_imagen(
                 "si" if resultado.items else "NO",
             )
 
-    vision = await _vision_de_imagen(content, extract_from_image)
+    _inicio_vision = time.perf_counter()
+    vision = await _vision_de_imagen(
+        content, extract_from_image, imagen_preparada=imagen_preparada
+    )
+    logger.info(
+        "_desde_imagen total_ms=%.0f vision_ms=%.0f vision_llamada=True",
+        (time.perf_counter() - _inicio) * 1000,
+        (time.perf_counter() - _inicio_vision) * 1000,
+    )
     if por_ocr is None:
         return vision
     return _mejor_de(por_ocr, vision)
 
 
-async def _vision_de_imagen(content: bytes, extract_from_image: ExtractFn | None) -> TicketExtractionResult:
+async def _vision_de_imagen(
+    content: bytes,
+    extract_from_image: ExtractFn | None,
+    imagen_preparada=None,
+) -> TicketExtractionResult:
     """Vision: el ultimo escalon, el que mas caro es."""
     if extract_from_image is None:
         return _ilegible("no hay extractor de vision disponible")
 
     try:
-        invoice = await extract_from_image(content)
+        # La imagen preparada solo se pasa si el extractor la acepta: el real
+        # (`ai_extractor.extract_from_image`) si, y los inyectados en tests no.
+        # Se mira la firma en vez de probar y reintentar, porque reintentar
+        # una llamada de Vision cuesta minutos.
+        import inspect
+
+        if "imagen_preparada" in inspect.signature(extract_from_image).parameters:
+            invoice = await extract_from_image(
+                content, imagen_preparada=imagen_preparada
+            )
+        else:
+            invoice = await extract_from_image(content)
     except Exception as exc:
         # Un archivo que se subio y no se pudo leer no se pierde: entra a la
         # cola. Perderlo es el unico resultado inaceptable, porque nadie llega a

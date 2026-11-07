@@ -16,15 +16,13 @@ de verdad:
 
 from __future__ import annotations
 
-import hashlib
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-from app.core.enums import ExtractionStatus, ScanStatus, SourceType
+from app.core.enums import ExtractionStatus, ScanStatus
 from app.models.scan_file import ScanFileModel
 from app.models.ticket import TicketModel
 from app.services import scan_service
@@ -54,6 +52,20 @@ TOTAL: 1100.00
 # Se construye partiendo de `COMPROBANTE` y cambiándole el subtotal, para que
 # los dos comprobantes sean identicos salvo en lo que el test necesita.
 COMPROBANTE_ARITMETICA_ROTA = COMPROBANTE.replace("948.28", "948.00")
+
+# Un segundo gasto DISTINTO para el test de archivado: mismo proveedor pero
+# otro total (2200.00, con su subtotal e IVA cuadrados) y otra fecha. Sin
+# esto, la regla de duplicado por contenido (proveedor+total+fecha) marcaria
+# el archivo "bien leido" como duplicado del de aritmetica rota —que es el
+# MISMO gasto segun esa regla— y el test no probaria que un ticket bien leido
+# sale de la bandeja: probaria duplicados.
+COMPROBANTE_OTRO_GASTO = """Tiendas Ramirez SA de CV
+RFC: TRAM910101XXX
+Fecha: 2025/03/16
+Subtotal: 1896.55
+IVA (16%): 303.45
+TOTAL: 2200.00
+"""
 
 
 @pytest.fixture
@@ -119,6 +131,28 @@ def _pdf_con_texto(monkeypatch, texto: str):
     )
 
 
+def _pdf_por_marca(monkeypatch, textos: dict[bytes, str]):
+    """Como `_pdf_con_texto`, pero el texto depende de una marca en los bytes.
+
+    Es lo que permite probar duplicados por contenido: dos archivos con bytes
+    distintos (hash distinto) y el MISMO texto leido, o con textos distintos.
+    La marca viaja en los bytes despues del `%PDF-1.7 `, que el lector de PDF
+    con texto ignora.
+    """
+    from app.services import capture
+
+    def _extraer(datos: bytes) -> str:
+        for marca, texto in textos.items():
+            if marca in datos:
+                return texto
+        raise AssertionError("sin texto de prueba para estos bytes")
+
+    monkeypatch.setattr(capture, "extract_pdf_text", _extraer)
+    monkeypatch.setattr(
+        capture, "_vision_pdf", _no_deberia_llamarse("un PDF con texto no se renderiza")
+    )
+
+
 def _no_deberia_llamarse(que):
     async def _explota(*_args, **_kwargs):
         raise AssertionError(que)
@@ -135,8 +169,6 @@ class TestLaRutaNoSePideSeConfigura:
 
     def test_una_ruta_relativa_se_reconstruye_dentro_de_la_carpeta(self, carpeta):
         (carpeta / "dentro.pdf").write_bytes(b"%PDF-1.7 x")
-        fila = ScanFileModel(relative_path="dentro.pdf", content_hash="a" * 64)
-
         assert scan_service.ruta_de_relativo("dentro.pdf") == (carpeta / "dentro.pdf")
 
     @pytest.mark.parametrize(
@@ -455,6 +487,208 @@ class TestEscanearEsIdempotente:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Duplicado por CONTENIDO, no solo por hash
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicadoPorContenido:
+    """La misma foto con otro nombre, o el mismo papel fotografiado dos veces.
+
+    El hash no atrapa estos casos porque los bytes cambian. La regla es
+    proveedor + total y, si los dos tienen fecha real, la fecha; sin fecha real
+    en alguno, proveedor + total. No hay folio: el sistema no tiene columna de
+    folio, asi que la regla no lo usa y la entrada del listado lo lleva en None.
+    """
+
+    # El mismo comprobante sin fecha: el papel no trae fecha visible (Bodega
+    # Aurrera del set de 7 HEIC). La lectura sale sin fecha y el ticket se
+    # guarda con la fecha de captura y `fecha_provisional=True`.
+    COMPROBANTE_SIN_FECHA = COMPROBANTE.replace("Fecha: 2025/03/15\n", "")
+    # Mismo proveedor y fecha, otro total (subtotal ajustado para que cuadre).
+    COMPROBANTE_OTRO_TOTAL = COMPROBANTE.replace("948.28", "1048.28").replace(
+        "TOTAL: 1100.00", "TOTAL: 1200.00"
+    )
+    # Mismo total y fecha, otro proveedor (nombre y RFC).
+    COMPROBANTE_OTRO_PROVEEDOR = COMPROBANTE.replace(
+        "Tiendas Ramirez SA de CV", "Abarrotes Luna SA de CV"
+    ).replace("TRAM910101XXX", "LUNA920202YYY")
+    # Mismo proveedor y total, otro dia.
+    COMPROBANTE_OTRA_FECHA = COMPROBANTE.replace("2025/03/15", "2025/03/16")
+
+    async def test_mismo_contenido_con_bytes_distintos_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        _pdf_por_marca(monkeypatch, {b"PRIMERO": COMPROBANTE, b"SEGUNDO": COMPROBANTE})
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        (carpeta / "b.pdf").write_bytes(b"%PDF-1.7 SEGUNDO " + COMPROBANTE.encode())
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1, "mismo contenido no puede ser dos tickets"
+        assert resumen.nuevos == 1
+        assert resumen.duplicados == 1
+        # El dinero no se cuenta dos veces: el duplicado apunta al mismo ticket.
+        assert resumen.resumen["importe_total_leido"] == Decimal("1100.00")
+        assert len(resumen.duplicados_por_contenido) == 1
+        entrada = resumen.duplicados_por_contenido[0]
+        assert entrada["archivo"] == "b.pdf"
+        assert entrada["proveedor"] == "Tiendas Ramirez SA de CV"
+        assert entrada["rfc"] == "TRAM910101XXX"
+        assert entrada["total"] == "1100.00"
+        assert entrada["fecha"] == "2025-03-15"
+        assert entrada["folio"] is None
+        assert entrada["ticket_id"] == str(tickets[0].id)
+        assert entrada["regla"] == "proveedor+total+fecha"
+        assert entrada["tipo"] == "contenido"
+
+    async def test_total_distinto_no_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        _pdf_por_marca(
+            monkeypatch,
+            {b"PRIMERO": COMPROBANTE, b"SEGUNDO": self.COMPROBANTE_OTRO_TOTAL},
+        )
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        (carpeta / "b.pdf").write_bytes(
+            b"%PDF-1.7 SEGUNDO " + self.COMPROBANTE_OTRO_TOTAL.encode()
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 2
+        assert resumen.duplicados == 0
+        assert resumen.duplicados_por_contenido == []
+
+    async def test_proveedor_distinto_no_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        _pdf_por_marca(
+            monkeypatch,
+            {b"PRIMERO": COMPROBANTE, b"SEGUNDO": self.COMPROBANTE_OTRO_PROVEEDOR},
+        )
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        (carpeta / "b.pdf").write_bytes(
+            b"%PDF-1.7 SEGUNDO " + self.COMPROBANTE_OTRO_PROVEEDOR.encode()
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 2
+        assert resumen.duplicados == 0
+
+    async def test_fecha_distinta_no_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        _pdf_por_marca(
+            monkeypatch,
+            {b"PRIMERO": COMPROBANTE, b"SEGUNDO": self.COMPROBANTE_OTRA_FECHA},
+        )
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        (carpeta / "b.pdf").write_bytes(
+            b"%PDF-1.7 SEGUNDO " + self.COMPROBANTE_OTRA_FECHA.encode()
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 2, "mismo total otro dia puede ser otra compra"
+        assert resumen.duplicados == 0
+
+    async def test_sin_fecha_en_ambos_si_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """Bodega Aurrera: sin fecha visible, decide proveedor+total."""
+        _pdf_por_marca(
+            monkeypatch,
+            {b"PRIMERO": self.COMPROBANTE_SIN_FECHA, b"SEGUNDO": self.COMPROBANTE_SIN_FECHA},
+        )
+        (carpeta / "a.pdf").write_bytes(
+            b"%PDF-1.7 PRIMERO " + self.COMPROBANTE_SIN_FECHA.encode()
+        )
+        (carpeta / "b.pdf").write_bytes(
+            b"%PDF-1.7 SEGUNDO " + self.COMPROBANTE_SIN_FECHA.encode()
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1
+        assert resumen.duplicados == 1
+        entrada = resumen.duplicados_por_contenido[0]
+        assert entrada["fecha"] is None
+        assert entrada["fecha_provisional"] is True
+        assert entrada["regla"] == "proveedor+total (sin fecha)"
+
+    async def test_una_con_fecha_y_otra_sin_tambien_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """La fecha provisional no desmiente: decide proveedor+total.
+
+        Es la variante debil de la regla y queda registrada como tal en la
+        entrada (`sin fecha`): dos gastos distintos con el mismo total y la
+        fecha ilegible en uno se marcarian duplicado, y el operador lo ve en
+        la regla antes de reprocesar con forzar.
+        """
+        _pdf_por_marca(
+            monkeypatch,
+            {b"PRIMERO": COMPROBANTE, b"SEGUNDO": self.COMPROBANTE_SIN_FECHA},
+        )
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        (carpeta / "b.pdf").write_bytes(
+            b"%PDF-1.7 SEGUNDO " + self.COMPROBANTE_SIN_FECHA.encode()
+        )
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1
+        assert resumen.duplicados == 1
+        assert resumen.duplicados_por_contenido[0]["regla"] == "proveedor+total (sin fecha)"
+
+    async def test_en_otra_empresa_no_es_duplicado(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """El mismo papel puede existir en dos empresas: cada una lo gasto."""
+        from app.models.company import CompanyModel
+
+        _pdf_por_marca(monkeypatch, {b"PRIMERO": COMPROBANTE, b"SEGUNDO": COMPROBANTE})
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        otra = CompanyModel(name="Otra Empresa", tax_id="OTRA123456789")
+        db_session.add(otra)
+        await db_session.commit()
+        await db_session.refresh(otra)
+
+        (carpeta / "b.pdf").write_bytes(b"%PDF-1.7 SEGUNDO " + COMPROBANTE.encode())
+        resumen = await scan_service.escanear(db_session, otra.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 2
+        assert resumen.duplicados == 0
+
+    async def test_reprocesar_con_forzar_si_crea_el_segundo_ticket(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        """`forzar` es la decision explicita de que si es un gasto nuevo."""
+        _pdf_por_marca(monkeypatch, {b"PRIMERO": COMPROBANTE, b"SEGUNDO": COMPROBANTE})
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 PRIMERO " + COMPROBANTE.encode())
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        (carpeta / "b.pdf").write_bytes(b"%PDF-1.7 SEGUNDO " + COMPROBANTE.encode())
+        resumen = await scan_service.escanear(
+            db_session, test_company.id, "ana", reprocesar=True
+        )
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 2, "con forzar, el operador decide que es nuevo"
+        assert resumen.duplicados == 0
+
+
+# ---------------------------------------------------------------------------
 # 4. Que solo salga de la bandeja lo que se leyo bien
 # ---------------------------------------------------------------------------
 
@@ -638,7 +872,7 @@ class TestSoloSeArchivaLoResuelto:
         El numero de `detalles` tiene que ser el de archivos vistos. Es la misma
         cifra que el operador usa para saber si la carpeta se vacio.
         """
-        destino = self._archivar_encendido(monkeypatch, tmp_path)
+        self._archivar_encendido(monkeypatch, tmp_path)
 
         # Uno que se queda (aritmetica rota) y uno que sale (bien leido).
         _pdf_con_texto(monkeypatch, COMPROBANTE_ARITMETICA_ROTA)
@@ -646,8 +880,8 @@ class TestSoloSeArchivaLoResuelto:
 
         await scan_service.escanear(db_session, test_company.id, "ana")
 
-        _pdf_con_texto(monkeypatch, COMPROBANTE)
-        (carpeta / "bien.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+        _pdf_con_texto(monkeypatch, COMPROBANTE_OTRO_GASTO)
+        (carpeta / "bien.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE_OTRO_GASTO.encode())
 
         resumen = await scan_service.escanear(db_session, test_company.id, "ana")
 
@@ -1015,7 +1249,7 @@ class TestEscanearSinEmpresa:
         _pdf_con_texto(monkeypatch, COMPROBANTE)
         (carpeta / "ocho.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
 
-        resumen = await scan_service.escanear(db_session, None, "ana")
+        await scan_service.escanear(db_session, None, "ana")
 
         tickets = (await db_session.execute(select(TicketModel))).scalars().all()
         assert tickets == []
@@ -1024,3 +1258,172 @@ class TestEscanearSinEmpresa:
         assert fila.status == ScanStatus.PROCESADO.value
         assert fila.ticket_id is None
         assert "sin empresa" in fila.last_error
+
+
+# ---------------------------------------------------------------------------
+# 7. Calidad de la foto y prelectura en paralelo (OPT 2026-11-06)
+# ---------------------------------------------------------------------------
+
+
+def _foto_buena_bytes() -> bytes:
+    """Papel claro con lineas oscuras nitidas, como PNG: un ticket legible."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("L", (1000, 1400), 245)
+    dibujo = ImageDraw.Draw(img)
+    y = 60
+    for _ in range(30):
+        dibujo.rectangle([60, y, 940, y + 14], fill=20)
+        y += 42
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _foto_oscura_bytes() -> bytes:
+    """Casi negra: claramente mala, sin importar el OCR."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("L", (1000, 1400), 20)
+    dibujo = ImageDraw.Draw(img)
+    y = 60
+    for _ in range(30):
+        dibujo.rectangle([60, y, 940, y + 14], fill=5)
+        y += 42
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestCalidadDeFotoEnElEscaneo:
+    """El control de calidad corre ANTES de OCR/Vision, en el escaneo real.
+
+    Una foto oscura no llega a `capture_ticket`: se marca `REVISAR_FOTO` con
+    su motivo, no crea ticket, no gasta Vision, y aparece en el listado
+    `fotos_por_revisar` con el mensaje para el usuario. Una foto buena pasa
+    el chequeo y se lee normal.
+    """
+
+    async def test_una_foto_oscura_no_llega_a_capture(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        (carpeta / "oscura.png").write_bytes(_foto_oscura_bytes())
+
+        async def _no_deberia_llamarse(*_args, **_kwargs):
+            raise AssertionError("una foto mala no se manda a capture")
+
+        # `procesar_archivo` llama al `capture_ticket` importado en su
+        # modulo: es ese el que se burla, no el del modulo `capture`.
+        monkeypatch.setattr(scan_service, "capture_ticket", _no_deberia_llamarse)
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert tickets == []
+        assert len(resumen.fotos_por_revisar) == 1
+        entrada = resumen.fotos_por_revisar[0]
+        assert entrada["archivo"] == "oscura.png"
+        assert "oscura" in (entrada["motivo"] or "")
+        detalle = resumen.detalles[0]
+        assert detalle.status is ScanStatus.REVISAR_FOTO
+        assert detalle.calidad_foto is not None
+        assert "oscura" in detalle.calidad_foto["motivos"]
+        # Sin ticket: no se cuenta dinero que no existe.
+        assert resumen.resumen["sin_ticket"] == 1
+        assert len(resumen.resumen["fotos_por_revisar"]) == 1
+        fila = (await db_session.execute(select(ScanFileModel))).scalar_one()
+        assert fila.status == ScanStatus.REVISAR_FOTO.value
+
+    async def test_una_foto_buena_pasa_el_chequeo_y_se_lee(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        from datetime import date
+        from decimal import Decimal
+
+        from app.core.enums import ConfidenceSource
+        from app.services.parser_service import TicketExtractionResult
+
+        (carpeta / "buena.png").write_bytes(_foto_buena_bytes())
+
+        async def _capture_falsa(*_args, **_kwargs):
+            return TicketExtractionResult(
+                provider_name="Tiendas Ramirez SA de CV",
+                provider_tax_id="TRAM910101XXX",
+                total_amount=Decimal("1100.00"),
+                tax_amount=Decimal("151.72"),
+                subtotal=Decimal("948.28"),
+                expense_date=date(2025, 3, 15),
+                raw_text="Tiendas Ramirez SA de CV TOTAL: 1100.00",
+                confidence_source=ConfidenceSource.OCR,
+            )
+
+        monkeypatch.setattr(scan_service, "capture_ticket", _capture_falsa)
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        assert resumen.fotos_por_revisar == []
+        assert resumen.nuevos == 1
+        tickets = (await db_session.execute(select(TicketModel))).scalars().all()
+        assert len(tickets) == 1
+        assert tickets[0].total_amount == Decimal("1100.00")
+        assert resumen.detalles[0].discrepancias == []
+
+
+class TestPrelecturaEnParalelo:
+    """El OCR de varias fotos se precalcula a la vez; la Vision no.
+
+    La prueba no mide tiempo (seria fragil), sino cableado: con la prelectura
+    burlada, el escaneo sigue creando los tickets, y en la segunda pasada
+    (todo SIN_CAMBIOS) la prelectura ni se llama, porque gastar OCR en
+    archivos que no se van a leer seria pagar por nada.
+    """
+
+    async def test_la_segunda_pasada_no_prelee_nada(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+        (carpeta / "b.png").write_bytes(_foto_buena_bytes())
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+        assert resumen.nuevos >= 1
+
+        def _explota(_contenido: bytes):
+            raise AssertionError(
+                "en la segunda pasada nada se prelee: todo es SIN_CAMBIOS"
+            )
+
+        monkeypatch.setattr(scan_service, "_prelectura_de_foto", _explota)
+
+        resumen2 = await scan_service.escanear(db_session, test_company.id, "ana")
+        assert resumen2.sin_cambios >= 1
+        assert resumen2.nuevos == 0
+
+    async def test_toca_leer_distinque_sin_cambios_de_nuevo(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch
+    ):
+        from app.services.scan_service import ArchivoVista
+        from datetime import datetime, timezone
+
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        (carpeta / "a.pdf").write_bytes(b"%PDF-1.7 " + COMPROBANTE.encode())
+        await scan_service.escanear(db_session, test_company.id, "ana")
+
+        vista = ArchivoVista(
+            ruta=carpeta / "a.pdf",
+            relative_path="a.pdf",
+            tamano=100,
+            mtime=datetime.now(timezone.utc),
+            extension=".pdf",
+        )
+        contenido = (carpeta / "a.pdf").read_bytes()
+        assert await scan_service._toca_leer(
+            db_session, vista, contenido, test_company.id, forzar=False
+        ) is False
+        assert await scan_service._toca_leer(
+            db_session, vista, contenido, test_company.id, forzar=True
+        ) is True

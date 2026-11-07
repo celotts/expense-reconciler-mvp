@@ -1219,6 +1219,61 @@ COMMENT ON COLUMN tickets.motivo_rechazo IS
 
 
 -- =====================================================================
+-- 0019_lotes.sql - Lotes de digitalizacion
+-- =====================================================================
+--
+-- COPIA de la migracion 0019. La regla sigue vigente: si anades una columna,
+-- la migracion Y el `init.sql`, o nada.
+CREATE TABLE IF NOT EXISTS lotes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    folio VARCHAR(30) NOT NULL,
+    nombre VARCHAR(150) NOT NULL,
+    ejercicio INTEGER NOT NULL,
+    mes INTEGER NOT NULL,
+    tipo_periodo VARCHAR(20) NOT NULL DEFAULT 'mensual',
+    fecha_inicio DATE NOT NULL,
+    fecha_fin DATE NOT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'ABIERTO',
+    total_esperado INTEGER NULL,
+    total_escaneado INTEGER NOT NULL DEFAULT 0,
+    importe_total NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    lote_padre_id UUID NULL REFERENCES lotes(id) ON DELETE SET NULL,
+    motivo TEXT NULL,
+    creado_por VARCHAR(255) NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cerrado_at TIMESTAMP WITH TIME ZONE NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_lotes_empresa_folio
+    ON lotes (company_id, folio);
+CREATE INDEX IF NOT EXISTS ix_lotes_empresa_periodo
+    ON lotes (company_id, ejercicio, mes, estado);
+CREATE INDEX IF NOT EXISTS ix_lotes_padre ON lotes (lote_padre_id);
+
+ALTER TABLE lotes DROP CONSTRAINT IF EXISTS ck_lotes_mes;
+ALTER TABLE lotes ADD CONSTRAINT ck_lotes_mes CHECK (mes BETWEEN 1 AND 12);
+ALTER TABLE lotes DROP CONSTRAINT IF EXISTS ck_lotes_fechas;
+ALTER TABLE lotes ADD CONSTRAINT ck_lotes_fechas CHECK (fecha_inicio <= fecha_fin);
+ALTER TABLE lotes DROP CONSTRAINT IF EXISTS ck_lotes_estado;
+ALTER TABLE lotes ADD CONSTRAINT ck_lotes_estado
+    CHECK (estado IN ('ABIERTO', 'EN_REVISION', 'CERRADO'));
+ALTER TABLE lotes DROP CONSTRAINT IF EXISTS ck_lotes_tipo_periodo;
+ALTER TABLE lotes ADD CONSTRAINT ck_lotes_tipo_periodo
+    CHECK (tipo_periodo IN ('mensual', 'quincenal', 'semanal'));
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS lote_config JSON NULL;
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS lote_id UUID
+    REFERENCES lotes(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS ix_tickets_lote ON tickets (lote_id);
+
+ALTER TABLE scan_files ADD COLUMN IF NOT EXISTS lote_id UUID
+    REFERENCES lotes(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS ix_scan_files_lote ON scan_files (lote_id);
+
+
+-- =====================================================================
 -- El registro de que esta base ya esta al dia (0015)
 -- =====================================================================
 --
@@ -1250,14 +1305,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Una base creada desde `init.sql` esta AL DIA con las 18 migraciones, porque
+-- Una base creada desde `init.sql` esta AL DIA con las 19 migraciones, porque
 -- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 18
 -- archivos sobre una base que ya tiene todo: `IF NOT EXISTS` los haria
 -- idempotentes, pero el operador veria "aplicando 0002..." y pensaria que su
 -- base estaba vieja. El registro tiene que decir la verdad, y la verdad es que
 -- esa base no necesita nada.
 --
--- Son 18 y no 12 porque la 0018 se anadio despues. Esa omision es exactamente
+-- Son 19 y no 12 porque la 0018 y la 0019 se anadieron despues. Esa omision es exactamente
 -- el fallo que `test_init_sql_espeja_los_modelos.py` existe para cazar, y lo
 -- cazó: faltaba la tabla `tipos_gasto` entera y no solo columnas. Si anades una
 -- migracion, la copias aqui Y agregas su fila a esta lista.
@@ -1281,5 +1336,6 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0015_fecha_provisional.sql'),
     ('0016_perfil_usuario.sql'),
     ('0017_auditoria.sql'),
-    ('0018_tipos_gasto.sql')
+    ('0018_tipos_gasto.sql'),
+    ('0019_lotes.sql')
 ON CONFLICT (nombre) DO NOTHING;

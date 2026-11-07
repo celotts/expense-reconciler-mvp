@@ -131,6 +131,10 @@ class ScanStatus(str, Enum):
     DUPLICADO     -> mismos bytes que un archivo ya procesado; no se relee
     ERROR         -> se intento y no se pudo; `attempts` y `last_error` lo dicen
     NO_SOPORTADO  -> el formato no es del dominio (no es PDF ni imagen)
+    REVISAR_FOTO  -> la foto es claramente mala (borrosa, oscura, con reflejo
+                      o muy baja resolucion) y NO se gasto OCR ni Vision en
+                      ella; el operador tiene que volver a tomarla. Ver
+                      `app/services/calidad_foto.py`.
     """
 
     PENDIENTE = "PENDIENTE"
@@ -138,6 +142,7 @@ class ScanStatus(str, Enum):
     DUPLICADO = "DUPLICADO"
     ERROR = "ERROR"
     NO_SOPORTADO = "NO_SOPORTADO"
+    REVISAR_FOTO = "REVISAR_FOTO"
 
     @property
     def is_open(self) -> bool:

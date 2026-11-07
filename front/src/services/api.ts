@@ -12,7 +12,7 @@ import type {
 } from '../types/api';
 import type { Categoria, DashboardResponse } from '../types/dashboard';
 import type {
-  ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanIaEstado, ScanItem, ScanOcrEstado,
+  ScanAceptado, ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanIaEstado, ScanItem, ScanOcrEstado,
   ScanRequest, ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
 import { estaVencido, leerToken, notificarCaducidad, SesionVencida } from './sesion';
@@ -385,10 +385,23 @@ export const ticketsApi = {
       body: JSON.stringify(data),
     }),
 
+  /** Escanea en segundo plano: el servidor responde 202 de inmediato (sin el
+   * resultado) y el trabajo sigue; el progreso se sigue por `scanRuns`.
+   *
+   *  Es el camino que usa la pantalla por omision desde 2026-11-06: con fotos
+   *  el escaneo tarda minutos y nginx corta el POST a los 300 s, asi que
+   *  esperar el resultado en la misma peticion dejaba al operador sin
+   *  respuesta aunque el trabajo siguiera. */
+  escanearEnSegundoPlano: (data: ScanRequest = {}): Promise<ScanAceptado> =>
+    fetchApi<ScanAceptado>('/scan/', {
+      method: 'POST',
+      body: JSON.stringify({ ...data, segundo_plano: true }),
+    }),
+
   /** Las corridas recientes, y cuales siguen en marcha.
    *
-   *  Es el canal de progreso: `POST /scan` es sincrono y con fotos tarda
-   *  minutos, asi que el cliente necesita algo que consultar mientras espera. */
+   *  Es el canal de progreso: el escaneo con fotos tarda minutos, asi que el
+   *  cliente necesita algo que consultar mientras espera. */
   scanRuns: (limite = 10): Promise<{ corridas: ScanCorrida[]; en_curso: string[] }> =>
     fetchApi<{ corridas: ScanCorrida[]; en_curso: string[] }>(`/scan/runs?limite=${limite}`),
 

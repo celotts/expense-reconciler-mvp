@@ -1,0 +1,2 @@
+docker compose exec expense-api python scripts/crear_usuario.py --listar
+docker compose exec expense-api python scripts/crear_usuario.py --listar

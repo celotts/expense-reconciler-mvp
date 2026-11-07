@@ -32,8 +32,16 @@ from app.core.config import settings
 from app.core.heif import DISPONIBLE as _HEIC_DISPONIBLE
 
 
-def _a_jpeg(image_bytes: bytes) -> bytes | None:
+def _a_jpeg(image_bytes: bytes, imagen_preparada=None) -> bytes | None:
     """Decodifica, reescala y pasa a JPEG. `None` si no se puede.
+
+    OPT 2026-11-06 (rama perf/scan-vision-solo-si-ocr-falla): `imagen_preparada`
+    es la imagen PIL que `ocr.preparar_imagen` ya decodifico, recorto al papel
+    y paso a gris para Tesseract. Cuando viene, NO se vuelve a decodificar el
+    HEIC (la segunda decodificacion de la foto): solo se pasa a RGB, se
+    reescala al lado de Vision y se guarda a JPEG. Sin ella se decodifica
+    como antes, y el comportamiento no cambia.
+
 
     El reescalado a 1600 px no es cosmetico: los modelos de vision locales
     (`moondream`) tardan mucho menos con la imagen pequena, y el total de un
@@ -59,9 +67,14 @@ def _a_jpeg(image_bytes: bytes) -> bytes | None:
         from PIL import Image as PILImage
         from PIL import ImageOps
 
-        img = PILImage.open(io.BytesIO(image_bytes))
-        img = ImageOps.exif_transpose(img) or img
-        img = img.convert("RGB")
+        if imagen_preparada is not None:
+            # Ya viene decodificada, recortada al papel y en gris: es la misma
+            # imagen que uso el OCR. Solo falta pasarla a RGB para el JPEG.
+            img = imagen_preparada.convert("RGB")
+        else:
+            img = PILImage.open(io.BytesIO(image_bytes))
+            img = ImageOps.exif_transpose(img) or img
+            img = img.convert("RGB")
 
         # EL LADO LARGO, no el ancho.
         #
@@ -319,8 +332,15 @@ class AIExtractor:
             return settings.OLLAMA_VISION_MODEL
         return "gpt-4o"
 
-    async def extract_from_image(self, image_bytes: bytes) -> ExtractedInvoice:
+    async def extract_from_image(
+        self, image_bytes: bytes, imagen_preparada=None
+    ) -> ExtractedInvoice:
         """Extract from image (photo of receipt/invoice)
+
+        `imagen_preparada` es la imagen PIL que `ocr.preparar_imagen` ya
+        decodifico para el OCR. Cuando viene, `_a_jpeg` la reutiliza y no
+        vuelve a decodificar el HEIC. Opcional y solo para el camino real:
+        los extractores inyectados en tests se llaman sin el, como antes.
 
         Solo recibe los bytes, y a proposito. Antes llevaba un
         `mime_type="image/png"` que no se usaba NADA en el cuerpo: el formato sale
@@ -345,7 +365,7 @@ class AIExtractor:
         if not self.enabled:
             return self._fallback_extraction(image_bytes)
 
-        jpeg = _a_jpeg(image_bytes)
+        jpeg = _a_jpeg(image_bytes, imagen_preparada=imagen_preparada)
         if jpeg is None:
             return ExtractedInvoice(
                 provider_name="IMAGEN_ILEGIBLE",

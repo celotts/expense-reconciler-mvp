@@ -142,6 +142,12 @@ class ResultadoOCR:
     #
     # Ver `app/services/parser_lineas.py`, que es quien lo usa.
     lineas: tuple[dict, ...] = ()
+    # Cuantas llamadas a Tesseract costo esta lectura (1 en el caso comun,
+    # hasta 16 en el peor). Es el numero que dice si el escalonado por niveles
+    # de `_leer_tesseract` esta funcionando, y viaja en el log para la
+    # medicion con los 7 HEIC. `0` cuando la lectura no paso por Tesseract
+    # (imagen casi en blanco, o motor EasyOCR).
+    intentos_tesseract: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +378,29 @@ def _recortar_el_papel(imagen):
     return recortada, fraccion
 
 
-def _preparar(datos: bytes) -> "Image.Image | bytes":
-    """Recorta al papel, escala, pasa a gris y sube contraste.
+def preparar_imagen(datos: bytes) -> tuple["Image.Image | bytes", "Image.Image | None"]:
+    """Decodifica UNA VEZ y devuelve `(preparada, imagen_pil)`.
+
+    OPT 2026-11-06 (rama perf/scan-vision-solo-si-ocr-falla): un HEIC se
+    decodificaba TRES veces por foto —una en `_preparar` para OCR, otra en
+    `ai_extractor._a_jpeg` para Vision, y otra en el chequeo de calidad—,
+    y cada decodificacion HEIC es trabajo real. Con esta funcion la
+    decodificacion, el recorte al papel y el paso a gris se hacen una sola
+    vez, y la misma imagen PIL se reutiliza para OCR, para Vision y para el
+    chequeo de calidad (`calidad_foto.revisar_calidad_foto`).
+
+    `preparada` es lo que `_preparar` devolvia (imagen lista para Tesseract,
+    o los bytes crudos si Pillow no esta o la imagen no se pudo abrir).
+    `imagen_pil` es la imagen PIL en gris, recortada al papel y escalada,
+    SIN autocontraste, o `None` cuando no la hay: es la que Vision y el
+    chequeo de calidad reutilizan sin volver a decodificar. Sin
+    autocontraste a proposito: el autocontraste borra el brillo absoluto
+    (una foto oscura estirada queda identica a una clara, MEDIDO: media
+    182.8 y 70% saturado en las dos) y el chequeo de calidad juzga justo
+    eso. El OCR lo aplica a su entrada en `_leer_tesseract`, donde es
+    idempotente, asi que Tesseract ve exactamente lo mismo que antes.
+
+    Recorta al papel, escala, pasa a gris y sube contraste.
 
     Devuelve una imagen de Pillow lista para Tesseract. Si Pillow no esta, se
     devuelven los bytes tal cual: Tesseract acepta la imagen original, va a
@@ -395,7 +422,7 @@ def _preparar(datos: bytes) -> "Image.Image | bytes":
         from PIL import Image, ImageOps
     except ImportError:
         logger.warning("Pillow no esta instalado; el OCR va sin preprocesar")
-        return datos
+        return datos, None
 
     import io
 
@@ -422,8 +449,12 @@ def _preparar(datos: bytes) -> "Image.Image | bytes":
                 imagen = imagen.convert("L")
             # AutoContrast sobre un gris de un ticket sube la diferencia entre
             # la tinta y el papel sin inventar detalle: no agrega pixeles, solo
-            # estira lo que hay.
-            return ImageOps.autocontrast(imagen)
+            # estira lo que hay. Va SOLO en `procesada`, la imagen para
+            # Tesseract: la segunda salida es el gris SIN autocontraste, para
+            # que la calidad vea el brillo real de la foto y Vision la foto
+            # como se tomo (ver el docstring de esta funcion).
+            procesada = ImageOps.autocontrast(imagen)
+            return procesada, imagen
     except Exception as exc:
         # `pillow-heif` no siempre esta, y cuando falta el sintoma es este
         # `except`: Pillow no identifica la imagen y devuelve los bytes crudos.
@@ -439,7 +470,17 @@ def _preparar(datos: bytes) -> "Image.Image | bytes":
             )
         else:
             logger.warning("no se pudo preprocesar la imagen (%s); se usa original", exc)
-        return datos
+        return datos, None
+
+
+def _preparar(datos: bytes) -> "Image.Image | bytes":
+    """Lo mismo que antes: solo la imagen preparada, sin la PIL aparte.
+
+    Se mantiene porque `_leer_easyocr` y los tests la usan, y porque cambiar
+    todas sus llamadas por un `[0]` seria ruido. La decodificacion unica vive
+    en `preparar_imagen`; esto es solo el envoltorio compatible.
+    """
+    return preparar_imagen(datos)[0]
 
 
 # Los grados que se prueban, en el orden en que se prueban.
@@ -448,6 +489,12 @@ def _preparar(datos: bytes) -> "Image.Image | bytes":
 # resuelva en la primera vuelta. Una foto de ticket sale casi siempre derecha,
 # asi que 0 va primero y sale barato; las demas se prueban solo si esa no sirvio.
 ROTACIONES = (0, 90, 180, 270)
+
+# Puntos a partir de los cuales una lectura ya trae evidencia fuerte
+# (total 20 + aritmetica 40, o total + RFC + calidad) y no vale la pena
+# seguir probando rotaciones: la orientacion ya es la correcta. Ver TIER 2
+# en `_leer_tesseract`.
+_PUNTOS_PARA_ROTAR = 40
 
 
 # ---------------------------------------------------------------------------
@@ -796,12 +843,20 @@ def _es_buena(lectura: Lectura) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def leer_imagen(datos: bytes, motor: str = "tesseract") -> ResultadoOCR:
+def leer_imagen(
+    datos: bytes,
+    motor: str = "tesseract",
+    imagen_preparada: "Image.Image | None" = None,
+) -> ResultadoOCR:
     """Saca el texto de una imagen.
 
     Args:
         datos: bytes de la imagen (JPEG, PNG, TIFF...).
         motor: `tesseract` (default) o `easyocr`.
+        imagen_preparada: la imagen PIL que `preparar_imagen` ya decodifico
+            (mismo `datos`, recortada al papel y en gris). Cuando viene, el
+            OCR la reutiliza y NO vuelve a decodificar el HEIC: es la mitad
+            del ahorro de convertir una sola vez. `None` decodifica como antes.
 
     Returns:
         `ResultadoOCR` con el texto leido, el motor que lo leyo y la confianza
@@ -822,17 +877,44 @@ def leer_imagen(datos: bytes, motor: str = "tesseract") -> ResultadoOCR:
 
     if motor.strip().lower() == "easyocr":
         return _leer_easyocr(datos)
-    return _leer_tesseract(datos)
+    return _leer_tesseract(datos, imagen_preparada=imagen_preparada)
 
 
-def _leer_tesseract(datos: bytes) -> ResultadoOCR:
+def _leer_tesseract(
+    datos: bytes, imagen_preparada: "Image.Image | None" = None
+) -> ResultadoOCR:
     """Lee la imagen probando las orientaciones y quedandose con la mejor.
 
     El usuario no ajusta nada: el sistema prueba, puntua y decide. Ver `_puntuar`
     para por que se puntua con evidencia del documento y no con la confianza de
     Tesseract.
+
+    ESCALONADO (OPT 2026-11-06): las lecturas se prueban por niveles y no a
+    ciegas. TIER 1: la mejor config primero (PSM 6, sin binarizar, orientacion
+    original). TIER 2: el resto de rotaciones, solo si la primera no dio
+    evidencia fuerte. TIER 3: binarizacion adaptativa, solo si ninguna fue
+    buena. TIER 4: PSM alternativos, solo si ninguna produjo un comprobante.
+    El caso comun (foto derecha y limpia) se resuelve en el TIER 1 con UNA
+    lectura; el peor caso sigue costando lo mismo que antes, nunca mas. El
+    numero de lecturas queda en `ResultadoOCR.intentos_tesseract` y en el log,
+    para que la medicion con los 7 HEIC diga cuanto costo cada foto.
     """
-    base = _preparar(datos)
+    base = imagen_preparada if imagen_preparada is not None else _preparar(datos)
+
+    # El autocontraste se aplica AQUI, a la entrada del OCR, y no solo en
+    # `_preparar`: `preparar_imagen` devuelve la imagen SIN autocontraste
+    # como segunda salida (la calidad necesita el brillo real), asi que sin
+    # esto Tesseract perderia el contraste que tenia. Es idempotente —sobre
+    # una imagen ya estirada es identidad, MEDIDO—, asi que el camino viejo
+    # (`_preparar`, ya estirada) no cambia nada, y la guarda de abajo sigue
+    # mirando la misma imagen que antes.
+    if not isinstance(base, (bytes, bytearray, memoryview)):
+        try:
+            from PIL import ImageOps as _ImageOps
+
+            base = _ImageOps.autocontrast(base.convert("L"))
+        except Exception as exc:
+            logger.debug("autocontraste no disponible (%s); se continua", exc)
 
     # GUARDA DE IMAGEN VACÍA O CASI-BLANCA
     # ======================================
@@ -891,23 +973,51 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
     pytesseract = obtener_motor("tesseract")
 
     mejor: Lectura | None = None
+    intentos = 0
     psm_por_usar = settings.OCR_PSM
+    variantes = _variantes(base)
 
-    for rotacion, imagen in _variantes(base):
-        lectura = _una_lectura(pytesseract, imagen, rotacion, psm_por_usar)
-        if mejor is None or lectura.puntos > mejor.puntos:
-            mejor = lectura
-        # Corte temprano. Una lectura con total, RFC y aritmetica cuadrada ya
-        # tiene los tres datos que hacen falta para contabilizar el ticket, y
-        # las otras rotaciones no pueden mejorar eso: solo pueden gastar CPU. Es
-        # lo que hace que el caso comum (una foto derecha y limpia) cueste una
-        # sola lectura y no cuatro.
-        if _es_buena(lectura):
-            logger.info(
-                "OCR: rotacion %d gana con %d puntos (total+RFC+aritmetica)",
-                rotacion, lectura.puntos,
-            )
-            break
+    # TIER 1 — la mejor config primero: PSM 6, sin binarizar, orientacion
+    # original. Es la que gana en el caso comun, y por eso va sola: si aqui
+    # ya salio un comprobante completo, no hay nada que probar en los demas
+    # niveles. El corte temprano es el mismo de antes (`_es_buena`, 70 puntos).
+    rotacion, imagen = variantes[0]
+    lectura = _una_lectura(pytesseract, imagen, rotacion, psm_por_usar)
+    intentos += 1
+    mejor = lectura
+    if _es_buena(lectura):
+        logger.info(
+            "OCR: rotacion %d gana con %d puntos (total+RFC+aritmetica)",
+            rotacion, lectura.puntos,
+        )
+
+    # TIER 2 — el resto de rotaciones, SOLO si la primera no dio evidencia
+    # fuerte. `_PUNTOS_PARA_ROTAR` (40) es total+aritmetica: con eso leido la
+    # orientacion es la correcta, y una foto derecha no se vuelve mejor
+    # girandola. Sin este corte, una foto que ya leia bien en la primera
+    # rotacion pagaba las otras tres igual, porque el corte de 70 puntos
+    # exige RFC y un ticket de supermercado casi no lo trae. MEDIDO
+    # 2026-10-16: el mejor puntaje fue 25 en dos fotos reales, asi que el
+    # corte de 70 nunca entraba y se pagaban 4 lecturas siempre.
+    if mejor is not None and not _es_buena(mejor) and mejor.puntos < _PUNTOS_PARA_ROTAR:
+        for rotacion, imagen in variantes[1:]:
+            lectura = _una_lectura(pytesseract, imagen, rotacion, psm_por_usar)
+            intentos += 1
+            if lectura.puntos > mejor.puntos:
+                mejor = lectura
+            # Corte temprano. Una lectura con total, RFC y aritmetica cuadrada ya
+            # tiene los tres datos que hacen falta para contabilizar el ticket, y
+            # las otras rotaciones no pueden mejorar eso: solo pueden gastar CPU.
+            if _es_buena(lectura):
+                logger.info(
+                    "OCR: rotacion %d gana con %d puntos (total+RFC+aritmetica)",
+                    rotacion, lectura.puntos,
+                )
+                break
+            # Con evidencia fuerte la orientacion ya es la correcta: las
+            # rotaciones que quedan no pueden aportar nada nuevo.
+            if mejor.puntos >= _PUNTOS_PARA_ROTAR:
+                break
 
     # Tercera etapa: la MISMA lectura, pero sobre la BINARIZACION ADAPTATIVA.
     #
@@ -931,6 +1041,7 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
         if binarizada is not None:
             for rotacion, imagen in _variantes(binarizada):
                 lectura = _una_lectura(pytesseract, imagen, rotacion, psm_por_usar)
+                intentos += 1
                 if mejor is None or lectura.puntos > mejor.puntos:
                     # El puntaje del ganador anterior se toma ANTES de sustituirlo.
                     # Con el `logger` despues del `mejor = lectura` los dos
@@ -964,6 +1075,7 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
         for psm in _PSM_ALTERNATIVOS:
             for rotacion, imagen in _variantes(base):
                 lectura = _una_lectura(pytesseract, imagen, rotacion, psm)
+                intentos += 1
                 if lectura.puntos > mejor.puntos:
                     mejor = lectura
                     logger.info(
@@ -989,11 +1101,20 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
             mejor.puntos, mejor.rotacion,
         )
 
+    # El coste real de esta foto, para la medicion: cuantos intentos de
+    # Tesseract costo llegar a este texto. Sin este numero, "el OCR tardo 21 s"
+    # no dice si fueron 4 lecturas de 5 s o 16 de 1 s, y no se puede saber que
+    # nivel del escalonado hay que ajustar.
+    logger.info(
+        "OCR: %d intento(s) de Tesseract, mejor=%d puntos rotacion=%d",
+        intentos, mejor.puntos, mejor.rotacion,
+    )
     return ResultadoOCR(
         texto=mejor.texto,
         motor="tesseract",
         confianza_media=mejor.confianza,
         lineas=tuple(mejor.lineas),
+        intentos_tesseract=intentos,
     )
 
 

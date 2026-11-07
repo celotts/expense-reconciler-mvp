@@ -7,6 +7,7 @@ from app.api.categorias import router as categorias_router
 from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.inventario import router as inventario_router
+from app.api.lotes import router as lotes_router
 from app.api.reconciliations import router as reconciliations_router
 from app.api.reports import router as reports_router
 from app.api.scans import router as scan_router
@@ -82,6 +83,15 @@ api_router.include_router(
     bank_transactions_router,
     prefix="/bank-transactions",
     tags=["Bank Transactions"],
+    dependencies=[Depends(get_current_user)],
+)
+# Lotes de digitalizacion. Token a nivel de router, como todos los demas.
+# El prefijo va aqui y NO en el APIRouter del modulo, igual que `scan.py`:
+# ponerlo en los dos lados produce `/lotes/lotes/`, que es un 404 silencioso.
+api_router.include_router(
+    lotes_router,
+    prefix="/lotes",
+    tags=["Lotes"],
     dependencies=[Depends(get_current_user)],
 )
 api_router.include_router(

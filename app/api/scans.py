@@ -30,14 +30,17 @@ la carpeta.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
 from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
 from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
@@ -48,6 +51,7 @@ from app.schemas.lectura import DiagnosticoLecturaResponse
 from app.schemas.scan import (
     NO_SE_BORRA,
     ReprocessResponse,
+    ScanAceptadoResponse,
     ScanEventResponse,
     ScanFileDetailResponse,
     ScanFileListResponse,
@@ -57,7 +61,6 @@ from app.schemas.scan import (
     ScanResetRequest,
     ScanResetResponse,
     ScanResponse,
-    ResumenScan,
     ScanStatsResponse,
 )
 from app.services import scan_registry, scan_reset, scan_service
@@ -65,6 +68,8 @@ from app.services.scan_reset import FRASE_CONFIRMACION
 from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ai_client import disponibilidad as disponibilidad_ia
 from app.services.ocr import disponibilidad as disponibilidad_ocr
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Scan"])
 
@@ -127,6 +132,10 @@ def _de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
         # El servicio lo arma como `dict` para no importar schemas; aqui es
         # donde se valida. `None` cuando el archivo no produjo ticket.
         datos=detalle.datos,
+        # Calidad de la foto (solo en REVISAR_FOTO) y discrepancias de la
+        # lectura final (total que no cuadra, RFC sin forma, fecha futura).
+        calidad_foto=detalle.calidad_foto,
+        discrepancias=detalle.discrepancias,
     )
 
 
@@ -568,7 +577,7 @@ async def diagnosticar_archivo(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
-        )
+        ) from exc
 
     if not ruta.is_file():
         # 409 y no 404: el REGISTRO existe, el archivo no. Son hechos distintos y el
@@ -601,12 +610,50 @@ async def diagnosticar_archivo(
     return _a_diagnostico(resultado)
 
 
+async def _escanear_en_segundo_plano(
+    company_id: UUID | None,
+    actor: str,
+    *,
+    reprocesar: bool,
+    solo_pendientes: bool,
+    archivar: bool | None,
+    simular: bool,
+    confirmar: bool,
+) -> None:
+    """El trabajo de una corrida en segundo plano, con su propia sesion.
+
+    La sesion del request NO se puede usar aqui: se cierra cuando el endpoint
+    responde 202, y la corrida tarda minutos. Por eso la tarea abre su propia
+    sesion con `AsyncSessionLocal`. El progreso vive en el registro de
+    corridas (en memoria, compartido), asi que `GET /scan/runs` lo ve aunque
+    la sesion sea otra.
+
+    Si el trabajo falla, el error queda en el log y la corrida se cierra con
+    error en el registro: un fallo silencioso seria peor, porque el cliente
+    seguiria esperando un resumen que nunca llega.
+    """
+    async with AsyncSessionLocal() as db:
+        try:
+            await scan_service.escanear(
+                db,
+                company_id,
+                actor,
+                reprocesar=reprocesar,
+                solo_pendientes=solo_pendientes,
+                archivar=archivar,
+                simular=simular,
+                confirmar=confirmar,
+            )
+        except Exception:
+            logger.exception("el escaneo en segundo plano fallo")
+
+
 @router.post("/", response_model=ScanResponse)
 async def escanear(
     cuerpo: ScanRequest,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
-) -> ScanResponse:
+) -> ScanResponse | JSONResponse:
     """Recorre la carpeta y procesa lo que corresponda.
 
     El body NO lleva carpeta. Se lee `TICKETS_INPUT_DIR` de la configuracion y
@@ -641,6 +688,30 @@ async def escanear(
                 detail="La empresa indicada no existe",
             )
 
+    # Segundo plano (OPT 2026-11-06): con fotos el escaneo tarda minutos y
+    # nginx corta a los 300 s, asi que el cliente se quedaba sin respuesta
+    # aunque el trabajo siguiera. Con `segundo_plano=true` se responde 202 de
+    # inmediato y el trabajo sigue en el servidor; el cliente sigue el
+    # progreso por `GET /scan/runs`, que ya existia como canal. El modo
+    # sincrono sigue siendo el de por omision: quien ya llama esperando el
+    # resultado no cambia de comportamiento.
+    if cuerpo.segundo_plano:
+        asyncio.create_task(
+            _escanear_en_segundo_plano(
+                cuerpo.company_id,
+                actor,
+                reprocesar=cuerpo.reprocesar,
+                solo_pendientes=cuerpo.solo_pendientes,
+                archivar=cuerpo.archivar,
+                simular=cuerpo.simular,
+                confirmar=cuerpo.confirmar,
+            )
+        )
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=ScanAceptadoResponse().model_dump(mode="json"),
+        )
+
     resumen = await scan_service.escanear(
         db,
         cuerpo.company_id,
@@ -659,6 +730,8 @@ async def escanear(
         actualizados=resumen.actualizados,
         sin_cambios=resumen.sin_cambios,
         duplicados=resumen.duplicados,
+        duplicados_por_contenido=resumen.duplicados_por_contenido,
+        fotos_por_revisar=resumen.fotos_por_revisar,
         con_error=resumen.con_error,
         no_soportados=resumen.no_soportados,
         omitidos_por_tope=resumen.omitidos_por_tope,
@@ -686,6 +759,7 @@ async def escanear(
         # importar de `schemas/`.
         resumen=resumen.resumen,
         corrida_id=resumen.corrida_id,
+        duracion_segundos=resumen.duracion_segundos,
     )
 
 

@@ -72,11 +72,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.archivo_real import detectar_tipo_real
+from app.core.archivo_real import TIPO_IMAGEN, detectar_tipo_real
 from app.services import scan_registry
 from app.core.config import settings
 from app.core.enums import (
     SETTLED_STATUSES,
+    UNKNOWN_PROVIDER,
     ConfidenceSource,
     EstadoCompra,
     ExtractionStatus,
@@ -97,6 +98,7 @@ from app.services.auditoria import (
     registrar_auditoria,
     registrar_digitalizacion_auditoria,
 )
+from app.services.calidad_foto import revisar_calidad_foto
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.confidence_gate import gate_ticket
 from app.services.ticket_persistence import persistir_extraccion
@@ -430,6 +432,30 @@ class ResumenArchivo:
     # sin trece copias de la misma asignacion.
     datos: dict | None = None
 
+    # --- Duplicado por CONTENIDO ----------------------------------------
+    #
+    # La entrada del listado `ResumenEscaneo.duplicados_por_contenido`, solo
+    # cuando ESTE archivo se marco DUPLICADO por la regla de contenido
+    # (proveedor+total+fecha, o proveedor+total sin fecha) y no por hash.
+    # Es `dict` y no un schema, por la misma razon que `datos`: `services/` no
+    # importa de `schemas/`.
+    duplicado_por_contenido: dict | None = None
+
+    # --- Calidad de la foto y discrepancias --------------------------------
+    #
+    # `calidad_foto` solo viene cuando el chequeo previo marco la foto como
+    # claramente mala (ver `calidad_foto.revisar_calidad_foto`): trae `motivos`,
+    # `mensaje` y `metricas`. `None` NO es "no se reviso": es "paso el
+    # chequeo o no era una foto". Sin esto, un `REVISAR_FOTO` no diria que
+    # corregir, y el operador tendria que adivinar si fue el enfoque o la luz.
+    #
+    # `discrepancias` es lo que la lectura final contradice de si misma
+    # (total que no cuadra, RFC sin forma, fecha futura), sin modelo extra.
+    # Vacia es "se reviso y no hay ninguna". Es lo que el operador mira en el
+    # detalle del archivo para saber QUE revisar del papel.
+    calidad_foto: dict | None = None
+    discrepancias: list[str] = field(default_factory=list)
+
 
 @dataclass
 class ResumenEscaneo:
@@ -441,6 +467,19 @@ class ResumenEscaneo:
     actualizados: int = 0
     sin_cambios: int = 0
     duplicados: int = 0
+    # Los duplicados por CONTENIDO de ESTA corrida, con archivo, proveedor,
+    # total, fecha y el ticket existente al que duplican. Es lista y no numero
+    # por la misma razon que `ilegibles`: el numero no dice que hacer, y sin la
+    # lista el operador no puede distinguir "este papel ya estaba" de "este
+    # papel es un gasto nuevo con el mismo total". Solo trae los de la regla de
+    # contenido; los de hash ya se ven en `detalles` con estado DUPLICADO y el
+    # mismo `ticket_id`.
+    duplicados_por_contenido: list[dict] = field(default_factory=list)
+    # Las fotos que el control de calidad marco para retomar, con archivo,
+    # motivo y mensaje. Es lista y no numero por la misma razon que
+    # `ilegibles`: el numero no dice que foto retomar ni por que. Solo trae
+    # las de `REVISAR_FOTO`; las que pasaron el chequeo no aparecen.
+    fotos_por_revisar: list[dict] = field(default_factory=list)
     con_error: int = 0
     no_soportados: int = 0
     omitidos_por_tope: int = 0
@@ -514,6 +553,14 @@ class ResumenEscaneo:
     # motivo es lo que dice si hay que revisar el papel o arreglar el catalogo.
     compras_confirmadas: int = 0
     compras_no_confirmadas: list[dict] = field(default_factory=list)
+
+    # Tiempo total de la corrida en segundos, medido por el registro de
+    # corridas (iniciada_at -> terminada_at). Es lo que el front muestra como
+    # "Tiempo total" en HEIC y PDF por igual: sin esto la pantalla solo decia
+    # cuantos archivos se vieron, no cuanto tardo. Se rellena al cerrar la
+    # corrida, despues de `cerrar_corrida`, porque antes `segundos` seguiria
+    # corriendo.
+    duracion_segundos: float | None = None
 
     @property
     def leidos(self) -> int:
@@ -682,6 +729,32 @@ async def _actualizar_ticket(
     return ticket
 
 
+def _lector_fijo(resultado):
+    """Un lector de OCR que siempre devuelve el resultado ya calculado.
+
+    Es lo que permite reutilizar el OCR precalculado en paralelo por
+    `escanear`: la cascada pide `ocr(datos)` y recibe el texto que Tesseract
+    ya leyo en el hilo, sin volver a llamarlo.
+    """
+
+    def _leer(_datos):
+        return resultado
+
+    return _leer
+
+
+def _lector_sin_ocr(_datos):
+    """Un lector de OCR que siempre dice que el OCR no esta disponible.
+
+    Es el camino cuando la prelectura en paralelo fallo: la cascada lo
+    traduce en "se va directo a vision", que es lo que haria si el OCR
+    fallara en linea, sin pagar el OCR dos veces.
+    """
+    from app.services.ocr import OCRNoDisponible
+
+    raise OCRNoDisponible("el OCR previo fallo; se va directo a vision")
+
+
 async def procesar_archivo(
     db: AsyncSession,
     vista: ArchivoVista,
@@ -690,6 +763,7 @@ async def procesar_archivo(
     actor: str,
     *,
     forzar: bool = False,
+    prelectura: dict | None = None,
 ) -> ResumenArchivo:
     """Lee UN archivo y deja su registro al dia. Nunca lanza por el archivo.
 
@@ -698,6 +772,13 @@ async def procesar_archivo(
     quedarían sin procesar porque en la carpeta habia uno malo, y el operador
     no tendria forma de saber cual era: el error estaria en la cara de la
     peticion, no en la fila del archivo.
+
+    `prelectura` es el trabajo que `escanear` ya hizo en paralelo para esta
+    foto (ver `_prelectura_de_foto`): `{"ocr": ResultadoOCR | None, "imagen":
+    PIL | None, "revision": dict | None}`. Cuando viene, el OCR no se vuelve
+    a correr y la imagen preparada se reutiliza para Vision y para el
+    chequeo de calidad. `None` hace todo en linea, como antes: es el camino
+    del reproceso de UN archivo, que no tiene corrida que paralelice.
     """
     resumen = ResumenArchivo(relative_path=vista.relative_path)
     ahora = utcnow()
@@ -866,12 +947,69 @@ async def procesar_archivo(
     fila.file_size = vista.tamano
     fila.file_mtime = vista.mtime
 
+    # --- Control de calidad de la foto, ANTES de OCR/Vision ---------------
+    #
+    # PLUS 2026-11-06: una foto borrosa, oscura, con reflejo o con resolucion
+    # muy baja va a salir mal la lea quien la lea. Gastar Vision en ella es
+    # pagar 250-440 s por un total inventado o un ticket a la cola sin motivo.
+    # Se juzga aqui, con la misma imagen ya preparada para OCR, en
+    # milisegundos, y si es claramente mala se marca `REVISAR_FOTO` con un
+    # mensaje que dice QUE corregir. No se crea ticket, no se gasta OCR ni
+    # Vision, y el archivo se queda en la bandeja para que se retome la foto.
+    #
+    # Solo corre para imagenes y solo cuando el interruptor
+    # `CALIDAD_FOTO_HABILITADA` esta en `true`. Los umbrales son
+    # conservadores: una foto buena nunca se bloquea por un borde. Y si la
+    # imagen no se pudo preparar, no hay veredicto y la foto sigue a OCR como
+    # antes: sin evidencia no se bloquea nada.
+    imagen_pil = None
+    if tipo == TIPO_IMAGEN:
+        if prelectura is not None:
+            imagen_pil = prelectura.get("imagen")
+            revision = prelectura.get("revision")
+        else:
+            from app.services.ocr import preparar_imagen
+
+            _preparada, imagen_pil = preparar_imagen(contenido)
+            revision = (
+                revisar_calidad_foto(imagen_pil)
+                if settings.CALIDAD_FOTO_HABILITADA
+                else None
+            )
+        if revision is not None:
+            mensaje = revision.get("mensaje") or "foto por revisar"
+            fila.status = ScanStatus.REVISAR_FOTO.value
+            fila.last_error = (
+                f"foto por revisar: {mensaje} "
+                f"(motivos: {', '.join(revision.get('motivos') or [])})"
+            )
+            await db.commit()
+            resumen.status = ScanStatus.REVISAR_FOTO
+            resumen.accion = "OMITIDO"
+            resumen.detalle = fila.last_error
+            resumen.calidad_foto = revision
+            await _registrar(db, fila, "OMITIDO", fila.last_error, actor)
+            return resumen
+
+    # El lector de OCR: el precalculado en paralelo cuando viene en
+    # `prelectura`, y el real cuando no. Si la prelectura no trajo OCR (fallo
+    # en el hilo), se usa un lector que levanta `OCRNoDisponible` para que la
+    # cascada vaya directa a Vision sin pagar el OCR dos veces.
+    ocr_reader = None
+    if prelectura is not None and tipo == TIPO_IMAGEN:
+        _ocr_previo = prelectura.get("ocr")
+        ocr_reader = (
+            _lector_fijo(_ocr_previo) if _ocr_previo is not None else _lector_sin_ocr
+        )
+
     try:
         extracted = await capture_ticket(
             contenido,
             tipo,
             extract_from_image=ai_extractor.extract_from_image,
             extract_from_text=ai_extractor.extract_from_text,
+            ocr_reader=ocr_reader,
+            imagen_preparada=imagen_pil,
         )
     except ExtractionUnavailable as exc:
         fila.status = ScanStatus.ERROR.value
@@ -895,6 +1033,10 @@ async def procesar_archivo(
 
     resumen.confianza = extracted.confidence
     resumen.origen = extracted.confidence_source
+    # Lo que la lectura final contradice de si misma (ver
+    # `capture._discrepancias_de_lectura`). Viaja en el detalle para que el
+    # operador sepa QUE mirar del papel, sin abrir el ticket.
+    resumen.discrepancias = list(extracted.discrepancias or [])
     # Quien contesto. Se copia aqui, junto al `origen`, porque los dos van juntos:
     # `llm` sin nombre no dice nada accionable, y el nombre sin `llm` tampoco.
     #
@@ -960,6 +1102,21 @@ async def procesar_archivo(
                 await _registrar(db, fila, "OMITIDO", detalle, actor, resumen.confianza)
                 return resumen
 
+            # Despues del hash y antes de crear nada: ¿ya hay OTRO ticket con
+            # este mismo CONTENIDO (proveedor+total+fecha)? Los bytes son
+            # distintos, asi que el hash no lo atrapo. `forzar` la salta: es
+            # la decision explicita de una persona de que si es un gasto nuevo.
+            if not forzar:
+                existente = await _buscar_duplicado_por_contenido(
+                    db, company_id, extracted, excluir_archivo=vista.relative_path
+                )
+                if existente is not None:
+                    return await _marcar_duplicado_por_contenido(
+                        db, fila, resumen,
+                        company_id=company_id, actor=actor, extracted=extracted,
+                        existente=existente, ahora=ahora,
+                    )
+
             ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
                 source_type=SourceType.DIRECTORY,
@@ -987,6 +1144,18 @@ async def procesar_archivo(
         fila.last_error = None
 
         if fila.ticket_id is None:
+            # El archivo estaba registrado sin ticket (inventario, o ticket
+            # borrado): antes de crear uno, la misma regla de contenido.
+            if not forzar:
+                existente = await _buscar_duplicado_por_contenido(
+                    db, company_id, extracted, excluir_archivo=vista.relative_path
+                )
+                if existente is not None:
+                    return await _marcar_duplicado_por_contenido(
+                        db, fila, resumen,
+                        company_id=company_id, actor=actor, extracted=extracted,
+                        existente=existente, ahora=ahora,
+                    )
             ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
                 source_type=SourceType.DIRECTORY,
@@ -1005,6 +1174,19 @@ async def procesar_archivo(
         ).scalar_one_or_none()
 
         if ticket is None:
+            # El ticket se borro. Antes de crear uno nuevo con el contenido
+            # actual, la misma regla: si otro ticket vivo ya tiene este
+            # contenido, no se crea un segundo.
+            if not forzar:
+                existente = await _buscar_duplicado_por_contenido(
+                    db, company_id, extracted, excluir_archivo=vista.relative_path
+                )
+                if existente is not None:
+                    return await _marcar_duplicado_por_contenido(
+                        db, fila, resumen,
+                        company_id=company_id, actor=actor, extracted=extracted,
+                        existente=existente, ahora=ahora,
+                    )
             # El ticket se borro. Se crea uno nuevo con el contenido actual.
             nuevo_ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
@@ -1061,6 +1243,200 @@ async def procesar_archivo(
         return resumen
 
 
+# ---------------------------------------------------------------------------
+# Duplicado por CONTENIDO (no por hash)
+# ---------------------------------------------------------------------------
+#
+# El hash solo atrapa los MISMOS bytes. La misma foto subida con otro nombre,
+# o el mismo papel fotografiado dos veces, cambia el hash y el sistema creaba
+# un segundo ticket: el set de 7 HEIC trae 2 asi (Soriana $65 y Bodega $234).
+#
+# LA REGLA, Y POR QUE ES ASI
+# ---------------------------
+# Un ticket ya procesado en la MISMA empresa es duplicado de la lectura nueva
+# cuando coinciden proveedor + total y, si los dos tienen fecha real, la fecha.
+#
+# - Proveedor: el RFC cuando los dos lo tienen (normalizado, sin guiones ni
+#   espacios); si alguno no lo tiene, el nombre normalizado (minusculas, espacios
+#   colapsados). Sin RFC ni nombre usable no hay match: un proveedor
+#   "Unknown Provider" no identifica nada y marcarlo duplicado seria borrar un
+#   gasto real por parecerse a otro.
+# - Total: exacto, en Decimal. Sin total (None o <= 0) no hay match.
+# - Fecha: SOLO si la lectura nueva trae fecha real Y el ticket existente NO es
+#   provisional. Si alguno de los dos no tiene fecha real, la fecha se ignora y
+#   la regla pasa a ser proveedor+total. Es el caso de Bodega Aurrera: el papel
+#   no trae fecha visible, asi que el ticket se guarda con la fecha de captura
+#   y `fecha_provisional=True`, y esa fecha NO es un dato del papel: usarla
+#   como clave haria que el mismo ticket dejara de ser duplicado al dia
+#   siguiente, y que dos gastos distintos del mismo dia parecieran el mismo.
+# - Folio: NO se usa. No hay columna de folio en `tickets` ni campo en
+#   `TicketExtractionResult` (verificado: "folio" no existe como campo en la
+#   app). Inventarlo aqui seria afirmar un dato que el sistema nunca lee ni
+#   guarda. La entrada del listado lleva `folio: None` para que el front lo
+#   pueda mostrar cuando exista, sin mentir hoy.
+#
+# LO QUE NO HACE ESTA REGLA
+# --------------------------
+# No borra nada y no toca custodia, hash, append-only ni el gate: el archivo
+# queda DUPLICADO apuntando al ticket original, y el ticket original sigue
+# intacto. El riesgo que queda es el falso positivo de la variante sin fecha:
+# dos gastos distintos, mismo proveedor y mismo total, con fecha ilegible en
+# alguno, se marcan duplicado. Por eso la entrada del listado dice la regla
+# que disparo (`proveedor+total (sin fecha)`), y por eso `forzar=True` la
+# salta: una persona que reprocesa el archivo decide que si es un gasto nuevo.
+# El archivado tampoco mueve estos archivos: `_retirar_si_esta_respaldo` exige
+# los mismos bytes en `ticket_documents`, y aqui los bytes son distintos.
+
+
+def _normalizar_proveedor(nombre: str | None) -> str:
+    """El nombre del proveedor, para comparar y no para mostrar."""
+    if not nombre:
+        return ""
+    return " ".join(str(nombre).split()).casefold()
+
+
+def _normalizar_rfc(rfc: str | None) -> str:
+    """El RFC sin guiones, espacios ni minusculas."""
+    if not rfc:
+        return ""
+    return "".join(ch for ch in str(rfc).upper() if ch.isalnum())
+
+
+def _coincide_proveedor(
+    rfc_nuevo: str | None, nombre_nuevo: str | None, existente: TicketModel
+) -> bool:
+    """¿El proveedor de la lectura nueva es el del ticket existente?"""
+    rfc_n = _normalizar_rfc(rfc_nuevo)
+    rfc_e = _normalizar_rfc(existente.provider_tax_id)
+    if rfc_n and rfc_e:
+        return rfc_n == rfc_e
+    nombre_n = _normalizar_proveedor(nombre_nuevo)
+    nombre_e = _normalizar_proveedor(existente.provider_name)
+    if not nombre_n or not nombre_e:
+        return False
+    if nombre_n == UNKNOWN_PROVIDER.casefold() or nombre_e == UNKNOWN_PROVIDER.casefold():
+        return False
+    return nombre_n == nombre_e
+
+
+def _coincide_fecha(
+    fecha_nueva: date | None, existente: TicketModel
+) -> bool:
+    """¿La fecha desmiente que sea el mismo comprobante?"""
+    # Sin fecha real en alguno de los dos, la fecha no desmiente nada: se
+    # ignora y decide proveedor+total. Ver la nota del modulo.
+    if fecha_nueva is None or existente.fecha_provisional:
+        return True
+    return fecha_nueva == existente.expense_date
+
+
+def _regla_duplicado(fecha_nueva: date | None, existente: TicketModel) -> str:
+    """La regla que disparo, para que el operador sepa lo fuerte que es."""
+    if fecha_nueva is not None and not existente.fecha_provisional:
+        return "proveedor+total+fecha"
+    return "proveedor+total (sin fecha)"
+
+
+async def _buscar_duplicado_por_contenido(
+    db: AsyncSession,
+    company_id: UUID,
+    extracted,
+    *,
+    excluir_archivo: str | None = None,
+) -> TicketModel | None:
+    """El ticket ya procesado con el mismo contenido, o `None`.
+
+    Se filtra en base por empresa+total (el conjunto es pequeno) y se compara
+    proveedor y fecha en Python, porque la normalizacion (RFC sin guiones,
+    nombre en minusculas) no es una comparacion que SQL haga igual en Postgres
+    y en SQLite, y los tests corren contra SQLite.
+    """
+    total = extracted.total_amount
+    if total is None or isinstance(total, bool):
+        return None
+    try:
+        total_decimal = Decimal(str(total))
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return None
+    if total_decimal <= 0:
+        return None
+    candidatos = (
+        await db.execute(
+            select(TicketModel).where(
+                TicketModel.company_id == company_id,
+                TicketModel.total_amount == total_decimal,
+            )
+        )
+    ).scalars().all()
+    for ticket in candidatos:
+        # El ticket del MISMO archivo no es un duplicado de si mismo: es el
+        # caso del archivo ya registrado cuyo ticket se borro y se vuelve a
+        # leer. Igual que `_ticket_de_otro_archivo` excluye su propia ruta.
+        if excluir_archivo is not None and ticket.source_file == excluir_archivo:
+            continue
+        if not _coincide_proveedor(
+            extracted.provider_tax_id, extracted.provider_name, ticket
+        ):
+            continue
+        if not _coincide_fecha(extracted.expense_date, ticket):
+            continue
+        return ticket
+    return None
+
+
+def _entrada_duplicado_por_contenido(
+    relative_path: str, extracted, existente: TicketModel
+) -> dict:
+    """La entrada del listado, con lo que el front necesita mostrar."""
+    return {
+        "archivo": relative_path,
+        "proveedor": extracted.provider_name,
+        "rfc": extracted.provider_tax_id,
+        "total": str(extracted.total_amount),
+        "fecha": extracted.expense_date.isoformat() if extracted.expense_date else None,
+        "fecha_provisional": extracted.expense_date is None,
+        # Sin columna de folio en el sistema: None honesto, no inventado.
+        "folio": None,
+        "ticket_id": str(existente.id),
+        "regla": _regla_duplicado(extracted.expense_date, existente),
+        "tipo": "contenido",
+    }
+
+
+async def _marcar_duplicado_por_contenido(
+    db: AsyncSession,
+    fila: ScanFileModel,
+    resumen: ResumenArchivo,
+    *,
+    company_id: UUID,
+    actor: str,
+    extracted,
+    existente: TicketModel,
+    ahora: datetime,
+) -> ResumenArchivo:
+    """Marca el archivo DUPLICADO por contenido, sin crear ticket."""
+    entrada = _entrada_duplicado_por_contenido(resumen.relative_path, extracted, existente)
+    detalle = (
+        "mismo contenido que otro ticket ya procesado "
+        f"({entrada['regla']}); se conserva el ticket original "
+        f"{entrada['ticket_id']} y no se crea un segundo ticket"
+    )
+    fila.status = ScanStatus.DUPLICADO.value
+    fila.ticket_id = existente.id
+    fila.company_id = company_id
+    fila.read_by = extracted.confidence_source.value
+    fila.processed_at = ahora
+    fila.last_error = detalle
+    await db.commit()
+    resumen.status = ScanStatus.DUPLICADO
+    resumen.accion = "OMITIDO"
+    resumen.ticket_id = existente.id
+    resumen.detalle = detalle
+    resumen.duplicado_por_contenido = entrada
+    await _registrar(db, fila, "OMITIDO", detalle, actor, resumen.confianza)
+    return resumen
+
+
 async def _ticket_de_otro_archivo(
     db: AsyncSession, content_hash: str, relative_path: str
 ) -> UUID | None:
@@ -1084,6 +1460,69 @@ async def _ticket_de_otro_archivo(
         )
     ).scalar_one_or_none()
     return ticket_id
+
+
+def _prelectura_de_foto(contenido: bytes) -> dict:
+    """Prepara, juzga la calidad y lee el OCR de UNA foto, en un hilo.
+
+    Es sincrona a proposito: corre con `asyncio.to_thread`, fuera del bucle
+    principal, para que 2-3 fotos se lean a la vez (ver `escanear`). Devuelve
+    siempre un dict con las tres cosas que `procesar_archivo` reutiliza:
+    `ocr` (el `ResultadoOCR`, o `None` si el OCR fallo o la foto es mala),
+    `imagen` (la PIL preparada, o `None`) y `revision` (el dict de calidad
+    cuando la foto es claramente mala, o `None` si paso el chequeo).
+
+    La decodificacion HEIC, el recorte al papel y el paso a gris se hacen
+    UNA vez aqui, y la misma imagen sirve para el OCR, para Vision y para el
+    chequeo de calidad: es el "convertir una sola vez" del plan.
+    """
+    from app.services.ocr import leer_imagen, preparar_imagen
+
+    _preparada, imagen_pil = preparar_imagen(contenido)
+    revision = None
+    if settings.CALIDAD_FOTO_HABILITADA and imagen_pil is not None:
+        revision = revisar_calidad_foto(imagen_pil)
+    if revision is not None:
+        # Foto claramente mala: no se gasta OCR en ella. `procesar_archivo`
+        # la marcara REVISAR_FOTO con este mismo dict.
+        return {"ocr": None, "imagen": imagen_pil, "revision": revision}
+    try:
+        resultado = leer_imagen(contenido, imagen_preparada=imagen_pil)
+    except Exception as exc:
+        logger.warning("la prelectura OCR fallo (%s); se ira a vision", exc)
+        return {"ocr": None, "imagen": imagen_pil, "revision": None}
+    return {"ocr": resultado, "imagen": imagen_pil, "revision": None}
+
+
+async def _toca_leer(
+    db: AsyncSession,
+    vista: ArchivoVista,
+    contenido: bytes,
+    company_id: UUID | None,
+    *,
+    forzar: bool,
+) -> bool:
+    """¿Este archivo necesita lectura, o el atajo SIN_CAMBIOS/OMITIDO lo cubre?
+
+    Es el MISMO criterio que `procesar_archivo` aplica con la fila (hash
+    igual sin forzar y sin falta de atribuir -> SIN_CAMBIOS; contenido
+    cambiado sin forzar -> OMITIDO), leido aqui solo para decidir si vale la
+    pena gastar la prelectura OCR en paralelo. Si esto dice que no, el archivo
+    sigue pasando por `procesar_archivo`, que es quien escribe el SIN_CAMBIOS
+    o el OMITIDO con su registro: aqui solo se decide el trabajo previo, no
+    el resultado. Si los dos criterios se desincronizan, lo peor que pasa es
+    gastar un OCR de mas, nunca saltarse una lectura.
+    """
+    fila = await _buscar(db, vista.relative_path)
+    if fila is None:
+        return True
+    hash_actual = hashlib.sha256(contenido).hexdigest()
+    falta_atribuir = fila.ticket_id is None and company_id is not None
+    if hash_actual == fila.content_hash and not forzar and not falta_atribuir:
+        return False
+    if not forzar and not falta_atribuir:
+        return False
+    return True
 
 
 async def escanear(
@@ -1180,6 +1619,10 @@ async def escanear(
         )
         resumen.corrida_id = corrida.id
 
+        # FASE 0 — que archivos entran, y con que bytes. La lectura de disco y
+        # los filtros baratos (tope, solo_pendientes, ilegible) son
+        # secuenciales; lo caro (OCR) va en la fase siguiente, en paralelo.
+        pendientes: list[tuple[ArchivoVista, bytes]] = []
         for indice, vista in enumerate(archivos):
             if indice >= settings.TICKETS_SCAN_MAX_ARCHIVOS:
                 resumen.omitidos_por_tope = len(archivos) - indice
@@ -1189,8 +1632,6 @@ async def escanear(
                     resumen.omitidos_por_tope,
                 )
                 break
-
-            scan_registry.marcar_archivo(corrida, vista.relative_path)
 
             try:
                 contenido = vista.ruta.read_bytes()
@@ -1205,14 +1646,68 @@ async def escanear(
                 if fila is not None and ScanStatus(fila.status) == ScanStatus.PROCESADO:
                     continue
 
+            pendientes.append((vista, contenido))
+
+        # FASE 1 — prelectura OCR en paralelo, SOLO para las fotos que de
+        # verdad se van a leer.
+        #
+        # Por que en paralelo y por que SOLO el OCR: Tesseract es CPU y
+        # admite 2-3 fotos a la vez (`OCR_CONCURRENCIA`, por omision 3); la
+        # Vision se mantiene SECUENCIAL porque Ollama tiene NUM_PARALLEL=1 y
+        # paralelizarla seria encolar llamadas que el modelo atiende de una
+        # en una. Y por que solo las que se van a leer: un segundo escaneo de
+        # la misma carpeta es casi todo SIN_CAMBIOS, y gastar OCR en paralelo
+        # en archivos que no se van a leer seria pagar 3x por nada.
+        #
+        # La sesion de base de datos NO se comparte entre hilos: la prelectura
+        # es solo CPU (preparar + calidad + Tesseract, en `to_thread`) y no
+        # toca la base. Todo lo que escribe sigue en la fase 2, secuencial,
+        # con la misma sesion de siempre. Los resultados son los mismos que
+        # en linea: la misma funcion, el mismo orden de niveles, solo antes.
+        prelecturas: dict[str, dict] = {}
+        a_preleer: list[tuple[ArchivoVista, bytes]] = []
+        for vista, contenido in pendientes:
+            if detectar_tipo_real(contenido) != TIPO_IMAGEN:
+                continue
+            if await _toca_leer(db, vista, contenido, company_id, forzar=reprocesar):
+                a_preleer.append((vista, contenido))
+        if a_preleer:
+            semaforo = asyncio.Semaphore(max(1, settings.OCR_CONCURRENCIA))
+
+            async def _preleer(vista: ArchivoVista, contenido: bytes):
+                async with semaforo:
+                    return vista.relative_path, await asyncio.to_thread(
+                        _prelectura_de_foto, contenido
+                    )
+
+            for relative_path, prelectura in await asyncio.gather(
+                *[_preleer(vista, contenido) for vista, contenido in a_preleer]
+            ):
+                prelecturas[relative_path] = prelectura
+
+        # FASE 2 — el procesamiento, secuencial como siempre: registro,
+        # duplicados, persistencia, archivado y contadores no cambian.
+        for vista, contenido in pendientes:
+            scan_registry.marcar_archivo(corrida, vista.relative_path)
+
             detalle = await procesar_archivo(
-                db, vista, contenido, company_id, actor, forzar=reprocesar
+                db,
+                vista,
+                contenido,
+                company_id,
+                actor,
+                forzar=reprocesar,
+                prelectura=prelecturas.get(vista.relative_path),
             )
 
             # El registro de la corrida se actualiza con el resultado de cada
             # archivo. Solo `leidos` y `con_error` se llevan la cuenta: lo demas
             # esta en el resumen del final.
-            if detalle.ticket_id is not None:
+            # Un duplicado apunta al ticket ORIGINAL (`ticket_id` no es None)
+            # pero no es un ticket nuevo: no suma en `con_ticket`. Sin este
+            # filtro, una foto repetida contaba como otro ticket con ticket y
+            # el panel decia "2 con ticket" con un solo gasto real.
+            if detalle.ticket_id is not None and detalle.status is not ScanStatus.DUPLICADO:
                 scan_registry.marcar_con_ticket(corrida)
             elif detalle.accion == "ERROR":
                 scan_registry.marcar_error(corrida)
@@ -1240,7 +1735,18 @@ async def escanear(
             # `ticket_id` hacia que un escaneo entero se reportara como
             # "0 leidos / Ningun archivo se leyo en esta corrida" habiendo
             # Dedicated tres minutos y medio a leerlos.
-            await _registrar_en_el_feed(corrida, db, detalle)
+            #
+            # EXCEPCION: el duplicado NO entra al feed. Su fila copiaba el
+            # encabezado y el importe del ticket ORIGINAL (mismo $234, mismo
+            # proveedor, mismo `date_missing`) y en la lista principal se veia
+            # como un segundo ticket pendiente, al lado del correcto. El
+            # duplicado solo va a `duplicados_por_contenido`, donde ya lleva
+            # archivo, proveedor, total, fecha, original y regla; su registro
+            # de auditoria (`_registrar`, en `procesar_archivo`) y su fila en
+            # `scan_files` con estado DUPLICADO se conservan, asi que no se
+            # pierde el rastro: solo deja de parecer un gasto mas.
+            if detalle.status is not ScanStatus.DUPLICADO:
+                await _registrar_en_el_feed(corrida, db, detalle)
 
             # --- Registro de auditoría de digitalización ------------------
             #
@@ -1323,7 +1829,13 @@ async def escanear(
             # - ERROR / NO_SOPORTADO: no se pudo leer. Obvio: se quedan.
             # - DUPLICADO: ya esta en `Tickets_Scan` por el otro archivo. Moverlo
             #   otra vez lo duplica con sufijo, y `archivados` contaria dos veces
-            #   el mismo comprobante.
+            #   el mismo comprobante. El filtro es por `status` y no por
+            #   `accion`, porque el duplicado por CONTENIDO llega con accion
+            #   `OMITIDO` (solo el de hash llega con accion `DUPLICADO`) y con
+            #   `ticket_id` apuntando al ticket original: con el filtro por
+            #   accion se colaba, se contaba en `quedan_en_bandeja` cuando el
+            #   original no estaba resuelto, y se borraba de la entrada cuando
+            #   si lo estaba.
             # - PENDIENTE / REQUIERE_REVISION: el gate lo paro. **ESTE ES EL QUE
             #   IMPORTA**: son los que alguien tiene que mirar, y un papel que
             #   necesita a una persona tiene que seguir en la bandeja, visible.
@@ -1336,9 +1848,14 @@ async def escanear(
             # Sin coste: el archivo que se queda ya esta en `scan_files` con su
             # `content_hash`, asi que la proxima corrida lo reporta `SIN_CAMBIOS`
             # sin volver a pagar OCR.
-            if archivar and detalle.accion not in (
-                "ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO"
-            ) and detalle.ticket_id is not None:
+            if (
+                archivar
+                and detalle.accion not in (
+                    "ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO"
+                )
+                and detalle.status is not ScanStatus.DUPLICADO
+                and detalle.ticket_id is not None
+            ):
                 # Por `scan_file_id`, NO por `ticket_id`: un ticket puede tener
                 # varios `scan_files` —el original y sus duplicados por
                 # contenido— y buscar por `ticket_id` devuelve varios y revienta
@@ -1424,6 +1941,22 @@ async def escanear(
 
             resumen.detalles.append(detalle)
 
+            # El listado de duplicados por contenido de la corrida, para que
+            # el front lo muestre sin tener que inferirlo de los detalles.
+            if detalle.duplicado_por_contenido is not None:
+                resumen.duplicados_por_contenido.append(detalle.duplicado_por_contenido)
+
+            # El listado de fotos por retomar, con archivo y motivo. Sin el,
+            # un `REVISAR_FOTO` en `detalles` no dice que hacer con la foto.
+            if detalle.calidad_foto is not None:
+                resumen.fotos_por_revisar.append(
+                    {
+                        "archivo": detalle.relative_path,
+                        "motivo": detalle.calidad_foto.get("mensaje"),
+                        "motivos": detalle.calidad_foto.get("motivos"),
+                    }
+                )
+
             if detalle.accion == "CREADO":
                 resumen.nuevos += 1
             elif detalle.accion == "ACTUALIZADO":
@@ -1482,7 +2015,21 @@ async def escanear(
         quedan_en_bandeja=resumen.quedan_en_bandeja,
         archivados=resumen.archivados,
     )
+    # Las dos listas viajan TAMBIEN en el resumen de la corrida, y no solo en
+    # la respuesta del POST. Con el escaneo en segundo plano el POST responde
+    # 202 sin resultado, y el front sigue el progreso por `GET /scan/runs`:
+    # sin esto, las listas solo existirian en el camino sincrono y el panel de
+    # progreso no podria mostrar QUE duplicados encontro ni QUE fotos hay que
+    # retomar. `ResumenScan` las ignora (extra por omision), asi que la
+    # respuesta sincrona no cambia: ahi siguen viajando en los campos de
+    # primer nivel de `ScanResponse`.
+    resumen.resumen["duplicados_por_contenido"] = resumen.duplicados_por_contenido
+    resumen.resumen["fotos_por_revisar"] = resumen.fotos_por_revisar
     scan_registry.cerrar_corrida(corrida, resumen.resumen)
+    # Tiempo total: se lee DESPUES de cerrar, porque `cerrar_corrida` pone
+    # `terminada_at` y `segundos` es `terminada - iniciada`. Antes de cerrar
+    # seguiria corriendo.
+    resumen.duracion_segundos = round(corrida.segundos, 1)
 
     return resumen
 
@@ -1788,6 +2335,9 @@ def _calcular_resumen(
     con_error = _con("ERROR")
     no_soportados = len([d for d in detalles if d.status is ScanStatus.NO_SOPORTADO])
     duplicados = len([d for d in detalles if d.status is ScanStatus.DUPLICADO])
+    fotos_por_revisar = len(
+        [d for d in detalles if d.status is ScanStatus.REVISAR_FOTO]
+    )
 
     # Lo accionable es lo que ninguna persona hizo y no se va a resolver solo:
     # los que necesitan correccion, mas los que no se pudieron leer, mas los que
@@ -1811,6 +2361,7 @@ def _calcular_resumen(
         "actualizados": _con("ACTUALIZADO"),
         "sin_cambios": _con("SIN_CAMBIOS"),
         "duplicados": duplicados,
+        "fotos_por_revisar": fotos_por_revisar,
         "con_error": con_error,
         "no_soportados": no_soportados,
         "omitidos_por_tope": 0,
@@ -1998,7 +2549,11 @@ async def _registrar_en_el_feed(
             if ticket is not None
             else False
         ),
-        es_duplicado=detalle.accion == "OMITIDO",
+        # Por `status` y no por `accion`: todo OMITIDO (sin empresa, sin
+        # cambios) se marcaba duplicado, y el duplicado por contenido llega
+        # con accion OMITIDO pero es el unico que lo es. El de hash tambien
+        # llega con `status` DUPLICADO.
+        es_duplicado=detalle.status is ScanStatus.DUPLICADO,
         # El encabezado, de la MISMA fila que dio el monto. No de
         # `detalle.datos`: ese se resuelve despues del bucle y aqui saldría en
         # null, que es el problema que ya.trae este feed resuelto para el importe.
@@ -2025,6 +2580,11 @@ async def _registrar_en_el_feed(
             else None
         ),
         validation_errors=ticket.validation_errors if ticket is not None else None,
+        # El motivo de la foto, en vivo: sin esto un REVISAR_FOTO salia en el
+        # feed como un `omitido` gris sin decir por que. Solo va aqui, y no
+        # en todos los archivos sin ticket: un SIN_CAMBIOS tambien trae un
+        # `detalle` y no es un motivo que haya que ensenar en el feed.
+        motivo=detalle.detalle if detalle.status is ScanStatus.REVISAR_FOTO else None,
     )
 
 

@@ -742,6 +742,14 @@ class TicketExtractionResult(BaseModel):
     # donde salio el dato. Sin esa verdad no se puede medir la exactitud de la
     # IA: se estaria promediando la IA con un regex que casi nunca falla.
     confidence_source: ConfidenceSource = ConfidenceSource.LLM
+    # Discrepancias que ESTA lectura trae consigo, sin modelo extra. Las llena
+    # `capture._discrepancias_de_lectura` al final de la lectura: total que no
+    # cuadra con subtotal+IVA+IEPS, RFC sin forma, fecha futura. `[]` = se
+    # reviso y no hay ninguna; es el dato que el escaneo muestra en el detalle
+    # del archivo para que el operador sepa QUE mirar del papel, y el que en
+    # `_desde_imagen` dispara Vision cuando el OCR es dudoso. No se inventa
+    # nada: solo se marca lo que la propia lectura contradice.
+    discrepancias: list[str] = []
 
     @field_validator("raw_text")
     @classmethod

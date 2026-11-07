@@ -52,10 +52,12 @@ export function Scan() {
   const [preparando, setPreparando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ultimo, setUltimo] = useState<ScanResultado | null>(null);
+  /** Tiempo total medido en el CLIENTE, como respaldo cuando el POST se
+   * corta (nginx 300s con Vision) y no llega `duracion_segundos` del
+   * servidor. Se pone en cero al iniciar cada escaneo. */
+  const [tiempoClienteSegundos, setTiempoClienteSegundos] = useState<number | null>(null);
   /** El progreso en vivo de la corrida que esta corriendo. */
   const [corrida, setCorrida] = useState<ScanCorrida | null>(null);
-  /** El id de esa corrida, para poder seguirla por su propio endpoint. */
-  const [corridaId, setCorridaId] = useState<string | null>(null);
   /** El intervalo de sondeo, en un `useRef` y no en un estado.
    *
    *  En un estado provocaria un re-render en cada tick, y el `useEffect` de
@@ -140,16 +142,41 @@ export function Scan() {
   const [archivar, setArchivar] = useState<boolean | null>(null);
 
   const escanear = async (conEmpresa: boolean) => {
+    const inicioCliente = Date.now();
     setPreparando(true);
     setEscaneando(true);
     setError(null);
     setConexionCortada(false);
     setCorrida(null);
+    // La "Última pasada" anterior no se muestra durante el escaneo nuevo:
+    // en segundo plano no hay un `ScanResponse` que poner ahi, y dejar la
+    // corrida anterior seria mostrar numeros viejos como si fueran de esta.
+    // El resultado vive en el panel de progreso de la corrida (PanelProgreso)
+    // y en el registro de archivos, que `cargar()` refresca al terminar.
+    setUltimo(null);
+    setTiempoClienteSegundos(null);
     try {
-      // `POST /scan` tarda minutos con fotos, asi que no se espera a que
-      // responda para empezar a mostrar progreso: se arranca a consultar el
-      // canal mientras el POST sigue abierto. `GET /scan/runs` es lo que dice
-      // que hay una corrida en marcha, y a partir de ahi se sigue por su id.
+      // Segundo plano (2026-11-06): `POST /scan` ya NO se espera. Responde
+      // 202 de inmediato y el trabajo sigue en el servidor; el progreso se
+      // sigue por `GET /scan/runs` hasta que la corrida dice `terminada`.
+      // Es lo que evita el corte de nginx a los 300 s: antes el POST se
+      // quedaba abierto minutos y caia con 504 aunque el trabajo si se
+      // hiciera, y la pantalla decia "no se pudo escanear" con los tickets
+      // ya guardados. Un error que dice que no paso algo que si paso es peor
+      // que un error: hace que el operador repita la corrida y duplique los
+      // tickets.
+      //
+      // Se guarda el id de las corridas que ya existian antes de pedir, para
+      // saber cual es LA NUESTRA cuando aparezca: la primera corrida nueva
+      // que se vea en el canal es la que este escaneo abrio.
+      const conocidas = new Set<string>();
+      try {
+        const antes = await ticketsApi.scanRuns(5);
+        antes.corridas.forEach((c) => conocidas.add(c.id));
+      } catch {
+        /* sin el "antes", la espera usa la primera corrida viva que vea */
+      }
+
       const watching = setInterval(() => {
         ticketsApi
           .scanRuns(5)
@@ -157,11 +184,10 @@ export function Scan() {
             const viva = r.corridas.find((c) => !c.terminada);
             if (viva) {
               setCorrida(viva);
-              setCorridaId(viva.id);
             }
           })
           .catch(() => {
-            /* si el canal falla, el POST sigue: no se interrumpe nada */
+            /* si el canal falla, el escaneo sigue: no se interrumpe nada */
           });
       }, 2000);
       setIntervalActivo(watching);
@@ -174,37 +200,34 @@ export function Scan() {
       // `null`, no `false`: `null` le dice al servidor "usa tu default", y `false`
       // le diria "no muevas nada", que es una decision que el operador todavia no
       // ha tomado.
-      try {
-        const r = await ticketsApi.escanear({
-          ...(conEmpresa && companyId ? { company_id: companyId } : {}),
-          archivar,
-        });
-        setUltimo(r);
-        await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { con_empresa: conEmpresa, company_id: companyId || null, archivos_vistos: r.archivos_vistos ?? null } });
-      } catch (e) {
-        // MEDIDO el 2026-10-16: con vision el escaneo tarda **7 a 9 minutos por
-        // foto** y nginx corta la conexion a los 300 s. El trabajo **si se hizo**
-        // -el ticket quedo guardado con el total leido- pero el POST cae con 504.
-        //
-        // Antes este `catch` hacia `setError(...)` y el `finally` apagaba el
-        // canal: la pantalla decia "no se pudo escanear" con el escaneo YA
-        // terminado y los tickets en la base. Un error que dice que no paso algo
-        // que si paso es peor que un error: hace que el operador repita la
-        // corrida y duplique los tickets.
-        //
-        // Aqui NO se apaga el canal: se sigue consultando hasta que la corrida
-        // diga `terminada`, y el resultado sale de alla.
-        setConexionCortada(true);
-      }
+      await ticketsApi.escanearEnSegundoPlano({
+        ...(conEmpresa && companyId ? { company_id: companyId } : {}),
+        archivar,
+      });
+      await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { con_empresa: conEmpresa, company_id: companyId || null, segundo_plano: true } });
 
-      // Un ultimo Hald del canal para recoger el resumen final, que en el
-      // POST puede venir con `terminada: false` si se respondio justo al cerrar.
-      try {
-        const { corridas } = await ticketsApi.scanRuns(5);
-        const mia = corridas.find((c) => c.id === corridaId) ?? corridas[0];
-        if (mia) setCorrida(mia);
-      } catch {
-        /* sinUltimo no es un error: ya vino el resultado del POST */
+      // Espera a que la corrida NUEVA termine: se consulta el canal cada 2 s
+      // hasta verla terminada, o hasta 30 minutos. Si el servidor tardo en
+      // abrirla (otra corrida con el candado), la primera corrida que no estaba
+      // en `conocidas` es la nuestra.
+      const limiteEspera = Date.now() + 30 * 60 * 1000;
+      let mia: ScanCorrida | undefined;
+      while (Date.now() < limiteEspera) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let corridas: ScanCorrida[] = [];
+        try {
+          corridas = (await ticketsApi.scanRuns(5)).corridas;
+        } catch {
+          continue;
+        }
+        mia = corridas.find((c) => !conocidas.has(c.id));
+        if (mia) {
+          setCorrida(mia);
+          if (mia.terminada) break;
+        }
+      }
+      if (mia && !mia.terminada) {
+        setError('El escaneo sigue en curso después de 30 minutos. Revisa el progreso en esta misma pantalla.');
       }
       await cargar();
     } catch (e) {
@@ -213,6 +236,7 @@ export function Scan() {
       clearIntervalActivo();
       setEscaneando(false);
       setPreparando(false);
+      setTiempoClienteSegundos((Date.now() - inicioCliente) / 1000);
     }
   };
 
@@ -294,20 +318,26 @@ export function Scan() {
           elegida y se apaga sin ella. Un solo boton con un parametro opcional
           deja la decision de crear tickets escondida en un estado que nadie ve.
         */}
-        <Button onClick={() => escanear(false)} disabled={escaneando || !companyId} title={companyId ? undefined : 'Elige una empresa para escanear'} className={preparando ? 'opacity-80 cursor-wait' : ''}>
-          {preparando ? (
-            <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
-          ) : escaneando ? 'Escaneando...' : 'Escanear (solo inventariar)'}
-        </Button>
-        <Button
-          onClick={() => escanear(true)}
-          disabled={escaneando || !companyId}
-          title={companyId ? undefined : 'Elige una empresa: sin ella no se puede atribuir ningún gasto'}
-        >
-          {preparando ? (
-            <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
-          ) : escaneando ? 'Escaneando...' : 'Escanear y crear tickets'}
-        </Button>
+        <div className="flex flex-col items-start gap-1">
+          <Button onClick={() => escanear(false)} disabled={escaneando || !companyId} title={companyId ? 'Solo revisión: lee e inventaría, no crea tickets' : 'Elige una empresa para escanear'} className={preparando ? 'opacity-80 cursor-wait' : ''}>
+            {preparando ? (
+              <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
+            ) : escaneando ? 'Escaneando...' : 'Solo revisar (sin crear tickets)'}
+          </Button>
+          <p className="text-xs text-gray-500 max-w-64">Solo lee e inventaría, no crea tickets.</p>
+        </div>
+        <div className="flex flex-col items-start gap-1">
+          <Button
+            onClick={() => escanear(true)}
+            disabled={escaneando || !companyId}
+            title={companyId ? 'Lee y crea los tickets en la empresa elegida' : 'Elige una empresa: sin ella no se puede atribuir ningún gasto'}
+          >
+            {preparando ? (
+              <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
+            ) : escaneando ? 'Escaneando...' : 'Escanear y crear tickets'}
+          </Button>
+          <p className="text-xs text-gray-500 max-w-64">Lee y crea los tickets en la empresa elegida.</p>
+        </div>
       </div>
 
       {/* Antes del panel, no despues: si hay un modelo configurado que no esta
@@ -323,7 +353,13 @@ export function Scan() {
       )}
       {corrida && <PanelProgreso corrida={corrida} totalPosible={stats?.total_archivos} />}
 
-      {ultimo && <PanelResultado resultado={ultimo} />}
+      {ultimo && (
+        <PanelResultado
+          resultado={ultimo}
+          duracionClienteSegundos={tiempoClienteSegundos}
+          corridaSegundos={corrida?.segundos ?? null}
+        />
+      )}
 
       {/* MEDIDO el 2026-10-16. El texto importa mas que el color: el operador
           tiene que saber que el trabajo SIGUE, no que fallo. Antes esta pantalla
@@ -455,13 +491,69 @@ function PanelOcr({ ocr }: { ocr: ScanOcrEstado }) {
   );
 }
 
-function PanelResultado({ resultado }: { resultado: ScanResultado }) {
+function formatoDuracion(s: number): string {
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  const resto = Math.round(s % 60);
+  return resto ? `${m}m ${resto}s` : `${m}m`;
+}
+
+function PanelResultado({
+  resultado,
+  duracionClienteSegundos,
+  corridaSegundos,
+}: {
+  resultado: ScanResultado;
+  duracionClienteSegundos?: number | null;
+  corridaSegundos?: number | null;
+}) {
   const { nuevos, actualizados, sin_cambios, duplicados, con_error, no_soportados,
-    omitidos_por_tope, archivos_vistos, ilegibles = [] } = resultado;
+    omitidos_por_tope, archivos_vistos, ilegibles = [], fotos_por_revisar = [],
+    duplicados_por_contenido = [] } = resultado;
+  const [ticketVer, setTicketVer] = useState<Ticket | null>(null);
+  const [cargandoTicket, setCargandoTicket] = useState(false);
+  async function abrirTicket(ticketId: string) {
+    setCargandoTicket(true);
+    try { const t = await ticketsApi.get(ticketId); setTicketVer(t); }
+    finally { setCargandoTicket(false); }
+  }
+  // La lista principal es de comprobantes UNICOS. Un duplicado por contenido
+  // llegaba aqui como un detalle mas con accion OMITIDO y se veia como otra
+  // fila del escaneo, al lado del ticket correcto con el mismo importe. Los
+  // duplicados van solo a su seccion aparte, con su original y su regla.
+  const archivosDuplicados = new Set(duplicados_por_contenido.map((d) => d.archivo));
+  const detallesUnicos = resultado.detalles.filter(
+    (d: ScanItem) => d.status !== 'DUPLICADO' && !archivosDuplicados.has(d.relative_path),
+  );
+  // Los duplicados por HASH no van en `duplicados_por_contenido` (solo van
+  // los de contenido): sin esto, al sacarlos del detalle principal
+  // desaparecerian de la pantalla y solo quedaria el contador. Van a la
+  // misma seccion colapsada, con la regla "mismos bytes".
+  const duplicadosHash = resultado.detalles.filter(
+    (d: ScanItem) => d.status === 'DUPLICADO' && !archivosDuplicados.has(d.relative_path),
+  );
+  const totalDuplicados = duplicados_por_contenido.length + duplicadosHash.length;
+  // Tiempo total: primero el del servidor (el real, iniciada -> terminada),
+  // luego el de la corrida en vivo, luego el medido en el cliente. Sin
+  // ninguno no se inventa un cero: se esconde la linea.
+  const duracion =
+    resultado.duracion_segundos ?? corridaSegundos ?? duracionClienteSegundos ?? null;
+  const porArchivo =
+    duracion !== null && archivos_vistos > 0 ? duracion / archivos_vistos : null;
 
   return (
     <Card className="mt-4">
       <h3 className="font-semibold text-gray-900 mb-2">Última pasada</h3>
+      {duracion !== null && (
+        <p className="text-sm text-gray-700 mb-2" data-testid="tiempo-total">
+          ⏱ Tiempo total: <strong className="tabular-nums">{formatoDuracion(duracion)}</strong>
+          {porArchivo !== null && (
+            <span className="text-gray-500">
+              {' '}· {archivos_vistos} archivo(s) · ~{formatoDuracion(porArchivo)} por archivo
+            </span>
+          )}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2 text-sm">
         <Badge variant="info">{archivos_vistos} vistos</Badge>
         {nuevos > 0 && <Badge variant="success">{nuevos} nuevos</Badge>}
@@ -472,6 +564,9 @@ function PanelResultado({ resultado }: { resultado: ScanResultado }) {
         {con_error > 0 && <Badge variant="danger">{con_error} con error</Badge>}
         {ilegibles.length > 0 && (
           <Badge variant="danger">{ilegibles.length} ilegibles</Badge>
+        )}
+        {fotos_por_revisar.length > 0 && (
+          <Badge variant="warning">{fotos_por_revisar.length} fotos por retomar</Badge>
         )}
       </div>
       {/*
@@ -507,15 +602,96 @@ function PanelResultado({ resultado }: { resultado: ScanResultado }) {
           </ul>
         </div>
       )}
+      {fotos_por_revisar.length > 0 && (
+        <div className="mt-3 rounded-md border border-yellow-200 bg-yellow-50 p-3">
+          <p className="text-sm font-medium text-yellow-800">
+            {fotos_por_revisar.length === 1
+              ? 'Una foto hay que volver a tomarla:'
+              : `${fotos_por_revisar.length} fotos hay que volver a tomarlas:`}
+          </p>
+          <p className="text-xs text-yellow-700 mt-1">
+            No se gastó tiempo en leerlas porque la foto no daba para leer el
+            ticket. Vuelve a tomarlas con más luz y sin reflejo.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {fotos_por_revisar.map((f) => (
+              <li key={f.archivo} className="text-xs text-yellow-800">
+                <span className="font-mono">{f.archivo}</span>
+                <span className="text-yellow-600"> — {f.motivo ?? 'foto por revisar'}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {totalDuplicados > 0 && (
+        <details className="mt-3 rounded-md border border-blue-200 bg-blue-50 p-3">
+          <summary className="text-sm font-medium text-blue-800 cursor-pointer">
+            Duplicados detectados ({totalDuplicados}) — no se sumaron dos veces, el original se conserva.
+          </summary>
+          <p className="text-xs text-blue-700 mt-1">
+            Mismo proveedor, total y fecha que un ticket que ya existía, aunque
+            la foto fuera distinta. El original se conserva; este intento queda
+            en el registro, ligado a él.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {duplicados_por_contenido.map((d) => (
+              <li key={`${d.archivo}-${d.ticket_id ?? ''}`} className="text-xs text-blue-800">
+                <span className="font-mono">{d.archivo}</span>
+                {' — '}{d.proveedor ?? 'sin proveedor'}
+                {d.total != null && (
+                  <span className="font-medium tabular-nums"> · ${Number(d.total).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                )}
+                {d.fecha && <span> · {d.fecha}</span>}
+                {d.ticket_id && (
+                  <span className="text-blue-600"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
+                )}
+                {d.regla && <span className="text-blue-600"> · {d.regla}</span>}
+                {d.ticket_id && (
+                  <button
+                    type="button"
+                    onClick={() => abrirTicket(d.ticket_id!)}
+                    className="ml-2 text-blue-600 hover:text-blue-800 hover:underline"
+                  >
+                    {cargandoTicket ? 'Abriendo…' : 'Ver original'}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {duplicadosHash.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {duplicadosHash.map((d) => (
+                <li key={d.relative_path} className="text-xs text-blue-800">
+                  <span className="font-mono">{d.relative_path}</span>
+                  {' — '}mismos bytes que un archivo ya procesado
+                  <span className="text-blue-600"> · mismos bytes</span>
+                  {d.ticket_id && (
+                    <span className="text-blue-600"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
+                  )}
+                  {d.ticket_id && (
+                    <button
+                      type="button"
+                      onClick={() => abrirTicket(d.ticket_id!)}
+                      className="ml-2 text-blue-600 hover:text-blue-800 hover:underline"
+                    >
+                      Ver original
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
+      )}
       {omitidos_por_tope > 0 && (
         <p className="text-sm text-gray-600 mt-2">
           Se alcanzó el tope de la pasada: <strong>{omitidos_por_tope}</strong> archivos quedan
           para la siguiente. Vuelve a escanear para seguir.
         </p>
       )}
-      {resultado.detalles.length > 0 && (
+      {detallesUnicos.length > 0 && (
         <ul className="mt-3 text-sm text-gray-700 space-y-1 max-h-48 overflow-y-auto">
-          {resultado.detalles.map((d: ScanItem) => (
+          {detallesUnicos.map((d: ScanItem) => (
             <li key={d.relative_path} className="flex items-start gap-2">
               <span className="font-mono text-xs text-gray-500 pt-0.5 truncate">
                 {d.relative_path}
@@ -534,11 +710,20 @@ function PanelResultado({ resultado }: { resultado: ScanResultado }) {
                   </span>
                 )}
                 {d.confianza !== null && ` · ${d.confianza.toFixed(2)}`}
+                {d.calidad_foto && (
+                  <span className="text-yellow-700"> · 📷 {d.calidad_foto.mensaje}</span>
+                )}
+                {d.discrepancias && d.discrepancias.length > 0 && (
+                  <span className="text-amber-700"> · ⚠ {d.discrepancias.join(', ')}</span>
+                )}
               </span>
             </li>
           ))}
         </ul>
       )}
+      <Modal isOpen={ticketVer !== null} onClose={() => setTicketVer(null)} title="Comprobante original">
+        {ticketVer && <VerDocumento ticket={ticketVer} />}
+      </Modal>
     </Card>
   );
 }

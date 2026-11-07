@@ -56,6 +56,13 @@ export const SCAN_STATUS_META: Record<ScanStatus, ScanStatusMeta> = {
     help: 'El archivo no es un PDF ni una imagen con firma conocida. No es un '
       + 'comprobante que se haya leido mal: es algo que nunca fue candidato.',
   },
+  REVISAR_FOTO: {
+    label: 'Revisar foto',
+    variant: 'warning',
+    help: 'La foto es borrosa, oscura, con reflejo o con resolución muy baja. '
+      + 'No se gastó OCR ni Vision en ella: hay que volver a tomarla con más '
+      + 'luz y sin reflejo.',
+  },
 };
 
 /** Que escalon leyo el archivo, en palabras.
@@ -166,4 +173,7 @@ export const COLOR_ESTADO: Record<ScanStatus, string> = {
   DUPLICADO: 'bg-blue-100 text-blue-700',
   ERROR: 'bg-red-100 text-red-700',
   NO_SOPORTADO: 'bg-yellow-100 text-yellow-700',
+  // Amarillo y no rojo: una foto por retomar no es un error del sistema, es
+  // trabajo pendiente del operador. En rojo se leeria como "se rompio algo".
+  REVISAR_FOTO: 'bg-yellow-100 text-yellow-700',
 };

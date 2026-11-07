@@ -53,6 +53,7 @@ TABLAS = [
     "productos",
     "movimientos_inventario",
     "auditoria",
+    "lotes",
 ]
 
 
@@ -146,6 +147,7 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         CompanyModel,
         CompraItemModel,
         CompraModel,
+        LoteModel,
         MovimientoInventarioModel,
         ProductoModel,
         ReconciliationModel,
@@ -196,6 +198,11 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         # hace lo que este archivo critica —mentir sobre el esquema para que
         # quien lo lea busque un problema que no esta—.
         (TipoGastoModel, "tipos_gasto"),
+        # MEDIDO el 2026-11-06: MISMO fallo que `auditoria` y `tipos_gasto`.
+        # La 0019 (`lotes`) llega con su modelo, su migracion y sus columnas
+        # en el DDL, y esta constante escrita a mano no lo cogio. Ver
+        # `test_no_hay_una_tabla_que_el_modelo_no_conozca`.
+        (LoteModel, "lotes"),
     ]
     return {
         tabla: {c.name for c in modelo.__table__.columns}

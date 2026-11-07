@@ -136,6 +136,16 @@ class TicketModel(Base):
     # vez de silenciar la regla.
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    # El lote al que pertenece este gasto. NULL = digitalizado antes de que
+    # existieran los lotes, o todavia sin asignar. `SET NULL` y no `CASCADE`:
+    # borrar un lote no puede borrar el gasto, que es el dato contable; el
+    # ticket se queda, sin lote, y alguien lo reasigna. No toca la cadena de
+    # custodia: ni `source_hash` ni los documentos cambian con esto.
+    lote_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("lotes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     provider_name = Column(String(150), nullable=False)
     provider_tax_id = Column(String(50), nullable=True)
     total_amount = Column(Numeric(12, 2), nullable=False)
@@ -324,6 +334,7 @@ class TicketModel(Base):
     # la base haga su trabajo. Ver `app/models/inventario.py` para el mismo
     # argumento aplicado a `productos` y `compras`.
     company = relationship("CompanyModel", backref="tickets", passive_deletes=True)
+    lote = relationship("LoteModel", back_populates="tickets")
     reconciliations = relationship("ReconciliationModel", back_populates="ticket")
 
     # LA CADENA DE DOCUMENTOS del ticket, en orden de version.

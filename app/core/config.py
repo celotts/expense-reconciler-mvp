@@ -12,7 +12,12 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Expense Reconciler MVP"
     API_V1_STR: str = "/api/v1"
-    DATABASE_URL: str
+    # PERF/FIX 2026-11-06: default de desarrollo para que Pylance no marque
+    # `Settings()` como falta de argumento. Pydantic-settings carga el valor
+    # real desde `.env` / `.env.local` o variable de entorno, que ganan sobre
+    # este default; en Docker lo sobrescribe `docker-compose.yml`. Es el mismo
+    # valor de `.env.example`, sin contrasena, solo para correr en local.
+    DATABASE_URL: str = "postgresql+asyncpg://postgres@localhost:5432/expense_db" 
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     # -------------------------------------------------------------------------
@@ -95,7 +100,11 @@ class Settings(BaseSettings):
     # 2000 px de lado largo es el mismo numero que ya usa `vista_previa.py`
     # (`_LADO_MAXIMO`), y por el mismo motivo: es donde un ticket de caja sigue
     # leyendo su total y su RFC de sobra. Si se sube, el tiempo sube con el.
-    MAX_LADO_VISION: int = 1400
+    # PERF 2026-11-06 (rama perf/scan-vision-solo-si-ocr-falla): 1400 -> 1000.
+    # MEDIDO: a 1400 una foto vertical da ~2300 tokens de vision y ~250 s por
+    # llamada; a 1000 los tokens y el prompt_eval bajan ~30-40% y el total/RFC
+    # se siguen leyendo. No se baja a menos para no perder letra pequena.
+    MAX_LADO_VISION: int = 1000
 
     # Para una FOTO, consultar al modelo de vision ANTES que al OCR local.
     #
@@ -301,6 +310,20 @@ class Settings(BaseSettings):
 
     OCR_IDIOMA: str = "spa+eng"
     OCR_PSM: int = 6  # bloque unico: el cuerpo del ticket, sin columnas
+
+    # OPT 2026-11-06 (rama perf/scan-vision-solo-si-ocr-falla): cuantos
+    # archivos se leen en paralelo en la fase de OCR de una corrida. Tesseract
+    # es CPU y admite 2-3 a la vez en esta maquina; mas de 3 no ayuda porque el
+    # disco y la CPU se saturan, y la VISION se mantiene SECUENCIAL porque
+    # Ollama tiene NUM_PARALLEL=1: paralelizarla seria encolar llamadas que el
+    # modelo atiende de una en una. Mismos resultados, menos tiempo de pared.
+    OCR_CONCURRENCIA: int = 3
+    # Calidad de foto ANTES de OCR/Vision (app/services/calidad_foto.py).
+    # `True` marca REVISAR_FOTO lo claramente malo y evita gastar Vision en
+    # fotos que van a salir mal. Con `False` el chequeo no corre y todo sigue
+    # como antes: es el interruptor por si un lote real demuestra falsos
+    # positivos y hay que apagarlo sin tocar codigo.
+    CALIDAD_FOTO_HABILITADA: bool = True
 
     @model_validator(mode="after")
     def _revisa_el_secreto(self) -> "Settings":
