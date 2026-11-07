@@ -305,6 +305,13 @@ export interface ScanAceptado {
 export interface ScanRequest {
   /** Omitirlo inventaria los archivos y NO crea tickets. */
   company_id?: string | null;
+  /** El lote al que van los archivos de esta corrida, si el operador eligió
+   *  uno. Omitirlo es "sin lote elegido": el servidor crea o asocia uno, y
+   *  un lote CERRADO no se puede elegir en la pantalla porque el servidor lo
+   *  rechaza con 409. El campo lo acepta el backend en paralelo a este
+   *  front; mientras tanto `ScanRequest` no tiene `extra="forbid"` y el
+   *  servidor lo ignora sin romper el escaneo. */
+  lote_id?: string | null;
   reprocesar?: boolean;
   solo_pendientes?: boolean;
   /** Mover los comprobantes a la carpeta de escaneados al digitalizarlos.

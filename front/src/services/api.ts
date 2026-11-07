@@ -15,6 +15,7 @@ import type {
   ScanAceptado, ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanIaEstado, ScanItem, ScanOcrEstado,
   ScanRequest, ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
+import type { Lote, LoteCreate, LoteDetalle } from '../types/lote';
 import { estaVencido, leerToken, notificarCaducidad, SesionVencida } from './sesion';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
@@ -247,6 +248,64 @@ export const companiesApi = {
     body: JSON.stringify(data),
   }),
   delete: (id: string) => fetchApi<void>(`/companies/${id}`, { method: 'DELETE' }),
+};
+
+// Lotes API
+//
+// Los lotes agrupan los comprobantes de un periodo (ver `types/lote.ts`).
+// El folio lo genera el servidor: nunca se manda en la creación. Las rutas
+// van SIN barra final (`/lotes`, no `/lotes/`): el router del backend declara
+// `@router.get("")`, así que con barra el servidor responde una redirección
+// en vez del listado.
+export const lotesApi = {
+  /** Los lotes, del más reciente al más viejo. Sin filtros trae los de todas
+   *  las empresas; la pantalla pasa `companyId` cuando hay una elegida. */
+  listar: (filtros?: {
+    companyId?: string;
+    ejercicio?: number;
+    mes?: number;
+    estado?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<Lote[]> => {
+    const params = new URLSearchParams();
+    if (filtros?.companyId) params.append('company_id', filtros.companyId);
+    if (filtros?.ejercicio !== undefined) params.append('ejercicio', String(filtros.ejercicio));
+    if (filtros?.mes !== undefined) params.append('mes', String(filtros.mes));
+    if (filtros?.estado) params.append('estado', filtros.estado);
+    if (filtros?.limit !== undefined) params.append('limit', String(filtros.limit));
+    if (filtros?.offset !== undefined) params.append('offset', String(filtros.offset));
+    const qs = params.toString();
+    return fetchApi<Lote[]>(`/lotes${qs ? `?${qs}` : ''}`);
+  },
+
+  crear: (data: LoteCreate) => fetchApi<Lote>('/lotes', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+
+  /** Un lote con sus conteos en vivo (archivos, tickets, importe, duplicados). */
+  detalle: (id: string) => fetchApi<LoteDetalle>(`/lotes/${id}`),
+
+  /** Cierra un lote ABIERTO o EN_REVISION. Cerrar uno ya CERRADO es 409, no
+   *  un 200 que finja haber hecho algo. */
+  cerrar: (id: string) => fetchApi<Lote>(`/lotes/${id}/cerrar`, { method: 'POST' }),
+
+  /** Reabre un lote CERRADO. El motivo es obligatorio (min. 3 caracteres) y
+   *  queda en `lote.motivo` y en auditoría. Si la empresa no permite reabrir,
+   *  el servidor responde 409. */
+  reabrir: (id: string, motivo: string) => fetchApi<Lote>(`/lotes/${id}/reabrir`, {
+    method: 'POST',
+    body: JSON.stringify({ motivo }),
+  }),
+
+  /** El lote complementario de uno que ya existe: hereda empresa, periodo y
+   *  fechas del padre y nace ABIERTO con su propio folio. Sin `nombre` se
+   *  llama "Complemento de {folio del padre}". */
+  complementario: (id: string, nombre?: string) => fetchApi<Lote>(`/lotes/${id}/complementario`, {
+    method: 'POST',
+    body: JSON.stringify(nombre ? { nombre } : {}),
+  }),
 };
 
 // Tickets API

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { registrarEventoFrontend } from '../services/auditoria';
-import { companiesApi, ticketsApi, type Company, type Ticket } from '../services/api';
+import { companiesApi, lotesApi, ticketsApi, type Company, type Ticket } from '../services/api';
 import type {
   ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
   ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
-import { Button, Card, Badge, Loading, EmptyState, Select, Modal } from '../components/ui';
+import type { Lote, LoteDetalle, TipoPeriodo } from '../types/lote';
+import { Button, Card, Badge, Loading, EmptyState, Select, Modal, Input } from '../components/ui';
 import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO, hayDiscrepanciaDeFormato } from '../utils/scan';
 import { VerDocumento } from '../components/TicketDocumento';
 import { PanelProgreso } from '../components/ScanProgreso';
@@ -67,6 +68,39 @@ export function Scan() {
   const watcherRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [detalle, setDetalle] = useState<ScanFileDetail | null>(null);
   const [ticketDelDetalle, setTicketDelDetalle] = useState<Ticket | null>(null);
+  /** Lotes de digitalización (ver `types/lote.ts`).
+   *
+   *  `loteId` es el lote ELEGIDO para el próximo escaneo, o '' si no se eligió
+   *  ninguno: en ese caso el `POST /scan` no lleva `lote_id` y el servidor
+   *  crea o asocia uno. `loteDetalle` es el lote que se está mirando, que no
+   *  es lo mismo: un lote CERRADO se puede mirar sin elegirlo. */
+  const [lotes, setLotes] = useState<Lote[]>([]);
+  const [lotesCargando, setLotesCargando] = useState(false);
+  const [errorLotes, setErrorLotes] = useState<string | null>(null);
+  const [loteId, setLoteId] = useState('');
+  const [loteDetalle, setLoteDetalle] = useState<LoteDetalle | null>(null);
+  /** La última corrida terminada que conoce el servidor, para el encabezado
+   *  "Último escaneo" cuando esta pantalla todavía no corrió ninguna. */
+  const [ultimaCorrida, setUltimaCorrida] = useState<ScanCorrida | null>(null);
+  /** El lote con el que se lanzó el escaneo en curso (o el último): es el
+   *  folio que muestran el progreso y la última pasada. Se congela al
+   *  arrancar para que cambiar de lote a mitad de corrida no reescriba el
+   *  folio de la corrida que ya va. */
+  const [loteDeCorrida, setLoteDeCorrida] = useState<Lote | null>(null);
+  const [mostrarFormLote, setMostrarFormLote] = useState(false);
+  const [creandoLote, setCreandoLote] = useState(false);
+  const [formLote, setFormLote] = useState({
+    nombre: '',
+    ejercicio: String(new Date().getFullYear()),
+    mes: String(new Date().getMonth() + 1),
+    tipo_periodo: 'mensual' as TipoPeriodo,
+    total_esperado: '',
+  });
+  const [confirmarCerrar, setConfirmarCerrar] = useState(false);
+  const [cerrandoLote, setCerrandoLote] = useState(false);
+  const [mostrarReabrir, setMostrarReabrir] = useState(false);
+  const [motivoReabrir, setMotivoReabrir] = useState('');
+  const [accionLote, setAccionLote] = useState(false);
 
   const POR_PAGINA = 20;
 
@@ -77,7 +111,7 @@ export function Scan() {
       // Config, OCR y stats van en paralelo y se reportan por separado, por la
       // misma razon que en el muestreo: si uno falla y los otros no, mostrar una
       // sola pantalla de error hides lo que si funciona.
-      const [c, o, s, f] = await Promise.allSettled([
+      const [c, o, s, f, r] = await Promise.allSettled([
         ticketsApi.scanConfig(),
         ticketsApi.scanOcr(),
         ticketsApi.scanStats(),
@@ -87,6 +121,7 @@ export function Scan() {
           limit: POR_PAGINA,
           offset: pagina * POR_PAGINA,
         }),
+        ticketsApi.scanRuns(5),
       ]);
       setConfig(c.status === 'fulfilled' ? c.value : null);
       // La casilla se siembra con el valor REAL del servidor. Solo la primera
@@ -105,10 +140,46 @@ export function Scan() {
         setArchivos([]);
         setError(f.reason instanceof Error ? f.reason.message : 'No se pudo cargar el registro');
       }
+      // La última corrida terminada, para el encabezado "Último escaneo". Si
+      // hay una en curso se ignora aquí: la viva la enseña `corrida`.
+      if (r.status === 'fulfilled') {
+        setUltimaCorrida(r.value.corridas.find((x) => x.terminada) ?? r.value.corridas[0] ?? null);
+      }
     } finally {
       setCargando(false);
     }
   }, [filtro, companyId, pagina]);
+
+  /** Carga los lotes de la empresa elegida (o de todas, si no hay ninguna).
+   *
+   *  Si el lote elegido deja de estar en la lista —cambió la empresa, o se
+   *  cerró— la selección se suelta sola: un lote cerrado no se puede elegir
+   *  para un nuevo escaneo, y mandar su id sería un 409 del servidor. El
+   *  detalle, si se estaba mirando, se queda: cerrar un lote no borra su
+   *  vista, que es donde están el complementario y la reapertura. */
+  const cargarLotes = useCallback(async () => {
+    try {
+      setLotesCargando(true);
+      setErrorLotes(null);
+      const lista = await lotesApi.listar({ companyId: companyId || undefined, limit: 200 });
+      setLotes(lista);
+      setLoteId((actual) => {
+        if (!actual) return actual;
+        const elegido = lista.find((l) => l.id === actual);
+        return elegido && elegido.estado !== 'CERRADO' ? actual : '';
+      });
+      // Y el detalle se suelta con él si ya no está en la lista: si no, la
+      // pantalla seguiría mostrando un lote de otra empresa.
+      setLoteDetalle((actual) => (actual && lista.some((l) => l.id === actual.id) ? actual : null));
+    } catch (e) {
+      setLotes([]);
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudieron cargar los lotes');
+    } finally {
+      setLotesCargando(false);
+    }
+  }, [companyId]);
+
+  useEffect(() => { cargarLotes(); }, [cargarLotes]);
 
   useEffect(() => { cargar(); }, [cargar]);
   useEffect(() => { if (corrida) setPreparando(false); }, [corrida]);
@@ -155,6 +226,13 @@ export function Scan() {
     // y en el registro de archivos, que `cargar()` refresca al terminar.
     setUltimo(null);
     setTiempoClienteSegundos(null);
+    // El lote de ESTA corrida se congela al arrancar: si el operador cambia
+    // de lote mientras corre, el folio que muestra el progreso sigue siendo
+    // el de la corrida, no el de la selección nueva. Un lote CERRADO no llega
+    // aquí (la lista no deja elegirlo), pero se vuelve a comprobar: mandar su
+    // id sería un 409 del servidor.
+    const loteParaEscanear = lotes.find((l) => l.id === loteId && l.estado !== 'CERRADO') ?? null;
+    setLoteDeCorrida(loteParaEscanear);
     try {
       // Segundo plano (2026-11-06): `POST /scan` ya NO se espera. Responde
       // 202 de inmediato y el trabajo sigue en el servidor; el progreso se
@@ -202,9 +280,12 @@ export function Scan() {
       // ha tomado.
       await ticketsApi.escanearEnSegundoPlano({
         ...(conEmpresa && companyId ? { company_id: companyId } : {}),
+        // Solo si el operador eligió un lote: sin `lote_id` el servidor crea
+        // o asocia uno, y mandar `lote_id: null` diría otra cosa.
+        ...(loteParaEscanear ? { lote_id: loteParaEscanear.id } : {}),
         archivar,
       });
-      await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { con_empresa: conEmpresa, company_id: companyId || null, segundo_plano: true } });
+      await registrarEventoFrontend({ accion: 'escanear', modulo: 'scan', detalles: { con_empresa: conEmpresa, company_id: companyId || null, segundo_plano: true, lote_id: loteParaEscanear?.id ?? null } });
 
       // Espera a que la corrida NUEVA termine: se consulta el canal cada 2 s
       // hasta verla terminada, o hasta 30 minutos. Si el servidor tardo en
@@ -270,6 +351,157 @@ export function Scan() {
     }
   };
 
+  /** Elige un lote para el próximo escaneo y abre su detalle. Solo se llama
+   *  desde un lote que no está CERRADO: el botón de elegir de un cerrado está
+   *  deshabilitado (ver la lista), y `verDetalleLote` es el camino para
+   *  mirar un cerrado sin elegirlo. */
+  const seleccionarLote = async (id: string) => {
+    setLoteId(id);
+    setConfirmarCerrar(false);
+    setMostrarReabrir(false);
+    try {
+      setLoteDetalle(await lotesApi.detalle(id));
+    } catch (e) {
+      setLoteDetalle(null);
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudo cargar el lote');
+    }
+  };
+
+  /** Abre el detalle de un lote SIN elegirlo para escanear. Es el camino
+   *  para mirar un lote CERRADO (complementario, reapertura) sin que el
+   *  próximo escaneo intente mandar su id. */
+  const verDetalleLote = async (id: string) => {
+    setConfirmarCerrar(false);
+    setMostrarReabrir(false);
+    try {
+      setLoteDetalle(await lotesApi.detalle(id));
+    } catch (e) {
+      setLoteDetalle(null);
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudo cargar el lote');
+    }
+  };
+
+  const crearLote = async () => {
+    if (!companyId) {
+      setErrorLotes('Elige una empresa arriba para crear el lote.');
+      return;
+    }
+    const ejercicio = Number(formLote.ejercicio);
+    const mes = Number(formLote.mes);
+    const totalEsperado = formLote.total_esperado.trim() === '' ? undefined : Number(formLote.total_esperado);
+    if (!formLote.nombre.trim()) {
+      setErrorLotes('El lote necesita un nombre.');
+      return;
+    }
+    if (!Number.isInteger(ejercicio) || ejercicio < 1900 || ejercicio > 2100) {
+      setErrorLotes('El ejercicio tiene que ser un año entre 1900 y 2100.');
+      return;
+    }
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12) {
+      setErrorLotes('El mes tiene que ser entre 1 y 12.');
+      return;
+    }
+    if (totalEsperado !== undefined && (!Number.isInteger(totalEsperado) || totalEsperado < 0)) {
+      setErrorLotes('El total esperado tiene que ser un número entero mayor o igual a 0.');
+      return;
+    }
+    try {
+      setCreandoLote(true);
+      setErrorLotes(null);
+      const nuevo = await lotesApi.crear({
+        company_id: companyId,
+        nombre: formLote.nombre.trim(),
+        ejercicio,
+        mes,
+        tipo_periodo: formLote.tipo_periodo,
+        ...(totalEsperado !== undefined ? { total_esperado: totalEsperado } : {}),
+      });
+      setMostrarFormLote(false);
+      setFormLote((f) => ({ ...f, nombre: '', total_esperado: '' }));
+      await cargarLotes();
+      // El lote nuevo queda elegido: es el que se acaba de crear para este escaneo.
+      await seleccionarLote(nuevo.id);
+    } catch (e) {
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudo crear el lote');
+    } finally {
+      setCreandoLote(false);
+    }
+  };
+
+  const cerrarLote = async () => {
+    if (!loteDetalle) return;
+    try {
+      setCerrandoLote(true);
+      const actualizado = await lotesApi.cerrar(loteDetalle.id);
+      setLotes((actual) => actual.map((l) => (l.id === actualizado.id ? actualizado : l)));
+      // La selección se suelta: un lote cerrado no se puede elegir para un
+      // nuevo escaneo. El detalle se queda abierto, que es donde están el
+      // complementario y la reapertura.
+      setLoteId('');
+      setConfirmarCerrar(false);
+      await verDetalleLote(actualizado.id);
+    } catch (e) {
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudo cerrar el lote');
+    } finally {
+      setCerrandoLote(false);
+    }
+  };
+
+  const reabrirLote = async () => {
+    if (!loteDetalle) return;
+    if (motivoReabrir.trim().length < 3) {
+      setErrorLotes('El motivo de la reapertura tiene que tener al menos 3 caracteres.');
+      return;
+    }
+    try {
+      setAccionLote(true);
+      const actualizado = await lotesApi.reabrir(loteDetalle.id, motivoReabrir.trim());
+      setLotes((actual) => actual.map((l) => (l.id === actualizado.id ? actualizado : l)));
+      setMostrarReabrir(false);
+      setMotivoReabrir('');
+      await seleccionarLote(actualizado.id);
+    } catch (e) {
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudo reabrir el lote');
+    } finally {
+      setAccionLote(false);
+    }
+  };
+
+  const crearComplementario = async () => {
+    if (!loteDetalle) return;
+    try {
+      setAccionLote(true);
+      const nuevo = await lotesApi.complementario(loteDetalle.id);
+      await cargarLotes();
+      // El complementario nace ABIERTO y queda elegido: es donde van los faltantes.
+      await seleccionarLote(nuevo.id);
+    } catch (e) {
+      setErrorLotes(e instanceof Error ? e.message : 'No se pudo crear el lote complementario');
+    } finally {
+      setAccionLote(false);
+    }
+  };
+
+  /** "Nuevo escaneo": limpia solo la VISTA del formulario y los resultados.
+   *
+   *  No borra archivos ni lotes ni la selección de lote: lo que se va es lo
+   *  que se estaba mirando (el progreso, la última pasada, el detalle de un
+   *  archivo), para empezar otra pasada con la pantalla limpia. */
+  const nuevoEscaneo = () => {
+    setUltimo(null);
+    setCorrida(null);
+    setDetalle(null);
+    setTicketDelDetalle(null);
+    setError(null);
+    setConexionCortada(false);
+    setTiempoClienteSegundos(null);
+    setLoteDeCorrida(null);
+  };
+
+  // La corrida en curso (o la que acaba de terminar) manda sobre la última
+  // que conoce el servidor: es la que el operador acaba de ver correr.
+  const corridaParaEncabezado = corrida ?? ultimaCorrida;
+
   if (cargando && !config && !ocr) return <Loading message="Cargando el escáner..." />;
 
   return (
@@ -296,6 +528,278 @@ export function Scan() {
 
       {config && <PanelConfig config={config} />}
       {ocr && <PanelOcr ocr={ocr} />}
+
+      {/* Lotes de digitalización.
+       *
+       *  Va ANTES del formulario de escaneo y no después: el lote es la
+       *  primera decisión de la pasada (a qué periodo van estos papeles), y
+       *  elegirlo después de pulsar "Escanear" sería elegirlo tarde.
+       */}
+      <section aria-label="Lotes de digitalización" className="mt-6">
+        <Card className="mb-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Último escaneo</h2>
+              {corridaParaEncabezado ? (
+                <p className="text-sm text-gray-600 mt-1">
+                  {new Date(corridaParaEncabezado.iniciada_at).toLocaleString('es-MX')}
+                  {' · '}{corridaParaEncabezado.archivos_vistos} archivo(s)
+                  {' · '}{corridaParaEncabezado.con_ticket} con ticket
+                  {' · '}⏱ {formatoDuracion(corridaParaEncabezado.segundos)}
+                  {!corridaParaEncabezado.terminada && ' (en curso)'}
+                </p>
+              ) : (
+                <p className="text-sm text-gray-500 mt-1">Aún no hay escaneos.</p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={nuevoEscaneo}
+                disabled={escaneando}
+                title="Limpia la vista (progreso y última pasada). No borra archivos ni lotes."
+              >
+                Nuevo escaneo
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setMostrarFormLote((v) => !v)}
+                disabled={escaneando || !companyId}
+                title={companyId ? 'Crear un lote nuevo' : 'Elige una empresa para crear un lote'}
+              >
+                {mostrarFormLote ? 'Cancelar nuevo lote' : 'Nuevo lote'}
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mt-3">
+            Para agregar un documento que faltó, ponlo en la carpeta de entrada y vuelve a escanear:
+            solo se leerá el nuevo, los demás salen SIN_CAMBIOS.
+          </p>
+
+          {errorLotes && (
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm flex items-start gap-2">
+              <span className="flex-1">{errorLotes}</span>
+              <Button variant="secondary" onClick={cargarLotes} className="!py-1 !px-2 !text-xs">Reintentar</Button>
+            </div>
+          )}
+
+          {lotesCargando ? (
+            <p className="text-sm text-gray-500 mt-3">Cargando lotes…</p>
+          ) : lotes.length === 0 ? (
+            <p className="text-sm text-gray-500 mt-3">
+              {companyId
+                ? 'No hay lotes para esta empresa. Crea el primero con “Nuevo lote”.'
+                : 'Elige una empresa para ver sus lotes, o crea uno con “Nuevo lote”.'}
+            </p>
+          ) : (
+            <div className="mt-4 space-y-4">
+              {agruparLotes(lotes).map((grupo) => (
+                <div key={grupo.clave}>
+                  <h3 className="text-sm font-semibold text-gray-700 capitalize">{grupo.etiqueta}</h3>
+                  <ul className="mt-1 divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-hidden">
+                    {grupo.lotes.map((lote) => {
+                      const cerrado = lote.estado === 'CERRADO';
+                      const seleccionado = lote.id === loteId;
+                      return (
+                        <li key={lote.id} className={`flex flex-wrap items-center gap-x-1 ${seleccionado ? 'bg-blue-50' : 'bg-white'}`}>
+                          <button
+                            type="button"
+                            onClick={() => void seleccionarLote(lote.id)}
+                            disabled={cerrado || escaneando}
+                            title={cerrado
+                              ? 'Lote cerrado: no acepta más escaneos. Usa “Detalle” para crear un lote complementario o reabrirlo.'
+                              : seleccionado
+                                ? 'Lote seleccionado para el próximo escaneo'
+                                : 'Elegir este lote para el próximo escaneo'}
+                            aria-pressed={seleccionado}
+                            className="flex-1 min-w-0 text-left px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                          >
+                            <span className="font-mono text-xs font-semibold text-gray-900">{lote.folio}</span>
+                            <span className="text-sm text-gray-700 truncate flex-1 min-w-0">{lote.nombre}</span>
+                            <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${colorEstadoLote(lote.estado)}`}>
+                              {etiquetaEstadoLote(lote.estado)}
+                            </span>
+                            <span className="text-xs text-gray-600 tabular-nums">
+                              {lote.total_escaneado}/{lote.total_esperado ?? '—'} escaneados
+                            </span>
+                            <span className="text-xs text-gray-900 font-medium tabular-nums">{dineroLote(lote.importe_total)}</span>
+                            {seleccionado && <span className="text-[11px] font-medium text-blue-700">Seleccionado</span>}
+                          </button>
+                          <Button variant="ghost" size="sm" onClick={() => void verDetalleLote(lote.id)} title="Ver el detalle del lote">
+                            Detalle
+                          </Button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {mostrarFormLote && (
+            <form
+              className="mt-4 rounded-lg border border-gray-200 bg-white p-3 space-y-3"
+              onSubmit={(e) => { e.preventDefault(); void crearLote(); }}
+            >
+              <h3 className="font-semibold text-gray-900">Nuevo lote</h3>
+              {!companyId && (
+                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+                  Elige una empresa arriba: el lote pertenece a una empresa.
+                </p>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Input
+                  label="Nombre"
+                  value={formLote.nombre}
+                  onChange={(e) => setFormLote((f) => ({ ...f, nombre: e.target.value }))}
+                  placeholder="Octubre 2026"
+                  maxLength={150}
+                />
+                <Select
+                  label="Tipo de periodo"
+                  value={formLote.tipo_periodo}
+                  onChange={(e) => setFormLote((f) => ({ ...f, tipo_periodo: e.target.value as TipoPeriodo }))}
+                  options={[
+                    { value: 'mensual', label: 'Mensual' },
+                    { value: 'quincenal', label: 'Quincenal' },
+                    { value: 'semanal', label: 'Semanal' },
+                  ]}
+                />
+                <Input
+                  label="Ejercicio"
+                  type="number"
+                  value={formLote.ejercicio}
+                  onChange={(e) => setFormLote((f) => ({ ...f, ejercicio: e.target.value }))}
+                  min={1900}
+                  max={2100}
+                />
+                <Select
+                  label="Mes"
+                  value={formLote.mes}
+                  onChange={(e) => setFormLote((f) => ({ ...f, mes: e.target.value }))}
+                  options={MESES.map((m, i) => ({ value: String(i + 1), label: `${i + 1} — ${m}` }))}
+                />
+                <Input
+                  label="Total esperado (opcional)"
+                  type="number"
+                  value={formLote.total_esperado}
+                  onChange={(e) => setFormLote((f) => ({ ...f, total_esperado: e.target.value }))}
+                  min={0}
+                  placeholder="¿Cuántos comprobantes esperas?"
+                />
+              </div>
+              <p className="text-xs text-gray-500">
+                El folio (LOT-2026-10-001…) lo genera el servidor. Sin fechas, el lote cubre el periodo completo.
+              </p>
+              <div className="flex gap-2 justify-end">
+                <Button variant="secondary" type="button" onClick={() => setMostrarFormLote(false)}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={creandoLote || !companyId}>
+                  {creandoLote ? 'Creando…' : 'Crear lote'}
+                </Button>
+              </div>
+            </form>
+          )}
+
+          {loteDetalle && (
+            <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-semibold text-gray-900">
+                  {loteDetalle.folio} · {loteDetalle.nombre}
+                </h3>
+                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${colorEstadoLote(loteDetalle.estado)}`}>
+                  {etiquetaEstadoLote(loteDetalle.estado)}
+                </span>
+              </div>
+              <p className="text-xs text-gray-600 mt-1">
+                {fechaCorta(loteDetalle.fecha_inicio)} – {fechaCorta(loteDetalle.fecha_fin)}
+                {' · '}{loteDetalle.tipo_periodo}
+                {loteDetalle.lote_padre_id ? ' · Complemento de otro lote' : ''}
+                {loteDetalle.motivo ? ` · Motivo: ${loteDetalle.motivo}` : ''}
+              </p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-sm text-gray-700">
+                <span><strong className="text-gray-900 tabular-nums">{loteDetalle.total_archivos}</strong> archivos</span>
+                <span><strong className="text-gray-900 tabular-nums">{loteDetalle.total_tickets}</strong> tickets</span>
+                <span>Importe vivo: <strong className="text-gray-900 tabular-nums">{dineroLote(loteDetalle.importe_total_vivo)}</strong></span>
+                {loteDetalle.duplicados > 0 && (
+                  <span className="text-blue-700">{loteDetalle.duplicados} duplicado(s) por contenido</span>
+                )}
+              </div>
+              {loteDetalle.estado !== 'CERRADO' ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {!confirmarCerrar ? (
+                    <Button variant="secondary" onClick={() => setConfirmarCerrar(true)} disabled={escaneando || accionLote}>
+                      Cerrar lote
+                    </Button>
+                  ) : (
+                    <span className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="text-gray-700">¿Cerrar {loteDetalle.folio}? Ya no aceptará más archivos.</span>
+                      <Button variant="danger" size="sm" onClick={() => void cerrarLote()} disabled={cerrandoLote}>
+                        {cerrandoLote ? 'Cerrando…' : 'Sí, cerrar'}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmarCerrar(false)}>
+                        Cancelar
+                      </Button>
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  <p className="text-sm text-gray-700">
+                    El lote cerrado no se edita; los faltantes van en un lote complementario.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={() => void crearComplementario()} disabled={escaneando || accionLote}>
+                      {accionLote ? 'Creando…' : 'Crear lote complementario'}
+                    </Button>
+                    <Button variant="secondary" onClick={() => setMostrarReabrir(true)} disabled={escaneando || accionLote}>
+                      Reabrir
+                    </Button>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Reabrir solo si procede: queda registrado quién lo reabrió y por qué.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <Modal
+            isOpen={mostrarReabrir}
+            onClose={() => { setMostrarReabrir(false); setMotivoReabrir(''); }}
+            title={`Reabrir ${loteDetalle?.folio ?? 'lote'}`}
+          >
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                La reapertura queda registrada en auditoría con tu usuario y este motivo.
+                Úsala solo si procede: por ejemplo, llegó un comprobante que pertenece a
+                este periodo y no a un complementario.
+              </p>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="motivo-reabrir" className="text-sm font-medium text-gray-700">Motivo</label>
+                <textarea
+                  id="motivo-reabrir"
+                  value={motivoReabrir}
+                  onChange={(e) => setMotivoReabrir(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Por qué se reabre este lote"
+                />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <Button variant="secondary" onClick={() => { setMostrarReabrir(false); setMotivoReabrir(''); }}>
+                  Cancelar
+                </Button>
+                <Button onClick={() => void reabrirLote()} disabled={accionLote || motivoReabrir.trim().length < 3}>
+                  {accionLote ? 'Reabriendo…' : 'Reabrir lote'}
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        </Card>
+      </section>
 
       {/* La casilla va ANTES de los botones, y no junto a ellos.
        *
@@ -351,13 +855,14 @@ export function Scan() {
           <span>Preparando el escaneo, detectando archivos{stats?.total_archivos ? ` (0 de ${stats.total_archivos})` : '…'}</span>
         </div>
       )}
-      {corrida && <PanelProgreso corrida={corrida} totalPosible={stats?.total_archivos} />}
+      {corrida && <PanelProgreso corrida={corrida} totalPosible={stats?.total_archivos} loteFolio={loteDeCorrida?.folio ?? null} />}
 
       {ultimo && (
         <PanelResultado
           resultado={ultimo}
           duracionClienteSegundos={tiempoClienteSegundos}
           corridaSegundos={corrida?.segundos ?? null}
+          loteFolio={loteDeCorrida?.folio ?? null}
         />
       )}
 
@@ -498,14 +1003,97 @@ function formatoDuracion(s: number): string {
   return resto ? `${m}m ${resto}s` : `${m}m`;
 }
 
+/** Los meses, en español y en minúscula: el encabezado del grupo y el
+ *  desplegable del formulario dicen "octubre 2026", no "10/2026". */
+const MESES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+];
+
+/** `2026-10-01` -> `01 oct 2026`. Se parte el texto en vez de pasar la cadena
+ *  por `Date`: `new Date('2026-10-01')` lo interpreta en UTC y en una zona
+ *  horaria detrás de UTC se renderiza como el día ANTERIOR. */
+function fechaCorta(iso: string | null): string {
+  if (!iso) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const meses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const mes = meses[Number(m[2]) - 1] ?? m[2];
+  return `${m[3]} ${mes} ${m[1]}`;
+}
+
+/** `2026-10` -> `octubre 2026`, la etiqueta del grupo de lotes. */
+function etiquetaPeriodo(ejercicio: number, mes: number): string {
+  const nombre = MESES[mes - 1];
+  return nombre ? `${nombre} ${ejercicio}` : `${mes}/${ejercicio}`;
+}
+
+/** Los lotes agrupados por periodo, del más reciente al más viejo. El
+ *  backend ya los trae ordenados así; aquí solo se parte la lista por mes. */
+function agruparLotes(lotes: Lote[]): Array<{ clave: string; etiqueta: string; lotes: Lote[] }> {
+  const grupos = new Map<string, Lote[]>();
+  for (const lote of lotes) {
+    const clave = `${lote.ejercicio}-${String(lote.mes).padStart(2, '0')}`;
+    const lista = grupos.get(clave) ?? [];
+    lista.push(lote);
+    grupos.set(clave, lista);
+  }
+  return [...grupos.entries()]
+    .sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))
+    .map(([clave, lista]) => {
+      const primero = lista[0];
+      return {
+        clave,
+        etiqueta: primero ? etiquetaPeriodo(primero.ejercicio, primero.mes) : clave,
+        lotes: lista,
+      };
+    });
+}
+
+/** El color del estado, y por qué es ese: ABIERTO es trabajo en curso (verde),
+ *  EN_REVISION es trabajo pendiente de una persona (ámbar) y CERRADO es
+ *  archivo (gris). Un estado que el backend agregue y este archivo no conozca
+ *  se muestra gris y con su texto crudo, no se esconde. */
+function colorEstadoLote(estado: string): string {
+  switch (estado) {
+    case 'ABIERTO': return 'bg-green-100 text-green-800';
+    case 'EN_REVISION': return 'bg-amber-100 text-amber-800';
+    case 'CERRADO': return 'bg-gray-100 text-gray-500';
+    default: return 'bg-gray-100 text-gray-500';
+  }
+}
+
+function etiquetaEstadoLote(estado: string): string {
+  switch (estado) {
+    case 'ABIERTO': return 'Abierto';
+    case 'EN_REVISION': return 'En revisión';
+    case 'CERRADO': return 'Cerrado';
+    default: return estado;
+  }
+}
+
+/** Un importe que llega como texto desde la API (`Decimal`). */
+function dineroLote(valor: string | null | undefined): string {
+  if (!valor) return '—';
+  const n = Number(valor);
+  if (Number.isNaN(n)) return valor;
+  return `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function PanelResultado({
   resultado,
   duracionClienteSegundos,
   corridaSegundos,
+  loteFolio,
 }: {
   resultado: ScanResultado;
   duracionClienteSegundos?: number | null;
   corridaSegundos?: number | null;
+  /** El folio del lote de esta corrida, elegido en la pantalla antes de
+   *  escanear. Es el folio LOCAL, no un campo de `ScanResultado`: la respuesta
+   *  del escaneo todavía no trae el lote, y mostrar el elegido es honesto
+   *  mientras el backend no lo devuelva. */
+  loteFolio?: string | null;
 }) {
   const { nuevos, actualizados, sin_cambios, duplicados, con_error, no_soportados,
     omitidos_por_tope, archivos_vistos, ilegibles = [], fotos_por_revisar = [],
@@ -544,6 +1132,11 @@ function PanelResultado({
   return (
     <Card className="mt-4">
       <h3 className="font-semibold text-gray-900 mb-2">Última pasada</h3>
+      {loteFolio && (
+        <p className="text-sm text-gray-700 mb-2">
+          Lote: <span className="font-mono font-semibold">{loteFolio}</span>
+        </p>
+      )}
       {duracion !== null && (
         <p className="text-sm text-gray-700 mb-2" data-testid="tiempo-total">
           ⏱ Tiempo total: <strong className="tabular-nums">{formatoDuracion(duracion)}</strong>

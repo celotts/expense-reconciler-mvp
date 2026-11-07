@@ -240,8 +240,14 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
   return { tono: 'bg-amber-100 text-amber-800', etiqueta: 'pendiente' };
 }
 
-/** El progreso de una corrida, con el feed de lo que ya se leyo. */
-export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida; totalPosible?: number }) {
+/** El progreso de una corrida, con el feed de lo que ya se leyo.
+ *
+ *  `loteFolio` es el folio del lote al que va esta corrida, cuando el operador
+ *  eligió uno antes de escanear. Es el folio LOCAL (el elegido en la
+ *  pantalla), no un campo de `ScanCorrida`: la respuesta del escaneo todavía
+ *  no trae el lote, y mostrar el elegido es honesto mientras el backend no lo
+ *  devuelva. `null` es "sin lote elegido", y ahí no se pinta nada. */
+export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: ScanCorrida; totalPosible?: number; loteFolio?: string | null }) {
   // La lista principal es de comprobantes UNICOS. Un duplicado copiaba el
   // importe y el encabezado del ticket ORIGINAL y en el feed se veia como un
   // segundo gasto pendiente, al lado del correcto. Por eso no es una fila
@@ -360,6 +366,11 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
           </div>
 
           <div className="flex items-center gap-4 text-xs text-gray-700">
+            {loteFolio && (
+              <span>
+                Lote <span className="font-mono font-semibold text-gray-900">{loteFolio}</span>
+              </span>
+            )}
             <span>
               <span className="font-semibold text-gray-900">{hechos}</span> leídos
             </span>
