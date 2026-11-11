@@ -38,6 +38,10 @@ export function Scan() {
   const [companyId, setCompanyId] = useState<string>('');
   const [config, setConfig] = useState<ScanConfig | null>(null);
   const [ocr, setOcr] = useState<ScanOcrEstado | null>(null);
+  /** Si la llamada de estado de OCR sigue en vuelo. Es lo que pinta el chip
+   *  "Revisando motores...": `ocr` en `null` no distingue "todavia no llego"
+   *  de "la llamada fallo", y el chip si tiene que distinguirlo. */
+  const [ocrCargando, setOcrCargando] = useState(true);
   const [stats, setStats] = useState<ScanStats | null>(null);
   const [archivos, setArchivos] = useState<ScanFile[]>([]);
   const [totalArchivos, setTotalArchivos] = useState(0);
@@ -108,12 +112,16 @@ export function Scan() {
     try {
       setCargando(true);
       setError(null);
-      // Config, OCR y stats van en paralelo y se reportan por separado, por la
-      // misma razon que en el muestreo: si uno falla y los otros no, mostrar una
-      // sola pantalla de error hides lo que si funciona.
-      const [c, o, s, f, r] = await Promise.allSettled([
+      // Config, stats, archivos y corridas van en paralelo y se reportan por
+      // separado, por la misma razon que en el muestreo: si uno falla y los
+      // otros no, mostrar una sola pantalla de error hides lo que si funciona.
+      // El estado de OCR NO va aqui: lo carga `cargarOcr` aparte. Antes iba en
+      // este mismo `Promise.allSettled` y el formulario no pintaba hasta que
+      // terminara la mas lenta, que era `GET /scan/ocr` construyendo EasyOCR
+      // (30-60 s la primera vez). El formulario solo necesita config, stats y
+      // archivos para pintar; los motores llegan despues, con su chip.
+      const [c, s, f, r] = await Promise.allSettled([
         ticketsApi.scanConfig(),
-        ticketsApi.scanOcr(),
         ticketsApi.scanStats(),
         ticketsApi.scanFiles({
           estado: filtro || undefined,
@@ -131,7 +139,6 @@ export function Scan() {
       if (c.status === 'fulfilled') {
         setArchivar(actual => (actual === null ? c.value.archivar_por_defecto : actual));
       }
-      setOcr(o.status === 'fulfilled' ? o.value : null);
       setStats(s.status === 'fulfilled' ? s.value : null);
       if (f.status === 'fulfilled') {
         setArchivos(f.value.archivos);
@@ -149,6 +156,30 @@ export function Scan() {
       setCargando(false);
     }
   }, [filtro, companyId, pagina]);
+
+  /** El estado de los motores de OCR, aparte de `cargar()`.
+   *
+   *  Va aparte porque es la llamada que antes frenaba el formulario: el
+   *  servidor la contesta en milisegundos (ya no construye EasyOCR en el GET)
+   *  y arranca el calentamiento en segundo plano, pero el formulario no tiene
+   *  por que esperarla para pintar. Si falla, `ocr` se queda en `null` y el
+   *  chip no se pinta: un error de estado no es un error del formulario.
+   *
+   *  Si EasyOCR sigue cargando, se vuelve a preguntar a los 5 s hasta que
+   *  llegue: es lo que mueve el chip de "cargando en segundo plano" a
+   *  "listo" sin que nadie tenga que recargar la pagina. El temporizador se
+   *  limpia si el componente se desmonta o si el estado deja de decir
+   *  `cargando`. */
+  const cargarOcr = useCallback(async () => {
+    try {
+      setOcrCargando(true);
+      setOcr(await ticketsApi.scanOcr());
+    } catch {
+      setOcr(null);
+    } finally {
+      setOcrCargando(false);
+    }
+  }, []);
 
   /** Carga los lotes de la empresa elegida (o de todas, si no hay ninguna).
    *
@@ -182,6 +213,12 @@ export function Scan() {
   useEffect(() => { cargarLotes(); }, [cargarLotes]);
 
   useEffect(() => { cargar(); }, [cargar]);
+  useEffect(() => { cargarOcr(); }, [cargarOcr]);
+  useEffect(() => {
+    if (ocr?.motores['easyocr']?.cargando !== true) return;
+    const t = setTimeout(() => { void cargarOcr(); }, 5000);
+    return () => clearTimeout(t);
+  }, [ocr, cargarOcr]);
   useEffect(() => { if (corrida) setPreparando(false); }, [corrida]);
   useEffect(() => { companiesApi.list().then(setCompanies).catch(() => setCompanies([])); }, []);
   // Si solo hay UNA empresa, preseleccionarla por defecto (no todas)
@@ -502,7 +539,10 @@ export function Scan() {
   // que conoce el servidor: es la que el operador acaba de ver correr.
   const corridaParaEncabezado = corrida ?? ultimaCorrida;
 
-  if (cargando && !config && !ocr) return <Loading message="Cargando el escáner..." />;
+  // La puerta es solo la config: es lo unico que el formulario necesita para
+  // pintar. El estado de OCR ya no frena la pantalla (llega aparte, con su
+  // chip), y los archivos y las stats llegan con el formulario o despues.
+  if (cargando && !config) return <Loading message="Cargando el escáner..." />;
 
   return (
     <div className="p-4 lg:p-8 max-w-7xl mx-auto">
@@ -527,6 +567,7 @@ export function Scan() {
       </div>
 
       {config && <PanelConfig config={config} />}
+      <ChipOcr ocr={ocr} cargando={ocrCargando} />
       {ocr && <PanelOcr ocr={ocr} />}
 
       {/* Lotes de digitalización.
@@ -966,16 +1007,60 @@ function PanelConfig({ config }: { config: ScanConfig }) {
   );
 }
 
+/** El chip de estado de los motores de OCR.
+ *
+ *  Es lo que se ve mientras los motores llegan: "Revisando motores..." y
+ *  luego "Tesseract listo • EasyOCR listo" o "EasyOCR cargando en segundo
+ *  plano…". Un motor que esta cargando no es un fallo y por eso no va al
+ *  panel amarillo de `PanelOcr`; va aqui, como espera. El chip solo se
+ *  esconde si la llamada de estado fallo (`ocr` en `null` y ya no cargando):
+ *  en ese caso no hay nada que decir del estado, y el formulario sigue
+ *  funcionando igual. */
+function ChipOcr({ ocr, cargando }: { ocr: ScanOcrEstado | null; cargando: boolean }) {
+  if (!ocr) {
+    if (!cargando) return null;
+    return (
+      <p className="text-sm text-gray-500 mb-4 flex items-center gap-2">
+        <span className="animate-spin inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full" />
+        Revisando motores…
+      </p>
+    );
+  }
+  const tesseract = ocr.motores['tesseract'];
+  const easyocr = ocr.motores['easyocr'];
+  const textoTesseract = tesseract?.disponible ? 'Tesseract listo' : 'Tesseract no disponible';
+  const textoEasy = !easyocr
+    ? 'EasyOCR sin datos'
+    : easyocr.disponible
+      ? 'EasyOCR listo'
+      : easyocr.cargando === true
+        ? 'EasyOCR cargando en segundo plano…'
+        : 'EasyOCR no instalado';
+  return (
+    <p className="text-sm text-gray-500 mb-4 flex items-center gap-2">
+      {easyocr?.cargando === true && (
+        <span className="animate-spin inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full" />
+      )}
+      {textoTesseract} • {textoEasy}
+    </p>
+  );
+}
+
 function PanelOcr({ ocr }: { ocr: ScanOcrEstado }) {
   // El tipo del valor se escribe porque `Object.entries` sobre un `Record`
   // devuelve `unknown` en TS 5 con `noUncheckedIndexedAccess`, y `m.disponible`
   // deja de compilar. Se declara la forma del valor, no se castea a mano.
-  const motores: Array<[string, { disponible: boolean; motivo: string | null }]> =
+  const motores: Array<[string, { disponible: boolean; motivo: string | null; cargando?: boolean }]> =
     Object.entries(ocr.motores);
   // El panel solo avisa cuando HAY un problema. Con todo funcionando, un cartel
   // verde de "OCR OK" en cada carga es ruido que entrena al ojo a ignorarlo, y
   // entonces el cartel rojo de verdad tampoco se lee.
-  const algunoFalla = !ocr.ocr_habilitado || motores.some(([, m]) => !m.disponible);
+  //
+  // Un motor con `cargando` en verdad NO es un problema: EasyOCR se carga en
+  // segundo plano al abrir el escaner, y mientras llega el chip ya lo dice.
+  // Si se contara como fallo, cada apertura mostraria el cartel amarillo
+  // durante el primer minuto, que es justo el ruido que este panel evita.
+  const algunoFalla = !ocr.ocr_habilitado || motores.some(([, m]) => !m.disponible && m.cargando !== true);
 
   if (!algunoFalla) return null;
 
@@ -986,7 +1071,7 @@ function PanelOcr({ ocr }: { ocr: ScanOcrEstado }) {
         {!ocr.ocr_habilitado && (
           <li>El OCR está apagado (<code>OCR_ENABLED=false</code>). Las fotos irán directo al modelo.</li>
         )}
-        {motores.filter(([, m]) => !m.disponible).map(([nombre, m]) => (
+        {motores.filter(([, m]) => !m.disponible && m.cargando !== true).map(([nombre, m]) => (
           <li key={nombre}>
             <span className="font-medium">{nombre}</span>: {m.motivo ?? 'no disponible'}
           </li>

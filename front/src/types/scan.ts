@@ -372,11 +372,26 @@ export interface ScanConfig {
  *
  *  Existe porque "OCR no funciona" y "OCR esta apagado" piden acciones
  *  opuestas, y un booleano las hace la misma. El backend lo dice con el motivo
- *  exacto, incluido como instalarlo. */
+ *  exacto, incluido como instalarlo.
+ *
+ *  `disponible` sigue significando "se puede usar AHORA, sin esperar". Los
+ *  tres campos opcionales son lo que distingue "no esta" de "esta llegando":
+ *  EasyOCR se carga en segundo plano al abrir el escaner, y mientras
+ *  `cargando` es verdad el motor no es un fallo, es una espera. Son opcionales
+ *  porque un servidor anterior a este cambio no los manda. */
 export interface ScanOcrEstado {
   ocr_habilitado: boolean;
   idioma: string;
-  motores: Record<string, { disponible: boolean; motivo: string | null }>;
+  motores: Record<
+    string,
+    {
+      disponible: boolean;
+      motivo: string | null;
+      instalado?: boolean;
+      cargado?: boolean;
+      cargando?: boolean;
+    }
+  >;
 }
 
 /**

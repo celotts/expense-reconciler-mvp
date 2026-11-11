@@ -83,6 +83,31 @@ python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 ```
 
+### Una base vieja NO se migra sola — `make migrar` después de cada `pull`
+
+**MEDIDO el 2026-11-06.** `POST /auth/login` devolvía 500 con
+`column users.company_id does not exist` porque el volumen de Postgres era anterior a
+la migración `0020_usuario_empresa.sql`.
+
+Tres reglas que se aprenden juntas:
+
+- **`db/init.sql` solo corre con el volumen vacío.** En una base existente no se
+  vuelve a ejecutar nunca; que el archivo ya tenga la columna no cambia nada.
+- **`make up` no migra.** Reconstruye imágenes y levanta contenedores. Si el `git pull`
+  trajo archivos nuevos en `db/migrations/`, hay que correr `make migrar` (o
+  `bash scripts/migrar.sh --estado` para ver qué falta). `make migrar` sin `MIGRAR_SI=1`
+  pregunta antes.
+- **El usuario y la base salen del entorno del contenedor.** `scripts/migrar.sh` y
+  `scripts/migraciones-registro.sh` fijaban `-U postgres` y esta base solo tiene el rol
+  `admin`: contestaban *"La base no respondió"* con el contenedor sano. Es el mismo
+  defecto que tenía el healthcheck. Ahora usan `$POSTGRES_USER` / `$POSTGRES_DB`.
+
+Y una cuarta, que es de diseño: **una migración no puede hacer `UPDATE` sobre una tabla
+append-only.** La 0020 rellenaba `ticket_documents.company_id` y el trigger de la 0009
+la rechazaba a propósito. El backfill se quitó; las filas viejas quedan con
+`company_id = NULL` y la política RLS fail-open las sigue mostrando. Ver
+`docs/known-issues.md` §45.
+
 > **`--import-mode=importlib` en `pytest.ini`, y por qué está.** Hay dos archivos
 > llamados `test_reporte_cierre.py`, uno en `unit/` y otro en `integration/`: los
 > dos nombres los fija `docs/contrato-producto.md` §5.3, así que no se pueden

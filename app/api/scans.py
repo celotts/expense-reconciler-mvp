@@ -79,7 +79,10 @@ from app.services.lote_service import ErrorLote, resolver_lote_corrida
 from app.services.scan_reset import FRASE_CONFIRMACION
 from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ai_client import disponibilidad as disponibilidad_ia
-from app.services.ocr import disponibilidad as disponibilidad_ocr
+from app.services.ocr import (
+    disponibilidad_ligera,
+    iniciar_calentamiento_easyocr,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -389,15 +392,28 @@ async def limpiar_base_de_datos(
 
 @router.get("/ocr")
 async def estado_del_ocr(usuario: UsuarioActual) -> dict:
-    """Que motores de OCR se pueden usar ahora mismo.
+    """Que motores de OCR se pueden usar ahora mismo, SIN esperar a cargarlos.
 
     Existe porque "OCR no funciona" y "OCR esta apagado" piden acciones
     opuestas, y verlas separadas evita la diagnostica de quince minutos. Cuando
     Tesseract no esta instalado, esto dice como instalarlo, en vez de dejar que
     cada foto falle con un error que hay que buscar en el log del servidor.
+
+    POR QUE ESTE GET ES LIGERO (apertura lenta del Scanner, 2026-11-07)
+    ===================================================================
+
+    Antes este endpoint llamaba a `disponibilidad()`, que CONSTRUYE el
+    `easyocr.Reader` (torch + ~100 MB de pesos, 30-60 s en CPU) dentro del
+    handler, y el front esperaba esa llamada antes de pintar el formulario:
+    abrir el Scanner tardaba un minuto la primera vez. Ahora responde con
+    `disponibilidad_ligera()`, que solo MIRA si EasyOCR esta instalado,
+    cargado o cargando, y arranca la carga en un hilo aparte: el formulario
+    pinta de inmediato y el Reader llega en segundo plano. La primera lectura
+    con EasyOCR sigue tardando 30-60 s, pero durante el escaneo, no al abrir.
     """
     del usuario  # La puerta la pone api_router; aqui el usuario no se usa.
-    return disponibilidad_ocr()
+    iniciar_calentamiento_easyocr()
+    return disponibilidad_ligera()
 
 
 @router.get("/ia")

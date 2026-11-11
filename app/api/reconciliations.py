@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.deps import Escribir, UsuarioActual, resolver_empresa
+from app.core.deps import AprobarOEscribir, Escribir, UsuarioActual, resolver_empresa
 from app.core.time import utcnow
 from app.models.accounting_mapping import AccountingMappingModel
 from app.models.bank_transaction import BankTransactionModel
@@ -470,7 +470,7 @@ async def update_reconciliation(
     reconciliation_id: UUID,
     reconciliacion_in: ReconciliationUpdate,
     usuario: UsuarioActual,
-    _: Escribir,
+    _: AprobarOEscribir,
     company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> ReconciliationModel:

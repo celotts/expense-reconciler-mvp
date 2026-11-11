@@ -2117,6 +2117,46 @@ y el log del 500) — **36 mutaciones, 36 mueren**.
 
 ---
 
+### 45. El login devolvía 500 y `make migrar` no podía arreglarlo — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-06.** `POST /api/v1/auth/login` respondía **500** con
+`column users.company_id does not exist`. La causa no era el login: era que la base
+nunca había recibido la migración `0020_usuario_empresa.sql`.
+
+Cuatro piezas, y las cuatro hay que verlas juntas:
+
+1. **El volumen se creó antes que la migración.** `schema_migrations` llegaba a
+   `0018`; la `0019` y la `0020` son del mismo día de los commits `14cb9eb` y
+   `bec7318`, posteriores a la creación del volumen.
+2. **`db/init.sql` no corre en una base existente.** Solo se ejecuta cuando Postgres
+   inicializa un directorio de datos vacío. Que el `init.sql` ya traiga la 0020 no
+   cambia nada en una base que ya existe.
+3. **`make migrar` estaba roto.** `scripts/migrar.sh` y `scripts/migraciones-registro.sh`
+   fijaban `-U postgres`, y esta base solo tiene el rol `admin`. El script contestaba
+   *"La base no respondió"* con el contenedor sano, porque el `psql` moría con
+   `FATAL: role "postgres" does not exist`. Es el mismo defecto que tenía el
+   healthcheck (ver `docker-compose.yml`): un rol repetido a mano en un segundo sitio.
+   Ahora los dos scripts lo sacan del entorno del contenedor (`$POSTGRES_USER` /
+   `$POSTGRES_DB`), que es la misma fuente que creó la base.
+4. **La 0020 tenía un backfill imposible.** Hacía `UPDATE ticket_documents` para
+   rellenar `company_id`, y el trigger append-only de la 0009 lo rechaza por diseño:
+
+   ```
+   ERROR: ticket_documents es append-only: un documento no se actualiza,
+   se agrega una version nueva ... Ticket 9cfd60bd-...
+   ```
+
+   Se quitó el backfill. Los documentos anteriores quedan con `company_id = NULL`,
+   que la política RLS fail-open sigue mostrando; los nuevos lo copian al guardarse.
+   Saltarlo con `DISABLE TRIGGER` sería exactamente lo que la regla prohíbe.
+
+**Lección:** un `make up` que reconstruye imágenes no migra, y una migración que nunca
+se aplicó no se nota hasta que el ORM consulta la columna. `make migrar --estado`
+tiene que decir **AL DÍA** después de cada `git pull` que añada un archivo en
+`db/migrations/`.
+
+---
+
 ## Arreglados en el pasado (no reabrir)
 - **El trigger de stock negativo contaba con el signo equivocado**, y la defensa no
   bloqueaba la salida que dejaba el inventario en negativo — punto 26.

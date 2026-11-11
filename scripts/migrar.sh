@@ -31,9 +31,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SERVICIO="postgres-reconciler"
-DB="expense_db"
-USUARIO="postgres"
-# El compose monta `./db` en `/docker-entrypoint-initdb.d` (docker-compose.yml:25).
+# El usuario y la base salen del ENTORNO DEL CONTENEDOR, nunca de un literal.
+# MEDIDO el 2026-11-06: aqui decia `USUARIO="postgres"` y esta base solo tiene
+# el rol `admin` (`environment: POSTGRES_USER: admin`). El script respondia
+# "La base no respondio" con el contenedor sano, porque `psql -U postgres`
+# moria con `FATAL: role "postgres" does not exist`. Es el mismo defecto que
+# tenia el healthcheck (ver docker-compose.yml): un rol repetido a mano en un
+# segundo sitio deja de coincidir el dia que alguien cambia `POSTGRES_USER`.
+#
+# `$$POSTGRES_USER` se expande DENTRO del contenedor, asi que lee el mismo
+# `environment:` que creo la base. Ver `sql()`.
+#
+# El compose monta `./db` en `/docker-entrypoint-initdb.d` (docker-compose.yml).
 # NO es `/db`. Usar la ruta equivocada da "No such file or directory" y parece
 # que las migraciones no existen.
 CONTENEDOR_DB="/docker-entrypoint-initdb.d/migrations"
@@ -45,7 +54,10 @@ case "${1:-}" in
   *)        CONFIRMAR=1 ;;
 esac
 
-sql() { docker compose exec -T "$SERVICIO" psql -U "$USUARIO" -d "$DB" -At -c "$1" < /dev/null 2>/dev/null; }
+# `sh -c '...' _ "$1"` pasa el SQL como $1 y deja que el shell DEL CONTENEDOR
+# expanda POSTGRES_USER/POSTGRES_DB. Asi el script no repite el rol ni el
+# nombre de la base en ningun sitio del host.
+sql() { docker compose exec -T "$SERVICIO" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "$1"' _ "$1" < /dev/null 2>/dev/null; }
 
 esta_levantada() {
   [ -n "$(sql "SELECT 1")" ]
@@ -126,8 +138,9 @@ aplicadas=0
 while read -r n <&3; do
   [ -n "$n" ] || continue
   echo "  aplicando $n..."
-  if ! docker compose exec -T "$SERVICIO" psql -U "$USUARIO" -d "$DB" \
-        -q -v ON_ERROR_STOP=1 -f "$CONTENEDOR_DB/$n" < /dev/null; then
+  if ! docker compose exec -T "$SERVICIO" \
+        sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q -v ON_ERROR_STOP=1 -f "$1"' \
+        _ "$CONTENEDOR_DB/$n" < /dev/null; then
     echo ""
     echo "  FALLO en $n. La base quedo a medio camino." >&2
     echo "  Corrigela a mano y vuelve a correr 'make migrar'." >&2

@@ -166,15 +166,38 @@ COMMENT ON COLUMN scan_events.company_id IS
 ALTER TABLE ticket_documents ADD COLUMN IF NOT EXISTS company_id UUID
     REFERENCES companies(id) ON DELETE SET NULL;
 
-UPDATE ticket_documents d
-    SET company_id = t.company_id
-    FROM tickets t
-    WHERE d.ticket_id = t.id AND d.company_id IS NULL;
+-- NO HAY BACKFILL, Y NO ES UN OLVIDO.
+--
+-- La version anterior de esta migracion traia:
+--
+--     UPDATE ticket_documents d SET company_id = t.company_id
+--         FROM tickets t WHERE d.ticket_id = t.id AND d.company_id IS NULL;
+--
+-- y **reventaba siempre** en una base con la 0009 aplicada:
+--
+--     ERROR: ticket_documents es append-only: un documento no se actualiza,
+--     se agrega una version nueva ... Ticket 9cfd60bd-...
+--
+-- El trigger `trg_ticket_documents_no_actualizar` esta ahi a proposito: un
+-- documento digitalizado es una foto de un papel y no se reescribe. Un
+-- backfill de la empresa es un `UPDATE` como cualquier otro, y el motor no
+-- distingue "rellenar una columna de tenant" de "cambiar el papel". Saltarlo
+-- con `ALTER TABLE ... DISABLE TRIGGER` seria justo lo que la regla prohibe.
+--
+-- Los documentos que ya existian quedan con `company_id = NULL`, y eso es
+-- correcto: la politica RLS es fail-open para NULL, asi que se siguen viendo.
+-- Las filas nuevas lo llevan puesto porque `guardar_documento` lo copia de
+-- `tickets.company_id` al escribirlas.
+--
+-- Medido el 2026-11-06: sin quitar este UPDATE, `make migrar` moria aqui y
+-- dejaba la base a medio camino (la 0019 y las secciones 1-4 de la 0020 ya
+-- aplicadas, la 0020 sin registrar). El `ALTER ... ADD COLUMN` de arriba y los
+-- demas son idempotentes, asi que volver a correrlo es seguro.
 
 CREATE INDEX IF NOT EXISTS ix_ticket_documents_company ON ticket_documents (company_id);
 
 COMMENT ON COLUMN ticket_documents.company_id IS
-    'Empresa del documento (P0-1). Copia de tickets.company_id al guardarlo.';
+    'Empresa del documento (P0-1). Copia de tickets.company_id al guardarlo. NULL en los documentos anteriores a la 0020: no se backfillea porque esta tabla es append-only.';
 
 
 -- ---------------------------------------------------------------------

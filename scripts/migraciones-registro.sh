@@ -47,11 +47,10 @@ if ! [[ "$NOMBRE" =~ $VALIDACION ]]; then
   exit 1
 fi
 
-docker compose exec -T postgres-reconciler psql \
-  -U postgres -d expense_db -q \
-  -v ON_ERROR_STOP=1 \
-  -c "CREATE TABLE IF NOT EXISTS schema_migrations (
-        nombre VARCHAR(255) PRIMARY KEY,
-        aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP)" \
-  -c "INSERT INTO schema_migrations (nombre) VALUES ('$NOMBRE')
-      ON CONFLICT (nombre) DO NOTHING"
+docker compose exec -T postgres-reconciler \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q -v ON_ERROR_STOP=1 \
+    -c "CREATE TABLE IF NOT EXISTS schema_migrations (
+          nombre VARCHAR(255) PRIMARY KEY,
+          aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP)" \
+    -c "INSERT INTO schema_migrations (nombre) VALUES ($1)
+        ON CONFLICT (nombre) DO NOTHING"' _ "'$NOMBRE'"

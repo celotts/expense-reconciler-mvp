@@ -12,6 +12,8 @@ Lo que estos tests demuestran, y por que existen:
   empresa explicita.
 - **Roles:** solo lectura no escribe (403); autorizar pide el permiso
   "aprobar" (403 para digitalizador).
+- **Revision:** revisar un ticket o registrar un veredicto de muestreo vale
+  "aprobar" o "escribir" (`AprobarOEscribir`); solo lectura recibe 403.
 - **P0-6:** `GET /tipos-gasto` ya no da 500: `UserModel` tiene `company_id` y
   el router esta registrado.
 - **Registro:** crea empresa + admin + trial de 30 dias en una transaccion.
@@ -293,6 +295,118 @@ class TestRoles:
         assert not puede(_U("aprobador"), "escribir")
         assert not puede(_U("digitalizador"), "aprobar")
         assert PERMISOS_POR_ROL["solo_lectura"] == {"leer"}
+
+
+class TestRevisionConRoles:
+    """Revisar es decidir Y corregir: vale "aprobar" o "escribir".
+
+    P0-1: con solo `Escribir`, el aprobador recibia 403 en su trabajo
+    principal. Con solo "aprobar", el digitalizador no podria revisar y los
+    tests viejos de la cola de revision moririan. La puerta es
+    `AprobarOEscribir`: cualquiera de los dos permisos abre; el de solo
+    lectura no tiene ninguno y sigue en 403.
+    """
+
+    async def _roto(self, db_session, empresa) -> TicketModel:
+        ticket = TicketModel(
+            company_id=empresa.id,
+            provider_name="Unknown Provider",
+            total_amount=Decimal("0.00"),
+            tax_amount=Decimal("0.00"),
+            expense_date=date(2026, 10, 6),
+            extraction_status="PENDIENTE",
+            source_type="image",
+        )
+        db_session.add(ticket)
+        await db_session.commit()
+        await db_session.refresh(ticket)
+        return ticket
+
+    async def _autoaprobado(self, db_session, empresa) -> TicketModel:
+        ticket = TicketModel(
+            company_id=empresa.id,
+            provider_name="WALMART",
+            total_amount=Decimal("100.00"),
+            tax_amount=Decimal("16.00"),
+            expense_date=date(2026, 10, 6),
+            extraction_status="AUTO_APROBADO",
+            confidence=0.95,
+            confidence_source="llm",
+            source_type="image",
+            source_hash=uuid4().hex,
+            spot_check_status="PENDIENTE",
+        )
+        db_session.add(ticket)
+        await db_session.commit()
+        await db_session.refresh(ticket)
+        return ticket
+
+    async def _revisar(self, cliente, ticket_id):
+        return await cliente.patch(
+            f"/api/v1/tickets/{ticket_id}/review",
+            json={
+                "action": "approve",
+                "provider_name": "OXXO",
+                "total_amount": "150.00",
+                "tax_amount": "20.69",
+            },
+        )
+
+    async def test_aprobador_si_puede_revisar(
+        self, cliente_como, db_session, test_company
+    ):
+        aprobador = await _usuario_en(db_session, test_company.id, "aprobador")
+        cliente = await cliente_como(aprobador)
+        ticket = await self._roto(db_session, test_company)
+        r = await self._revisar(cliente, ticket.id)
+        assert r.status_code == 200, r.text
+        assert r.json()["extraction_status"] == "APROBADO"
+
+    async def test_digitalizador_tambien_puede_revisar(
+        self, cliente_como, db_session, test_company
+    ):
+        # El digitalizador corrige la lectura mientras revisa; por eso vale
+        # "escribir". Los tests viejos de la cola de revision usan este rol.
+        digitalizador = await _usuario_en(
+            db_session, test_company.id, "digitalizador"
+        )
+        cliente = await cliente_como(digitalizador)
+        ticket = await self._roto(db_session, test_company)
+        r = await self._revisar(cliente, ticket.id)
+        assert r.status_code == 200, r.text
+
+    async def test_solo_lectura_no_puede_revisar(
+        self, cliente_como, db_session, test_company
+    ):
+        lector = await _usuario_en(db_session, test_company.id, "solo_lectura")
+        cliente = await cliente_como(lector)
+        ticket = await self._roto(db_session, test_company)
+        r = await self._revisar(cliente, ticket.id)
+        assert r.status_code == 403, r.text
+
+    async def test_aprobador_si_puede_registrar_veredicto(
+        self, cliente_como, db_session, test_company
+    ):
+        aprobador = await _usuario_en(db_session, test_company.id, "aprobador")
+        cliente = await cliente_como(aprobador)
+        ticket = await self._autoaprobado(db_session, test_company)
+        r = await cliente.patch(
+            f"/api/v1/tickets/{ticket.id}/spot-check",
+            json={"correct": True},
+        )
+        assert r.status_code == 200, r.text
+
+    async def test_solo_lectura_no_puede_registrar_veredicto(
+        self, cliente_como, db_session, test_company
+    ):
+        lector = await _usuario_en(db_session, test_company.id, "solo_lectura")
+        cliente = await cliente_como(lector)
+        ticket = await self._autoaprobado(db_session, test_company)
+        r = await cliente.patch(
+            f"/api/v1/tickets/{ticket.id}/spot-check",
+            json={"correct": True},
+        )
+        assert r.status_code == 403, r.text
 
 
 class TestP0SeisTiposGasto:

@@ -1,0 +1,53 @@
+Actúa como arquitecto senior y desarrollador experto en FastAPI, PostgreSQL, SQLAlchemy 2.0 async, Pydantic v2 y React + TypeScript, conocedor de procesos administrativos mexicanos, CFDI/SAT, control de gasto y cadena de custodia.
+
+Proyecto: expense-reconciler-mvp en /Users/carloslott/develop/python/expense-reconciler-mvp, rama perf/scan-vision-solo-si-ocr-falla, base develop, sin commit ni push sin autorización explícita. Stack actual: FastAPI Python 3.11+, PostgreSQL 16 + pgvector, Docker Compose, Ollama local qwen2.5:3b / qwen2.5vl:3b, Tesseract, front React + Vite + TS + Tailwind.
+
+Objetivo: convertir un lector de tickets con custodia en un sistema que controla el gasto antes, durante y después, sin romper lo que ya funciona: captura + confidence_gate + muestreo 5% + veredicto Wilson, hash, append-only, auditoría, conciliación ticket-banco, cierre mensual con PDF firmado SHA-256, inventario, autorización por ticket, precisión meta 85% y tiempo <1 min/ticket. No bajar MAX_LADO_VISION de 1000, no quitar confidence_gate ni muestreo.
+
+Orden de ejecución, no hacer P1 ni P2 antes de P0:
+
+FASE P0-1 - Multi-empresa y roles de verdad + verificar P0-6:
+- Añade company_id a UserModel y a todas las tablas de cliente: tickets, compras, conciliaciones, movimientos, scan_files, scan_events, ticket_documents, cierres, productos, tipos_gasto.
+- company_id siempre desde el token JWT, nunca desde query/body/form del cliente. Roles: admin, contador, aprobador, digitalizador, solo lectura, con permisos por endpoint.
+- Filtro centralizado desde el usuario autenticado + Row Level Security en Postgres como segunda cerradura.
+- Test obligatorio de fuga: usuario A pide ticket de B por ID debe dar 404, no 403 que confirme existencia.
+- Verifica el bug: tipos_gasto.py usa usuario.company_id pero UserModel no lo define. Corrige con llamada real.
+- Registro auto: al registrarse se crea company + admin + trial 30 días. Empresa DEMO con datos semilla y reset nocturno.
+- En companies: plan, trial_hasta, tickets_usados_este_mes.
+- Aceptación: ruff limpio, pytest pasa, test de fuga pasa, usuario sin empresa no ve nada.
+
+FASE P0-2 - CFDI como documento fiscal:
+- Persiste UUID fiscal, serie, folio, moneda, tipo_cambio real, forma_pago, metodo_pago, en tickets y en exportación CONTPAQI. No inventes tipo de cambio.
+- Valida vigente/cancelado contra SAT, marca deducible/no deducible.
+- No se guarda un CFDI sin UUID, no se duplica por UUID.
+- Aceptación: CFDI de prueba con UUID se guarda completo y se exporta completo.
+
+FASE P0-5 - Políticas de gasto ejecutables:
+- Topes por concepto y por centro de costo, escalamiento por monto y rol, centro de costo obligatorio.
+- Si excede tope, va a aprobación, no se auto-aprueba. Motivo obligatorio para excepción, con auditoría.
+- Aceptación: gasto sobre tope no se aprueba solo, gasto bajo tope sí, con log.
+
+FASE P0-3 - 3-way match:
+- Entidades: requisición, orden de compra, recepción, proveedor. Ticket/factura se compara contra OC + recepción: cantidad, precio, total.
+- Si no cuadra, queda en discrepancia, no se paga.
+- Aceptación: OC 10 x $100, recepción 10, factura 10 x $100 = match; factura 11 o $110 = discrepancia.
+
+FASE P0-4 - Proveedores como catálogo:
+- Tabla proveedores con RFC único, nombre normalizado, alias. VendorNormalizer activo.
+- "Oxxo", "OXXO", "OXXO EXPRESS" = 1 proveedor.
+- Aceptación: al crear ticket con variante de nombre, se asigna al mismo proveedor.
+
+FASE P1 - Retención:
+- Anticipos, viáticos y reembolsos con saldo por persona y empleado como entidad.
+- Presupuesto por centro de costo con alerta al 80%.
+- Tarjetas corporativas y conexión bancaria automática, distingue tarjeta vs transferencia, no solo CSV.
+- Notificaciones y cola de aprobadores en dashboard.
+- Cierre de periodo con bloqueo y reapertura motivada con auditoría. Un ticket tardío no cambia un reporte firmado sin bloquear.
+- Aceptación por cada módulo con test.
+
+FASE P2 - Después, no antes:
+- Captura móvil + multi-archivo, HEIC/TIFF, multi-moneda real, detección de anomalías, webhooks salientes, exports ERP, respaldo automático con retención SAT 5 años y restore probado.
+
+Qué NO construir todavía: una app por cliente, chatbot por moda, ningún P2 antes de P0.
+
+Entrega por fase: archivos tocados, qué cambió, riesgos, comandos exactos para validar en Mac en terminal limpia: ruff check, PYTHONPATH=. pytest -q, cd front && npx tsc --noEmit. Sin commit ni push. Sin tocar SECRET_KEY ni .env. Sin datos falsos.

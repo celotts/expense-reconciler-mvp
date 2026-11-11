@@ -222,6 +222,15 @@ async def exige_escritura(usuario: UsuarioActual) -> UserModel:
 Escribir = Annotated[UserModel, Depends(exige_escritura)]
 
 
+# P0-1: revisar un ticket, registrar un veredicto de muestreo o corregir el
+# veredicto de una conciliacion es decidir Y corregir datos a la vez. Vale
+# tener "aprobar" (el aprobador y el contador deciden) o "escribir" (el
+# digitalizador corrige la lectura mientras revisa). El de solo lectura no
+# tiene ninguno de los dos, asi que sigue en 403. Las aprobaciones puras,
+# como autorizar un tipo de gasto, siguen pidiendo solo "aprobar".
+AprobarOEscribir = Annotated[UserModel, Depends(exige_rol("aprobar", "escribir"))]
+
+
 def empresa_del_usuario(usuario: UserModel) -> UUID | None:
     """La empresa del usuario, o None si no tiene ninguna asignada."""
     return usuario.company_id

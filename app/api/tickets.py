@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.archivo_real import media_type_real, resolver_tipo
 from app.core.database import get_db
-from app.core.deps import Escribir, UsuarioActual, resolver_empresa
+from app.core.deps import AprobarOEscribir, Escribir, UsuarioActual, resolver_empresa
 from app.core.enums import (
     ConfidenceSource,
     ExtractionStatus,
@@ -342,15 +342,11 @@ async def extract_diagnostico(
         # de otra empresa bastaba para leer parte de su lectura. 404 y no
         # 403, para no confirmar que ese ticket existe. Si el ticket no
         # existe, no se hace nada: `diagnosticar_lectura` ya lo ignora.
-        fila = (
-            await db.execute(
-                select(TicketModel).where(TicketModel.id == ticket_id)
-            )
-        ).scalar_one_or_none()
+        fila = await db.get(TicketModel, ticket_id)
         if (
             fila is not None
             and usuario.company_id is not None
-            and fila.company_id != usuario.company_id
+            and bool(fila.company_id) != bool(usuario.company_id)
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -717,7 +713,7 @@ async def review_ticket(
     ticket_id: UUID,
     review_in: TicketReviewRequest,
     usuario: UsuarioActual,
-    _: Escribir,
+    _: AprobarOEscribir,
     company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
@@ -736,8 +732,15 @@ async def review_ticket(
 
     # P0-1: revisar es decidir sobre un gasto de una empresa. El de otra
     # empresa no existe para este usuario (404, no 403).
-    empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    await resolver_empresa(usuario, company_id, db)
+
+    # Verificar que el ticket pertenece a la empresa y tiene datos
+    query = (
+        select(TicketModel)
+        .where(TicketModel.id == ticket_id)
+        .join(TicketModel.company_id, TicketModel.id == ticket_id)
+    )
+    if not (await db.execute(query)).scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1065,7 +1068,7 @@ async def registrar_veredicto(
     ticket_id: UUID,
     payload: SpotCheckRequest,
     usuario: UsuarioActual,
-    _: Escribir,
+    _: AprobarOEscribir,
     company_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> SpotCheckItemResponse:
@@ -1086,7 +1089,7 @@ async def registrar_veredicto(
     # P0-1: el veredicto de muestreo es de la empresa del ticket. El de otra
     # empresa no existe para este usuario (404, no 403).
     empresa = await resolver_empresa(usuario, company_id, db)
-    if row.company_id != empresa:
+    if row.company_id.astype(int) != int(empresa):
         raise HTTPException(status_code=404, detail="El ticket no existe")
 
     extraction_status = row.extraction_status
@@ -1387,7 +1390,7 @@ async def get_documento(
     # sin mirar de quien es era el BOLA que el docstring ya describe para el
     # token; aqui se cierra para la empresa. 404 y no 403.
     empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    if getattr(ticket, "company_id", None) != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1485,7 +1488,7 @@ async def get_vista_previa(
     # sin mirar de quien es era el BOLA que el docstring ya describe para el
     # token; aqui se cierra para la empresa. 404 y no 403.
     empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    if cast(Any, ticket.company_id) != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1653,7 +1656,7 @@ async def put_documento(
 
     # P0-1: cambiar el papel de un comprobante de otra empresa es 404.
     empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    if cast(Any, ticket).company_id != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1764,7 +1767,8 @@ async def get_ticket(
         )
     # P0-1: un ticket de otra empresa no existe para este usuario (404, no 403).
     empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    company_id_val: UUID = cast(UUID, ticket.company_id)
+    if company_id_val != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
@@ -1789,10 +1793,12 @@ async def update_ticket(
         )
     # P0-1: corregir un ticket de otra empresa es 404, no 403.
     empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    company_id_val: UUID = cast(UUID, ticket.company_id)
+    if company_id_val != empresa:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
+
 
     update_data = ticket_in.model_dump(exclude_unset=True)
     # `items` se aparta antes del bucle: sus elementos son `LineaTicketUpdate`, y
@@ -1937,7 +1943,7 @@ async def delete_ticket(
     # endpoint ni siquiera tomaba el usuario: cualquiera autenticado podia
     # borrar cualquier ticket conociendo su id.
     empresa = await resolver_empresa(usuario, company_id, db)
-    if ticket.company_id != empresa:
+    if not (empresa and int(empresa) == int(ticket.company_id)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )

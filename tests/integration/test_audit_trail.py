@@ -11,7 +11,6 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,11 +21,18 @@ from app.models.user import UserModel
 P = "/api/v1"
 
 
-async def _usuario(db_session: AsyncSession, nombre: str) -> tuple[UserModel, str]:
+async def _usuario(
+    db_session: AsyncSession, nombre: str, company_id
+) -> tuple[UserModel, str]:
+    # P0-1: el usuario pertenece a la empresa del test. Sin empresa,
+    # `resolver_empresa` le daria 404 en cada revision y el test moriria
+    # sin revisar nada. El perfil queda en el valor por defecto
+    # (digitalizador), que si puede revisar: ver `AprobarOEscribir`.
     usuario = UserModel(
         email=f"{nombre}{uuid4().hex[:6]}@empresa.mx",
         nombre=nombre,
         password_hash=hashear_contrasena("contrasena-larga"),
+        company_id=company_id,
     )
     db_session.add(usuario)
     await db_session.commit()
@@ -80,7 +86,7 @@ class TestLaRevisionDiceQuien:
     async def test_quien_aprobo_es_el_dueño_del_token(
         self, async_client_sin_autenticar, db_session, test_company
     ):
-        (_, token) = await _usuario(db_session, "ana")
+        (_, token) = await _usuario(db_session, "ana", test_company.id)
         ticket = await _ticket_para_aprobar(db_session, test_company.id)
 
         respuesta = await async_client_sin_autenticar.patch(
@@ -108,8 +114,8 @@ class TestLaRevisionDiceQuien:
         que. Con el token, cada una deja su correo y el historico responde a
         "quien rechazo esto"."""
 
-        (_, token_ana) = await _usuario(db_session, "ana")
-        (_, token_beto) = await _usuario(db_session, "beto")
+        (_, token_ana) = await _usuario(db_session, "ana", test_company.id)
+        (_, token_beto) = await _usuario(db_session, "beto", test_company.id)
 
         primero = await _ticket_para_aprobar(db_session, test_company.id)
         segundo = await _ticket_para_aprobar(db_session, test_company.id)
@@ -152,7 +158,7 @@ class TestElMuestreoDiceQuien:
     async def test_quien_verifico_es_el_dueño_del_token(
         self, async_client_sin_autenticar, db_session, test_company
     ):
-        (_, token) = await _usuario(db_session, "ana")
+        (_, token) = await _usuario(db_session, "ana", test_company.id)
         ticket = await _ticket_muestreado(db_session, test_company.id)
 
         respuesta = await async_client_sin_autenticar.patch(
@@ -191,8 +197,8 @@ class TestElMuestreoDiceQuien:
         el promedio no tiene dueño y cuando sale mal no hay a quien preguntarle.
         """
 
-        (_, token_ana) = await _usuario(db_session, "ana")
-        (_, token_beto) = await _usuario(db_session, "beto")
+        (_, token_ana) = await _usuario(db_session, "ana", test_company.id)
+        (_, token_beto) = await _usuario(db_session, "beto", test_company.id)
 
         for token, correcto in ((token_ana, True), (token_beto, False)):
             ticket = await _ticket_muestreado(db_session, test_company.id)

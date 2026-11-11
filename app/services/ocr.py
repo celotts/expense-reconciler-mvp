@@ -41,6 +41,7 @@ tienes Tesseract", no para no poder contestar.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import threading
 from dataclasses import dataclass
@@ -1443,11 +1444,240 @@ def _leer_easyocr(datos: bytes) -> ResultadoOCR:
     )
 
 
+# ---------------------------------------------------------------------------
+# Calentamiento de EasyOCR en segundo plano
+# ---------------------------------------------------------------------------
+#
+# POR QUE EXISTE
+# ==============
+#
+# Abrir la pantalla del Scanner tardaba 30-60 s la primera vez porque
+# `GET /scan/ocr` construia el `easyocr.Reader` dentro del handler: torch mas
+# ~100 MB de pesos, en CPU, en el hilo que contesta la peticion. El front
+# esperaba esa llamada junto con las otras antes de pintar el formulario, asi
+# que la espera se veia como "la pagina no abre".
+#
+# La separacion es esta: PREGUNTAR si EasyOCR esta listo no puede costar lo
+# mismo que CARGARLO. `disponibilidad_ligera()` responde sin construir nada
+# (solo mira si el paquete existe y si el Reader ya esta en cache), y la carga
+# pasa a un hilo aparte que arranca con ese mismo GET. La primera lectura con
+# EasyOCR sigue tardando 30-60 s —eso no se puede quitar—, pero ahora ese
+# tiempo cae durante el escaneo, no al abrir la pantalla, y mientras tanto
+# Tesseract (el motor de serie) ya esta leyendo.
+#
+# POR QUE UN HILO Y NO `asyncio.create_task`
+# ==========================================
+#
+# Construir el Reader es trabajo de CPU que bloquea: en una corrutina
+# bloquearia el bucle de eventos igual que antes. En un hilo daemon el bucle
+# sigue contestando, y el daemon no frena el apagado del proceso si la carga
+# sigue a medias.
+#
+# POR QUE NO HAY DOBLE CONSTRUCCION
+# =================================
+#
+# Si un escaneo pide EasyOCR mientras el calentamiento va a medias, los dos
+# llegan a `_motor_easyocr`, que construye bajo `_CANDADO`: el segundo espera
+# al primero y recibe la instancia ya cacheada. El calentamiento nunca
+# construye un segundo Reader.
+#
+# Estado del calentamiento: si hay un hilo cargando el Reader, y el ultimo
+# error si fallo. El error se guarda y no se propaga: un calentamiento que
+# falla no puede tumbar ni un GET ni un arranque; el proximo GET lo reintenta.
+_CALENTAMIENTO_EASYOCR: dict[str, object] = {"en_curso": False, "error": None}
+_CANDADO_CALENTAMIENTO = threading.Lock()
+
+
+def _calentar_easyocr() -> None:
+    """Construye el Reader en este hilo; el fallo queda registrado, no se propaga."""
+    try:
+        _motor_easyocr()
+    except Exception as exc:  # noqa: BLE001 — el calentamiento nunca puede tumbar nada
+        with _CANDADO_CALENTAMIENTO:
+            _CALENTAMIENTO_EASYOCR["error"] = str(exc)
+        logger.warning("calentamiento de EasyOCR fallo: %s", exc)
+    finally:
+        with _CANDADO_CALENTAMIENTO:
+            _CALENTAMIENTO_EASYOCR["en_curso"] = False
+
+
+def iniciar_calentamiento_easyocr() -> None:
+    """Arranca la carga de EasyOCR en segundo plano, una sola vez por proceso.
+
+    No hace nada si el Reader ya esta en cache o si ya hay un hilo
+    cargandolo: cada `GET /scan/ocr` lo llama, y sin este guarda cada visita
+    a la pantalla lanzaria un hilo mas.
+    """
+    with _CANDADO_CALENTAMIENTO:
+        if "easyocr" in _CACHES or _CALENTAMIENTO_EASYOCR["en_curso"]:
+            return
+        _CALENTAMIENTO_EASYOCR["en_curso"] = True
+        _CALENTAMIENTO_EASYOCR["error"] = None
+    threading.Thread(
+        target=_calentar_easyocr, name="calentamiento-easyocr", daemon=True
+    ).start()
+
+
+def _estado_easyocr_ligero() -> dict[str, object]:
+    """EasyOCR sin construirlo: instalado, cargado o cargando.
+
+    `disponible` sigue significando "se puede usar AHORA, sin esperar": solo
+    es verdad cuando el Reader ya esta en cache. Mientras carga, el front
+    distingue el caso por `cargando` y no lo trata como un fallo — un motor
+    que esta llegando no es un motor roto.
+    """
+    with _CANDADO_CALENTAMIENTO:
+        cargando = bool(_CALENTAMIENTO_EASYOCR["en_curso"])
+        error = _CALENTAMIENTO_EASYOCR["error"]
+    if "easyocr" in _CACHES:
+        return {
+            "disponible": True,
+            "motivo": None,
+            "instalado": True,
+            "cargado": True,
+            "cargando": False,
+        }
+    # `find_spec` no importa el paquete: solo pregunta si existe. Importar
+    # `easyocr` aqui arrastraria torch a un GET que tiene que contestar en
+    # milisegundos, que es justo lo que se esta quitando.
+    instalado = importlib.util.find_spec("easyocr") is not None
+    if not instalado:
+        return {
+            "disponible": False,
+            "motivo": (
+                "easyocr no esta instalado. Agrega 'easyocr>=1.7.2' a "
+                "requirements.txt. La primera vez descarga ~100 MB de pesos."
+            ),
+            "instalado": False,
+            "cargado": False,
+            "cargando": False,
+        }
+    if cargando:
+        return {
+            "disponible": False,
+            "motivo": (
+                "EasyOCR se esta cargando en segundo plano; la primera "
+                "lectura con este motor espera a que termine."
+            ),
+            "instalado": True,
+            "cargado": False,
+            "cargando": True,
+        }
+    if isinstance(error, str) and error:
+        return {
+            "disponible": False,
+            "motivo": (
+                "el calentamiento de EasyOCR fallo: "
+                f"{error}. Se reintentara al abrir el escaner."
+            ),
+            "instalado": True,
+            "cargado": False,
+            "cargando": False,
+        }
+    return {
+        "disponible": False,
+        "motivo": (
+            "EasyOCR instalado pero aun no cargado; se carga en segundo "
+            "plano al abrir el escaner."
+        ),
+        "instalado": True,
+        "cargado": False,
+        "cargando": False,
+    }
+
+
+def _estado_opencv() -> dict[str, object]:
+    """OpenCV, aparte porque no es un motor de lectura.
+
+    No produce texto, es un preprocesado que hace MAS legible lo que el motor
+    lee. Meterlo en `motores` diria "easyocr no esta instalado" al lado de
+    "opencv no esta instalado", que son dos cosas de distinta gravedad —la
+    primera es no poder leer, la segunda es leer igual que antes—. Va aparte
+    por eso, y va en la respuesta aunque no este instalado, que es justo el
+    punto: el operador tiene que poder PREGUNTAR por que su foto se lee igual
+    que hace seis meses, en vez de deducirlo de un numero de exactitud que no
+    se movio.
+    """
+    _cv2_modulo = _cv2()
+    if _cv2_modulo is None:
+        return {
+            "disponible": False,
+            "motivo": (
+                "opencv no esta instalado. Agrega 'opencv-python-headless' a "
+                "requirements.txt. Es OPCIONAL: sin el, el OCR lee igual que "
+                "antes, pero sin la binarizacion adaptativa que quita sombras."
+            ),
+            "version": None,
+        }
+    return {
+        "disponible": True,
+        "motivo": None,
+        "version": getattr(_cv2_modulo, "__version__", None),
+    }
+
+
+def disponibilidad_ligera() -> dict[str, object]:
+    """Que motores se pueden usar, SIN construir ninguno.
+
+    Es la respuesta de `GET /scan/ocr`: un GET tiene que contestar en
+    milisegundos, y construir el `easyocr.Reader` cuesta 30-60 s. Tesseract
+    se comprueba igual que siempre —importar `pytesseract` y preguntar la
+    version es barato— y EasyOCR solo se MIRA (`_estado_easyocr_ligero`):
+    instalado, cargado o cargando. La carga la arranca el endpoint en un hilo
+    aparte (`iniciar_calentamiento_easyocr`).
+
+    `disponibilidad()` sigue existiendo para quien de verdad necesita saber si
+    el motor CONSTRUIDO funciona; no se usa en ningun GET.
+    """
+    motores: dict[str, dict[str, object]] = {}
+    try:
+        _motor_tesseract()
+    except OCRNoDisponible as exc:
+        motores["tesseract"] = {
+            "disponible": False,
+            "motivo": str(exc),
+            "instalado": importlib.util.find_spec("pytesseract") is not None,
+            "cargado": False,
+            "cargando": False,
+        }
+    except Exception as exc:  # pragma: no cover - solo motores exoticos
+        motores["tesseract"] = {
+            "disponible": False,
+            "motivo": f"fallo inesperado al cargar el motor: {exc}",
+            "instalado": importlib.util.find_spec("pytesseract") is not None,
+            "cargado": False,
+            "cargando": False,
+        }
+    else:
+        motores["tesseract"] = {
+            "disponible": True,
+            "motivo": None,
+            "instalado": True,
+            "cargado": True,
+            "cargando": False,
+        }
+    motores["easyocr"] = _estado_easyocr_ligero()
+
+    return {
+        "ocr_habilitado": settings.OCR_ENABLED,
+        "idioma": settings.OCR_IDIOMA,
+        "psm": settings.OCR_PSM,
+        "oem": OEM_TESSERACT,
+        "motores": motores,
+        "opencv": _estado_opencv(),
+    }
+
+
 def disponibilidad() -> dict[str, object]:
     """Que motores se pueden usar ahora mismo, para el endpoint de estado.
 
     Se responde con esto y no con un booleano porque "OCR no funciona" y "OCR
     esta apagado" piden acciones opuestas, y un booleano las hace la misma.
+
+    OJO: esta funcion CONSTRUYE los motores, incluido el `easyocr.Reader`
+    (30-60 s la primera vez). No se llama desde ningun GET que tenga que
+    contestar rapido: `GET /scan/ocr` usa `disponibilidad_ligera()` y calienta
+    EasyOCR en segundo plano.
     """
     motores: dict[str, dict[str, object]] = {}
     for nombre in ("tesseract", "easyocr"):
@@ -1463,38 +1693,11 @@ def disponibilidad() -> dict[str, object]:
         else:
             motores[nombre] = {"disponible": True, "motivo": None}
 
-    # OpenCV NO va en `motores` porque no es un motor de lectura: no produce
-    # texto, es un preprocesado que hace MAS legible lo que el motor lee. Meterlo
-    # en la misma lista diria "easyocr no esta instalado" al lado de "opencv no
-    # esta instalado", que son dos cosas de distinta gravedad —la primera es no
-    # poder leer, la segunda es leer igual que antes—. Va aparte por eso.
-    #
-    # Y va en la respuesta aunque no este instalado, que es justo el punto: el
-    # operador tiene que poder PREGUNTAR por que su foto se lee igual que hace
-    # seis meses, en vez de deducirlo de un numero de exactitud que no se movio.
-    _cv2_modulo = _cv2()
-    if _cv2_modulo is None:
-        opencv = {
-            "disponible": False,
-            "motivo": (
-                "opencv no esta instalado. Agrega 'opencv-python-headless' a "
-                "requirements.txt. Es OPCIONAL: sin el, el OCR lee igual que "
-                "antes, pero sin la binarizacion adaptativa que quita sombras."
-            ),
-            "version": None,
-        }
-    else:
-        opencv = {
-            "disponible": True,
-            "motivo": None,
-            "version": getattr(_cv2_modulo, "__version__", None),
-        }
-
     return {
         "ocr_habilitado": settings.OCR_ENABLED,
         "idioma": settings.OCR_IDIOMA,
         "psm": settings.OCR_PSM,
         "oem": OEM_TESSERACT,
         "motores": motores,
-        "opencv": opencv,
+        "opencv": _estado_opencv(),
     }

@@ -22,7 +22,7 @@ es la evidencia.
 
 Una cadena de custodia para el cierre mensual, corriendo **privada y local**:
 
-```
+```markdown
 archivo → hash → lectura → confianza → muestra del 5% → veredicto firmado → informe
 ```
 
@@ -37,8 +37,8 @@ archivo → hash → lectura → confianza → muestra del 5% → veredicto firm
 Es la parte del mensaje que más cuesta escribir y la que más lo distingue. Un competidor con una
 API de visión no puede replicarla sin reconstruirla, porque no es código: es postura.
 
-| El producto SÍ dice | El producto NO dice |
-|---|---|
+| El producto SÍ diga | El producto NO decía |
+| :-- | :-- |
 | "El 5% de las lecturas automáticas se verificó a mano" | "Leemos el 96% de los comprobantes" |
 | "El intervalo de esta vía es [0.74, 0.99]" | "La exactitud es 96%" |
 | "No hay evidencia suficiente para afirmarlo" | "La exactitud es 0%" |
@@ -97,7 +97,7 @@ posponer. Ninguna cantidad de trabajo sustituye esa respuesta.
 
 ## Estructura del Proyecto
 
-```
+```markdown
 expense-reconciler-mvp/
 ├── app/
 │   ├── main.py                 # FastAPI app + routers
@@ -150,6 +150,7 @@ expense-reconciler-mvp/
 ## Quick Start
 
 ### Con Docker (Recomendado)
+
 ```bash
 make up
 ```
@@ -160,10 +161,12 @@ imagen anterior aunque `requirements.txt` haya cambiado, y la API arranca con im
 Otros objetivos: `make logs`, `make ps`, `make stats` (RAM/CPU vs cuota), `make disk`,
 `make prune` (limpia imágenes/cache sin tocar datos), `make down`, `make clean` (⚠️ borra volúmenes).
 
-La API estará en: `http://localhost:8000`
-- Swagger UI: `http://localhost:8000/docs`
-- Health: `http://localhost:8000/health`
-- Frontend: `http://localhost:3000`
+La API estará en: http://localhost:8000
+```bash
+Swagger UI: http://localhost:8000/docs  # Swagger UI
+Health: http://localhost:8000/health
+Frontend: http://localhost:3000
+```
 
 ### Recursos en una laptop
 
@@ -186,6 +189,8 @@ API queda en **1.86 GB** en vez de 6.76 GB.
 
 **Modelos de Ollama** (ligeros a propósito, y por qué):
 
+
+```bash
 | Modelo | Tamaño | Rol |
 |---|---|---|
 | `qwen2.5:3b` | 1.9 GB | Texto: extracción de datos de facturas |

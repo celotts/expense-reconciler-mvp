@@ -1,0 +1,32 @@
+{
+  "models": [
+    {
+      "title": "Qwen 2.5 Coder 7B (Principal)",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b",
+      "apiBase": "http://127.0.0.1:11434",
+      "capabilities": ["tool_use"],
+      "requestOptions": {
+        "numPredict": 2048,
+        "numCtx": 16384,
+        "keep_alive": "30m",
+        "timeout": 300000
+      }
+    },
+    {
+      "title": "Qwen Coder 7B (Agente de Refactorización)",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b",
+      "apiBase": "http://127.0.0.1:11434",
+      "capabilities": ["tool_use"],
+      "systemMessage": "Eres un agente de desarrollo autónomo senior experto en Python, Spring Boot (Java) y React...",
+      "requestOptions": {
+        "numPredict": 2048,
+        "numCtx": 16384,
+        "temperature": 0.2,
+        "keep_alive": "30m",
+        "timeout": 300000
+      }
+    }
+  ]
+}

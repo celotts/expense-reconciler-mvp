@@ -13,8 +13,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
-
 from sqlalchemy import select, update
 
 from app.core.enums import ScanStatus
@@ -68,7 +66,7 @@ def carpeta(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-async def con_token(db_session):
+async def con_token(db_session, test_company):
     """Un usuario real y su token, como en `test_audit_trail.py`.
 
     Se cifra la contrasena de verdad (`hashear_contrasena`) en vez de poner una
@@ -76,11 +74,16 @@ async def con_token(db_session):
     correo, y `get_current_user` vuelve a consultar la fila. Si la fila fuera
     falsa, la prueba probaria el camino de un token valido contra un usuario que
     no existe, que es otra cosa.
+
+    P0-1: el usuario pertenece a `test_company`. Sin empresa, `resolver_empresa`
+    le daria 404 en cada `POST /scan` con empresa y los tests de escaneo con
+    token moririan sin escanear nada.
     """
     usuario = UserModel(
         email=f"ana{uuid4().hex[:6]}@empresa.mx",
         nombre="Ana",
         password_hash=hashear_contrasena("contrasena-larga"),
+        company_id=test_company.id,
     )
     db_session.add(usuario)
     await db_session.commit()
@@ -720,7 +723,6 @@ class TestAutorizarLaCompraEnLaMismaCorrida:
         """
         from app.models.inventario import CompraModel, MovimientoInventarioModel
         from app.models.inventario import ProductoModel
-        from app.services import inventario_service as inv
 
         _escribir(carpeta, "ocho.pdf")
         _, token = con_token
