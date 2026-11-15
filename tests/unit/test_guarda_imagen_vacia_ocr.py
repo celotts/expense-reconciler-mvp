@@ -2,7 +2,7 @@
 
 ## Qué protege este archivo
 
-Una imagen sin tinta (o con < 0.5% de píxeles oscuros) hace que Tesseract
+Una imagen sin tinta (o con < 0.3% de píxeles oscuros) hace que Tesseract
 ejecute hasta 16 llamadas —4 rotaciones × 2 PSMs alternativos × etapa de
 binarización— antes de confirmar que no hay nada que leer. Medido: ~19 s por
 imagen fallida.
@@ -15,7 +15,7 @@ Tres reglas que mueren si se quita la guarda (y por eso son los tres casos más
 importantes):
 
 1. Una imagen en blanco puro NO llama a `obtener_motor`.
-2. Una imagen casi-blanca (0.4% de píxeles oscuros, < 0.5% de umbral) tampoco.
+2. Una imagen casi-blanca (0.2% de píxeles oscuros, < 0.3% de umbral) tampoco.
 3. Una imagen con suficiente tinta (1%) SÍ llama al motor.
 
 La regla 1 es la que protege contra el abuso de ~19 s por imagen vacía.
@@ -83,8 +83,8 @@ class TestGuardaImagenVaciaOCR:
         assert resultado.confianza_media is None
 
     def test_imagen_casi_blanca_no_llama_al_motor(self):
-        """0.4% de píxeles oscuros (< umbral 0.5%) → early-exit."""
-        imagen = _imagen_sintetica(fraccion_oscuros=0.004)  # 0.4%
+        """0.2% de píxeles oscuros (< umbral 0.3%) → early-exit."""
+        imagen = _imagen_sintetica(fraccion_oscuros=0.002)  # 0.2%
 
         llamadas = []
 
@@ -100,7 +100,7 @@ class TestGuardaImagenVaciaOCR:
         assert resultado.texto == ""
 
     def test_imagen_con_tinta_suficiente_pasa_al_motor(self):
-        """1% de píxeles oscuros (≥ umbral 0.5%) → la guarda NO dispara."""
+        """1% de píxeles oscuros (≥ umbral 0.3%) → la guarda NO dispara."""
         imagen = _imagen_sintetica(fraccion_oscuros=0.01)  # 1%
 
         # Motor falso que responde texto vacío pero SÍ se llama.

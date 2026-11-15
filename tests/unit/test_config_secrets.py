@@ -235,6 +235,7 @@ class TestElOrdenDeLosArchivosDeEntorno:
     """
 
     def test_el_archivo_correcto_es_el_que_gana(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SECRET_KEY", raising=False)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text(f"SECRET_KEY={CLAVE_DE_ENV}\n")
         (tmp_path / ".env.local").write_text(f"SECRET_KEY={CLAVE_DE_LOCAL}\n")
@@ -248,6 +249,7 @@ class TestElOrdenDeLosArchivosDeEntorno:
 
     def test_sin_local_se_lee_dev(self, tmp_path, monkeypatch):
         """Clone nuevo: no hay `.env.local` y la app tiene que levantar igual."""
+        monkeypatch.delenv("SECRET_KEY", raising=False)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text(f"SECRET_KEY={CLAVE_DE_ENV}\n")
 

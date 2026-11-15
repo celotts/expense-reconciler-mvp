@@ -920,18 +920,18 @@ def _leer_tesseract(
     # GUARDA DE IMAGEN VACÍA O CASI-BLANCA
     # ======================================
     #
-    # Medido: una imagen completamente en blanco (o con < 0.5% de píxeles
+    # Medido: una imagen completamente en blanco (o con < 0.3% de píxeles
     # oscuros) hace que Tesseract lance hasta 16 llamadas —4 rotaciones × 2 PSMs
     # alternativos × etapa de binarización— con un costo de ~19 segundos y cero
     # texto útil. La imagen es blanca en las cuatro orientaciones, así que las
     # 15 llamadas adicionales son trabajo tirado.
     #
     # La guarda mira la imagen PREPARADA (ya en gris) y cuenta la fracción de
-    # píxeles menores a 128 (oscuros = tinta). Si hay menos del 0.5%, la imagen
+    # píxeles menores a 128 (oscuros = tinta). Si hay menos del 0.3%, la imagen
     # no tiene texto que leer: Tesseract lo confirmaría igualmente, pero a un
     # coste 16x mayor.
     #
-    # El umbral 0.5% viene de que incluso un ticket muy desvaído ocupa varias
+    # El umbral 0.3% viene de que incluso un ticket muy desvaído ocupa varias
     # líneas de texto fino; menos de eso es ruido o fondo puro. En la práctica
     # lo que llega aquí es una foto del techo, un archivo en blanco, o la imagen
     # que `_preparar` no pudo abrir y devolvió como bytes: en ese último caso

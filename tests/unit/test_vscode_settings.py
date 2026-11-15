@@ -38,6 +38,7 @@ justifique, o si se le quita el `!.vscode/settings.json` al `.gitignore`.
 from __future__ import annotations
 
 import json
+import shutil
 import re
 import subprocess
 from pathlib import Path
@@ -336,6 +337,7 @@ class TestGitignoreAcotaLaCarpeta:
         )
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="estos tests se responden con el binario de git, y el contenedor de CI no lo trae")
 class TestLosArchivosRealmenteSeVersionan:
     """El test que casi no hace falta, y es el mas importante de los dos.
 

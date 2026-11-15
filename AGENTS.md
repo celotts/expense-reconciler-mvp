@@ -37,7 +37,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 9 páginas |
-| Tests | **1639** — 1243 unit, 396 integration, 2 skip |
+| Tests | **1946** — pasan en Docker (7 skip). Antes de 2026-11-15 la suite tenia **87 fallas** en el arbol limpio |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports`
@@ -2111,6 +2111,62 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 
 - **Los puertos van en `127.0.0.1:`.** Sin el prefijo, Docker publica en `0.0.0.0` y la base
   de datos con su contraseña queda al alcance de la red local.
+
+---
+
+## Las tres defensas añadidas el 2026-11-15
+
+**1. Validador aritmético fiscal en `TicketBase`** (`app/schemas/ticket.py`).
+`TicketCreate` acepta `subtotal`, `ieps_amount` y `retention_amount` opcionales.
+Un `model_validator(mode="after")` comprueba `subtotal + IVA + IEPS − retenciones == total`,
+tolerancia **0.05** (más floja que el `MONEY_TOLERANCE=0.01` del gate, a propósito:
+el gate decide quién aprueba, el validator solo abre la puerta de la API). Si no cuadra,
+`ValueError` descriptivo con los números dentro → 422. En el camino del escáner el
+desajuste sigue yendo a `REQUIERE_REVISION` vía el gate, como siempre.
+`retention_amount` es **solo validación** y NO se persiste (no hay columna). Si se quiere
+guardar: migración + `init.sql`, las dos o nada. `create_ticket` lo excluye del volcado a la
+base y pasa `subtotal`/`ieps_amount` a `gate_manual_ticket`.
+Mutación verificada: quitar el validator mata 3 tests de `TestAritmeticaFiscal`.
+
+**2. NL-to-SQL seguro: `POST /api/v1/ai-query/ask`** (`app/api/ai_query.py`,
+`app/services/consulta_nl.py`, `app/schemas/ai_query.py`).
+- El `tenant_id` del cuerpo **no decide nada**: pasa por `resolver_empresa` (la misma
+  cerradura P0-1 que el resto de la API). Pedir la empresa de otro → 404.
+- El SQL del modelo (Ollama local, `{OLLAMA_BASE_URL}/v1/chat/completions`) **nunca**
+  llega a la base sin `validar_sql_solo_lectura`: una sentencia, SELECT/WITH solo,
+  lista blanca de tablas (`tickets`, `bank_transactions`, `reconciliations` — todas con
+  `company_id`), CTEs permitidas, cero tokens de escritura, y el predicado literal
+  `company_id = '<tenant>'` **obligatorio**.
+- En Postgres la ejecución va por una conexión asyncpg dedicada con
+  `default_transaction_read_only=on` y `statement_timeout=6000` (tercera cerradura).
+  En SQLite (tests) solo opera el guardia.
+- SQL rechazado → **400** (nunca 200 con `error`, que esconde el intento);
+  Ollama caído → **503** con el motivo.
+- Los importes viajan como `str` en el JSON, nunca como `float`.
+- En SQLite el UUID se guarda como CHAR(32) hex sin guiones y el predicado dashed no
+  casa: los tests de integración usan un CTE con el predicado literal para probar la
+  plomería. La lectura sobre la tabla real se verifica contra Postgres.
+- Mutaciones verificadas: quitar el chequeo del predicado mata 3 tests; quitar la
+  resta de CTEs mata 2 tests.
+
+**3. Cola offline para la PWA** (`front/src/services/colaOffline.ts`,
+`front/src/hooks/useColaOffline.ts`, `front/src/components/AvisoGastosPendientes.tsx`).
+- `Tickets.tsx`, ante `TypeError` de fetch (sin red), encola el gasto en IndexedDB
+  (DB `expense-reconciler`, tabla `gastos_pendientes`) en vez de perderlo. El aviso va
+  en ámbar: la creación sí se guardó, en este equipo.
+- `App.tsx` registra `iniciarSincronizacionAutomatica()`: listener `online` + intento al
+  arrancar. Reenvía en orden de encolado, borra solo lo confirmado y sube el comprobante
+  DESPUÉS de crear el ticket (su fallo no deshace el gasto).
+- **`POST /tickets/` no es idempotente**: doble reenvío puede duplicar el gasto si la
+  respuesta original se perdió. El aviso dice "gastos sin enviar", nunca "guardado".
+  Falta la llave de idempotencia en el backend (`client_request_id` UNIQUE).
+- Los 4xx/5xx no se reintentan para siempre: el pendiente se queda con `ultimoError` a la
+  vista y el botón Descartar.
+
+**Y una trampa medida (2026-11-15):** la shell exporta `SECRET_KEY` y `DATABASE_URL` con
+valores que no son los del `.env`/`.env.local`, y ganan sobre ambos. `python3 -m pytest`
+fuera de Docker falla con "SECRET_KEY tiene menos de 32 caracteres". Fuera de Docker:
+`env -u SECRET_KEY -u DATABASE_URL -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB python3 -m pytest tests/ -q`.
 
 ---
 

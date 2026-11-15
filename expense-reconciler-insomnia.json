@@ -151,6 +151,34 @@
       "_type": "request"
     },
     {
+      "_id": "req_03",
+      "parentId": "fld_01",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "2b. Registro de empresa (crea el admin y su empresa)",
+      "description": "Autorregistro (P0-1): crea empresa + admin + trial de 30 dias.\n\nUn registro crea tres cosas en una sola transaccion: la empresa (plan\n'basico', prueba hasta hoy + 30 dias), su catalogo de tipos de gasto y\nla cuenta admin de esa empresa. Si algo falla, no queda ninguna de las\ntres a medias.\n\nEl 409 dice CUAL es el duplicado (correo o RFC). En el login no se dice\npara no convertirlo en un buscador de correos; aqui el que se registra\nes el dueno de los dos datos y necesita saber cual corregir.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"{{ email }}\",\n  \"nombre\": \"texto\",\n  \"password\": \"{{ password }}\",\n  \"empresa_nombre\": \"texto\",\n  \"tax_id\": \"MTA123456789\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/auth/registro",
+      "metaSortKey": 3,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
       "_id": "fld_02",
       "parentId": "col_api",
       "modified": 1759353600000,
@@ -166,12 +194,12 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_03",
+      "_id": "req_04",
       "parentId": "fld_02",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "z3. Dashboard",
-      "description": "El tablero.\n\n`usuario` se declara y no se usa: la proteccion la pone el router entero en\n`api_router.py`, no este endpoint. Se deja para que quede a la vista que\naqui no hay puerta, y no porque sirva de algo.",
+      "description": "El tablero.\n\nP0-1: el tablero es SIEMPRE de una empresa, la resuelta del usuario.\nSin `company_id` vale la del usuario; con otra, 404. Nunca se agregan\nlos numeros de TODAS las empresas por defecto: un total sumado de\nvarias empresas no es el gasto de nadie.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -198,7 +226,7 @@
         }
       ],
       "url": "{{ base_url }}/dashboard/",
-      "metaSortKey": 3,
+      "metaSortKey": 4,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -218,7 +246,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_04",
+      "_id": "req_05",
       "parentId": "fld_03",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -237,12 +265,12 @@
         }
       ],
       "url": "{{ base_url }}/categorias",
-      "metaSortKey": 4,
+      "metaSortKey": 5,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_05",
+      "_id": "req_06",
       "parentId": "fld_03",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -261,7 +289,7 @@
         }
       ],
       "url": "{{ base_url }}/categorias/sin-clasificar",
-      "metaSortKey": 5,
+      "metaSortKey": 6,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -281,7 +309,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_06",
+      "_id": "req_07",
       "parentId": "fld_04",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -313,7 +341,7 @@
         }
       ],
       "url": "{{ base_url }}/companies/",
-      "metaSortKey": 6,
+      "metaSortKey": 7,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -325,7 +353,7 @@
       ]
     },
     {
-      "_id": "req_07",
+      "_id": "req_08",
       "parentId": "fld_04",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -348,12 +376,12 @@
         }
       ],
       "url": "{{ base_url }}/companies/",
-      "metaSortKey": 7,
+      "metaSortKey": 8,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_08",
+      "_id": "req_09",
       "parentId": "fld_04",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -372,12 +400,12 @@
         }
       ],
       "url": "{{ base_url }}/companies/{{ company_id }}",
-      "metaSortKey": 8,
+      "metaSortKey": 9,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_09",
+      "_id": "req_10",
       "parentId": "fld_04",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -386,7 +414,7 @@
       "method": "PATCH",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"name\": \"Mi Taqueria\",\n  \"tax_id\": \"MTA123456789\"\n}"
+        "text": "{\n  \"name\": \"Mi Taqueria\",\n  \"tax_id\": \"MTA123456789\",\n  \"plan\": \"texto\",\n  \"trial_hasta\": \"texto\"\n}"
       },
       "parameters": [],
       "headers": [
@@ -400,12 +428,12 @@
         }
       ],
       "url": "{{ base_url }}/companies/{{ company_id }}",
-      "metaSortKey": 9,
+      "metaSortKey": 10,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_10",
+      "_id": "req_11",
       "parentId": "fld_04",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -424,7 +452,7 @@
         }
       ],
       "url": "{{ base_url }}/companies/{{ company_id }}",
-      "metaSortKey": 10,
+      "metaSortKey": 11,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -444,7 +472,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_11",
+      "_id": "req_12",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -482,7 +510,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/extract-diagnostico",
-      "metaSortKey": 11,
+      "metaSortKey": 12,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -494,7 +522,7 @@
       ]
     },
     {
-      "_id": "req_12",
+      "_id": "req_13",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -532,7 +560,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/extract-and-create",
-      "metaSortKey": 12,
+      "metaSortKey": 13,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -544,7 +572,7 @@
       ]
     },
     {
-      "_id": "req_13",
+      "_id": "req_14",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -612,7 +640,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/",
-      "metaSortKey": 13,
+      "metaSortKey": 14,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -624,7 +652,7 @@
       ]
     },
     {
-      "_id": "req_14",
+      "_id": "req_15",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -662,12 +690,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/review-queue",
-      "metaSortKey": 14,
+      "metaSortKey": 15,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_15",
+      "_id": "req_16",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -678,7 +706,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -686,12 +721,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}",
-      "metaSortKey": 15,
+      "metaSortKey": 16,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_16",
+      "_id": "req_17",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -702,7 +737,14 @@
         "mimeType": "application/json",
         "text": "{\n  \"action\": \"approve\",\n  \"notes\": \"Revisado contra el papel\",\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"subtotal\": 1.0,\n  \"ieps_amount\": 1.0\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -714,12 +756,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/review",
-      "metaSortKey": 16,
+      "metaSortKey": 17,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_17",
+      "_id": "req_18",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -745,12 +787,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/accuracy",
-      "metaSortKey": 17,
+      "metaSortKey": 18,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_18",
+      "_id": "req_19",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -788,12 +830,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/spot-check",
-      "metaSortKey": 18,
+      "metaSortKey": 19,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_19",
+      "_id": "req_20",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -804,7 +846,14 @@
         "mimeType": "application/json",
         "text": "{\n  \"correct\": true,\n  \"campos_incorrectos\": [\n    \"total_amount\"\n  ],\n  \"notes\": \"Revisado contra el papel\"\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -816,21 +865,21 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/spot-check",
-      "metaSortKey": 19,
+      "metaSortKey": 20,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_20",
+      "_id": "req_21",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "t1. Alta manual (sin archivo)",
-      "description": "Create a new ticket manually.\n\nUna persona tecleo los datos, asi que no hay confianza que medir, pero si\npasan los mismos checks deterministas que la IA. Escribirlos a mano no\nexime de que el total sea positivo.",
+      "description": "Create a new ticket manually.\n\nUna persona tecleo los datos, asi que no hay confianza que medir, pero si\npasan los mismos checks deterministas que la IA. Escribirlos a mano no\nexime de que el total sea positivo.\n\nP0-1: la empresa del cuerpo se resuelve contra la del usuario. Pedir otra\nempresa es 404, no 403, para no confirmar que existe ni que tiene datos.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"company_id\": \"{{ company_id }}\"\n}"
+        "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"subtotal\": 1.0,\n  \"ieps_amount\": 1.0,\n  \"retention_amount\": 1.0,\n  \"company_id\": \"{{ company_id }}\"\n}"
       },
       "parameters": [],
       "headers": [
@@ -844,12 +893,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/",
-      "metaSortKey": 20,
+      "metaSortKey": 21,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_21",
+      "_id": "req_22",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -860,7 +909,14 @@
         "mimeType": "application/json",
         "text": "{\n  \"provider_name\": \"OXXO\",\n  \"provider_tax_id\": \"PSA430615KJ9\",\n  \"total_amount\": \"4094.80\",\n  \"tax_amount\": \"582.62\",\n  \"expense_date\": \"2026-09-15\",\n  \"category\": \"ALIMENTACION\",\n  \"raw_text\": \"Compra en tienda de autoservicio\",\n  \"subtotal\": 1.0,\n  \"ieps_amount\": 1.0,\n  \"items\": [\n    \"texto\"\n  ]\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -872,23 +928,30 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}",
-      "metaSortKey": 21,
+      "metaSortKey": 22,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_22",
+      "_id": "req_23",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "t3. Ver el comprobante original",
-      "description": "Los bytes del comprobante, tal como los subio la persona.\n\nEs lo que hace posible el muestreo: la pregunta \"¿la extraccion coincidio con\nel papel?\" solo tiene respuesta si hay papel. Y es lo que hace auditable un\nveredicto meses despues, cuando el papel ya no esta en la carpeta de\nquien lo subio.\n\nEl `Content-Type` sale de una lista cerrada y no de lo que declaro el\ncliente. Ver `app.models.ticket_document.content_type_servible`: servir\n`text/html` con bytes sin revisar seria XSS desde el propio dominio, con\nsesion iniciada, disparado por alguien de confianza de la empresa.",
+      "description": "Los bytes del comprobante, tal como los subio la persona.\n\nEs lo que hace posible el muestreo: la pregunta \"¿la extraccion coincidio con\nel papel?\" solo tiene respuesta si hay papel. Y es lo que hace auditable un\nveredicto meses despues, cuando el papel ya no esta en la carpeta de\nquien lo subio.\n\nEl `Content-Type` sale de una lista cerrada y no de lo que declaro el\ncliente. Ver `app.models.ticket_document.content_type_servible`: servir\n`text/html` con bytes sin revisar seria XSS desde el propio dominio, con\nsesion iniciada, disparado por alguien de confianza de la empresa.\n\n**Requiere autenticacion.** Sin ella, cualquier cliente externo que conozca\n(o adivine) un UUID de ticket puede descargar el comprobante fiscal de una\nempresa sin haber iniciado sesion. Es un BOLA clasico: el recurso existia y\nel unico control era que el id fuera dificil de adivinar, que no es un\ncontrol de acceso. Los UUIDs v4 son largos pero no secretos: aparecen en\nURLs, logs y respuestas de otros endpoints autenticados.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -896,12 +959,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
-      "metaSortKey": 22,
+      "metaSortKey": 23,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_23",
+      "_id": "req_24",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -912,7 +975,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -920,12 +990,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento/vista-previa",
-      "metaSortKey": 23,
+      "metaSortKey": 24,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_24",
+      "_id": "req_25",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -936,7 +1006,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -944,12 +1021,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documentos",
-      "metaSortKey": 24,
+      "metaSortKey": 25,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_25",
+      "_id": "req_26",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -973,7 +1050,14 @@
           }
         ]
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -981,12 +1065,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
-      "metaSortKey": 25,
+      "metaSortKey": 26,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_26",
+      "_id": "req_27",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1018,12 +1102,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/extract",
-      "metaSortKey": 26,
+      "metaSortKey": 27,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_27",
+      "_id": "req_28",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1034,7 +1118,14 @@
         "mimeType": "application/json",
         "text": "{\n  \"ticket_ids\": [\n    \"{{ ticket_id }}\"\n  ],\n  \"category\": \"ALIMENTACION\"\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -1046,12 +1137,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/categoria",
-      "metaSortKey": 27,
+      "metaSortKey": 28,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_28",
+      "_id": "req_29",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1062,7 +1153,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -1070,7 +1168,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}",
-      "metaSortKey": 28,
+      "metaSortKey": 29,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1090,12 +1188,12 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_29",
+      "_id": "req_30",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "4b. Archivos vistos  <- fija {{ file_id }}",
-      "description": "El registro de archivos, filtrado y paginado.\n\n`limit` tiene tope porque no hay tope sin el: un `GET /files` sin limite\nsobre una carpeta de diez mil comprobantes devuelve diez mil filas y se come\nla memoria del proceso, que es el mismo proceso que sirve el resto de la API.",
+      "description": "El registro de archivos, filtrado y paginado.\n\n`limit` tiene tope porque no hay tope sin el: un `GET /files` sin limite\nsobre una carpeta de diez mil comprobantes devuelve diez mil filas y se come\nla memoria del proceso, que es el mismo proceso que sirve el resto de la API.\n\nEl listado es el de la empresa resuelta (`resolver_empresa`) MAS el buzon\nsin atribuir: ver `_alcance_empresa`. El `company_id` del query es solo\npara el operador admin sin empresa; pedir otra empresa es 404.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1134,7 +1232,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/files",
-      "metaSortKey": 29,
+      "metaSortKey": 30,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -1146,18 +1244,25 @@
       ]
     },
     {
-      "_id": "req_30",
+      "_id": "req_31",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "4c. DIAGNOSTICO de un archivo ya escaneado, NO guarda",
-      "description": "La lectura de un archivo ya escaneado, paso por paso, sin escribir nada.\n\nPOR QUE ESTE Y NO SUBIR EL ARCHIVO DE NUEVO\n--------------------------------------------\n\nPor dos razones, y la segunda es la que importa:\n\n  1. Desde Insomnia es un click. `{{ file_id }}` ya se autocompleta con\n     `GET /scan/files`, y aqui no hay que elegir ningun archivo: la variable\n     `producto_id`-de-archivo ya esta. Subir el archivo obliga a ir al disco a\n     buscarlo en cada llamada.\n  2. **El archivo ya se movio.** Con `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR` en `true`\n     (la omision), `POST /scan` mueve cada comprobante a `Tickets_Scan` al\n     digitalizarlo. Volver a subirlo significaria que se puede diagnosticar un\n     comprobante que el sistema ya no tiene delante, que no es el caso que\n     interesa.\n\nY es el mismo archivo que leyo el escaner, con el mismo contenido: el diagnostico\nno dice por que salio mal *ayer*, dice por que saldria mal ahora.\n\n**No guarda nada**, ni actualiza `scan_files` ni sus `attempts`. Es la diferencia\ncon `POST /files/{id}/reprocess`, que si lo hace: ese es el unico camino que puede\nsobreescribir un ticket con correcciones humanas, y por eso es explicito. Este solo\nmira.\n\n**No pide `company_id`.** No escribe nada, asi que no hay a quien atribuir el\nticket. Y el contraste con lo guardado sale del `ticket_id` que el propio registro\nya tiene, que es la atribucion que hizo el escaner.",
+      "description": "La lectura de un archivo ya escaneado, paso por paso, sin escribir nada.\n\nPOR QUE ESTE Y NO SUBIR EL ARCHIVO DE NUEVO\n--------------------------------------------\n\nPor dos razones, y la segunda es la que importa:\n\n  1. Desde Insomnia es un click. `{{ file_id }}` ya se autocompleta con\n     `GET /scan/files`, y aqui no hay que elegir ningun archivo: la variable\n     `producto_id`-de-archivo ya esta. Subir el archivo obliga a ir al disco a\n     buscarlo en cada llamada.\n  2. **El archivo ya se movio.** Con `TICKETS_SCAN_ARCHIVAR_AL_ESCANEAR` en `true`\n     (la omision), `POST /scan` mueve cada comprobante a `Tickets_Scan` al\n     digitalizarlo. Volver a subirlo significaria que se puede diagnosticar un\n     comprobante que el sistema ya no tiene delante, que no es el caso que\n     interesa.\n\nY es el mismo archivo que leyo el escaner, con el mismo contenido: el diagnostico\nno dice por que salio mal *ayer*, dice por que saldria mal ahora.\n\n**No guarda nada**, ni actualiza `scan_files` ni sus `attempts`. Es la diferencia\ncon `POST /files/{id}/reprocess`, que si lo hace: ese es el unico camino que puede\nsobreescribir un ticket con correcciones humanas, y por eso es explicito. Este solo\nmira.\n\n**El `company_id` del query es solo para el operador admin sin empresa.**\nNo escribe nada, asi que no hay a quien atribuir el ticket, y un usuario\ncon empresa no lo necesita. Lo que si se comprueba es la tenencia: un\narchivo de otra empresa es 404 (ver `_archivo_de_empresa_o_404`), y uno\ndel buzon sin atribuir se puede diagnosticar. Y el contraste con lo\nguardado sale del `ticket_id` que el propio registro ya tiene, que es la\natribucion que hizo el escaner.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -1165,7 +1270,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/diagnostico",
-      "metaSortKey": 30,
+      "metaSortKey": 31,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -1177,16 +1282,16 @@
       ]
     },
     {
-      "_id": "req_31",
+      "_id": "req_32",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "5. Escanear carpeta (SI guarda)",
-      "description": "Recorre la carpeta y procesa lo que corresponda.\n\nEl body NO lleva carpeta. Se lee `TICKETS_INPUT_DIR` de la configuracion y\nno de la peticion, por seguridad: ver la nota del modulo.\n\nSin `company_id` el escaneo inventaria y NO crea tickets. Es a proposito, y\nes el primer paso que conviene: correrlo para ver que hay en la carpeta antes\nde atribuir los gastos a una empresa.\n\nY sin `company_id` NO se archiva nada, aunque `archivar` veniga en `true`:\nmover un comprobante sin que se haya guardado su contenido deja el papel en\nun sitio donde nadie lo va a buscar y sin registro de lo que se leyo.\n\nCOMO USAR `simular`\n====================\n\nCon `archivar` activo por omision, la primera corrida deja la carpeta de\nentrada vacia. Eso conviene verlo antes de que ocurra:\n\n    POST /scan {\"company_id\": \"...\", \"simular\": true}\n\nDevuelve exactamente lo que moveria, con la ruta de destino de cada archivo\ny si su lectura quedo pendiente, y no mueve nada.",
+      "description": "Recorre la carpeta y procesa lo que corresponda.\n\nEl body NO lleva carpeta. Se lee `TICKETS_INPUT_DIR` de la configuracion y\nno de la peticion, por seguridad: ver la nota del modulo.\n\nSin `company_id` el escaneo inventaria y NO crea tickets. Es a proposito, y\nes el primer paso que conviene: correrlo para ver que hay en la carpeta antes\nde atribuir los gastos a una empresa.\n\nY sin `company_id` NO se archiva nada, aunque `archivar` veniga en `true`:\nmover un comprobante sin que se haya guardado su contenido deja el papel en\nun sitio donde nadie lo va a buscar y sin registro de lo que se leyo.\n\nCOMO USAR `simular`\n====================\n\nCon `archivar` activo por omision, la primera corrida deja la carpeta de\nentrada vacia. Eso conviene verlo antes de que ocurra:\n\n    POST /scan {\"company_id\": \"...\", \"simular\": true}\n\nDevuelve exactamente lo que moveria, con la ruta de destino de cada archivo\ny si su lectura quedo pendiente, y no mueve nada.\n\nEL LOTE\n=======\n\nCada corrida con empresa va a UN lote: el de `lote_id`, el que pide\n`crear_lote`, o el ABIERTO del periodo de escaneo (reutilizado si ya\nexiste, creado si no). El lote se resuelve AQUI, antes de responder —\ntambien en segundo plano — para que un lote CERRADO o inexistente sea\nun 409/404 inmediato y no un fallo silencioso de la tarea en segundo\nplano. La corrida vuelve a resolverlo dentro, y reutiliza este mismo\nlote: resolver dos veces es a proposito, como las dos capas de la ruta.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"reprocesar\": false,\n  \"solo_pendientes\": false,\n  \"archivar\": false,\n  \"simular\": false,\n  \"confirmar\": false\n}"
+        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"reprocesar\": false,\n  \"solo_pendientes\": false,\n  \"archivar\": false,\n  \"simular\": false,\n  \"confirmar\": false,\n  \"segundo_plano\": false,\n  \"lote_id\": \"texto\",\n  \"crear_lote\": \"texto\"\n}"
       },
       "parameters": [],
       "headers": [
@@ -1200,12 +1305,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/",
-      "metaSortKey": 31,
+      "metaSortKey": 32,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_32",
+      "_id": "req_33",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1224,12 +1329,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/config",
-      "metaSortKey": 32,
+      "metaSortKey": 33,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_33",
+      "_id": "req_34",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1248,17 +1353,17 @@
         }
       ],
       "url": "{{ base_url }}/scan/ia",
-      "metaSortKey": 33,
+      "metaSortKey": 34,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_34",
+      "_id": "req_35",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s2. Estado del OCR (hay Tesseract?)",
-      "description": "Que motores de OCR se pueden usar ahora mismo.\n\nExiste porque \"OCR no funciona\" y \"OCR esta apagado\" piden acciones\nopuestas, y verlas separadas evita la diagnostica de quince minutos. Cuando\nTesseract no esta instalado, esto dice como instalarlo, en vez de dejar que\ncada foto falle con un error que hay que buscar en el log del servidor.",
+      "description": "Que motores de OCR se pueden usar ahora mismo, SIN esperar a cargarlos.\n\nExiste porque \"OCR no funciona\" y \"OCR esta apagado\" piden acciones\nopuestas, y verlas separadas evita la diagnostica de quince minutos. Cuando\nTesseract no esta instalado, esto dice como instalarlo, en vez de dejar que\ncada foto falle con un error que hay que buscar en el log del servidor.\n\nPOR QUE ESTE GET ES LIGERO (apertura lenta del Scanner, 2026-11-07)\n===================================================================\n\nAntes este endpoint llamaba a `disponibilidad()`, que CONSTRUYE el\n`easyocr.Reader` (torch + ~100 MB de pesos, 30-60 s en CPU) dentro del\nhandler, y el front esperaba esa llamada antes de pintar el formulario:\nabrir el Scanner tardaba un minuto la primera vez. Ahora responde con\n`disponibilidad_ligera()`, que solo MIRA si EasyOCR esta instalado,\ncargado o cargando, y arranca la carga en un hilo aparte: el formulario\npinta de inmediato y el Reader llega en segundo plano. La primera lectura\ncon EasyOCR sigue tardando 30-60 s, pero durante el escaneo, no al abrir.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1272,23 +1377,30 @@
         }
       ],
       "url": "{{ base_url }}/scan/ocr",
-      "metaSortKey": 34,
+      "metaSortKey": 35,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_35",
+      "_id": "req_36",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s3. Resumen del escaneo",
-      "description": "Como va el escaneo: conteos por estado, por motor y por antiguedad.\n\nVa antes que `/files/{file_id}` por el orden de rutas. Sin eso,\n`GET /scan/stats` se buscaria como un UUID.",
+      "description": "Como va el escaneo: conteos por estado, por motor y por antiguedad.\n\nVa antes que `/files/{file_id}` por el orden de rutas. Sin eso,\n`GET /scan/stats` se buscaria como un UUID.\n\nLos conteos son los de la empresa resuelta (`resolver_empresa`) MAS el\nbuzon sin atribuir (`company_id IS NULL`): ver `_alcance_empresa`. El\n`company_id` del query es solo para el operador admin sin empresa.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -1296,12 +1408,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/stats",
-      "metaSortKey": 35,
+      "metaSortKey": 36,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_36",
+      "_id": "req_37",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1327,17 +1439,17 @@
         }
       ],
       "url": "{{ base_url }}/scan/runs",
-      "metaSortKey": 36,
+      "metaSortKey": 37,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_37",
+      "_id": "req_38",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s5. Detalle de una corrida",
-      "description": "El progreso de UNA corrida.\n\nEs la llamada que hace el cliente cada dos o tres segundos mientras el\n`POST /scan` sigue abierto. Devuelve el resumen final cuando ya termino, asi\nque el mismo endpoint sirve para el progreso y para el resultado.\n\nUn 404 aqui NO es \"no existio\": el registro es en memoria y se descarta a las\ndos horas, y tambien al reiniciar. El mensaje lo dice, para que el cliente no\nlo presente como un error del servidor.",
+      "description": "El progreso de UNA corrida.\n\nEs la llamada que hace el cliente cada dos o tres segundos mientras el\n`POST /scan` sigue abierto. Devuelve el resumen final cuando ya termino, asi\nque el mismo endpoint sirve para el progreso y para el resultado.\n\nUn 404 aqui NO es \"no existio\": el registro es en memoria y se descarta a las\ndos horas, y tambien al reiniciar. El mensaje lo dice, para que el cliente no\nlo presente como un error del servidor.\n\nLIMITACION P0-1: como en `listar_corridas`, el registro no guarda empresa y\nla corrida no se puede comprobar contra la empresa resuelta. Ver la nota ahi.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1351,17 +1463,17 @@
         }
       ],
       "url": "{{ base_url }}/scan/runs/{{ corrida_id }}",
-      "metaSortKey": 37,
+      "metaSortKey": 38,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_38",
+      "_id": "req_39",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s6. Releer UN archivo (SI sobrescribe)",
-      "description": "Relee UN archivo. Este es el camino explicito para forzar una relectura.\n\nEs el unico endpoint que puede sobreescribir un ticket que ya tiene\ncorrecciones humanas, y lo hace porque la peticion es explicita: alguien\npidio reprocesar ESTE archivo. El escaneo automatico nunca lo hace, y esa\ndiferencia es el motivo de que los dos caminos existan.\n\nSi el archivo ya no esta en el disco, devuelve 409 con el motivo y no un\nexito: reprocesar el registro de un archivo que alguien movio tiene que\nverse, no reportarse como leido.",
+      "description": "Relee UN archivo. Este es el camino explicito para forzar una relectura.\n\nEs el unico endpoint que puede sobreescribir un ticket que ya tiene\ncorrecciones humanas, y lo hace porque la peticion es explicita: alguien\npidio reprocesar ESTE archivo. El escaneo automatico nunca lo hace, y esa\ndiferencia es el motivo de que los dos caminos existan.\n\nSi el archivo ya no esta en el disco, devuelve 409 con el motivo y no un\nexito: reprocesar el registro de un archivo que alguien movio tiene que\nverse, no reportarse como leido.\n\nLa empresa a usar es la resuelta (`resolver_empresa`): un archivo que ya\ntiene empresa distinta es 404, y uno del buzon sin atribuir se atribuye\na la empresa resuelta —que es para lo que esta el `company_id` del\nquery—.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -1382,23 +1494,30 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/reprocess",
-      "metaSortKey": 38,
+      "metaSortKey": 39,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_39",
+      "_id": "req_40",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s7. Detalle de un archivo",
-      "description": "Un archivo con su historico completo.\n\nEl historico va aqui y no en un endpoint aparte de auditoria porque la\npregunta casi siempre es \"que le paso a ESTE archivo\", y separarla obliga a\ndos requests para la misma pantalla.",
+      "description": "Un archivo con su historico completo.\n\nEl historico va aqui y no en un endpoint aparte de auditoria porque la\npregunta casi siempre es \"que le paso a ESTE archivo\", y separarla obliga a\ndos requests para la misma pantalla.\n\nUn archivo de otra empresa es 404: ver `_archivo_de_empresa_o_404`. El\n`company_id` del query es solo para el operador admin sin empresa.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -1406,12 +1525,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}",
-      "metaSortKey": 39,
+      "metaSortKey": 40,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_40",
+      "_id": "req_41",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1434,7 +1553,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/reset",
-      "metaSortKey": 40,
+      "metaSortKey": 41,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1454,12 +1573,12 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_41",
+      "_id": "req_42",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u1. Cuentas del sistema",
-      "description": "Las cuentas del sistema.\n\n`UsuarioActual` y no `UsuarioVerificado`: ver la lista es un endpoint de lectura\ny no compromete a nadie. Pedir la contrasena para mirar una lista haria que el\nuso diario molestase, y una defensa que molesta se deja de usar.\n\n`password_hash` no sale: `UsuarioResponse` no declara el campo, y con\n`from_attributes` eso es lo que lo mantiene fuera. Ver el modulo de\n`app/schemas/auth.py`.",
+      "description": "Las cuentas de la empresa del que llama (P0-1).\n\n`UsuarioActual` y no `UsuarioVerificado`: ver la lista es un endpoint de lectura\ny no compromete a nadie. Pedir la contrasena para mirar una lista haria que el\nuso diario molestase, y una defensa que molesta se deja de usar.\n\n`password_hash` no sale: `UsuarioResponse` no declara el campo, y con\n`from_attributes` eso es lo que lo mantiene fuera. Ver el modulo de\n`app/schemas/auth.py`.\n\nUn usuario con empresa solo ve las cuentas de su empresa. El operador\nadmin sin empresa (arranque) las ve todas. Un usuario sin empresa y sin\nrol admin no ve nada (404).",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1492,17 +1611,17 @@
         }
       ],
       "url": "{{ base_url }}/usuarios",
-      "metaSortKey": 41,
+      "metaSortKey": 42,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_42",
+      "_id": "req_43",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u2. Ver una cuenta",
-      "description": "Una cuenta por id. Sin hash, como todas.",
+      "description": "Una cuenta por id. Sin hash, como todas.\n\nP0-1: un usuario con empresa solo puede ver cuentas de su empresa. El\noperador admin sin empresa las ve todas. 404 y no 403, para no confirmar\nque existe una cuenta con ese id en otra empresa.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1516,12 +1635,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 42,
+      "metaSortKey": 43,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_43",
+      "_id": "req_44",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1530,7 +1649,7 @@
       "method": "PATCH",
       "body": {
         "mimeType": "application/json",
-        "text": "{\n  \"nombre\": \"texto\",\n  \"is_active\": false,\n  \"perfil\": \"texto\",\n  \"grupo\": \"texto\"\n}"
+        "text": "{\n  \"nombre\": \"texto\",\n  \"is_active\": false,\n  \"perfil\": \"texto\",\n  \"grupo\": \"texto\",\n  \"company_id\": \"{{ company_id }}\"\n}"
       },
       "parameters": [],
       "headers": [
@@ -1548,17 +1667,17 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 43,
+      "metaSortKey": 44,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_44",
+      "_id": "req_45",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
-      "description": "Rota la contrasena de una cuenta.\n\nDOS PUERTAS, Y POR QUE HACE FALTA LAS DOS\n------------------------------------------\n\n- `X-Contrasena-Actual` (el header): la contrasena de **quien esta\n  llamando**. Es `UsuarioVerificado`, y es lo que impide que un token robado\n  tome la cuenta. Ver `deps.get_current_user_verificado`.\n- `contrasena_actual` (el cuerpo): la contrasena de **la cuenta que se va a\n  cambiar**. Es lo que impide que quien llama cambie la contrasena de OTRA\n  cuenta sin saber la de esa cuenta.\n\nSon la misma palabra y no se pueden fusionar, porque responden a preguntas\ndistintas: \"quien eres tu\" y \"de quien es esta cuenta\". Con una sola, un\natacante con un token robado podria cambiar la contrasena de cualquiera, que\nes el takeover permanente que `CambioContrasenaRequest` documenta.\n\nY POR QUE NO SE INVALIDAN LOS TOKENS\n------------------------------------\n\nPorque no hay forma de hacerlo. `crear_token` firma con `SECRET_KEY` y sin un\n`jti` ni una lista de revocacion, un token emitido antes del cambio sigue\nsiendo criptograficamente valido hasta que caduca (8 horas). `AGENTS.md` ya lo\ndice de `SECRET_KEY`: \"lo que NO hay es revocacion de tokens: uno robado vive\n8 horas\". Rotar la contrasena acorta la ventana a partir del siguiente login,\nno de golpe, y decirlo aqui es mejor que prometer lo que no hace.\n\nCuando la cuenta es la propia, esto no importa: la sesion del que la rotó\nsigue viva, que es lo comodo. Cuando es otra, es lo que hay.",
+      "description": "Rota la contrasena de una cuenta.\n\nDOS PUERTAS, Y POR QUE HACE FALTA LAS DOS\n------------------------------------------\n\n- `X-Contrasena-Actual` (el header): la contrasena de **quien esta\n  llamando**. Es `UsuarioVerificado`, y es lo que impide que un token robado\n  tome la cuenta. Ver `deps.get_current_user_verificado`.\n- `contrasena_actual` (el cuerpo): la contrasena de **la cuenta que se va a\n  cambiar**. Es lo que impide que quien llama cambie la contrasena de OTRA\n  cuenta sin saber la de esa cuenta.\n\nSon la misma palabra y no se pueden fusionar, porque responden a preguntas\ndistintas: \"quien eres tu\" y \"de quien es esta cuenta\". Con una sola, un\natacante con un token robado podria cambiar la contrasena de cualquiera, que\nes el takeover permanente que `CambioContrasenaRequest` documenta.\n\nY POR QUE NO SE INVALIDAN LOS TOKENS\n------------------------------------\n\nPorque no hay forma de hacerlo. `crear_token` firma con `SECRET_KEY` y sin un\n`jti` ni una lista de revocacion, un token emitido antes del cambio sigue\nsiendo criptograficamente valido hasta que caduca (8 horas). `AGENTS.md` ya lo\ndice de `SECRET_KEY`: \"lo que NO hay es revocacion de tokens: uno robado vive\n8 horas\". Rotar la contrasena acorta la ventana a partir del siguiente login,\nno de golpe, y decirlo aqui es mejor que prometer lo que no hace.\n\nCuando la cuenta es la propia, esto no importa: la sesion del que la rotó\nsigue viva, que es lo comodo. Cuando es otra, es lo que hay.\n\nP0-1: solo se rota la contrasena de una cuenta de la propia empresa.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -1580,7 +1699,35 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena",
-      "metaSortKey": 44,
+      "metaSortKey": 45,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_46",
+      "parentId": "fld_07",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u5. Crear usuario",
+      "description": "Registra una nueva cuenta en el sistema.\n\nSEGURIDAD\n---------\n- Requiere `UsuarioVerificado`: token y cabecera `X-Contrasena-Actual` de quien\n  ejecuta la operacion. Esto impide que un atacante con un token robado cree\n  nuevas cuentas con credenciales conocidas.\n- El correo se normaliza en minusculas y se rechaza con 409 si ya existe.\n- La contrasena se hashea con `hashear_contrasena` (scrypt N=2**17) y NUNCA se\n  almacena en texto plano.\n- La respuesta usa `UsuarioResponse`, por lo que el hash jamas se devuelve.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"{{ email }}\",\n  \"nombre\": \"texto\",\n  \"password\": \"{{ password }}\",\n  \"perfil\": \"digitalizador\",\n  \"grupo\": \"operaciones\",\n  \"is_active\": true,\n  \"company_id\": \"{{ company_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios",
+      "metaSortKey": 46,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1600,12 +1747,12 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_45",
+      "_id": "req_47",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i1. Lineas sin producto (la cola de trabajo)",
-      "description": "Las lineas de compra sin producto asignado.\n\nEs la cola de trabajo del inventario. No hay una tabla de \"pendientes\": esta\nconsulta ES la cola, y es `compra_items WHERE producto_id IS NULL`. Una tabla\nmas seria una segunda fuente de verdad que se puede desincronizar de\n`compra_items`.",
+      "description": "Las lineas de compra sin producto asignado.\n\nEs la cola de trabajo del inventario. No hay una tabla de \"pendientes\": esta\nconsulta ES la cola, y es `compra_items WHERE producto_id IS NULL`. Una tabla\nmas seria una segunda fuente de verdad que se puede desincronizar de\n`compra_items`.\n\nLa cola es la de la empresa resuelta (`resolver_empresa`): la cola de otra\nempresa no se lista ni se confirma.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1626,17 +1773,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/cola",
-      "metaSortKey": 45,
+      "metaSortKey": 47,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_46",
+      "_id": "req_48",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i2. Compras  <- fija {{ compra_id }}",
-      "description": "",
+      "description": "Las compras de la empresa resuelta (`resolver_empresa`).",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1675,23 +1822,30 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras",
-      "metaSortKey": 46,
+      "metaSortKey": 48,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_47",
+      "_id": "req_49",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i3. Ver una compra",
-      "description": "",
+      "description": "Una compra de la empresa resuelta, o 404 si es de otra.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -1699,23 +1853,30 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
-      "metaSortKey": 47,
+      "metaSortKey": 49,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_48",
+      "_id": "req_50",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i4. Asignar producto a una linea",
-      "description": "Resuelve una linea de la cola.\n\nGuarda QUIEN asigno y cuando: \"lo eligio el sistema\" y \"lo eligio Ana\" son\nrespuestas distintas a \"de donde salio este producto del catalogo\", y sin la\ncolumna de actor la segunda no se puede reconstruir.",
+      "description": "Resuelve una linea de la cola.\n\nGuarda QUIEN asigno y cuando: \"lo eligio el sistema\" y \"lo eligio Ana\" son\nrespuestas distintas a \"de donde salio este producto del catalogo\", y sin la\ncolumna de actor la segunda no se puede reconstruir.\n\nLa linea y el producto tienen que ser de la empresa resuelta\n(`resolver_empresa`): asignar un producto propio a una linea ajena, o un\nproducto ajeno a una linea propia, es 404 y no 409, para no confirmar que\nesa linea o ese producto existen en otra empresa. El servicio vuelve a\ncomprobar que son de la misma empresa; esto es la primera cerradura.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
         "text": "{\n  \"producto_id\": \"{{ producto_id }}\"\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -1727,23 +1888,30 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
-      "metaSortKey": 48,
+      "metaSortKey": 50,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_49",
+      "_id": "req_51",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i5. Autorizar  << SUMA STOCK, no se deshace",
-      "description": "Autoriza la compra y hace que sus lineas entren al inventario.\n\nEs el unico endpoint del proyecto que escribe en `movimientos_inventario`, y\npor eso devuelve 409 y no 200 en los tres casos que importan: ya confirmada\n(no se vuelve a sumar), con lineas sin producto (el inventario quedaria\nincompleto sin rastro), o sin quien firmar.",
+      "description": "Autoriza la compra y hace que sus lineas entren al inventario.\n\nEs el unico endpoint del proyecto que escribe en `movimientos_inventario`, y\npor eso devuelve 409 y no 200 en los tres casos que importan: ya confirmada\n(no se vuelve a sumar), con lineas sin producto (el inventario quedaria\nincompleto sin rastro), o sin quien firmar.\n\nConfirmar una compra de otra empresa es 404, no 403: ver\n`_compra_de_empresa_o_404`.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
         "text": "{\n  \"nota\": \"texto\"\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -1755,23 +1923,30 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
-      "metaSortKey": 49,
+      "metaSortKey": 51,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_50",
+      "_id": "req_52",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i6. Rechazar: no es una compra",
-      "description": "Descarta una compra sin borrarla.\n\nPor que no se borra: `compras.ticket_id` es UNIQUE, asi que borrar deja el\nticket libre y el proximo reescaneo vuelve a crear la compra desde\n`registrar_compra`. El bucle aparece cada vez que se toca el comprobante y no\nrecuerda que alguien ya la habia mirado. Con RECHAZADO el veredicto queda\nescrito.\n\nUna compra PROCESADA no se puede rechazar: ya sumo stock y el kardex es\nappend-only, no hay forma de deshacerlo. El 409 dice que la via es el AJUSTE.\n\nQuien rechaza sale del token, nunca del body. Ver `RechazarCompraRequest`.",
+      "description": "Descarta una compra sin borrarla.\n\nPor que no se borra: `compras.ticket_id` es UNIQUE, asi que borrar deja el\nticket libre y el proximo reescaneo vuelve a crear la compra desde\n`registrar_compra`. El bucle aparece cada vez que se toca el comprobante y no\nrecuerda que alguien ya la habia mirado. Con RECHAZADO el veredicto queda\nescrito.\n\nUna compra PROCESADA no se puede rechazar: ya sumo stock y el kardex es\nappend-only, no hay forma de deshacerlo. El 409 dice que la via es el AJUSTE.\n\nQuien rechaza sale del token, nunca del body. Ver `RechazarCompraRequest`.\n\nRechazar una compra de otra empresa es 404, no 403: ver\n`_compra_de_empresa_o_404`.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
         "text": "{\n  \"motivo\": \"El papel estaba borroso; subo la foto mejor\"\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -1783,23 +1958,30 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/rechazar",
-      "metaSortKey": 50,
+      "metaSortKey": 52,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_51",
+      "_id": "req_53",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i7. Deshacer el rechazo",
-      "description": "Devuelve una compra rechazada a la cola de autorizacion.\n\nNo reabre una compra PROCESADA, y hay un endpoint distinto para cada cosa a\nproposito: uno que aceptara las dos necesitaria adivinar cual es cual, y el\nerror —dar por reversible una compra que ya movio stock— es el que no tiene\nsalida. Ver `inventario_service.reabrir_compra`.",
+      "description": "Devuelve una compra rechazada a la cola de autorizacion.\n\nNo reabre una compra PROCESADA, y hay un endpoint distinto para cada cosa a\nproposito: uno que aceptara las dos necesitaria adivinar cual es cual, y el\nerror —dar por reversible una compra que ya movio stock— es el que no tiene\nsalida. Ver `inventario_service.reabrir_compra`.\n\nReabrir una compra de otra empresa es 404, no 403: ver\n`_compra_de_empresa_o_404`.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -1807,17 +1989,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/reabrir",
-      "metaSortKey": 51,
+      "metaSortKey": 53,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_52",
+      "_id": "req_54",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i8. El kardex",
-      "description": "La linea de tiempo del inventario.\n\nEs la respuesta a \"el conteo fisico no cuadra, que movio este producto\".",
+      "description": "La linea de tiempo del inventario.\n\nEs la respuesta a \"el conteo fisico no cuadra, que movio este producto\".\n\nEl kardex es el de la empresa resuelta (`resolver_empresa`): pedir el de\notra empresa es 404, y un `producto_id` de otra empresa simplemente no\ntiene movimientos aqui.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1850,17 +2032,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 52,
+      "metaSortKey": 54,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_53",
+      "_id": "req_55",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i9. Venta o ajuste  << SUMA/RESTA STOCK, no se deshace",
-      "description": "Escribe una fila del kardex a mano.\n\nES LA RESPUESTA A \"el conteo fisico no cuadra, que movio este producto\". El\nkardex es append-only por trigger, asi que corregir un movimiento viejo es\nagregar uno nuevo que diga lo contrario, y este endpoint es el unico camino\npara hacerlo.\n\n`es_ajuste=true` pone `referencia_tipo='AJUSTE'` y es lo que permite una\n`ENTRADA`: sin el, una entrada seria indistinguible de una compra y el servicio\nla rechaza con 409, porque `confirmar_compra` es la unica via que puede sumar\nstock. Ver `inventario_service.registrar_movimiento`.\n\nEl cliente no manda `referencia_tipo`: sale de `es_ajuste`. Pedirlo seria\nabrir la puerta a que alguien escriba `referencia_tipo='COMPRA'` a mano, y una\nfila con esa etiqueta es lo que `export_service` y las auditorias toman como\n\"esto vino de una compra\".",
+      "description": "Escribe una fila del kardex a mano.\n\nES LA RESPUESTA A \"el conteo fisico no cuadra, que movio este producto\". El\nkardex es append-only por trigger, asi que corregir un movimiento viejo es\nagregar uno nuevo que diga lo contrario, y este endpoint es el unico camino\npara hacerlo.\n\n`es_ajuste=true` pone `referencia_tipo='AJUSTE'` y es lo que permite una\n`ENTRADA`: sin el, una entrada seria indistinguible de una compra y el servicio\nla rechaza con 409, porque `confirmar_compra` es la unica via que puede sumar\nstock. Ver `inventario_service.registrar_movimiento`.\n\nEl cliente no manda `referencia_tipo`: sale de `es_ajuste`. Pedirlo seria\nabrir la puerta a que alguien escriba `referencia_tipo='COMPRA'` a mano, y una\nfila con esa etiqueta es lo que `export_service` y las auditorias toman como\n\"esto vino de una compra\".\n\nEl movimiento se escribe en la empresa resuelta (`resolver_empresa`): el\nservicio rechaza un producto de otra empresa, y aqui la empresa ya no es\nla que dice el query.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -1885,17 +2067,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 53,
+      "metaSortKey": 55,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_54",
+      "_id": "req_56",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i10. Catalogo de productos (con stock)",
-      "description": "El catalogo, con el stock de cada uno.\n\nEl stock sale del kardex (`stock_de`), no de una columna: ver el modulo de\n`inventario_service`. Por eso la consulta del catalogo y la del stock son dos\ny despues se pegan: una columna `stock` seria una copia que se desincroniza.\n\n`solo_sin_verificar=true` es la cola de revision de productos. Es la parte que\nhace manejable el alta automatica: el inventario funciona desde el primer dia\ny a la vez hay una lista de lo que hay que limpiar. Ver\ndb/migrations/0011_productos_origen.sql.",
+      "description": "El catalogo, con el stock de cada uno.\n\nEl stock sale del kardex (`stock_de`), no de una columna: ver el modulo de\n`inventario_service`. Por eso la consulta del catalogo y la del stock son dos\ny despues se pegan: una columna `stock` seria una copia que se desincroniza.\n\n`solo_sin_verificar=true` es la cola de revision de productos. Es la parte que\nhace manejable el alta automatica: el inventario funciona desde el primer dia\ny a la vez hay una lista de lo que hay que limpiar. Ver\ndb/migrations/0011_productos_origen.sql.\n\nLa empresa siempre es la resuelta (`resolver_empresa`): el `company_id`\ndel query solo vale si es la empresa del usuario; pedir otra es 404.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1928,17 +2110,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 54,
+      "metaSortKey": 56,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_55",
+      "_id": "req_57",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i11. Alta manual de producto",
-      "description": "Da de alta un producto. A mano, no desde una linea de OCR.",
+      "description": "Da de alta un producto. A mano, no desde una linea de OCR.\n\nLa empresa es la resuelta (`resolver_empresa`): el producto nace en la\nempresa del usuario, y pedir otra por query es 404.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -1963,17 +2145,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 55,
+      "metaSortKey": 57,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_56",
+      "_id": "req_58",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i12. Ver un producto",
-      "description": "Un producto del catalogo, con el stock que le da el kardex.\n\nEl `company_id` es obligatorio y se comprueba contra el producto. No es\ndecorativo: `AGENTS.md` advierte que no hay multi-tenancy, asi que sin esta\ncomparacion un `producto_id` de otra empresa se leeria igual y el stock que\nsaliera en la respuesta seria el de la empresa equivocada —un 200 con el\nnumero de otro, que es peor que un 403 porque no parece un error.\n\nPor que responde `ProductoConStock` y no `ProductoResponse`: el listado\ndevuelve stock, y que el detalle no lo devuelva obliga al cliente a hacer una\nsegunda llamada para saber el mismo numero.",
+      "description": "Un producto del catalogo, con el stock que le da el kardex.\n\nEl `company_id` del query solo vale si es la empresa del usuario\n(`resolver_empresa`): un `producto_id` de otra empresa se responde 404,\nno 403, para no confirmar que hay un producto con ese id en otra\nempresa. Sin esta comparacion el stock que saldria en la respuesta seria\nel de la empresa equivocada —un 200 con el numero de otro, que es peor\nque un 403 porque no parece un error.\n\nPor que responde `ProductoConStock` y no `ProductoResponse`: el listado\ndevuelve stock, y que el detalle no lo devuelva obliga al cliente a hacer una\nsegunda llamada para saber el mismo numero.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -1994,17 +2176,17 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 56,
+      "metaSortKey": 58,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_57",
+      "_id": "req_59",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i13. Renombrar / verificar / dar de baja",
-      "description": "Corrige el catalogo. Es lo que hace que la cola se pueda vaciar.\n\n`GET /inventario/productos?solo_sin_verificar=true` devuelve la cola de\nproductos que salieron de leer un papel, y `AGENTS.md` le atribuye la tarea de\n\"revisar, renombrar o fusionar\". Sin este endpoint la cola se podia mirar pero\nno limpiar: el `verificado` de un producto de OCR no tenia ninguna puerta por\nla que cambiarlo.\n\nLo que el servicio NO deja cambiar, y por que, esta en\n`inventario_service.actualizar_producto`: `company_id`, `origen`, y poner\n`verificado` a un producto de OCR sin codigo.\n\n`exclude_unset=True` y no `exclude_none`: es la diferencia entre \"no lo\nmandaron\" y \"lo mandaron en null\". Ver `ProductoUpdate`.",
+      "description": "Corrige el catalogo. Es lo que hace que la cola se pueda vaciar.\n\n`GET /inventario/productos?solo_sin_verificar=true` devuelve la cola de\nproductos que salieron de leer un papel, y `AGENTS.md` le atribuye la tarea de\n\"revisar, renombrar o fusionar\". Sin este endpoint la cola se podia mirar pero\nno limpiar: el `verificado` de un producto de OCR no tenia ninguna puerta por\nla que cambiarlo.\n\nLo que el servicio NO deja cambiar, y por que, esta en\n`inventario_service.actualizar_producto`: `company_id`, `origen`, y poner\n`verificado` a un producto de OCR sin codigo.\n\n`exclude_unset=True` y no `exclude_none`: es la diferencia entre \"no lo\nmandaron\" y \"lo mandaron en null\". Ver `ProductoUpdate`.\n\nEl producto tiene que ser de la empresa resuelta: tocar el catalogo de\notra empresa es 404, no 403.",
       "method": "PATCH",
       "body": {
         "mimeType": "application/json",
@@ -2029,7 +2211,7 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 57,
+      "metaSortKey": 59,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2049,12 +2231,12 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_58",
+      "_id": "req_60",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Movimientos bancarios",
-      "description": "List bank transactions with optional company filter.",
+      "description": "List bank transactions with optional company filter.\n\nP0-1: el listado es SIEMPRE de la empresa resuelta. Sin `company_id`\nvale la del usuario; con otra, 404.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -2087,7 +2269,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 58,
+      "metaSortKey": 60,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2099,12 +2281,12 @@
       ]
     },
     {
-      "_id": "req_59",
+      "_id": "req_61",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5b. Alta manual de un movimiento",
-      "description": "Create a new bank transaction manually.",
+      "description": "Create a new bank transaction manually.\n\nP0-1: la empresa del cuerpo se resuelve contra la del usuario. Un\nmovimiento no se puede crear en otra empresa ni \"sin empresa\".",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -2122,12 +2304,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 59,
+      "metaSortKey": 61,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_60",
+      "_id": "req_62",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2201,12 +2383,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv",
-      "metaSortKey": 60,
+      "metaSortKey": 62,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_61",
+      "_id": "req_63",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2286,12 +2468,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
-      "metaSortKey": 61,
+      "metaSortKey": 63,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_62",
+      "_id": "req_64",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2302,7 +2484,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -2310,12 +2499,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 62,
+      "metaSortKey": 64,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_63",
+      "_id": "req_65",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2326,7 +2515,14 @@
         "mimeType": "application/json",
         "text": "{\n  \"transaction_date\": \"2026-09-15\",\n  \"amount\": \"1500.00\",\n  \"description\": \"Compra con tarjeta\",\n  \"reference\": \"AUTOCARD ****1234\",\n  \"is_reconciled\": false\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -2338,12 +2534,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 63,
+      "metaSortKey": 65,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_64",
+      "_id": "req_66",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2354,7 +2550,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -2362,7 +2565,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 64,
+      "metaSortKey": 66,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2382,12 +2585,12 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_65",
+      "_id": "req_67",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r1. Conciliaciones  <- fija {{ reconciliation_id }}",
-      "description": "List reconciliations with optional filters.",
+      "description": "List reconciliations with optional filters.\n\nP0-1: el listado es SIEMPRE de la empresa resuelta. El filtro mira la\nempresa de la fila Y la del ticket enlazado: el motor todavia no escribe\n`reconciliations.company_id` (se rellena en la migracion), asi que solo\ncon la columna las corridas del motor desaparecerian de la lista.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -2426,7 +2629,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 65,
+      "metaSortKey": 67,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2438,12 +2641,12 @@
       ]
     },
     {
-      "_id": "req_66",
+      "_id": "req_68",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r1b. Crear una conciliacion a mano",
-      "description": "Create a manual reconciliation link.",
+      "description": "Create a manual reconciliation link.\n\nP0-1: nunca se enlaza un ticket de A con un movimiento de B. Los dos\nlados tienen que ser de la empresa resuelta, y la fila nueva la lleva\npuesta en `company_id`.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -2461,17 +2664,17 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 66,
+      "metaSortKey": 68,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_67",
+      "_id": "req_69",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r2. Correr el motor de conciliacion",
-      "description": "Run the automatic reconciliation engine.",
+      "description": "Run the automatic reconciliation engine.\n\nP0-1: el motor solo corre sobre la empresa resuelta. El `company_id`\ndel cuerpo se resuelve contra el usuario; pedir otra empresa es 404.\nEl motor ya filtra tickets y movimientos por esa empresa.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -2489,12 +2692,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/run",
-      "metaSortKey": 67,
+      "metaSortKey": 69,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_68",
+      "_id": "req_70",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2505,59 +2708,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
-      "headers": [
+      "parameters": [
         {
-          "name": "Authorization",
-          "value": "Bearer {{ token }}"
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
         }
       ],
-      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 68,
-      "collectionId": "col_api",
-      "_type": "request"
-    },
-    {
-      "_id": "req_69",
-      "parentId": "fld_10",
-      "modified": 1759353600000,
-      "created": 1759353600000,
-      "name": "r3. Corregir un veredicto a mano",
-      "description": "Una persona corrige el `match_status` que produjo el motor.\n\nQUE POR QUE HAY UNA COLUMNA `revisado_por` Y NO SOLO EL CAMBIO\n-----------------------------------------------------------\n\nPorque `match_status` decide que se exporta: `export_service` filtra por\n`MATCHED_STATUSES`, y `DISCREPANCY` esta fuera a proposito. Sin `revisado_por`,\nun `PERFECT` que decidio el motor y uno que aprobo una persona serían la misma\nfila, y no habria forma de saber cual se esta mandando a CONTPAQI.\n\nEs el mismo motivo por el que existe `confidence_source` en `tickets`, y por el\nque `compras.confirmada_por` es obligatorio para PROCESADO: \"lo automatico lo\nhizo\" y \"lo hizo una persona\" no se suman, y mezclarlos produce un numero que\nno describe a ninguno de los dos.\n\nPOR QUE NO SE CAMBIA EL TICKET NI EL MOVIMIENTO AQUI\n---------------------------------------------------\n\nPorque un emparejamiento equivocado se corrige de otra manera —`DELETE` y\n`POST`—, y mezclar las dos cosas en un endpoint deja la fila sin poder decir\nque se cambio. Ver `ReconciliationUpdate`.\n\nY ADEMAS el estado del movimiento bancario. Este endpoint NO toca\n`bank_transactions.is_reconciled`: un cruce a mano sigue siendo un cruce\n(hay reconciliacion, y el movimiento esta emparejado), lo que cambio es si\ncuenta como cuadrado. Marcar el movimiento como no conciliado desde aqui\ndejaria la fila de `reconciliations` apuntando a un movimiento que dice que no\nesta conciliado, que es la contradiccion que `delete_reconciliation` si\nresuelve.",
-      "method": "PATCH",
-      "body": {
-        "mimeType": "application/json",
-        "text": "{\n  \"match_status\": \"PERFECT\"\n}"
-      },
-      "parameters": [],
-      "headers": [
-        {
-          "name": "Content-Type",
-          "value": "application/json"
-        },
-        {
-          "name": "Authorization",
-          "value": "Bearer {{ token }}"
-        }
-      ],
-      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 69,
-      "collectionId": "col_api",
-      "_type": "request"
-    },
-    {
-      "_id": "req_70",
-      "parentId": "fld_10",
-      "modified": 1759353600000,
-      "created": 1759353600000,
-      "name": "r4. Borrar una conciliacion",
-      "description": "Delete a reconciliation and mark bank transaction as unreconciled.",
-      "method": "DELETE",
-      "body": {
-        "mimeType": "application/json",
-        "text": ""
-      },
-      "parameters": [],
       "headers": [
         {
           "name": "Authorization",
@@ -2571,6 +2729,72 @@
     },
     {
       "_id": "req_71",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r3. Corregir un veredicto a mano",
+      "description": "Una persona corrige el `match_status` que produjo el motor.\n\nQUE POR QUE HAY UNA COLUMNA `revisado_por` Y NO SOLO EL CAMBIO\n-----------------------------------------------------------\n\nPorque `match_status` decide que se exporta: `export_service` filtra por\n`MATCHED_STATUSES`, y `DISCREPANCY` esta fuera a proposito. Sin `revisado_por`,\nun `PERFECT` que decidio el motor y uno que aprobo una persona serían la misma\nfila, y no habria forma de saber cual se esta mandando a CONTPAQI.\n\nEs el mismo motivo por el que existe `confidence_source` en `tickets`, y por el\nque `compras.confirmada_por` es obligatorio para PROCESADO: \"lo automatico lo\nhizo\" y \"lo hizo una persona\" no se suman, y mezclarlos produce un numero que\nno describe a ninguno de los dos.\n\nPOR QUE NO SE CAMBIA EL TICKET NI EL MOVIMIENTO AQUI\n---------------------------------------------------\n\nPorque un emparejamiento equivocado se corrige de otra manera —`DELETE` y\n`POST`—, y mezclar las dos cosas en un endpoint deja la fila sin poder decir\nque se cambio. Ver `ReconciliationUpdate`.\n\nY ADEMAS el estado del movimiento bancario. Este endpoint NO toca\n`bank_transactions.is_reconciled`: un cruce a mano sigue siendo un cruce\n(hay reconciliacion, y el movimiento esta emparejado), lo que cambio es si\ncuenta como cuadrado. Marcar el movimiento como no conciliado desde aqui\ndejaria la fila de `reconciliations` apuntando a un movimiento que dice que no\nesta conciliado, que es la contradiccion que `delete_reconciliation` si\nresuelve.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"match_status\": \"PERFECT\"\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 71,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_72",
+      "parentId": "fld_10",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "r4. Borrar una conciliacion",
+      "description": "Delete a reconciliation and mark bank transaction as unreconciled.",
+      "method": "DELETE",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
+      "metaSortKey": 72,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_73",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2614,12 +2838,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/excel",
-      "metaSortKey": 71,
+      "metaSortKey": 73,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_72",
+      "_id": "req_74",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2669,12 +2893,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/contpaqi",
-      "metaSortKey": 72,
+      "metaSortKey": 74,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_73",
+      "_id": "req_75",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2724,17 +2948,17 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/generic",
-      "metaSortKey": 73,
+      "metaSortKey": 75,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_74",
+      "_id": "req_76",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r9. Mapeos contables  <- fija {{ mapping_id }}",
-      "description": "List accounting mappings.",
+      "description": "List accounting mappings.\n\nP0-1: el listado es SIEMPRE de la empresa resuelta.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -2755,17 +2979,17 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 74,
+      "metaSortKey": 76,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_75",
+      "_id": "req_77",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r10. Crear mapeo contable",
-      "description": "Create an accounting mapping template.",
+      "description": "Create an accounting mapping template.\n\nP0-1: el mapeo se crea en la empresa resuelta, no en la del cuerpo sin mas.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -2783,12 +3007,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 75,
+      "metaSortKey": 77,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_76",
+      "_id": "req_78",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2799,7 +3023,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -2807,12 +3038,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 76,
+      "metaSortKey": 78,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_77",
+      "_id": "req_79",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2823,7 +3054,14 @@
         "mimeType": "application/json",
         "text": "{\n  \"software_name\": \"CONTPAQI\",\n  \"column_mappings\": {\n    \"Fecha\": \"expense_date\",\n    \"Proveedor\": \"provider_name\",\n    \"Total\": \"total_amount\"\n  }\n}"
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Content-Type",
@@ -2835,12 +3073,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 77,
+      "metaSortKey": 79,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_78",
+      "_id": "req_80",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2851,7 +3089,14 @@
         "mimeType": "application/json",
         "text": ""
       },
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
       "headers": [
         {
           "name": "Authorization",
@@ -2859,7 +3104,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 78,
+      "metaSortKey": 80,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2879,7 +3124,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_79",
+      "_id": "req_81",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2911,12 +3156,12 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual",
-      "metaSortKey": 79,
+      "metaSortKey": 81,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_80",
+      "_id": "req_82",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2948,7 +3193,7 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual.pdf",
-      "metaSortKey": 80,
+      "metaSortKey": 82,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2968,7 +3213,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_81",
+      "_id": "req_83",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2991,12 +3236,12 @@
         }
       ],
       "url": "{{ base_url }}/auditoria/evento",
-      "metaSortKey": 81,
+      "metaSortKey": 83,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_82",
+      "_id": "req_84",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3052,7 +3297,7 @@
         }
       ],
       "url": "{{ base_url }}/auditoria",
-      "metaSortKey": 82,
+      "metaSortKey": 84,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3072,7 +3317,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_83",
+      "_id": "req_85",
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3091,7 +3336,7 @@
         }
       ],
       "url": "{{ base_url }}/sistema/backup",
-      "metaSortKey": 83,
+      "metaSortKey": 85,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3100,7 +3345,7 @@
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
-      "name": "Sin /api/v1",
+      "name": "Lotes",
       "environment": {},
       "metaSortKey": -986,
       "collectionId": "col_api",
@@ -3111,12 +3356,644 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_84",
+      "_id": "req_86",
       "parentId": "fld_14",
       "modified": 1759353600000,
       "created": 1759353600000,
+      "name": "l1. Listar lotes",
+      "description": "Los lotes, filtrados y paginados, del mas reciente al mas viejo.\n\nLa empresa siempre es la resuelta (`resolver_empresa`), nunca \"todas por\ndefecto\": un listado sin `company_id` devuelve solo los lotes de la\nempresa del usuario, y pedir otra empresa es 404.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "ejercicio",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "mes",
+          "value": "",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "estado",
+          "value": "PROCESADO",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "value": "50",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "offset",
+          "value": "0",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/lotes",
+      "metaSortKey": 86,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_87",
+      "parentId": "fld_14",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "l2. Crear un lote",
+      "description": "Crea un lote con folio automatico.\n\nSin `fecha_inicio`/`fecha_fin`, cubre el periodo completo del dia 1 del\nmes segun `tipo_periodo`. Si la empresa exige `total_esperado` en su\n`lote_config` y no viene, es 422: un lote sin expectativa no se puede\ndeclarar completo despues.\n\nLa empresa del cuerpo se resuelve contra el usuario (`resolver_empresa`):\ncrear un lote en otra empresa es 404, no 403.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"company_id\": \"{{ company_id }}\",\n  \"nombre\": \"texto\",\n  \"ejercicio\": 1,\n  \"mes\": 1,\n  \"tipo_periodo\": \"mensual\",\n  \"fecha_inicio\": \"texto\",\n  \"fecha_fin\": \"texto\",\n  \"total_esperado\": 1\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/lotes",
+      "metaSortKey": 87,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_88",
+      "parentId": "fld_14",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "l3. Detalle del lote (con conteos)",
+      "description": "Un lote con sus conteos en vivo (archivos, tickets, importe, duplicados).\n\nEl `company_id` del query es solo para el operador admin sin empresa; un\nusuario con empresa no lo necesita y pedir otra es 404.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/lotes/{{ lote_id }}",
+      "metaSortKey": 88,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_89",
+      "parentId": "fld_14",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "l4. Cerrar un lote",
+      "description": "Cierra un lote ABIERTO o EN_REVISION.\n\nUn lote CERRADO no acepta mas archivos: `scan_service` lo comprueba antes\nde asignar (ver el docstring del modulo). Cerrar un lote ya CERRADO es\n409, no un 200 que finja haber hecho algo.\n\nCerrar un lote de otra empresa es 404, no 403: ver `_lote_de_empresa_o_404`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/lotes/{{ lote_id }}/cerrar",
+      "metaSortKey": 89,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_90",
+      "parentId": "fld_14",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "l5. Reabrir un lote",
+      "description": "Reabre un lote CERRADO. Exige motivo, y que la empresa lo permita.\n\nSi `lote_config.permite_reapertura` es falso, es 409: la empresa decidio\nque un cierre es definitivo, y un 422 diria que la peticion esta mal\nformada cuando lo que esta es prohibido por configuracion. El motivo\nqueda en `lote.motivo` y en `auditoria`, que es donde se busca despues\nquien reabrio y por que.\n\nReabrir un lote de otra empresa es 404, no 403: ver `_lote_de_empresa_o_404`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"motivo\": \"El papel estaba borroso; subo la foto mejor\"\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/lotes/{{ lote_id }}/reabrir",
+      "metaSortKey": 90,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_91",
+      "parentId": "fld_14",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "l6. Crear un lote complementario",
+      "description": "Crea el lote complementario (o de alcance) de uno que ya existe.\n\nHereda empresa, ejercicio, mes, fechas y tipo de periodo del padre, y se\nllama \"Complemento de {folio}\" salvo que se mande otro nombre. Nace\nABIERTO con su propio folio secuencial del mes, aunque el padre este\nCERRADO: para eso existe, para lo que llego despues del cierre.\n\nEl padre tiene que ser de la empresa resuelta: ver `_lote_de_empresa_o_404`.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/lotes/{{ lote_id }}/complementario",
+      "metaSortKey": 91,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_15",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Tipos de Gasto",
+      "environment": {},
+      "metaSortKey": -985,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_92",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg1. Listar tipos de gasto",
+      "description": "Las cuentas de esta empresa.\n\nLa empresa sale del usuario autenticado (`_empresa`), nunca del cliente:\naceptar un `company_id` del cuerpo o del query sin contrastarlo seria\nleer el catalogo de otra empresa. Ver P0-6 en `_empresa`.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "incluir_inactivos",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        },
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto",
+      "metaSortKey": 92,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_93",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg2. Crear tipo de gasto",
+      "description": "Da de alta una cuenta.\n\nLa clave se normaliza a mayusculas en el servicio, no aqui: `Renta` y `renta`\nson la misma cuenta y si se guardaran distintas el cierre las contaria dos\nveces.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"clave\": \"texto\",\n  \"nombre\": \"texto\",\n  \"variable\": true\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto",
+      "metaSortKey": 93,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_94",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg9. Autorizaciones de tipos de gasto",
+      "description": "Cuantos gastos hay de cada estado. Para la cabecera de la pantalla.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/autorizacion",
+      "metaSortKey": 94,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_95",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg10. Pendientes de autorizacion",
+      "description": "La cola: los gastos que todavia nadie ha decidido.\n\nDevuelve datos planos y NO los `TicketResponse` completos, a proposito: esta\npantalla necesita commerce, monto, fecha y cuenta, y nada mas. Mandar el\n`raw_text` de 20 000 caracteres por cada pendiente es lo que hace que una\npantalla con 200 filas se sienta lenta.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "limite",
+          "value": "200",
+          "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/autorizacion/pendientes",
+      "metaSortKey": 95,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_96",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg8. Asignar cuenta al producto",
+      "description": "Le pone la cuenta por omision a un producto.\n\nNO copia nada a ningun gasto. Lo que se compre de ese producto puede ir a otra\ncuenta, y heredarla seria decidir por la persona en que se imputa un gasto.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"tipo_gasto_id\": \"texto\"\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/productos/{{ producto_id }}/cuenta",
+      "metaSortKey": 96,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_97",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg3. Sembrar el catalogo (idempotente)",
+      "description": "Crea las cuentas basicas que falten. Idempotente.\n\nExiste porque el catalogo depende de la empresa y una migracion no puede\nsembrarlo (ver la nota de la migracion 0018). Para una empresa nueva se llama\nsola al crearla; este endpoint es el botón de la pantalla para las que ya\nexisten, y se puede volver a pulsar sin que rompa nada.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/sembrar",
+      "metaSortKey": 97,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_98",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg6. Autorizar tipo de gasto",
+      "description": "Aprueba un gasto.\n\n## POR QUE EL CUERPO ESTA VACIO Y SIN embargo SE ACEPTA\n\nPara que el cliente pueda mandar `{}` y no un 422, y para que quede\nexplicito en la firma que aqui no se acepta ninguna decision: ni quien\nautoriza (sale del token) ni el motivo (aprobar no lleva motivo). Un\nendpoint de \"haz esto\" con un cuerpo que no dice nada es raro, pero un\nendpoint donde el cuerpo PODRIA decir quien autorizo es peor.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/autorizar",
+      "metaSortKey": 98,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_99",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg5. Asignar cuenta contable al ticket",
+      "description": "Le pone (o le quita) la cuenta a un gasto.\n\nMandar `tipo_gasto_id: null` lo deja SIN CLASIFICAR. Es una respuesta valida y\nno un error: significa \"todavia no lo se\", y es la unica forma de corregir\nuna cuenta mal puesta.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"tipo_gasto_id\": \"texto\"\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/cuenta",
+      "metaSortKey": 99,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_100",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg7. Rechazar tipo de gasto",
+      "description": "Rechaza un gasto. El motivo va en el cuerpo y es obligatorio.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"motivo\": \"El papel estaba borroso; subo la foto mejor\"\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/rechazar",
+      "metaSortKey": 100,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_101",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "tg4. Corregir un tipo de gasto",
+      "description": "Edita una cuenta.\n\nEl `exclude_unset` lo aplica FastAPI antes de llegar al servicio, asi que\n`nombre=None` llego como \"no lo mandaste\" y no como \"ponlo en null\" (regla 22).",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"texto\",\n  \"variable\": false,\n  \"activo\": false\n}"
+      },
+      "parameters": [
+        {
+          "name": "company_id",
+          "value": "{{ company_id }}",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/{{ tipo_id }}",
+      "metaSortKey": 101,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_16",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "AI Query",
+      "environment": {},
+      "metaSortKey": -984,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_102",
+      "parentId": "fld_16",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "ia1. Preguntar en lenguaje natural (solo lectura)",
+      "description": "",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"pregunta\": \"texto\",\n  \"tenant_id\": \"texto\",\n  \"max_filas\": 100\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/ai-query/ask",
+      "metaSortKey": 102,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_17",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Sin /api/v1",
+      "environment": {},
+      "metaSortKey": -983,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_103",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Health",
-      "description": "El chequeo de vida, y de qué la app depende para funcionar.\n\n## POR QUE CONSULTA LA BASE Y NO SOLO EL PROCESO\n\nMEDIDO en este repo antes de este cambio: con `expense_pgvector` parado,\neste endpoint respondía **200 `{\"status\": \"healthy\"}`**. El contenedor se\ndeclaraba `healthy` y `docker compose ps` decía que todo estaba en orden\nmientras **ninguna ruta que lea datos funcionaba**: cada una devolvía 500\npor conexión rechazada.\n\nEso es un healthcheck que no sabe nada, y el daño no es solo theoretical:\nes el que decide si `expense-front` puede levantarse\n(`depends_on: service_healthy`). Con esta mentira, el front levantaba\napuntando a una API que no podía contestar y el síntoma era \"el front está\narriba pero nada carga\".\n\n## POR QUE NO ES UNA DEFENSA CONTRA CUALQUIER FALLA\n\n`SELECT 1` prueba que hay una conexión y que Postgres responde. **No**\ncomprueba que el esquema esté cargado: una base a la que le falta `tickets`\npasa este chequeo y falla en cada endpoint. Para eso está el healthcheck del\ncontenedor de Postgres, que pregunta por `to_regclass('public.tickets')` y\nno por el socket — porque durante el init la conexión responde antes de que\nlas tablas existan. Son dos preguntas distintas y cada una la contesta su\nhealthcheck: esta dice \"hay base\", el otro dice \"la base tiene el esquema\".\n\n## POR SIGUE SIN PEDIR TOKEN\n\nUn monitor externo no tiene credenciales, y uno que las pide reporta caído un\nservicio que está arriba. Y la respuesta no dice nada del dominio: ni\ntickets, ni montos, ni cuentas. Solo el estado de la conexión.\n\nEl 503 lleva `Connection: close` porque, sin él, nginx y el navegador\npueden cachear el 503 y seguir mostrando \"caído\" después de que la base\nvolvió. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en\nuna URL de Postgres el usuario y la contraseña viajan dentro, y un\nhealthcheck abierto a localhost no es el lugar donde se publican.",
+      "description": "El chequeo de vida, y de qué la app depende para funcionar.\n\n## POR QUE CONSULTA LA BASE Y NO SOLO EL PROCESO\n\nMEDIDO en este repo antes de este cambio: con `expense_pgvector` parado,\neste endpoint respondía **200 `{\"status\": \"healthy\"}`**. El contenedor se\ndeclaraba `healthy` y `docker compose ps` decía que todo estaba en orden\nmientras **ninguna ruta que lea datos funcionaba**: cada una devolvía 500\npor conexión rechazada.\n\nEso es un healthcheck que no sabe nada, y el daño no es solo theoretical:\nes el que decide si `expense-front` puede levantarse\n(`depends_on: service_healthy`). Con esta mentira, el front levantaba\napuntando a una API que no podía contestar y el síntoma era \"el front está\narriba pero nada carga\".\n\n## POR QUE NO ES UNA DEFENSA CONTRA CUALQUIER FALLA\n\n`SELECT 1` prueba que hay una conexión y que Postgres responde. **No**\ncomprueba que el esquema esté cargado: una base a la que le falta `tickets`\npasa este chequeo y falla en cada endpoint. Para eso está el healthcheck del\ncontenedor de Postgres, que pregunta por `to_regclass('public.tickets')` y\nno por el socket — porque durante el init la conexión responde antes de que\nlas tablas existan. Son dos preguntas distintas y cada una la contesta su\nhealthcheck: esta dice \"hay base\", el otro dice \"la base tiene el esquema\".\n\n## POR SIGUE SIN PEDIR TOKEN\n\nUn monitor externo no tiene credenciales, y uno que las pide reporta caído un\nservicio que está arriba. Y la respuesta no dice nada del dominio: ni\ntickets, ni montos, ni cuentas. Solo el estado de la conexión.\n\nEl 503 lleva `Connection: close` porque, sin él, nginx y el navegador\npueden cachear el 503 y seguir mostrando \"caído\" después de que la base\nvolvía. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en\nuna URL de Postgres el usuario y la contraseña viajan dentro, y un\nhealthcheck abierto a localhost no es el lugar donde se publican.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -3125,7 +4002,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 84,
+      "metaSortKey": 103,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {

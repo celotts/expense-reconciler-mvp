@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS scan_files (
     -- SQLite, que no mira esto. El primer lugar donde se descubre un valor mal
     -- escrito seria un INSERT en produccion.
     CONSTRAINT ck_scan_files_status
-        CHECK (status IN ('PENDIENTE', 'PROCESADO', 'DUPLICADO', 'ERROR', 'NO_SOPORTADO')),
+        CHECK (status IN ('PENDIENTE', 'PROCESADO', 'DUPLICADO', 'ERROR', 'NO_SOPORTADO', 'REVISAR_FOTO')),
 
     -- Un archivo, una fila. Sin esto, dos corridas simultaneas insertan dos
     -- filas para el mismo archivo y la idempotencia se pierde justo cuando

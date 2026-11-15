@@ -307,6 +307,11 @@ class TestElDiagnosticoNoDiceQueTodoEstaBien:
         async def _fake(base_url):
             return instalados, error
 
+        # La maquina puede tener OLLAMA_ENABLED=false (el contenedor de CI lo
+        # trae asi) y entonces proveedor=LOCAL y el mock nunca se llama: todo
+        # test de este archivo prob para OLLAMA, asi que se fuerza el proveedor
+        # declarado. Sin esto pasan en la maquina del rojo y fallan en otra.
+        monkeypatch.setattr(mod.settings, "OLLAMA_ENABLED", True)
         monkeypatch.setattr(mod, "_modelos_del_proveedor", _fake)
 
     @staticmethod

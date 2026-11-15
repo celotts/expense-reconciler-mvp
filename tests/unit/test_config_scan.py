@@ -138,7 +138,8 @@ class TestLaCarpetaEstaMalPuesta:
 
 class TestElValorPorOmision:
 
-    def test_el_default_es_la_carpeta_del_prompt(self):
+    def test_el_default_es_la_carpeta_del_prompt(self, monkeypatch):
+        monkeypatch.delenv("TICKETS_INPUT_DIR", raising=False)
         """El valor por omision es el que pide el enunciado, y esta declarado.
 
         Se comprueba contra el codigo y no contra `.env.example`, porque el

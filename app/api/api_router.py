@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.auth import router as auth_router
+from app.api.ai_query import router as ai_query_router
 from app.api.auditoria import router as auditoria_router
 from app.api.bank_transactions import router as bank_transactions_router
 from app.api.categorias import router as categorias_router
@@ -155,5 +156,12 @@ api_router.include_router(
     sistema_router,
     prefix="/sistema",
     tags=["Sistema"],
+    dependencies=[Depends(get_current_user)],
+)
+# Consultas en lenguaje natural (NL-to-SQL, solo lectura). Token obligatorio
+# como cualquier otro recurso. El tenant lo resuelve el propio endpoint con
+# `resolver_empresa`: el `tenant_id` del cuerpo nunca decide por si solo.
+api_router.include_router(
+    ai_query_router,
     dependencies=[Depends(get_current_user)],
 )

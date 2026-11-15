@@ -119,33 +119,21 @@ class TestElOrdenDeLaEscalada:
         assert resultado.total_amount == Decimal("1100.00")
         assert resultado.confidence_source is ConfidenceSource.OCR
 
-    async def test_por_omision_una_foto_sin_lineas_si_va_al_modelo(
+    async def test_una_foto_sin_lineas_util_no_va_al_modelo(
         self, monkeypatch
     ):
-        """EL OTRO LADO DE LA MONEDA, y el que decide el inventario.
+        """LA DECISION DE LA RAMA perf (2026-11-06), fijada aqui.
 
-        El OCR lee el encabezado —proveedor y total— pero no produce lineas de
-        producto, y sin lineas no hay compra que confirmar (`registrar_compra`
-        devuelve `None` y el inventario no se entera).
+        Una foto que el OCR leyo completa y sin contradicciones se acepta
+        aunque no traiga lineas de producto: las lineas son inventario, y
+        pagar vision (250-440 s) por ellas no se justifica con el total ya
+        leido. El escalado por items se mantiene en `_cascada_texto`
+        (PDF/texto), donde el modelo es de texto y barato.
 
-        ## POR QUE ESTE TEST AFIRMA `ocr.llamadas == 1` Y NO `== 0`
-
-        MEDIDO el 2026-10-13: se probo vision-primero
-        (`IMAGENES_VISION_PRIMERO=True`) y **se midio que era el peor camino**:
-        la vision sirvio 3 de 8 fotos, y en las otras 5 hubo que pagar vision
-        (~250 s) Y despues el OCR (~81 s), porque hacen falta los dos. Con OCR
-        primero se pagan 81 s y se resuelve el 63% con el mismo lector que ya
-        funcionaba. El flag quedo en `False` y el orden es OCR primero.
-
-        Este test vivio en medio de esa prueba: se habia cambiado a `== 0` para
-        afirmar que con vision primero el OCR no se ejecuta, y al volver el flag
-        a `False` la asercion se quedo. Un test que afirma el comportamiento de
-        una opcion que la medicion rechazo no es una defensa: es una contradiccion
-        que nadie iba a notar hasta que este test fallo.
-
-        Lo que el test protege NO cambio: "el modelo aporta las lineas y lo que
-        aporta queda". Lo unico que se afirma sobre el orden es el orden que el
-        producto decidio, que es OCR primero.
+        Esta prueba sigue siendo de la foto sin lineas: lo que afirma la
+        decision de producto vigente, no la de octubre 2026. La version
+        anterior afirmaba que SI iba al modelo y estaba contradiciendo el
+        comentario de `_desde_imagen` "PERF 2026-11-06".
         """
         monkeypatch.setattr(settings, "ESCALAR_A_IA_SIN_LINEAS", True)
         ocr = OcrFalso(TEXTO_OCR)
@@ -156,12 +144,10 @@ class TestElOrdenDeLaEscalada:
             ocr_reader=ocr, extract_from_image=_vision_que_si_lee,
         )
 
-        assert _llamadas_a_vision, "la foto tiene que llegar al modelo"
-        assert resultado.items, "el modelo trajo lineas de producto"
-        assert resultado.confidence_source is ConfidenceSource.LLM
-        # El OCR se lee UNA vez y el modelo se consulta igual: ese es el orden que
-        # eligio la medicion del 2026-10-13 (vision primero resulto 3 de 8 y
-        # obligaba a pagar los dos). Ver `IMAGENES_VISION_PRIMERO` en config.py.
+        assert not _llamadas_a_vision, "una foto util no paga vision por las lineas"
+        assert resultado.items is None
+        assert resultado.confidence_source is ConfidenceSource.OCR
+        assert resultado.total_amount == Decimal("1100.00")
         assert len(ocr.llamadas) == 1, "el OCR se lee una vez"
 
     async def test_el_ocr_disenado_va_a_vision(self):

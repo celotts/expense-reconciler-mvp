@@ -23,6 +23,17 @@ class TicketBase(BaseModel):
     expense_date: date
     category: str | None = Field(None, max_length=100)
     raw_text: str | None = None
+    # El desglose fiscal, tal como lo imprime el comprobante.
+    #
+    # `subtotal` e `ieps_amount` SI se persisten (las columnas existen desde
+    # las migraciones 0008/0012) y por eso viven aqui y no solo en `TicketUpdate`.
+    # `retention_amount` (retenciones) se acepta SOLO para comprobar la
+    # aritmetica y NO se persiste: no hay columna, y agregarla es una decision
+    # de esquema que no se toma callando. Dentro de `create_ticket` se excluye
+    # del volcado a la base.
+    subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+    retention_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
 
     @field_validator("provider_name")
     @classmethod
@@ -58,6 +69,41 @@ class TicketBase(BaseModel):
             raise ValueError(
                 f"tax_amount ({self.tax_amount}) no puede ser mayor "
                 f"que total_amount ({self.total_amount})."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _aritmetica_fiscal_cuadra(self) -> "TicketBase":
+        """subtotal + IVA + IEPS - retenciones == total, tolerancia 0.05.
+
+        La tolerancia de este chequeo (5 centavos) es MAS floja que la del
+        gate de confianza (1 centimo, MONEY_TOLERANCE) a proposito: existe
+        para dejar pasar el redondeo que hace el OCR sobre papeles reales,
+        no para decidir quien aprueba el gasto. El gate sigue siendo el
+        que pone o quita el AUTO_APROBADO; este validator es la puerta de
+        la API.
+
+        Sin `subtotal` no se comprueba nada: no hay con que comparar, y
+        exigirlo convertiria un dato opcional en uno obligatorio.
+
+        Si no cuadra, el ValueError lleva los numeros dentro para que el
+        comprobante quede en la cola de revision manual con la razon a la
+        vista, y para que el 422 del API diga QUE no cuadra y no un generico
+        "datos invalidos".
+        """
+        if self.subtotal is None:
+            return self
+        ieps = self.ieps_amount if self.ieps_amount is not None else Decimal("0.00")
+        retenciones = self.retention_amount if self.retention_amount is not None else Decimal("0.00")
+        esperado = self.subtotal + self.tax_amount + ieps - retenciones
+        diferencia = abs(esperado - self.total_amount)
+        if diferencia > Decimal("0.05"):
+            raise ValueError(
+                f"La aritmetica fiscal no cuadra: subtotal ({self.subtotal}) "
+                f"+ IVA ({self.tax_amount}) + IEPS ({ieps}) - retenciones ({retenciones}) "
+                f"= {esperado}, pero total = {self.total_amount}. "
+                f"Diferencia {diferencia} (tolerancia maxima 0.05). "
+                f"El comprobante debe revisarse a mano antes de guardarlo."
             )
         return self
 

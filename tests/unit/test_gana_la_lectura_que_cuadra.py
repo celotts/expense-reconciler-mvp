@@ -51,7 +51,7 @@ class TestLaAritmeticaComoCriterio:
 
         Con un bool ("cuadra o no"), esta lectura valia 0 y una que si cuadraba
         valia 1. Eso hacia que la AUSENCIA de subtotal contara como error, y
-        rompio `test_por_omision_una_foto_sin_lineas_si_va_al_modelo`: el OCR
+        rompio `test_una_foto_sin_lineas_util_no_va_al_modelo`: el OCR
         traia un desglose que suma exacto y el modelo no traia ninguno, asi que
         el criterio empujaba al OCR y se saltaban las LINEAS DE PRODUCTO — que es
         lo unico que el modelo aporta y lo que el inventario necesita.

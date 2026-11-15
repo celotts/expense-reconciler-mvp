@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -434,7 +434,7 @@ class TestRegistro:
         correo = f"nueva-{uuid4().hex[:8]}@empresa.mx"
         rfc = f"REG{uuid4().hex[:9].upper()}"
         r = await async_client_sin_autenticar.post(
-            "/auth/registro",
+            "/api/v1/auth/registro",
             json={
                 "email": correo,
                 "nombre": "Nueva Empresa",
@@ -459,7 +459,13 @@ class TestRegistro:
         from app.core.time import utcnow
 
         assert empresa.trial_hasta is not None
-        assert utcnow() < empresa.trial_hasta < utcnow() + timedelta(days=31)
+        trial = empresa.trial_hasta
+        # SQLite no guarda zona horaria: el TIMESTAMP(timezone=True) vuelve
+        # naive de la base y comparar aware con naive revienta. La zona que
+        # falta es UTC, que es lo que la base guarda.
+        if trial.tzinfo is None:
+            trial = trial.replace(tzinfo=timezone.utc)
+        assert utcnow() < trial < utcnow() + timedelta(days=31)
         # El catalogo de tipos de gasto se sembro con la empresa.
         from app.models.tipo_gasto import TipoGastoModel
 
@@ -474,7 +480,7 @@ class TestRegistro:
 
         # Y con esas credenciales se entra, con la empresa en el token.
         login = await async_client_sin_autenticar.post(
-            "/auth/login",
+            "/api/v1/auth/login",
             json={"email": correo, "password": "PasswordSegura123!"},
         )
         assert login.status_code == 200, login.text
@@ -493,17 +499,17 @@ class TestRegistro:
             "tax_id": f"DUP{uuid4().hex[:9].upper()}",
         }
         assert (
-            await async_client_sin_autenticar.post("/auth/registro", json=cuerpo)
+            await async_client_sin_autenticar.post("/api/v1/auth/registro", json=cuerpo)
         ).status_code == 201
         cuerpo["tax_id"] = f"DUP{uuid4().hex[:9].upper()}"
-        r = await async_client_sin_autenticar.post("/auth/registro", json=cuerpo)
+        r = await async_client_sin_autenticar.post("/api/v1/auth/registro", json=cuerpo)
         assert r.status_code == 409, r.text
 
     async def test_registro_sin_rfc_usa_marcador(
         self, async_client_sin_autenticar, db_session
     ):
         r = await async_client_sin_autenticar.post(
-            "/auth/registro",
+            "/api/v1/auth/registro",
             json={
                 "email": f"sinrfc-{uuid4().hex[:8]}@empresa.mx",
                 "nombre": "Sin RFC",

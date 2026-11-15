@@ -240,6 +240,8 @@ async def create_ticket(
         tax_amount=ticket_in.tax_amount,
         expense_date=ticket_in.expense_date,
         provider_tax_id=ticket_in.provider_tax_id,
+        subtotal=ticket_in.subtotal,
+        ieps_amount=ticket_in.ieps_amount,
     )
     if not decision.validation.ok:
         raise HTTPException(
@@ -248,7 +250,9 @@ async def create_ticket(
         )
 
     ticket = TicketModel(
-        **ticket_in.model_dump(),
+        # `retention_amount` se queda fuera: es un dato de validacion, no una
+        # columna. `subtotal` e `ieps_amount` SI viajan (las columnas existen).
+        **ticket_in.model_dump(exclude={"retention_amount"}),
         extraction_status=decision.status.value,
         confidence_source=decision.confidence_source.value,
         confidence=decision.persisted_confidence,
@@ -734,17 +738,6 @@ async def review_ticket(
     # empresa no existe para este usuario (404, no 403).
     await resolver_empresa(usuario, company_id, db)
 
-    # Verificar que el ticket pertenece a la empresa y tiene datos
-    query = (
-        select(TicketModel)
-        .where(TicketModel.id == ticket_id)
-        .join(TicketModel.company_id, TicketModel.id == ticket_id)
-    )
-    if not (await db.execute(query)).scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
-        )
-
     # Correcciones aplicadas durante la revision.
     corrections = review_in.model_dump(
         exclude_unset=True,
@@ -1089,7 +1082,7 @@ async def registrar_veredicto(
     # P0-1: el veredicto de muestreo es de la empresa del ticket. El de otra
     # empresa no existe para este usuario (404, no 403).
     empresa = await resolver_empresa(usuario, company_id, db)
-    if row.company_id.astype(int) != int(empresa):
+    if row.company_id != empresa:
         raise HTTPException(status_code=404, detail="El ticket no existe")
 
     extraction_status = row.extraction_status

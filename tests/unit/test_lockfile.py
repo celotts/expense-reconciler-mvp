@@ -44,6 +44,8 @@ Que protege
 
 from __future__ import annotations
 
+import shutil
+
 import json
 import subprocess
 from pathlib import Path
@@ -56,6 +58,7 @@ LOCKFILE = Path("front/package-lock.json")
 DOCKERFILES_DEL_FRONT = sorted((RAIZ / "front").glob("Dockerfile*"))
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="estos tests se responden con el binario de git, y el contenedor de CI no lo trae")
 class TestElLockfileSeVersiona:
     """Lo que hay que preguntarle a git, no al `.gitignore`."""
 

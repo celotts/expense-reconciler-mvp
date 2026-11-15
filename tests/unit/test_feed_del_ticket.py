@@ -278,10 +278,15 @@ class TestElEscanerLosPasa:
         # captura el cierre, asi que `accion = accion` dentro de una `class`
         # busca el nombre en el ambito de la clase y no en el de la funcion, y
         # falla con `NameError`.
+        from app.core.enums import ScanStatus
+
         detalle = SimpleNamespace(
             relative_path="AA4D0E8F.JPG",
             ticket_id=uuid.UUID(int=1),
             accion=accion,
+            # `es_duplicado` se lee de `status`, y el doble no lo traia: era
+            # el unico atributo que la funcion lee y el fake no tenia.
+            status=ScanStatus.PROCESADO,
             origen=origen,
             # `modelo_ia` y `proveedor_ia` no son opcionales en `ResumenArchivo`,
             # asi que el doble los trae. `None` es el caso real de una foto leida
@@ -365,10 +370,13 @@ class TestElEscanerLosPasa:
 
         from app.services.scan_service import _registrar_en_el_feed
 
+        from app.core.enums import ScanStatus
+
         detalle = SimpleNamespace(
             relative_path="roto.pdf",
             ticket_id=None,
             accion="ERROR",
+            status=ScanStatus.ERROR,
             origen=None,
             modelo_ia=None,
             proveedor_ia=None,

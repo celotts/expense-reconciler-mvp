@@ -2179,3 +2179,56 @@ tiene que decir **AL DÍA** después de cada `git pull` que añada un archivo en
 - Muestreo con veredicto firmado por usuario.
 - Defensa de fórmula XLSX + allowlist de codecs.
 - Auth con scrypt + JWT HS256, rate limit, re-consulta de usuario.
+
+## Notas 2026-11-15 — Validador fiscal, NL-to-SQL, cola offline
+
+Tres capacidades añadidas el 2026-11-15. No son bugs; son decisiones y costes que hay que saber.
+
+1. **`retention_amount` no se persiste** (`TicketBase`). Es un dato de validación del validador
+   aritmético fiscal (`subtotal + IVA + IEPS − retenciones == total`, tolerancia 0.05). Si se
+   quiere guardar hace falta migración + `init.sql` (regla: las dos, o nada). `create_ticket` lo
+   excluye del volcado a propósito.
+2. **NL-to-SQL (`POST /api/v1/ai-query/ask`)** ejecuta SQL generado por Ollama. Tres cerraduras:
+   el tenant pasa por `resolver_empresa` (empresa ajena → 404), el guardia `validar_sql_solo_lectura`
+   (una sentencia, SELECT/WITH only, lista blanca de 3 tablas con `company_id`, predicado literal
+   obligatorio), y —en Postgres— conexión asyncpg con `default_transaction_read_only=on` y
+   `statement_timeout=6000`. SQL rechazado → 400; Ollama caído → 503; nunca 500.
+   **Limitación conocida:** el predicado del tenant debe venir en el SQL del modelo; un modelo que
+   "olvide" `company_id = '<tenant>'` recibe 400, no datos filtrados a medias. Es intencional.
+   En SQLite (tests) el UUID se guarda hex sin guiones, así que el predicado dashed jamás casa:
+   los tests usan un CTE con el predicado literal. La lectura sobre `tickets` real se verifica
+   contra Postgres, no contra SQLite.
+3. **La cola offline NO es idempotente en el backend.** `POST /tickets/` no acepta una llave de
+   idempotencia, así que dos sincronizaciones pueden duplicar un gasto si la primera respuesta se
+   perdió después de guardarlo. La UI siempre dice "gastos sin enviar", nunca "guardado". La
+   solución limpia (columna `client_request_id` UNIQUE) sigue pendiente.
+4. **La shell del equipo exporta `SECRET_KEY` y `DATABASE_URL`** con valores que no son los de
+   `.env`/`.env.local` y ganan sobre ambos: `python3 -m pytest` fuera de Docker falla con
+   "SECRET_KEY tiene menos de 32 caracteres". Fuera de Docker, limpiar el entorno:
+   `env -u SECRET_KEY -u DATABASE_URL -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB python3 -m pytest tests/ -q`.
+   Dentro de Docker (`docker compose exec expense-api ...`) el entorno es el correcto.
+
+## Reparación de la suite — 2026-11-15
+
+Antes de esta reparación, **87 tests fallaban en el árbol limpio** (medido con `git stash`). La causa no era una: eran varias, y ninguna estaba visible hasta medirlas todas juntas.
+
+Causas encontradas y corregidas:
+
+1. **`tickets.py` se auto-unía sin sentido**: `.join(TicketModel.company_id, TicketModel.id == ticket_id)` se quitó (query redundante; el `resolver_empresa` de arriba ya validaba). SQLAlchemy 2.x-strict lo rechazaba con `No 'on clause' argument may be passed when joining to a relationship path as a target` — eran ~15 tests en rojo.
+2. **`tickets.py` comparaba UUID con `.astype(int)`**: `row.company_id.astype(int) != int(empresa)` — AttributeError en el endpoint de veredicto; quedaba como `row.company_id != empresa`.
+3. **Tests que llamaban `create_ticket()` directamente** no pasaban el parámetro de permiso (`_: Escribir`).
+4. **`/lotes`, `/scan/`, `/auth/registro` y `/auth/login` en los tests sin el prefijo `/api/v1`**: 404 en todo lo relacionado con lotes y en el login del multitenancy.
+5. **Enum `REVISAR_FOTO` sin entrada en el DDL**: `app/core/enums.py` lo produce, `scan_service` lo escribe (`fila.status = 'REVISAR_FOTO'`) y ni `init.sql` ni la migración 0008 lo aceptaban en `ck_scan_files_status`. Cualquier máquina nueva habría abortado la transacción del escaneo al marcar una foto mala. Migración `0021_scan_files_status_revisar_foto.sql` + los dos archivos alineados; el test `test_scan_mutaciones` lo fija.
+6. **Tests concentrados en comparaciones de `.env` de la máquina**: `SECRET_KEY`/`TICKETS_INPUT_DIR`/`ESCALAR_A_IA_SIN_LINEAS`/`TICKETS_SCAN_RESET_HABILITADO` exportados ganaban sobre los archivos y rompían la suite fuera de Docker. Cada test ya construye su propio entorno con monkeypatch (delenv/force).
+7. **Guarda de imagen casi-blanca**: el umbral bajó de 0.5% a 0.3% en `017bd9f` y el test quedó anclado al viejo. Se alineó test y comentarios con el valor real (0.3%).
+8. **Colección de Insomnia desincronizada**: la API ya expone lotes, tipos-gasto, usuarios y registro, y NADIE los había puesto. `make insomnia` regeneró; `scripts/generar_insomnia.py` ganó las carpetas "Lotes", "Tipos de Gasto" y "AI Query" y los nombres de las 19 rutas nuevas-antiguas en `NOMBRES`.
+9. **La rama perf cambió la política de items en fotos** y el test siguió afirmando la vieja ("una foto sin líneas debe ir al modelo"). El test ahora fija la decisión vigente y documenta el criterio (líneas = inventario, no justifican visión por foto; el escalado por items vive en PDF/texto).
+10. **SQLite no guarda zona horaria**: `trial_hasta` naive vs aware en el test de registro.
+11. **`.gitignore` y lockfile**: tests git-dependientes hacen `skipif(shutil.which('git') is None)`; el contenedor no trae git.
+
+Resultado medido: **1946 pasan, 0 fallan, 7 skip** en Docker.
+
+**Notas de riesgo que siguen abiertas:**
+- `/api/v1/ai-query/ask` no tiene rate limit propio: una pregunta es una llamada al LLM, y una cuenta buena puede encarecer el Ollama compartido. El limite `rate_limit.py` existente es por cuenta+IP para el login; reusarlo para este endpoint es una decision de producto pendiente (cuantas preguntas por minuto).
+- `POST /tickets/` no es idempotente (ver la cola offline, más arriba en este archivo).
+- `registrar_auditoria` sin `db=` abre su propia sesión contra el `AsyncSessionLocal` real: en los tests eso intenta conectar con la base REAL y solo sobrevive porque la transacción aborta antes del `commit`. Es frágil por diseño; corregirlo exige decidir la semántica transaccional de la auditoría (propuesto: best-effort con `db=` inyectado en cada call site; no hecho aquí).

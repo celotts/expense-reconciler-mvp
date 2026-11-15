@@ -174,6 +174,12 @@ CARPETAS: list[tuple[str, str]] = [
     ("/reports", "Reports"),
     ("/auditoria", "Auditoria"),
     ("/sistema", "Sistema"),
+    # El orden de ESTA lista es el orden de las carpetas: Lotes antes de
+    # Tipos de Gasto porque un lote se cierra antes de autorizar tipos, y AI
+    # Query al final porque es la unica carpeta que habla con un modelo.
+    ("/lotes", "Lotes"),
+    ("/tipos-gasto", "Tipos de Gasto"),
+    ("/ai-query", "AI Query"),
 ]
 
 # El orden de ESTA lista es el orden de las carpetas, y el de las peticiones dentro de
@@ -235,6 +241,7 @@ QUERY_EJEMPLOS: dict[str, Any] = {
 NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/auth/login"): "1. Login  <- TIENE que ir primero",
     ("GET", "/auth/me"): "2. Quien soy (token valido)",
+    ("POST", "/auth/registro"): "2b. Registro de empresa (crea el admin y su empresa)",
     ("GET", "/health"): "Health",
     # --- Informe de cierre mensual ----------------------------------------
     # El JSON va antes que el PDF aunque el PDF sea el que se lleva, y el motivo
@@ -349,6 +356,7 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("GET", "/usuarios/{usuario_id}"): "u2. Ver una cuenta",
     ("PATCH", "/usuarios/{usuario_id}"): "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
     ("POST", "/usuarios/{usuario_id}/contrasena"): "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
+    ("POST", "/usuarios"): "u5. Crear usuario",
     ("POST", "/auditoria/evento"): "a1. Evento de auditoria  <- navegacion/pantalla",
     # MEDIDO el 2026-10-15: faltaba esta entrada y con ella tres tests en rojo
     # (`test_no_falta_ninguna_entrada_en_nombres`, el que compara la coleccion
@@ -359,6 +367,28 @@ NOMBRES: dict[tuple[str, str], str] = {
     # demas reciben 403. Un 403 aqui es el resultado correcto, no un fallo de la
     # peticion, y quien lo lea con la coleccion delante lo comprueba en un clic.
     ("GET", "/auditoria"): "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
+    # --- Lotes -----------------------------------------------------------
+    ("GET", "/lotes"): "l1. Listar lotes",
+    ("POST", "/lotes"): "l2. Crear un lote",
+    ("GET", "/lotes/{lote_id}"): "l3. Detalle del lote (con conteos)",
+    ("POST", "/lotes/{lote_id}/cerrar"): "l4. Cerrar un lote",
+    ("POST", "/lotes/{lote_id}/reabrir"): "l5. Reabrir un lote",
+    ("POST", "/lotes/{lote_id}/complementario"): "l6. Crear un lote complementario",
+    # --- Tipos de Gasto ---------------------------------------------------
+    ("GET", "/tipos-gasto"): "tg1. Listar tipos de gasto",
+    ("POST", "/tipos-gasto"): "tg2. Crear tipo de gasto",
+    ("GET", "/tipos-gasto/sembrar"): "tg3. Sembrar el catalogo (idempotente)",
+    ("PATCH", "/tipos-gasto/{tipo_id}"): "tg4. Corregir un tipo de gasto",
+    ("PUT", "/tipos-gasto/tickets/{ticket_id}/cuenta"): "tg5. Asignar cuenta contable al ticket",
+    ("POST", "/tipos-gasto/tickets/{ticket_id}/autorizar"): "tg6. Autorizar tipo de gasto",
+    ("POST", "/tipos-gasto/tickets/{ticket_id}/rechazar"): "tg7. Rechazar tipo de gasto",
+    ("PUT", "/tipos-gasto/productos/{producto_id}/cuenta"): "tg8. Asignar cuenta al producto",
+    ("GET", "/tipos-gasto/autorizacion"): "tg9. Autorizaciones de tipos de gasto",
+    ("GET", "/tipos-gasto/autorizacion/pendientes"): "tg10. Pendientes de autorizacion",
+    # --- Consultas en lenguaje natural ------------------------------------
+    # El modelo escribe el SQL y el guardia lo aprueba o lo rechaza: quien
+    # prueba esta peticion tiene que saber que no es un endpoint cualquiera.
+    ("POST", "/ai-query/ask"): "ia1. Preguntar en lenguaje natural (solo lectura)",
     ("GET", "/sistema/backup"): "s1. Respaldo de la base de datos  (descarga SQL, solo admin)",
 }
 

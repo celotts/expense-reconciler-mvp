@@ -122,34 +122,32 @@ class TestLoQueSeGuardaDiceLaVerdad:
 
     @pytest.mark.asyncio
     async def test_el_origen_guardado_no_lo_elige_el_cliente(
-        self, async_client, test_company, db_session
+        self, async_client, test_company
     ):
-        """Dos subidas del MISMO archivo a empresas DISTINTAS.
+        """Dos subidas de archivos DISTINTOS a la MISMA empresa.
 
-        La distincia no es cosmetica: el idempotente es
-        `(company_id, source_hash)` (`AGENTS.md` regla 4), asi que el mismo
-        archivo a la misma empresa devuelve el ticket ya existente y las dos
-        comparaciones darian el mismo valor sin mirar nada. Con dos empresas
-        cada POST crea el suyo, y la comparacion si compara.
+        El mismo archivo a la misma empresa devuelve el ticket ya existente
+        por el idempotente `(company_id, source_hash)` (`AGENTS.md` regla 4),
+        asi que dos archivos distintos dan dos tickets y la comparacion si
+        compara. La version anterior de este test subia el mismo archivo a
+        "otra empresa", pero P0-1 (la empresa del cuerpo NUNCA decide; decide
+        la del usuario autenticado) hace que pedir otra empresa devuelva 404,
+        asi que el escenario ya no existe para este usuario.
         """
-        from app.models.company import CompanyModel
 
-        otra = CompanyModel(name="Otra empresa", tax_id="OPE999999999")
-        db_session.add(otra)
-        await db_session.commit()
-        await db_session.refresh(otra)
-
-        archivos = {"file": ("factura.pdf", _pdf_de_prueba(), "application/pdf")}
+        otro_pdf = (RAIZ / "test-files" / "factura_gas_industrial.pdf").read_bytes()
+        archivos_a = {"file": ("factura.pdf", _pdf_de_prueba(), "application/pdf")}
+        archivos_b = {"file": ("factura_gas.pdf", otro_pdf, "application/pdf")}
 
         mal = await async_client.post(
             "/api/v1/tickets/extract-and-create",
-            files=archivos,
+            files=archivos_a,
             data={"company_id": str(test_company.id), "file_type": "image"},
         )
         bien = await async_client.post(
             "/api/v1/tickets/extract-and-create",
-            files=archivos,
-            data={"company_id": str(otra.id), "file_type": "pdf"},
+            files=archivos_b,
+            data={"company_id": str(test_company.id), "file_type": "pdf"},
         )
 
         assert mal.status_code == 201, mal.text

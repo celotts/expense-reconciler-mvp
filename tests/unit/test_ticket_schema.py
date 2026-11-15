@@ -151,3 +151,82 @@ class TestUpdatePartial:
     def test_tax_rejected_when_both_present_and_invalid(self):
         with pytest.raises(ValidationError, match="no puede ser mayor"):
             TicketUpdate(total_amount=Decimal("10"), tax_amount=Decimal("50"))
+
+
+class TestAritmeticaFiscal:
+    """subtotal + IVA + IEPS - retenciones == total, tolerancia maxima 0.05.
+
+    La tolerancia del validator (5 centavos) existe por el redondeo del OCR, y es
+    deliberadamente MAS floja que MONEY_TOLERANCE del gate (1 centimo): el gate
+    decide quien aprueba, el validator solo abre la puerta de la API.
+    """
+
+    def test_cuadra_exacto(self):
+        ticket = TicketCreate(**make_create(
+            subtotal=Decimal("215.40"),
+            total_amount=Decimal("249.86"),
+            tax_amount=Decimal("34.46"),
+        ))
+        assert ticket.subtotal == Decimal("215.40")
+
+    def test_diferencia_de_cinco_centavos_pasa(self):
+        # Redondeo del papel: la tolerancia maxima es inclusive.
+        TicketCreate(**make_create(
+            subtotal=Decimal("215.35"),
+            total_amount=Decimal("249.86"),
+            tax_amount=Decimal("34.46"),
+        ))
+
+    def test_diferencia_mayor_a_cinco_centavos_falla(self):
+        with pytest.raises(ValidationError, match="aritmetica fiscal"):
+            TicketCreate(**make_create(
+                subtotal=Decimal("215.00"),
+                total_amount=Decimal("249.86"),
+                tax_amount=Decimal("34.46"),
+            ))
+
+    def test_ieps_se_suma_al_total(self):
+        # El caso real: Walmart con IVA e IEPS. 217.27 + 8.14 + 8.59 = 234.00.
+        ticket = TicketCreate(**make_create(
+            provider_name="WALMART",
+            subtotal=Decimal("217.27"),
+            tax_amount=Decimal("8.14"),
+            ieps_amount=Decimal("8.59"),
+            total_amount=Decimal("234.00"),
+        ))
+        assert ticket.ieps_amount == Decimal("8.59")
+
+    def test_ieps_que_no_se_declara_hace_fallar_cuando_cuadra_solo_aparente(self):
+        # 217.27 + 8.14 = 225.41 != 234.00: sin el IEPS no cuadra, y debe ir a revision.
+        with pytest.raises(ValidationError, match="aritmetica fiscal"):
+            TicketCreate(**make_create(
+                provider_name="WALMART",
+                subtotal=Decimal("217.27"),
+                tax_amount=Decimal("8.14"),
+                total_amount=Decimal("234.00"),
+            ))
+
+    def test_retenciones_se_restan_del_total(self):
+        # Retencion de ISR 10% sobre 1000.00: 1000 + 160 - 100 = 1060.
+        ticket = TicketCreate(**make_create(
+            subtotal=Decimal("1000.00"),
+            tax_amount=Decimal("160.00"),
+            retention_amount=Decimal("100.00"),
+            total_amount=Decimal("1060.00"),
+        ))
+        assert ticket.retention_amount == Decimal("100.00")
+
+    def test_sin_subtotal_no_se_comprueba(self):
+        # Sin subtotal no hay con que comparar: no es un error, es un dato ausente.
+        ticket = TicketCreate(**make_create())
+        assert ticket.subtotal is None
+
+    def test_el_error_lleva_los_numeros_dentro(self):
+        with pytest.raises(ValidationError) as excinfo:
+            TicketCreate(**make_create(
+                subtotal=Decimal("100.00"),
+                total_amount=Decimal("249.86"),
+                tax_amount=Decimal("34.46"),
+            ))
+        texto = str(excinfo.value)
+        assert "100.00" in texto and "249.86" in texto and "34.46" in texto

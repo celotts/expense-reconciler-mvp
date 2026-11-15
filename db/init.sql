@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS scan_files (
     last_scanned_at TIMESTAMP WITH TIME ZONE,
     processed_at TIMESTAMP WITH TIME ZONE,
     CONSTRAINT ck_scan_files_status
-        CHECK (status IN ('PENDIENTE', 'PROCESADO', 'DUPLICADO', 'ERROR', 'NO_SOPORTADO')),
+        CHECK (status IN ('PENDIENTE', 'PROCESADO', 'DUPLICADO', 'ERROR', 'NO_SOPORTADO', 'REVISAR_FOTO')),
     CONSTRAINT uq_scan_files_relative_path UNIQUE (relative_path)
 );
 

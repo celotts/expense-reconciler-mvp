@@ -507,7 +507,7 @@ class TestPostScanConLote:
         )
 
         respuesta = await async_client.post(
-            "/scan/",
+            "/api/v1/scan/",
             json={"company_id": str(test_company.id), "lote_id": str(lote.id)},
         )
 
@@ -527,7 +527,7 @@ class TestPostScanConLote:
         )
 
         respuesta = await async_client.post(
-            "/scan/",
+            "/api/v1/scan/",
             json={"company_id": str(test_company.id), "lote_id": str(lote.id)},
         )
 
@@ -545,7 +545,7 @@ class TestPostScanConLote:
         self, async_client, test_company
     ):
         respuesta = await async_client.post(
-            "/scan/",
+            "/api/v1/scan/",
             json={
                 "company_id": str(test_company.id),
                 "lote_id": str(uuid4()),

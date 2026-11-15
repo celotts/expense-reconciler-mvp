@@ -14,6 +14,8 @@ import { Cierre } from './pages/Cierre';
 import { Auditoria } from './pages/Auditoria';import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
 import { SesionProvider, useSesion } from './contextos/Sesion';
 import { Loading } from './components/ui';
+import { AvisoGastosPendientes } from './components/AvisoGastosPendientes';
+import { iniciarSincronizacionAutomatica } from './services/colaOffline';
 import './App.css';
 
 // El tipo `Page` se importa del contexto y NO se redeclara aqui.
@@ -158,6 +160,12 @@ function AppInner() {
     });
   }, [paginaActual, usuario, perfil]);
 
+  // La cola offline: al recuperar la red se reenvian los gastos que se
+  // guardaron sin conexion. El listener vive aqui (raiz de la sesion) y no
+  // en Tickets, porque el reenvio pertenece a todo el sistema, no a una
+  // pantalla.
+  useEffect(() => iniciarSincronizacionAutomatica(), []);
+
   const perfilLabels: Record<string, string> = {
     consultor: 'Consultor',
     digitalizador: 'Digitalizador',
@@ -300,6 +308,10 @@ function AppInner() {
           {renderPage()}
         </main>
       </div>
+      {/* El aviso de gastos pendientes se monta siempre: la cola pertenece al
+          sistema, no a una pantalla, y "se guardó sin conexión" tiene que
+          verse desde donde el operador esté. */}
+      <AvisoGastosPendientes />
     </div>
   );
 }

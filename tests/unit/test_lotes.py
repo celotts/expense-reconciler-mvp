@@ -39,7 +39,7 @@ def _crear_lote_payload(company_id, **cambios):
 
 
 async def _crear_lote(async_client, company_id, **cambios):
-    respuesta = await async_client.post("/lotes", json=_crear_lote_payload(company_id, **cambios))
+    respuesta = await async_client.post("/api/v1/lotes", json=_crear_lote_payload(company_id, **cambios))
     assert respuesta.status_code == 201, respuesta.text
     return respuesta.json()
 
@@ -138,7 +138,7 @@ class TestCrearLote:
 
     async def test_mes_fuera_de_rango_es_422(self, async_client, test_company):
         respuesta = await async_client.post(
-            "/lotes", json=_crear_lote_payload(test_company.id, mes=13)
+            "/api/v1/lotes", json=_crear_lote_payload(test_company.id, mes=13)
         )
         assert respuesta.status_code == 422
 
@@ -146,7 +146,7 @@ class TestCrearLote:
         self, async_client, test_company
     ):
         respuesta = await async_client.post(
-            "/lotes",
+            "/api/v1/lotes",
             json=_crear_lote_payload(
                 test_company.id,
                 fecha_inicio="2026-10-31",
@@ -157,7 +157,7 @@ class TestCrearLote:
 
     async def test_una_sola_fecha_es_422(self, async_client, test_company):
         respuesta = await async_client.post(
-            "/lotes",
+            "/api/v1/lotes",
             json=_crear_lote_payload(test_company.id, fecha_inicio="2026-10-01"),
         )
         assert respuesta.status_code == 422
@@ -166,7 +166,7 @@ class TestCrearLote:
         self, async_client, test_company
     ):
         respuesta = await async_client.post(
-            "/lotes",
+            "/api/v1/lotes",
             json=_crear_lote_payload(
                 test_company.id,
                 fecha_inicio="2026-11-01",
@@ -177,13 +177,13 @@ class TestCrearLote:
 
     async def test_empresa_inexistente_es_404(self, async_client):
         respuesta = await async_client.post(
-            "/lotes", json=_crear_lote_payload(uuid4())
+            "/api/v1/lotes", json=_crear_lote_payload(uuid4())
         )
         assert respuesta.status_code == 404
 
     async def test_el_folio_no_se_acepta_del_cuerpo(self, async_client, test_company):
         respuesta = await async_client.post(
-            "/lotes",
+            "/api/v1/lotes",
             json=_crear_lote_payload(test_company.id, folio="LOT-2026-10-999"),
         )
         assert respuesta.status_code == 422
@@ -194,7 +194,7 @@ class TestCrearLote:
         test_company.lote_config = {"exige_total_esperado": True}
         await db_session.commit()
         respuesta = await async_client.post(
-            "/lotes", json=_crear_lote_payload(test_company.id)
+            "/api/v1/lotes", json=_crear_lote_payload(test_company.id)
         )
         assert respuesta.status_code == 422
         lote = await _crear_lote(async_client, test_company.id, total_esperado=7)
@@ -205,10 +205,10 @@ class TestListarLotes:
     async def test_filtra_por_empresa_mes_y_estado(self, async_client, test_company):
         octubre = await _crear_lote(async_client, test_company.id)
         await _crear_lote(async_client, test_company.id, nombre="Noviembre", mes=11)
-        await async_client.post(f"/lotes/{octubre['id']}/cerrar")
+        await async_client.post(f"/api/v1/lotes/{octubre['id']}/cerrar")
 
         respuesta = await async_client.get(
-            "/lotes",
+            "/api/v1/lotes",
             params={
                 "company_id": str(test_company.id),
                 "ejercicio": 2026,
@@ -221,7 +221,7 @@ class TestListarLotes:
         assert [lote["id"] for lote in lotes] == [octubre["id"]]
 
     async def test_estado_invalido_es_422(self, async_client):
-        respuesta = await async_client.get("/lotes", params={"estado": "PERDIDO"})
+        respuesta = await async_client.get("/api/v1/lotes", params={"estado": "PERDIDO"})
         assert respuesta.status_code == 422
 
 
@@ -230,20 +230,20 @@ class TestCerrarYReabrir:
         self, async_client, test_company
     ):
         lote = await _crear_lote(async_client, test_company.id)
-        respuesta = await async_client.post(f"/lotes/{lote['id']}/cerrar")
+        respuesta = await async_client.post(f"/api/v1/lotes/{lote['id']}/cerrar")
         assert respuesta.status_code == 200, respuesta.text
         cerrado = respuesta.json()
         assert cerrado["estado"] == "CERRADO"
         assert cerrado["cerrado_at"] is not None
 
-        respuesta = await async_client.post(f"/lotes/{lote['id']}/cerrar")
+        respuesta = await async_client.post(f"/api/v1/lotes/{lote['id']}/cerrar")
         assert respuesta.status_code == 409
 
     async def test_cerrar_deja_rastro_en_auditoria(
         self, async_client, db_session, test_company
     ):
         lote = await _crear_lote(async_client, test_company.id)
-        await async_client.post(f"/lotes/{lote['id']}/cerrar")
+        await async_client.post(f"/api/v1/lotes/{lote['id']}/cerrar")
         filas = (
             await db_session.execute(
                 select(Auditoria).where(
@@ -257,17 +257,17 @@ class TestCerrarYReabrir:
 
     async def test_reabrir_sin_motivo_falla(self, async_client, test_company):
         lote = await _crear_lote(async_client, test_company.id)
-        await async_client.post(f"/lotes/{lote['id']}/cerrar")
-        respuesta = await async_client.post(f"/lotes/{lote['id']}/reabrir", json={})
+        await async_client.post(f"/api/v1/lotes/{lote['id']}/cerrar")
+        respuesta = await async_client.post(f"/api/v1/lotes/{lote['id']}/reabrir", json={})
         assert respuesta.status_code == 422
 
     async def test_reabrir_vuelve_a_abierto_y_guarda_el_motivo(
         self, async_client, test_company
     ):
         lote = await _crear_lote(async_client, test_company.id)
-        await async_client.post(f"/lotes/{lote['id']}/cerrar")
+        await async_client.post(f"/api/v1/lotes/{lote['id']}/cerrar")
         respuesta = await async_client.post(
-            f"/lotes/{lote['id']}/reabrir",
+            f"/api/v1/lotes/{lote['id']}/reabrir",
             json={"motivo": "Falto un ticket de Soriana"},
         )
         assert respuesta.status_code == 200, respuesta.text
@@ -279,7 +279,7 @@ class TestCerrarYReabrir:
     async def test_reabrir_un_lote_abierto_es_409(self, async_client, test_company):
         lote = await _crear_lote(async_client, test_company.id)
         respuesta = await async_client.post(
-            f"/lotes/{lote['id']}/reabrir", json={"motivo": "Por si acaso"}
+            f"/api/v1/lotes/{lote['id']}/reabrir", json={"motivo": "Por si acaso"}
         )
         assert respuesta.status_code == 409
 
@@ -287,11 +287,11 @@ class TestCerrarYReabrir:
         self, async_client, db_session, test_company
     ):
         lote = await _crear_lote(async_client, test_company.id)
-        await async_client.post(f"/lotes/{lote['id']}/cerrar")
+        await async_client.post(f"/api/v1/lotes/{lote['id']}/cerrar")
         test_company.lote_config = {"permite_reapertura": False}
         await db_session.commit()
         respuesta = await async_client.post(
-            f"/lotes/{lote['id']}/reabrir", json={"motivo": "Falto un ticket"}
+            f"/api/v1/lotes/{lote['id']}/reabrir", json={"motivo": "Falto un ticket"}
         )
         assert respuesta.status_code == 409
 
@@ -301,8 +301,8 @@ class TestComplementario:
         self, async_client, test_company
     ):
         padre = await _crear_lote(async_client, test_company.id)
-        await async_client.post(f"/lotes/{padre['id']}/cerrar")
-        respuesta = await async_client.post(f"/lotes/{padre['id']}/complementario", json={})
+        await async_client.post(f"/api/v1/lotes/{padre['id']}/cerrar")
+        respuesta = await async_client.post(f"/api/v1/lotes/{padre['id']}/complementario", json={})
         assert respuesta.status_code == 201, respuesta.text
         hijo = respuesta.json()
         assert hijo["lote_padre_id"] == padre["id"]
@@ -315,7 +315,7 @@ class TestComplementario:
         assert hijo["estado"] == "ABIERTO"
 
     async def test_complementario_de_padre_inexistente_es_404(self, async_client):
-        respuesta = await async_client.post(f"/lotes/{uuid4()}/complementario", json={})
+        respuesta = await async_client.post(f"/api/v1/lotes/{uuid4()}/complementario", json={})
         assert respuesta.status_code == 404
 
 
@@ -347,7 +347,7 @@ class TestDetalleConConteos:
             )
         await db_session.commit()
 
-        respuesta = await async_client.get(f"/lotes/{lote_id}")
+        respuesta = await async_client.get(f"/api/v1/lotes/{lote_id}")
         assert respuesta.status_code == 200, respuesta.text
         detalle = respuesta.json()
         assert detalle["total_archivos"] == 2
@@ -356,5 +356,5 @@ class TestDetalleConConteos:
         assert detalle["duplicados"] == 1
 
     async def test_detalle_de_lote_inexistente_es_404(self, async_client):
-        respuesta = await async_client.get(f"/lotes/{uuid4()}")
+        respuesta = await async_client.get(f"/api/v1/lotes/{uuid4()}")
         assert respuesta.status_code == 404

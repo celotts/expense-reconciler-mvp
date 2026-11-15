@@ -243,6 +243,7 @@ class TestLoQueNoTieneDocumento:
                 expense_date=date(2025, 3, 15),
             ),
             usuario=usuario_de_prueba,
+            _=usuario_de_prueba,
             db=db_session,
         )
 

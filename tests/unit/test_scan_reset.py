@@ -97,6 +97,22 @@ def reset_habilitado():
 
 
 @pytest.fixture
+def reset_apagado():
+    """Apaga el flag y lo restaura al terminar.
+
+    La maquina puede traer el flag encendido en su `.env`, y sin esto los
+    tests que afirman "sin el flag no existe el endpoint" fallan en ella
+    aunque el comportamiento del codigo sea el correcto.
+    """
+    antes = settings.TICKETS_SCAN_RESET_HABILITADO
+    settings.TICKETS_SCAN_RESET_HABILITADO = False
+    try:
+        yield
+    finally:
+        settings.TICKETS_SCAN_RESET_HABILITADO = antes
+
+
+@pytest.fixture
 async def producto(db_session, test_company):
     """Un producto del catalogo, para comprobar que el reset no se lo lleva.
 
@@ -219,11 +235,11 @@ async def _post(client, cuerpo=None, *, contrasena=CONTRASENA, **extra):
 class TestElFlag:
     """Sin `TICKETS_SCAN_RESET_HABILITADO`, el endpoint no existe."""
 
-    async def test_apagado_da_404(self, async_client):
+    async def test_apagado_da_404(self, async_client, reset_apagado):
         r = await _post(async_client, contrasena=None)
         assert r.status_code == 404
 
-    async def test_el_404_no_dice_que_haya_una_ruta(self, async_client):
+    async def test_el_404_no_dice_que_haya_una_ruta(self, async_client, reset_apagado):
         """"Esta deshabilitado" seria una instruccion de como abrirlo.
 
         El mensaje lo lee tambien quien va a probarlo. Va en el codigo y en el

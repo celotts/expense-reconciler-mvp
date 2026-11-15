@@ -12,6 +12,7 @@ import {
 import { dinero, fecha } from '../utils/format';
 import { VeredictoTicket } from '../components/VeredictoTicket';
 import { ComprobanteAlLado } from '../components/ComprobanteAlLado';
+import { encolarGasto, esErrorDeRed } from '../services/colaOffline';
 
 /** Como se filtra esta pantalla.
  *
@@ -211,6 +212,24 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       resetForm();
       await loadData();
     } catch (e) {
+      // Sin red, la creación del gasto NO se pierde: se encola en IndexedDB
+      // y se reenvía sola cuando vuelva la conexión (ver services/colaOffline).
+      if (!editingTicket && esErrorDeRed(e)) {
+        try {
+          await encolarGasto(normalized, pendingFile);
+          setShowModal(false);
+          resetForm();
+          setAvisoDocumento(
+            'Sin conexión: el gasto quedó guardado en este equipo y se ' +
+            'enviará solo cuando vuelva la red.',
+          );
+          // La lista no se puede recargar sin red; no es un error del gasto.
+          try { await loadData(); } catch { /* se recargará cuando vuelva */ }
+          return;
+        } catch (colaError) {
+          console.warn('No se pudo encolar el gasto offline:', colaError);
+        }
+      }
       setError(e instanceof Error ? e.message : 'Error al guardar');
     } finally {
       setSubmitting(false);
