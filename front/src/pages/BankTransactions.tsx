@@ -49,7 +49,7 @@ export function BankTransactions() {
     try {
       setSubmitting(true);
       if (editingTx) {
-        await bankTransactionsApi.update(editingTx.id, formData);
+        await bankTransactionsApi.update(editingTx.id, formData, selectedCompany || editingTx.company_id || undefined);
       } else {
         await bankTransactionsApi.create(formData);
       }
@@ -94,7 +94,7 @@ export function BankTransactions() {
   const handleDelete = async (id: string) => {
     if (!confirm('¿Eliminar este movimiento?')) return;
     try {
-      await bankTransactionsApi.delete(id);
+      await bankTransactionsApi.delete(id, selectedCompany || undefined);
       loadData();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al eliminar');

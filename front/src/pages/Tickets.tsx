@@ -152,7 +152,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     try {
       setClasificando(true);
       setError(null);
-      const r = await ticketsApi.clasificarLote(ids, destino);
+      const r = await ticketsApi.clasificarLote(ids, destino, selectedCompany || undefined);
       // Si el servidor toco menos de los pedidos, se dice. Puede pasar sin que
       // haya un fallo: alguien borro un ticket entre que se abrio la pantalla
       // y se envio el PATCH. Decir "clasificados 200" cuando fueron 198 deja a
@@ -186,7 +186,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       setSubmitting(true);
       setError(null);
       if (editingTicket) {
-        await ticketsApi.update(editingTicket.id, normalized);
+        await ticketsApi.update(editingTicket.id, normalized, selectedCompany || editingTicket.company_id || undefined);
       } else {
         const creado = await ticketsApi.create(normalized);
 
@@ -197,7 +197,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
         // perder el gasto no lo es.
         if (pendingFile) {
           try {
-            await ticketsApi.subirDocumento(creado.id, pendingFile);
+            await ticketsApi.subirDocumento(creado.id, pendingFile, selectedCompany || undefined);
             setAvisoDocumento(null);
           } catch (e) {
             setAvisoDocumento(
@@ -261,7 +261,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     if (!deleteTarget) return;
     try {
       setDeleting(true);
-      await ticketsApi.delete(deleteTarget.id);
+      await ticketsApi.delete(deleteTarget.id, selectedCompany || deleteTarget.company_id || undefined);
       setDeleteTarget(null);
       await loadData();
     } catch (e) {

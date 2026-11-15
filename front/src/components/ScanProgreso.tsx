@@ -247,7 +247,7 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
  *  pantalla), no un campo de `ScanCorrida`: la respuesta del escaneo todavía
  *  no trae el lote, y mostrar el elegido es honesto mientras el backend no lo
  *  devuelva. `null` es "sin lote elegido", y ahí no se pinta nada. */
-export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: ScanCorrida; totalPosible?: number; loteFolio?: string | null }) {
+export function PanelProgreso({ corrida, totalPosible, loteFolio, companyId }: { corrida: ScanCorrida; totalPosible?: number; loteFolio?: string | null; companyId?: string | null }) {
   // La lista principal es de comprobantes UNICOS. Un duplicado copiaba el
   // importe y el encabezado del ticket ORIGINAL y en el feed se veia como un
   // segundo gasto pendiente, al lado del correcto. Por eso no es una fila
@@ -267,7 +267,7 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
   const [cargandoTicket, setCargandoTicket] = useState(false);
   async function abrirTicket(ticketId: string) {
     setCargandoTicket(true);
-    try { const t = await ticketsApi.get(ticketId); setTicketVer(t); }
+    try { const t = await ticketsApi.get(ticketId, companyId || undefined); setTicketVer(t); }
     finally { setCargandoTicket(false); }
   }
 

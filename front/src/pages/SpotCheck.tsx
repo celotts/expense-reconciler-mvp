@@ -156,7 +156,7 @@ export function SpotCheck() {
         ) : (
           <div className="space-y-3">
             {cola.tickets.map(item => (
-              <TarjetaMuestra key={item.ticket.id} item={item} onRefresh={cargar} />
+              <TarjetaMuestra key={item.ticket.id} item={item} companyId={companyId || undefined} onRefresh={cargar} />
             ))}
           </div>
         )}
@@ -332,9 +332,10 @@ export function ResumenMuestra({
 // ---------------------------------------------------------------------------
 
 export function TarjetaMuestra({
-  item, onRefresh,
+  item, companyId, onRefresh,
 }: {
   item: SpotCheckItem;
+  companyId?: string;
   onRefresh: () => void | Promise<void>;
 }) {
   const t = item.ticket;
@@ -358,7 +359,7 @@ export function TarjetaMuestra({
         correct,
         campos_incorrectos: correct ? [] : campos,
         ...(nota.trim() ? { notes: nota.trim() } : {}),
-      });
+      }, companyId || t.company_id || undefined);
       await onRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo registrar el veredicto');

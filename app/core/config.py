@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # MEDIDO: a 1400 una foto vertical da ~2300 tokens de vision y ~250 s por
     # llamada; a 1000 los tokens y el prompt_eval bajan ~30-40% y el total/RFC
     # se siguen leyendo. No se baja a menos para no perder letra pequena.
-    MAX_LADO_VISION: int = 1000
+    MAX_LADO_VISION: int = 1400
 
     # Para una FOTO, consultar al modelo de vision ANTES que al OCR local.
     #

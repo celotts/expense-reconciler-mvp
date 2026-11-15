@@ -153,8 +153,8 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
  *  contra el papel. */
 export type BlobDocumento = Blob & { disposition: string | null };
 
-export async function fetchDocumento(ticketId: string): Promise<BlobDocumento> {
-  const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento`, {
+export async function fetchDocumento(ticketId: string, companyId?: string): Promise<BlobDocumento> {
+  const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     headers: { ...cabeceraDeAutorizacion() },
   });
 
@@ -190,8 +190,8 @@ export async function fetchDocumento(ticketId: string): Promise<BlobDocumento> {
  *  El backend convierte a JPEG SOLO para mostrar. El archivo guardado sigue
  *  siendo el HEIC original, byte por byte, y la descarga lo sigue dando: por eso
  *  son dos endpoints y no uno con un parametro. */
-export async function fetchVistaPrevia(ticketId: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento/vista-previa`, {
+export async function fetchVistaPrevia(ticketId: string, companyId?: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/tickets/${ticketId}/documento/vista-previa${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     headers: { ...cabeceraDeAutorizacion() },
   });
 
@@ -285,16 +285,16 @@ export const lotesApi = {
   }),
 
   /** Un lote con sus conteos en vivo (archivos, tickets, importe, duplicados). */
-  detalle: (id: string) => fetchApi<LoteDetalle>(`/lotes/${id}`),
+  detalle: (id: string, companyId?: string) => fetchApi<LoteDetalle>(`/lotes/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`),
 
   /** Cierra un lote ABIERTO o EN_REVISION. Cerrar uno ya CERRADO es 409, no
    *  un 200 que finja haber hecho algo. */
-  cerrar: (id: string) => fetchApi<Lote>(`/lotes/${id}/cerrar`, { method: 'POST' }),
+  cerrar: (id: string, companyId?: string) => fetchApi<Lote>(`/lotes/${id}/cerrar${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, { method: 'POST' }),
 
   /** Reabre un lote CERRADO. El motivo es obligatorio (min. 3 caracteres) y
    *  queda en `lote.motivo` y en auditoría. Si la empresa no permite reabrir,
    *  el servidor responde 409. */
-  reabrir: (id: string, motivo: string) => fetchApi<Lote>(`/lotes/${id}/reabrir`, {
+  reabrir: (id: string, motivo: string, companyId?: string) => fetchApi<Lote>(`/lotes/${id}/reabrir${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     method: 'POST',
     body: JSON.stringify({ motivo }),
   }),
@@ -302,7 +302,7 @@ export const lotesApi = {
   /** El lote complementario de uno que ya existe: hereda empresa, periodo y
    *  fechas del padre y nace ABIERTO con su propio folio. Sin `nombre` se
    *  llama "Complemento de {folio del padre}". */
-  complementario: (id: string, nombre?: string) => fetchApi<Lote>(`/lotes/${id}/complementario`, {
+  complementario: (id: string, nombre?: string, companyId?: string) => fetchApi<Lote>(`/lotes/${id}/complementario${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     method: 'POST',
     body: JSON.stringify(nombre ? { nombre } : {}),
   }),
@@ -333,21 +333,21 @@ export const ticketsApi = {
     const qs = params.toString();
     return fetchApi<Ticket[]>(`/tickets/${qs ? `?${qs}` : ''}`);
   },
-  get: (id: string) => fetchApi<Ticket>(`/tickets/${id}`),
+  get: (id: string, companyId?: string) => fetchApi<Ticket>(`/tickets/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`),
   create: (data: TicketCreate) => fetchApi<Ticket>('/tickets/', {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  update: (id: string, data: TicketUpdate) => fetchApi<Ticket>(`/tickets/${id}`, {
+  update: (id: string, data: TicketUpdate, companyId?: string) => fetchApi<Ticket>(`/tickets/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
-  delete: (id: string) => fetchApi<void>(`/tickets/${id}`, { method: 'DELETE' }),
+  delete: (id: string, companyId?: string) => fetchApi<void>(`/tickets/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, { method: 'DELETE' }),
 
   // Clasifica varios de golpe. Va en un solo PATCH y no en uno por ticket: la
   // barra gris puede ser de 200 y a uno por uno son 200 viajes de ida y vuelta.
-  clasificarLote: (ticketIds: string[], category: string | null): Promise<{ actualizados: number; pedidos: number }> =>
-    fetchApi('/tickets/categoria', {
+  clasificarLote: (ticketIds: string[], category: string | null, companyId?: string): Promise<{ actualizados: number; pedidos: number }> =>
+    fetchApi(`/tickets/categoria${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
       method: 'PATCH',
       body: JSON.stringify({ ticket_ids: ticketIds, category }),
     }),
@@ -370,7 +370,7 @@ export const ticketsApi = {
 
   // `approve` con datos que siguen rotos devuelve 422: la opinion de una
   // persona no puede saltarse los checks. Hay que corregir y volver a intentar.
-  review: (id: string, data: TicketReviewRequest) => fetchApi<Ticket>(`/tickets/${id}/review`, {
+  review: (id: string, data: TicketReviewRequest, companyId?: string) => fetchApi<Ticket>(`/tickets/${id}/review${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
@@ -397,8 +397,8 @@ export const ticketsApi = {
 
   // Registra el veredicto de la muestra. NO corrige el ticket: solo deja
   // constancia de si la lectura coincidia con el papel.
-  registrarVeredicto: (id: string, data: SpotCheckRequest) =>
-    fetchApi<SpotCheckItem>(`/tickets/${id}/spot-check`, {
+  registrarVeredicto: (id: string, data: SpotCheckRequest, companyId?: string) =>
+    fetchApi<SpotCheckItem>(`/tickets/${id}/spot-check${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
@@ -479,8 +479,8 @@ export const ticketsApi = {
     return fetchApi<ScanFilePage>(`/scan/files${qs ? `?${qs}` : ''}`);
   },
 
-  scanFile: (id: string): Promise<ScanFileDetail> =>
-    fetchApi<ScanFileDetail>(`/scan/files/${id}`),
+  scanFile: (id: string, companyId?: string): Promise<ScanFileDetail> =>
+    fetchApi<ScanFileDetail>(`/scan/files/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`),
 
   /** Relee UN archivo.
    *
@@ -496,7 +496,7 @@ export const ticketsApi = {
     );
   },
 
-  scanStats: (): Promise<ScanStats> => fetchApi<ScanStats>('/scan/stats'),
+  scanStats: (companyId?: string): Promise<ScanStats> => fetchApi<ScanStats>(`/scan/stats${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`),
 
   scanConfig: (): Promise<ScanConfig> => fetchApi<ScanConfig>('/scan/config'),
 
@@ -512,20 +512,20 @@ export const ticketsApi = {
    *  Devuelve bytes y no una URL porque el endpoint pide token: un `<img src>`
    *  contra la URL del backend se veria vacio, sin error visible, y el revisor
    *  no distinguiria "el documento no esta" de "la peticion fallo". */
-  documento: (ticketId: string): Promise<BlobDocumento> => fetchDocumento(ticketId),
-  vistaPrevia: (ticketId: string): Promise<Blob> => fetchVistaPrevia(ticketId),
+  documento: (ticketId: string, companyId?: string): Promise<BlobDocumento> => fetchDocumento(ticketId, companyId),
+  vistaPrevia: (ticketId: string, companyId?: string): Promise<Blob> => fetchVistaPrevia(ticketId, companyId),
 
   /** Vuelve a subir el comprobante de un ticket que ya existe.
    *
    *  Es lo que hace recuperable un documento que no se pudo leer: los bytes se
    *  pueden volver a subir sobre el ticket que ya esta, y no se crea un gasto
    *  nuevo. */
-  subirDocumento: (ticketId: string, file: File): Promise<Ticket> => {
+  subirDocumento: (ticketId: string, file: File, companyId?: string): Promise<Ticket> => {
     const formData = new FormData();
     formData.append('file', file);
     // Sin `headers`: el `Content-Type` del multipart lo pone `fetchApi` segun
     // vea que el cuerpo es un FormData. Ponerlo aqui a mano rompe el boundary.
-    return fetchApi<Ticket>(`/tickets/${ticketId}/documento`, {
+    return fetchApi<Ticket>(`/tickets/${ticketId}/documento${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
       method: 'PUT',
       body: formData,
     });
@@ -554,11 +554,11 @@ export const bankTransactionsApi = {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  update: (id: string, data: BankTransactionUpdate) => fetchApi<BankTransaction>(`/bank-transactions/${id}`, {
+  update: (id: string, data: BankTransactionUpdate, companyId?: string) => fetchApi<BankTransaction>(`/bank-transactions/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
-  delete: (id: string) => fetchApi<void>(`/bank-transactions/${id}`, { method: 'DELETE' }),
+  delete: (id: string, companyId?: string) => fetchApi<void>(`/bank-transactions/${id}${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ''}`, { method: 'DELETE' }),
 
   // Preview CSV import
   importCsvPreview: (file: File, options: {

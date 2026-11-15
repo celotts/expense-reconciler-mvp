@@ -138,6 +138,7 @@ export function ReviewQueue() {
               <TicketEnCola
                 key={t.id}
                 ticket={t}
+                companyId={companyId || undefined}
                 onRefresh={cargar}
                 onEditar={() => setEditando(t.id)}
                 onDescartar={() => setDescartando(t.id)}
@@ -152,6 +153,7 @@ export function ReviewQueue() {
       {descartando && (
         <DialogoDescartar
           ticket={tickets.find(t => t.id === descartando)!}
+          companyId={companyId || undefined}
           onCerrar={() => setDescartando(null)}
           onHecho={async () => { setDescartando(null); await cargar(); }}
         />
@@ -220,9 +222,10 @@ export function Resumen({
 // ---------------------------------------------------------------------------
 
 export function TicketEnCola({
-  ticket, editando, onEditar, onCancelarEdicion, onDescartar, onRefresh,
+  ticket, companyId, editando, onEditar, onCancelarEdicion, onDescartar, onRefresh,
 }: {
   ticket: Ticket;
+  companyId?: string;
   editando: boolean;
   onEditar: () => void;
   onCancelarEdicion: () => void;
@@ -243,7 +246,7 @@ export function TicketEnCola({
     setOcupado(true);
     setErrorAccion(null);
     try {
-      await ticketsApi.review(ticket.id, { action: 'approve', ...correcciones });
+      await ticketsApi.review(ticket.id, { action: 'approve', ...correcciones }, companyId || ticket.company_id || undefined);
       await onRefresh();
     } catch (e) {
       setErrorAccion(e instanceof Error ? e.message : 'No se pudo aprobar');
@@ -584,9 +587,10 @@ export function EditorTicket({
 // ---------------------------------------------------------------------------
 
 export function DialogoDescartar({
-  ticket, onCerrar, onHecho,
+  ticket, companyId, onCerrar, onHecho,
 }: {
   ticket: Ticket;
+  companyId?: string;
   onCerrar: () => void;
   onHecho: () => void | Promise<void>;
 }) {
@@ -602,7 +606,7 @@ export function DialogoDescartar({
     setOcupado(true);
     setError(null);
     try {
-      await ticketsApi.review(ticket.id, { action: 'reject', notes: motivo.trim() });
+      await ticketsApi.review(ticket.id, { action: 'reject', notes: motivo.trim() }, companyId || ticket.company_id || undefined);
       await onHecho();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo descartar');

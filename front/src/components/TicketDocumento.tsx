@@ -175,8 +175,8 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
     // fallo ahi significa "no hay conversion", nunca "no hay comprobante", y
     // esas dos cosas piden acciones opuestas.
     const [original, previa] = await Promise.allSettled([
-      ticketsApi.documento(ticket.id),
-      ticketsApi.vistaPrevia(ticket.id),
+      ticketsApi.documento(ticket.id, ticket.company_id || undefined),
+      ticketsApi.vistaPrevia(ticket.id, ticket.company_id || undefined),
     ]);
 
     if (original.status === 'rejected') {

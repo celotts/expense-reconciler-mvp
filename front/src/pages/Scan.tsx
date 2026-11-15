@@ -122,7 +122,7 @@ export function Scan() {
       // archivos para pintar; los motores llegan despues, con su chip.
       const [c, s, f, r] = await Promise.allSettled([
         ticketsApi.scanConfig(),
-        ticketsApi.scanStats(),
+        ticketsApi.scanStats(companyId || undefined),
         ticketsApi.scanFiles({
           estado: filtro || undefined,
           companyId: companyId || undefined,
@@ -360,13 +360,13 @@ export function Scan() {
 
   const abrirDetalle = async (id: string) => {
     try {
-      const archivo = await ticketsApi.scanFile(id);
+      const archivo = await ticketsApi.scanFile(id, companyId || undefined);
       setDetalle(archivo);
       // El ticket se pide aparte y su fallo NO cierra el detalle. El archivo y
       // su historial son el objeto de esta pantalla; el comprobante pegado es un
       // extra, y perderlo no puede hacer que el modal se quede en blanco.
       if (archivo.ticket_id) {
-        ticketsApi.get(archivo.ticket_id)
+        ticketsApi.get(archivo.ticket_id, companyId || undefined)
           .then(setTicketDelDetalle)
           .catch(() => setTicketDelDetalle(null));
       } else {
@@ -397,7 +397,7 @@ export function Scan() {
     setConfirmarCerrar(false);
     setMostrarReabrir(false);
     try {
-      setLoteDetalle(await lotesApi.detalle(id));
+      setLoteDetalle(await lotesApi.detalle(id, companyId || undefined));
     } catch (e) {
       setLoteDetalle(null);
       setErrorLotes(e instanceof Error ? e.message : 'No se pudo cargar el lote');
@@ -411,7 +411,7 @@ export function Scan() {
     setConfirmarCerrar(false);
     setMostrarReabrir(false);
     try {
-      setLoteDetalle(await lotesApi.detalle(id));
+      setLoteDetalle(await lotesApi.detalle(id, companyId || undefined));
     } catch (e) {
       setLoteDetalle(null);
       setErrorLotes(e instanceof Error ? e.message : 'No se pudo cargar el lote');
@@ -469,7 +469,7 @@ export function Scan() {
     if (!loteDetalle) return;
     try {
       setCerrandoLote(true);
-      const actualizado = await lotesApi.cerrar(loteDetalle.id);
+      const actualizado = await lotesApi.cerrar(loteDetalle.id, companyId || loteDetalle.company_id || undefined);
       setLotes((actual) => actual.map((l) => (l.id === actualizado.id ? actualizado : l)));
       // La selección se suelta: un lote cerrado no se puede elegir para un
       // nuevo escaneo. El detalle se queda abierto, que es donde están el
@@ -492,7 +492,7 @@ export function Scan() {
     }
     try {
       setAccionLote(true);
-      const actualizado = await lotesApi.reabrir(loteDetalle.id, motivoReabrir.trim());
+      const actualizado = await lotesApi.reabrir(loteDetalle.id, motivoReabrir.trim(), companyId || loteDetalle.company_id || undefined);
       setLotes((actual) => actual.map((l) => (l.id === actualizado.id ? actualizado : l)));
       setMostrarReabrir(false);
       setMotivoReabrir('');
@@ -508,7 +508,7 @@ export function Scan() {
     if (!loteDetalle) return;
     try {
       setAccionLote(true);
-      const nuevo = await lotesApi.complementario(loteDetalle.id);
+      const nuevo = await lotesApi.complementario(loteDetalle.id, undefined, companyId || loteDetalle.company_id || undefined);
       await cargarLotes();
       // El complementario nace ABIERTO y queda elegido: es donde van los faltantes.
       await seleccionarLote(nuevo.id);
@@ -896,7 +896,7 @@ export function Scan() {
           <span>Preparando el escaneo, detectando archivos{stats?.total_archivos ? ` (0 de ${stats.total_archivos})` : '…'}</span>
         </div>
       )}
-      {corrida && <PanelProgreso corrida={corrida} totalPosible={stats?.total_archivos} loteFolio={loteDeCorrida?.folio ?? null} />}
+      {corrida && <PanelProgreso corrida={corrida} totalPosible={stats?.total_archivos} loteFolio={loteDeCorrida?.folio ?? null} companyId={companyId} />}
 
       {ultimo && (
         <PanelResultado
@@ -904,6 +904,7 @@ export function Scan() {
           duracionClienteSegundos={tiempoClienteSegundos}
           corridaSegundos={corrida?.segundos ?? null}
           loteFolio={loteDeCorrida?.folio ?? null}
+          companyId={companyId}
         />
       )}
 
@@ -1170,10 +1171,12 @@ function PanelResultado({
   duracionClienteSegundos,
   corridaSegundos,
   loteFolio,
+  companyId,
 }: {
   resultado: ScanResultado;
   duracionClienteSegundos?: number | null;
   corridaSegundos?: number | null;
+  companyId?: string | null;
   /** El folio del lote de esta corrida, elegido en la pantalla antes de
    *  escanear. Es el folio LOCAL, no un campo de `ScanResultado`: la respuesta
    *  del escaneo todavía no trae el lote, y mostrar el elegido es honesto
@@ -1187,7 +1190,7 @@ function PanelResultado({
   const [cargandoTicket, setCargandoTicket] = useState(false);
   async function abrirTicket(ticketId: string) {
     setCargandoTicket(true);
-    try { const t = await ticketsApi.get(ticketId); setTicketVer(t); }
+    try { const t = await ticketsApi.get(ticketId, companyId || undefined); setTicketVer(t); }
     finally { setCargandoTicket(false); }
   }
   // La lista principal es de comprobantes UNICOS. Un duplicado por contenido

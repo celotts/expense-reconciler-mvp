@@ -111,7 +111,7 @@ export function Reconciliations() {
     e.preventDefault();
     try {
       setRunLoading(true);
-      const result = await reconciliationsApi.run(runParams);
+      const result = await reconciliationsApi.run({ ...runParams, company_id: runParams.company_id || selectedCompany });
       setRunResult(result);
       setShowRunModal(true);
       loadData();
