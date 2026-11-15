@@ -71,7 +71,7 @@ export function Companies() {
 
   const columns = [
     { key: 'name', header: 'Nombre', render: (c: Company) => <span className="font-medium">{c.name}</span> },
-    { key: 'tax_id', header: 'RFC', render: (c: Company) => <code className="text-sm bg-gray-100 px-2 py-1 rounded">{c.tax_id}</code> },
+    { key: 'tax_id', header: 'RFC', render: (c: Company) => <code className="text-sm bg-primary-50 text-primary-800 px-2 py-1 rounded">{c.tax_id}</code> },
     { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
     { key: 'actions', header: 'Acciones', render: (c: Company) => (
       <div className="flex gap-2">
@@ -85,7 +85,7 @@ export function Companies() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Empresas</h1>
+          <h1 className="text-2xl font-bold text-ink">Empresas</h1>
           <p className="text-gray-500">Gestiona tus empresas y perfiles fiscales</p>
         </div>
         <Button onClick={openCreateModal}>Nueva Empresa</Button>

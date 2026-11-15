@@ -56,7 +56,7 @@ export function CasillaArchivar({ valor, onCambio, ocupado, config }: Props) {
           checked={marcada}
           disabled={ocupado || valor === null}
           onChange={e => onCambio(e.target.checked)}
-          className="mt-0.5 w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+          className="mt-0.5 w-4 h-4 rounded border-gray-300 text-primary-700 focus:ring-primary-500 disabled:opacity-50"
         />
         <span className="min-w-0">
           <span className="block text-sm font-medium text-gray-900">

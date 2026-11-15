@@ -190,7 +190,7 @@ function AppInner() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-cream">
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div 
@@ -206,7 +206,7 @@ function AppInner() {
         <div className="flex flex-col h-full">
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b">
-            <h1 className="text-xl font-bold text-blue-600">Expense Reconciler</h1>
+            <h1 className="text-xl font-bold text-primary-700">Expense Reconciler</h1>
             {/* `p-3` y no `p-2`: el icono de 24 con `p-2` da 40px de alto, y el
                 minimo tactil es 44. Es el unico control sin etiqueta de esta
                 pantalla, asi que ademas necesita el margen para no pegarse al
@@ -236,7 +236,7 @@ function AppInner() {
                 }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                   paginaActual === item.key
-                    ? 'bg-blue-50 text-blue-700'
+                    ? 'bg-primary-50 text-primary-800'
                     : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                 }`}
               >
@@ -251,7 +251,7 @@ function AppInner() {
             <div className="mb-2">
               <p className="text-sm font-medium text-gray-800 truncate">{usuario?.nombre}</p>
               <p className="text-xs text-gray-500 truncate">{usuario?.email}</p>
-              <p className="text-xs text-blue-600 truncate font-medium">{perfilLabel}</p>
+              <p className="text-xs text-primary-700 truncate font-medium">{perfilLabel}</p>
               <p className="text-xs text-gray-400 truncate">{grupo ? `Grupo: ${grupo}` : ''}</p>
               {perfil === 'develop' && (
                 <div className="mt-2">

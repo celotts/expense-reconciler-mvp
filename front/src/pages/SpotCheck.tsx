@@ -199,7 +199,7 @@ export function PanelEvidencia({ reporte }: { reporte: ReporteExactitud }) {
           onClick={() => setDetalle(d => !d)}
           // Mismo criterio que el boton de "Abrir cola": el texto es pequeno
           // pero el area tiene que ser de 44. Medido en 20px sin esto.
-          className="text-sm text-blue-600 hover:text-blue-800 font-medium py-3 -my-3"
+          className="text-sm text-primary-700 hover:text-primary-800 font-medium py-3 -my-3"
         >
           {detalle ? 'Ocultar el desglose por vía de lectura' : 'Ver el desglose por vía de lectura'}
         </button>
@@ -291,7 +291,7 @@ export function ResumenMuestra({
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <Card>
         <p className="text-xs text-gray-500 uppercase tracking-wider">Sin revisar</p>
-        <p className={`text-3xl font-bold mt-1 ${pendientes > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+        <p className={`text-3xl font-bold mt-1 ${pendientes > 0 ? 'text-primary-700' : 'text-gray-400'}`}>
           {pendientes}
         </p>
         {antiguedad !== null && pendientes > 0 && (
@@ -416,7 +416,7 @@ export function TarjetaMuestra({
             <div className="mt-2">
               <button
                 onClick={() => setViendoTexto(v => !v)}
-                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                className="text-xs text-primary-700 hover:text-primary-800 font-medium"
               >
                 {viendoTexto ? 'Ocultar lo que leyó el sistema' : 'Ver lo que leyó el sistema'}
               </button>

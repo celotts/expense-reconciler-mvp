@@ -642,7 +642,7 @@ export function Scan() {
                       const cerrado = lote.estado === 'CERRADO';
                       const seleccionado = lote.id === loteId;
                       return (
-                        <li key={lote.id} className={`flex flex-wrap items-center gap-x-1 ${seleccionado ? 'bg-blue-50' : 'bg-white'}`}>
+                        <li key={lote.id} className={`flex flex-wrap items-center gap-x-1 ${seleccionado ? 'bg-primary-50' : 'bg-white'}`}>
                           <button
                             type="button"
                             onClick={() => void seleccionarLote(lote.id)}
@@ -664,7 +664,7 @@ export function Scan() {
                               {lote.total_escaneado}/{lote.total_esperado ?? '—'} escaneados
                             </span>
                             <span className="text-xs text-gray-900 font-medium tabular-nums">{dineroLote(lote.importe_total)}</span>
-                            {seleccionado && <span className="text-[11px] font-medium text-blue-700">Seleccionado</span>}
+                            {seleccionado && <span className="text-[11px] font-medium text-primary-800">Seleccionado</span>}
                           </button>
                           <Button variant="ghost" size="sm" onClick={() => void verDetalleLote(lote.id)} title="Ver el detalle del lote">
                             Detalle
@@ -765,7 +765,7 @@ export function Scan() {
                 <span><strong className="text-gray-900 tabular-nums">{loteDetalle.total_tickets}</strong> tickets</span>
                 <span>Importe vivo: <strong className="text-gray-900 tabular-nums">{dineroLote(loteDetalle.importe_total_vivo)}</strong></span>
                 {loteDetalle.duplicados > 0 && (
-                  <span className="text-blue-700">{loteDetalle.duplicados} duplicado(s) por contenido</span>
+                  <span className="text-primary-800">{loteDetalle.duplicados} duplicado(s) por contenido</span>
                 )}
               </div>
               {loteDetalle.estado !== 'CERRADO' ? (
@@ -825,7 +825,7 @@ export function Scan() {
                   value={motivoReabrir}
                   onChange={(e) => setMotivoReabrir(e.target.value)}
                   rows={3}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                   placeholder="Por qué se reabre este lote"
                 />
               </div>
@@ -891,8 +891,8 @@ export function Scan() {
       <EstadoDeIa />
 
       {preparando && (
-        <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm flex items-center gap-2">
-          <span className="animate-spin inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
+        <div className="mt-4 p-3 bg-primary-50 border border-primary-200 rounded-lg text-primary-800 text-sm flex items-center gap-2">
+          <span className="animate-spin inline-block w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full" />
           <span>Preparando el escaneo, detectando archivos{stats?.total_archivos ? ` (0 de ${stats.total_archivos})` : '…'}</span>
         </div>
       )}
@@ -1302,18 +1302,18 @@ function PanelResultado({
         </div>
       )}
       {totalDuplicados > 0 && (
-        <details className="mt-3 rounded-md border border-blue-200 bg-blue-50 p-3">
-          <summary className="text-sm font-medium text-blue-800 cursor-pointer">
+        <details className="mt-3 rounded-md border border-primary-200 bg-primary-50 p-3">
+          <summary className="text-sm font-medium text-primary-800 cursor-pointer">
             Duplicados detectados ({totalDuplicados}) — no se sumaron dos veces, el original se conserva.
           </summary>
-          <p className="text-xs text-blue-700 mt-1">
+          <p className="text-xs text-primary-800 mt-1">
             Mismo proveedor, total y fecha que un ticket que ya existía, aunque
             la foto fuera distinta. El original se conserva; este intento queda
             en el registro, ligado a él.
           </p>
           <ul className="mt-2 space-y-1">
             {duplicados_por_contenido.map((d) => (
-              <li key={`${d.archivo}-${d.ticket_id ?? ''}`} className="text-xs text-blue-800">
+              <li key={`${d.archivo}-${d.ticket_id ?? ''}`} className="text-xs text-primary-800">
                 <span className="font-mono">{d.archivo}</span>
                 {' — '}{d.proveedor ?? 'sin proveedor'}
                 {d.total != null && (
@@ -1321,14 +1321,14 @@ function PanelResultado({
                 )}
                 {d.fecha && <span> · {d.fecha}</span>}
                 {d.ticket_id && (
-                  <span className="text-blue-600"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
+                  <span className="text-primary-700"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
                 )}
-                {d.regla && <span className="text-blue-600"> · {d.regla}</span>}
+                {d.regla && <span className="text-primary-700"> · {d.regla}</span>}
                 {d.ticket_id && (
                   <button
                     type="button"
                     onClick={() => abrirTicket(d.ticket_id!)}
-                    className="ml-2 text-blue-600 hover:text-blue-800 hover:underline"
+                    className="ml-2 text-primary-700 hover:text-primary-800 hover:underline"
                   >
                     {cargandoTicket ? 'Abriendo…' : 'Ver original'}
                   </button>
@@ -1339,18 +1339,18 @@ function PanelResultado({
           {duplicadosHash.length > 0 && (
             <ul className="mt-2 space-y-1">
               {duplicadosHash.map((d) => (
-                <li key={d.relative_path} className="text-xs text-blue-800">
+                <li key={d.relative_path} className="text-xs text-primary-800">
                   <span className="font-mono">{d.relative_path}</span>
                   {' — '}mismos bytes que un archivo ya procesado
-                  <span className="text-blue-600"> · mismos bytes</span>
+                  <span className="text-primary-700"> · mismos bytes</span>
                   {d.ticket_id && (
-                    <span className="text-blue-600"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
+                    <span className="text-primary-700"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
                   )}
                   {d.ticket_id && (
                     <button
                       type="button"
                       onClick={() => abrirTicket(d.ticket_id!)}
-                      className="ml-2 text-blue-600 hover:text-blue-800 hover:underline"
+                      className="ml-2 text-primary-700 hover:text-primary-800 hover:underline"
                     >
                       Ver original
                     </button>
@@ -1468,7 +1468,7 @@ function TablaArchivos({ archivos, onAbrir }: {
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
+        <thead className="bg-primary-600 text-left text-xs text-white uppercase">
           <tr>
             <th className="px-4 py-2">Archivo</th>
             <th className="px-4 py-2">Negocio</th>
@@ -1526,7 +1526,7 @@ function TablaArchivos({ archivos, onAbrir }: {
                 {f.ticket_id ? (
                   <button
                     onClick={() => onAbrir(f.id)}
-                    className="text-blue-600 hover:text-blue-800 hover:underline"
+                    className="text-primary-700 hover:text-primary-800 hover:underline"
                     title="Abrir el ticket y su comprobante original"
                   >
                     Ver ticket

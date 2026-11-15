@@ -421,7 +421,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           checked={seleccionados.has(t.id)}
           onChange={() => alternarSeleccion(t.id)}
           onClick={(e) => e.stopPropagation()}
-          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          className="w-4 h-4 rounded border-gray-300 text-primary-700 focus:ring-primary-500 cursor-pointer"
           aria-label={`Seleccionar ${t.provider_name}`}
         />
       ),
@@ -459,7 +459,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Tickets / Facturas</h1>
+          <h1 className="text-2xl font-bold text-ink">Tickets / Facturas</h1>
           <p className="text-gray-500">Registra y gestiona tus comprobantes fiscales</p>
         </div>
         <div className="flex gap-2">
@@ -483,7 +483,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
             <select
               value={selectedCompany}
               onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             >
               <option value="">Seleccionar empresa...</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
@@ -510,8 +510,8 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                     i > 0 ? 'border-l border-gray-300' : ''
                   } ${
                     filtro === o.k
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-600 hover:bg-gray-50'
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-white text-gray-600 hover:bg-primary-50 hover:text-primary-800'
                   }`}
                 >
                   {o.l}
@@ -555,7 +555,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           <button
             type="button"
             onClick={() => setUltimoVeredicto(null)}
-            className="text-sm text-gray-500 hover:text-gray-700 underline"
+            className="text-sm text-gray-500 hover:text-primary-700 underline"
           >
             Entendido
           </button>
@@ -566,12 +566,12 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           vacia con un desplegable de categorias es ruido en la pantalla de todos
           los dias. */}
       {seleccionados.size > 0 && (
-        <div className="sticky top-0 z-20 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+        <div className="sticky top-0 z-20 bg-primary-50 border border-primary-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
           <div>
-            <p className="text-sm font-medium text-blue-900">
+            <p className="text-sm font-medium text-primary-900">
               {seleccionados.size} {seleccionados.size === 1 ? 'ticket seleccionado' : 'tickets seleccionados'}
             </p>
-            <p className="text-xs text-blue-700">
+            <p className="text-xs text-primary-800">
               {dinero(montoSeleccionado)} en total
             </p>
           </div>
@@ -579,7 +579,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
             <select
               value={categoriaLote}
               onChange={e => setCategoriaLote(e.target.value)}
-              className="px-3 py-3 sm:py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+              className="px-3 py-3 sm:py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
             >
               <option value="">Sin clasificar (quitar categoría)</option>
               {categorias.map(c => (
@@ -621,7 +621,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                     type="checkbox"
                     checked={seleccionados.size > 0 && seleccionados.size === tickets.length}
                     onChange={alternarTodos}
-                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    className="w-4 h-4 rounded border-gray-300 text-primary-700 focus:ring-primary-500 cursor-pointer"
                   />
                   Seleccionar todos ({tickets.length})
                 </label>
@@ -715,7 +715,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                 href={`/ticket/${editingTicket.id}/documento`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-2 inline-block text-xs text-blue-600 underline"
+                className="mt-2 inline-block text-xs text-primary-700 underline"
               >
                 Abrir el comprobante en otra pestaña (para verlo en grande)
               </a>
@@ -833,7 +833,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                       </ul>
                     </div>
                   )}
-                  <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="bg-primary-50 border border-primary-200 p-4 rounded-lg">
                     <h4 className="font-medium mb-2">Datos extraídos:</h4>
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div>
@@ -854,7 +854,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
                       entre al muestreo, y guardar por el formulario lo deja como
                       captura manual. Elegir sin entender la diferencia seria elegir
                       al azar, asi que se explica antes de elegir. */}
-                  <div className="bg-blue-50 border border-blue-200 text-blue-900 px-4 py-3 rounded-lg text-sm">
+                  <div className="bg-primary-50 border border-primary-200 text-primary-900 px-4 py-3 rounded-lg text-sm">
                     <p className="font-medium mb-1">¿Los datos están correctos?</p>
                     <p>
                       Si sí, se guardan con la verificación de la IA activada: el sistema

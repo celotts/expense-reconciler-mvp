@@ -15,18 +15,24 @@ export default {
         '2xl': '1536px',
       },
       colors: {
+        // Paleta Tablero de gastos (2026-11-14): verde oscuro + crema.
+        // primary-600 es el verde del boton (+ Registrar gasto) y
+        // primary-700 su hover; blanco sobre ambos pasa contraste AA.
         primary: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
+          50: '#eef5f0',
+          100: '#dce9e0',
+          200: '#bcd6c6',
+          300: '#8fbda3',
+          400: '#5fa07b',
+          500: '#3e8560',
+          600: '#2e6b4f',
+          700: '#256b4a',
+          800: '#1e4d36',
+          900: '#173e2c',
+          950: '#0f2a1e',
         },
+        cream: '#f5f3ee',
+        ink: '#1a1a1a',
       },
       spacing: {
         '18': '4.5rem',

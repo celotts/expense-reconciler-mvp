@@ -56,7 +56,7 @@ import { dinero, monto, numero, variacion } from '../utils/format';
  *  Tres estados y no mas. Un tablero con once colores distintos parece un
  *  grafico de torta y deja de leerse al segundo uso: cuando todo resalta, nada
  *  resalta. */
-const COLOR_VARIABLE = 'bg-blue-500';
+const COLOR_VARIABLE = 'bg-primary-500';
 const COLOR_FIJO = 'bg-slate-700';
 const COLOR_SIN_CLASIFICAR = 'bg-amber-400';
 
@@ -341,11 +341,11 @@ function RepartoPorCategoria({
       {sinClasificar && (
         <button
           onClick={() => irA('tickets', 'sinClasificar')}
-          className="w-full text-left text-xs text-gray-500 mt-4 pt-3 border-t border-gray-100 hover:text-blue-600 transition-colors"
+          className="w-full text-left text-xs text-gray-500 mt-4 pt-3 border-t border-gray-100 hover:text-primary-700 transition-colors"
         >
           <span className="inline-block w-2 h-2 rounded-full bg-amber-400 mr-1.5 align-middle" />
           Sin clasificar no es un rubro, es trabajo pendiente.{' '}
-          <span className="text-blue-600 font-medium">
+          <span className="text-primary-700 font-medium">
             Clasificar {sinClasificar.tickets}{' '}
             {sinClasificar.tickets === 1 ? 'ticket' : 'tickets'} →
           </span>
@@ -555,7 +555,7 @@ function Tendencia({ meses }: { meses: MesGasto[] }) {
             <div key={`${m.anio}-${m.mes}`} className="flex-1 flex flex-col items-center group relative">
               <div className="w-full flex items-end" style={{ height: ALTO_BARRAS }}>
                 <div
-                  className={`w-full rounded-sm ${enCurso ? 'bg-emerald-400' : 'bg-blue-200'}`}
+                  className={`w-full rounded-sm ${enCurso ? 'bg-emerald-400' : 'bg-primary-200'}`}
                   style={{ height: px }}
                 />
               </div>
@@ -579,7 +579,7 @@ function Tendencia({ meses }: { meses: MesGasto[] }) {
           es una frase, no dos cuadritos de color. */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-[11px] text-gray-500">
         <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-sm bg-blue-200 shrink-0" />
+          <span className="w-2.5 h-2.5 rounded-sm bg-primary-200 shrink-0" />
           Mes cerrado
         </span>
         <span className="inline-flex items-center gap-1.5">
@@ -789,7 +789,7 @@ function Pendientes({ d, irA }: { d: DashboardResponse; irA: (p: Page) => void }
           muestra: sin categoria, sin conciliar y con discrepancias. */}
       <button
         onClick={() => irA('cierre')}
-        className="mt-4 text-sm text-blue-600 hover:text-blue-700 py-3.5 -my-3.5"
+        className="mt-4 text-sm text-primary-700 hover:text-primary-800 py-3.5 -my-3.5"
       >
         Ver el cierre del mes →
       </button>
@@ -821,7 +821,7 @@ function FilaPendiente({
             // margen negativo es lo que permite eso — sin el, el boton
             // empujaria hacia abajo la linea de 20px en la que vive. Medido a
             // 16px sin esto. Con `py-2` daba 32, todavia corto.
-            className="text-xs text-blue-600 hover:text-blue-700 shrink-0 py-3.5 -my-3.5"
+            className="text-xs text-primary-700 hover:text-primary-800 shrink-0 py-3.5 -my-3.5"
           >
             {accion.texto} →
           </button>

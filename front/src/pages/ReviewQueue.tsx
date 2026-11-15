@@ -202,7 +202,7 @@ export function Resumen({
             onClick={() => onFiltrar(s)}
             title={statusMeta(s).help}
             className={`text-left rounded-xl shadow-sm border p-4 transition-colors ${
-              activo ? 'border-blue-400 bg-blue-50 ring-1 ring-blue-300' : 'border-gray-200 bg-white hover:border-gray-300'
+              activo ? 'border-primary-400 bg-primary-50 ring-1 ring-primary-300' : 'border-gray-200 bg-white hover:border-gray-300'
             }`}
           >
             <p className="text-xs text-gray-500 uppercase tracking-wider">{statusMeta(s).label}</p>
@@ -540,7 +540,7 @@ export function EditorTicket({
           type="button"
           onClick={agregarLinea}
           disabled={ocupado}
-          className="mt-2 text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
+          className="mt-2 text-xs text-primary-700 hover:text-primary-800 disabled:opacity-40"
         >
           + Agregar partida
         </button>

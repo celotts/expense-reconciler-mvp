@@ -229,7 +229,7 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
   // Sin ticket no hay nada que afirmar: se dice, en vez de inventar un estado de
   // lectura para un comprobante del que no se guardo fila.
   if (!p.ticket_id) {
-    return { tono: 'bg-blue-100 text-blue-800', etiqueta: 'leido, sin ticket' };
+    return { tono: 'bg-primary-100 text-primary-800', etiqueta: 'leido, sin ticket' };
   }
 
   if (p.es_duplicado) return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'duplicado' };
@@ -333,17 +333,17 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
   return (
     <>
     <section
-      className="mt-4 rounded-xl border-2 border-blue-200 bg-blue-50/50 overflow-hidden"
+      className="mt-4 rounded-xl border-2 border-primary-200 bg-primary-50/50 overflow-hidden"
       aria-live="polite"
       aria-busy={!corrida.terminada}
     >
       {/* La cabecera: el "va bien" o "se trabo" del operador */}
-      <header className="px-4 py-3 border-b border-blue-200 bg-white/60">
+      <header className="px-4 py-3 border-b border-primary-200 bg-white/60">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <span
               className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-                corrida.terminada ? 'bg-green-500' : 'bg-blue-500 animate-pulse'
+                corrida.terminada ? 'bg-green-500' : 'bg-primary-500 animate-pulse'
               }`}
               aria-hidden="true"
             />
@@ -391,9 +391,9 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
             relleno es un ancho relativo a los archivos que YA pasaron, con un
             minimo visible para que nunca parezca arrestedo. */}
         {!corrida.terminada && (
-          <div className="mt-3 h-1.5 bg-blue-100 rounded-full overflow-hidden">
+          <div className="mt-3 h-1.5 bg-primary-100 rounded-full overflow-hidden">
             <div
-              className="h-full bg-blue-500 rounded-full transition-all duration-500"
+              className="h-full bg-primary-500 rounded-full transition-all duration-500"
               style={{ width: `${Math.min(100, 12 + hechos * 4)}%` }}
             />
           </div>
@@ -402,7 +402,7 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
 
       {/* El feed: que salio de cada archivo, con su importe */}
       {procesados.length > 0 ? (
-        <ul className="divide-y divide-blue-100 max-h-80 overflow-y-auto">
+        <ul className="divide-y divide-primary-100 max-h-80 overflow-y-auto">
           {procesados.map((p, i) => {
             const ev = estadoVisual(p);
             return (
@@ -451,11 +451,11 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
                     <button
                       type="button"
                       onClick={() => abrirTicket(p.ticket_id!)}
-                      className="shrink-0 text-blue-600 hover:text-blue-800 p-1"
+                      className="shrink-0 text-primary-700 hover:text-primary-800 p-1"
                       title="Ver comprobante original"
                     >
                       {cargandoTicket ? (
-                        <span className="animate-spin inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
+                        <span className="animate-spin inline-block w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full" />
                       ) : (
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 12s.75-7.5 9.75-7.5S21.75 12 21.75 12s-.75 7.5-9.75 7.5S2.25 12 2.25 12z" /><circle cx="12" cy="12" r="3" /></svg>
                       )}
@@ -579,7 +579,7 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
 
       {/* El pie: el resumen honesto, solo si ya termino */}
       {corrida.terminada && corrida.resumen && (
-        <footer className="px-4 py-3 bg-white/80 border-t border-blue-200">
+        <footer className="px-4 py-3 bg-white/80 border-t border-primary-200">
           <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
             <span className="text-gray-600">
               Total leído:{' '}
@@ -622,28 +622,28 @@ export function PanelProgreso({ corrida, totalPosible, loteFolio }: { corrida: S
               plano el POST responde 202 sin resultado y este pie es lo unico
               que el operador ve al terminar. */}
           {duplicadosSeccion.length > 0 && (
-            <details className="mt-3 rounded-md border border-blue-200 bg-blue-50 p-3">
-              <summary className="text-xs font-medium text-blue-800 cursor-pointer">
+            <details className="mt-3 rounded-md border border-primary-200 bg-primary-50 p-3">
+              <summary className="text-xs font-medium text-primary-800 cursor-pointer">
                 Duplicados detectados ({duplicadosSeccion.length}) — no se sumaron dos veces, el original se conserva.
               </summary>
               <ul className="mt-1.5 space-y-1">
                 {duplicadosSeccion.map((d) => (
-                  <li key={`${d.archivo}-${d.ticket_id ?? ''}`} className="text-xs text-blue-800">
+                  <li key={`${d.archivo}-${d.ticket_id ?? ''}`} className="text-xs text-primary-800">
                     <span className="font-mono">{d.archivo}</span>
                     {' — '}{d.proveedor ?? 'sin proveedor'}
                     {d.total != null && (
                       <span className="font-medium tabular-nums"> · {dinero(d.total)}</span>
                     )}
                     {d.fecha && <span> · {fechaLegible(d.fecha)}</span>}
-                    {d.regla && <span className="text-blue-600"> · {d.regla}</span>}
+                    {d.regla && <span className="text-primary-700"> · {d.regla}</span>}
                     {d.ticket_id && (
-                      <span className="text-blue-600"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
+                      <span className="text-primary-700"> · original: <span className="font-mono" title={d.ticket_id}>{d.ticket_id.slice(0, 8)}…</span></span>
                     )}
                     {d.ticket_id && (
                       <button
                         type="button"
                         onClick={() => abrirTicket(d.ticket_id!)}
-                        className="ml-2 text-blue-600 hover:text-blue-800 hover:underline"
+                        className="ml-2 text-primary-700 hover:text-primary-800 hover:underline"
                       >
                         Ver original
                       </button>

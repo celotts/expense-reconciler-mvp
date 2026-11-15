@@ -212,7 +212,7 @@ export function Reconciliations() {
             <select
               value={selectedCompany}
               onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             >
               <option value="">Seleccionar empresa...</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
@@ -446,7 +446,7 @@ export function Reconciliations() {
             <Input label="Fecha Hasta" type="date" value={exportParams.date_to} onChange={e => setExportParams({...exportParams, date_to: e.target.value})} />
           </div>
           <div className="flex items-center gap-2">
-            <input type="checkbox" id="only_reconciled" checked={exportParams.only_reconciled} onChange={e => setExportParams({...exportParams, only_reconciled: e.target.checked})} className="w-4 h-4 text-blue-600 rounded" />
+            <input type="checkbox" id="only_reconciled" checked={exportParams.only_reconciled} onChange={e => setExportParams({...exportParams, only_reconciled: e.target.checked})} className="w-4 h-4 text-primary-700 rounded" />
             <label htmlFor="only_reconciled" className="text-sm">Solo conciliados (PERFECT + MANUAL)</label>
           </div>
           {exportFormat === 'generic' && (

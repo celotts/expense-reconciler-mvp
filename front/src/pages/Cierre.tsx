@@ -258,12 +258,12 @@ const [loading, setLoading] = useState(!informeInicial);
 
             {reporte.gasto.por_categoria.length > 0 ? (
               <table className="mt-4 w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="pb-2 font-medium">Categoría</th>
-                    <th className="pb-2 font-medium text-right">Monto</th>
-                    <th className="pb-2 font-medium text-right">Tickets</th>
-                    <th className="pb-2 font-medium text-right">% del total</th>
+                <thead className="bg-primary-600 text-white">
+                  <tr className="text-left">
+                    <th className="px-2 py-2 font-medium">Categoría</th>
+                    <th className="px-2 py-2 font-medium text-right">Monto</th>
+                    <th className="px-2 py-2 font-medium text-right">Tickets</th>
+                    <th className="px-2 py-2 font-medium text-right">% del total</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -359,12 +359,12 @@ const [loading, setLoading] = useState(!informeInicial);
 
             {reporte.exactitud && (
               <table className="mt-4 w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="pb-2 font-medium">Origen</th>
-                    <th className="pb-2 font-medium text-right">Revisados</th>
-                    <th className="pb-2 font-medium text-right">Aciertos</th>
-                    <th className="pb-2 font-medium text-right">Veredicto</th>
+                <thead className="bg-primary-600 text-white">
+                  <tr className="text-left">
+                    <th className="px-2 py-2 font-medium">Origen</th>
+                    <th className="px-2 py-2 font-medium text-right">Revisados</th>
+                    <th className="px-2 py-2 font-medium text-right">Aciertos</th>
+                    <th className="px-2 py-2 font-medium text-right">Veredicto</th>
                   </tr>
                 </thead>
                 <tbody>

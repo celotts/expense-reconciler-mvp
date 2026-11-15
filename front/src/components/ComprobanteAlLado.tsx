@@ -88,7 +88,7 @@ export function ComprobanteAlLado({ ticket }: { ticket: Ticket }) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between gap-2 mb-2">
-        <h3 className="text-sm font-semibold text-gray-900">Comprobante original</h3>
+        <h3 className="text-sm font-semibold text-ink">Comprobante original</h3>
         {ticket.documento_tamano != null && (
           <span className="text-xs text-gray-500 tabular-nums">
             {(ticket.documento_tamano / 1024).toFixed(0)} KB
@@ -103,7 +103,7 @@ export function ComprobanteAlLado({ ticket }: { ticket: Ticket }) {
           detalle="Es lo normal en captura manual. Si el comprobante existe en papel, no hay forma de contrastarlo: la lectura se tiene que aceptar o rechazar de memoria."
         />
       ) : cargando ? (
-        <div className="flex-1 flex items-center justify-center bg-gray-50 border border-gray-200 rounded-lg min-h-64">
+        <div className="flex-1 flex items-center justify-center bg-primary-50 border border-primary-200 rounded-lg min-h-64">
           <p className="text-sm text-gray-500">Cargando comprobante…</p>
         </div>
       ) : error ? (
@@ -141,7 +141,7 @@ export function ComprobanteAlLado({ ticket }: { ticket: Ticket }) {
                 href={url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-blue-600 underline mt-1 inline-block"
+                className="text-primary-700 underline mt-1 inline-block"
               >
                 Abrirlo en otra pestaña
               </a>
@@ -165,7 +165,7 @@ function Aviso({
   const clases =
     tono === 'rojo'
       ? 'bg-red-50 border-red-200 text-red-900'
-      : 'bg-gray-50 border-gray-200 text-gray-700';
+      : 'bg-primary-50 border-primary-200 text-primary-800';
   return (
     <div className={`flex-1 p-4 border rounded-lg ${clases}`}>
       <p className="text-sm font-medium">{titulo}</p>
@@ -179,10 +179,10 @@ export function TextoLeido({ texto }: { texto: string | null }) {
   if (!texto) return null;
   return (
     <details className="mt-3 group">
-      <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-900 select-none">
+      <summary className="text-xs text-gray-600 cursor-pointer hover:text-primary-800 select-none">
         Ver el texto que el sistema leyó del papel
       </summary>
-      <pre className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-y-auto text-gray-800">
+      <pre className="mt-2 p-3 bg-primary-50 border border-primary-200 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-y-auto text-gray-800">
         {texto}
       </pre>
     </details>

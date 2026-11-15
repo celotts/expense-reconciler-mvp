@@ -221,9 +221,9 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
 
   return (
     <div className="mt-3">
-      <div className="mb-3 p-3 rounded-lg bg-gray-50 border border-gray-200 text-xs space-y-2">
+      <div className="mb-3 p-3 rounded-lg bg-primary-50 border border-primary-200 text-xs space-y-2">
         <div className="min-w-0">
-          <p className="font-semibold text-gray-900 truncate" title={ticket.provider_name || 'Sin proveedor'}>{ticket.provider_name || 'Sin proveedor'}</p>
+          <p className="font-semibold text-ink truncate" title={ticket.provider_name || 'Sin proveedor'}>{ticket.provider_name || 'Sin proveedor'}</p>
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500">
             {ticket.provider_tax_id && <span className="font-mono">{ticket.provider_tax_id}</span>}
             {ticket.expense_date && <span>Fecha: {ticket.expense_date}</span>}
@@ -240,7 +240,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
       <button
         onClick={alternar}
         disabled={cargando}
-        className="text-xs text-blue-600 hover:text-blue-800 font-medium disabled:opacity-50"
+        className="text-xs text-primary-700 hover:text-primary-800 font-medium disabled:opacity-50"
       >
         {abierto ? 'Ocultar comprobante original' : 'Ver comprobante original'}
         {peso && <span className="text-gray-500"> ({peso})</span>}
@@ -315,7 +315,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
             <a
               href={url}
               download="comprobante"
-              className="text-blue-600 underline"
+              className="text-primary-700 underline"
             >
               Descargar el archivo
             </a>
@@ -324,7 +324,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
               href={url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 underline"
+              className="text-primary-700 underline"
             >
               Abrir en tamaño completo
             </a>

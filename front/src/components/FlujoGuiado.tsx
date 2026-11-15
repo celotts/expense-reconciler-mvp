@@ -173,7 +173,7 @@ export function FlujoGuiado({ dashboard, irA, companyId }: Props) {
                   estado === 'hecho'
                     ? 'border-green-200 bg-green-50 hover:bg-green-100'
                     : estado === 'en_curso'
-                      ? 'border-blue-300 bg-blue-50 hover:bg-blue-100'
+                      ? 'border-primary-300 bg-primary-50 hover:bg-primary-100'
                       : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
                 }`}
               >

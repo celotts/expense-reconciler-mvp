@@ -39,18 +39,29 @@ export function Button({
   className = '',
   ...props 
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'edit' | 'success'; size?: 'sm' | 'md' }) {
-  const base = 'rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+  // El redondeo y el peso van EN CADA VARIANTE y no en `base`: `rounded-lg` y
+  // `rounded-full` tienen la misma especificidad en Tailwind y gana la que
+  // aparezca despues en la hoja generada, no la que va despues en el atributo
+  // `class`, asi que con las dos puestas no se puede saber de antemano cual
+  // gana. Con una sola por variante, el resultado es determinista.
+  //
+  // `primary` copia el boton "+ Registrar gasto" del Tablero de gastos
+  // (2026-11-14): verde oscuro #2e6b4f (primary-600) con hover #256b4a
+  // (primary-700), texto blanco en negrita y forma de pildora (rounded-full).
+  // Las demas variantes conservan su redondeo y peso de antes; el ancho y el
+  // alto no se tocan: ningun boton se vuelve de ancho completo por esto.
+  const base = 'transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   const sizes = {
     sm: 'px-2.5 py-3 sm:py-1.5 text-sm',
     md: 'px-4 py-2.5 sm:py-2',
   };
   const variants = {
-    primary: 'bg-blue-600 text-white hover:bg-blue-700',
-    secondary: 'bg-gray-200 text-gray-800 hover:bg-gray-300',
-    danger: 'bg-red-600 text-white hover:bg-red-700',
-    ghost: 'bg-transparent text-gray-600 hover:bg-gray-100',
-    edit: 'bg-amber-500 text-white hover:bg-amber-600',
-    success: 'bg-emerald-600 text-white hover:bg-emerald-700',
+    primary: 'bg-primary-600 text-white font-bold hover:bg-primary-700 rounded-full',
+    secondary: 'bg-gray-200 text-gray-800 hover:bg-gray-300 rounded-lg font-medium',
+    danger: 'bg-red-600 text-white hover:bg-red-700 rounded-lg font-medium',
+    ghost: 'bg-transparent text-gray-600 hover:bg-gray-100 rounded-lg font-medium',
+    edit: 'bg-amber-500 text-white hover:bg-amber-600 rounded-lg font-medium',
+    success: 'bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg font-medium',
   };
   return (
     <button 
@@ -114,7 +125,7 @@ export function Input({
           // `pr-11` solo cuando hay botón: el input y el botón se solapan si el
           // padding no deja sitio al icono, y el texto queda debajo del ojo en vez
           // de al lado.
-          className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+          className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 ${
             esPassword ? 'pr-11' : ''
           } ${error ? 'border-red-500' : 'border-gray-300'} ${className}`}
           {...props}
@@ -214,7 +225,7 @@ export function Select({
         // un `py-[11px]` de 44 exacto porque dos pixeles por debajo del minimo no
         // se ven, pero un selector de 2px mas alto que sus vecinos en el mismo
         // formulario, si.
-        className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+        className={`w-full px-3 py-3 sm:py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 ${
           error ? 'border-red-500' : 'border-gray-300'
         } ${className}`}
         {...props}
@@ -285,10 +296,10 @@ export function Table({ columns, data, keyField, onRowClick, className = '' }: {
   return (
     <div className={`overflow-x-auto ${className}`}>
       <table className="w-full">
-        <thead className="bg-gray-50">
+        <thead className="bg-primary-600 text-white">
           <tr>
             {columns.map(col => (
-              <th key={col.key} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th key={col.key} className="px-4 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">
                 {col.header}
               </th>
             ))}
@@ -298,11 +309,11 @@ export function Table({ columns, data, keyField, onRowClick, className = '' }: {
           {data.map(item => (
             <tr 
               key={item[keyField]} 
-              className={onRowClick ? 'cursor-pointer hover:bg-gray-50' : ''}
+              className={onRowClick ? 'cursor-pointer hover:bg-primary-50' : ''}
               onClick={() => onRowClick?.(item)}
             >
               {columns.map(col => (
-                <td key={col.key} className="px-4 py-3 text-sm text-gray-900">
+                <td key={col.key} className="px-4 py-3 text-sm text-ink">
                   {col.render ? col.render(item) : item[col.key]}
                 </td>
               ))}
@@ -324,7 +335,7 @@ export function Badge({ children, variant = 'default' }: {
     success: 'bg-green-100 text-green-700',
     warning: 'bg-yellow-100 text-yellow-700',
     danger: 'bg-red-100 text-red-700',
-    info: 'bg-blue-100 text-blue-700',
+    info: 'bg-primary-100 text-primary-800',
   };
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${variants[variant]}`}>
@@ -338,7 +349,7 @@ export function Loading({ message = 'Cargando...' }: { message?: string }) {
   return (
     <div className="flex items-center justify-center py-12">
       <div className="flex flex-col items-center gap-3">
-        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <div className="w-8 h-8 border-4 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
         <p className="text-gray-600">{message}</p>
       </div>
     </div>
@@ -390,7 +401,7 @@ export function FileUpload({
   inputId?: string;
 }) {
   return (
-    <label htmlFor={inputId} className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors ${disabled ? 'opacity-50 cursor-not-allowed hover:border-gray-300 hover:bg-transparent' : ''} ${className}`}>
+    <label htmlFor={inputId} className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-primary-400 hover:bg-primary-50 transition-colors ${disabled ? 'opacity-50 cursor-not-allowed hover:border-gray-300 hover:bg-transparent' : ''} ${className}`}>
       <input 
         id={inputId}
         type="file" 
