@@ -140,3 +140,6 @@ test-files/*.pdf
 # IDE specific
 *.sublime-project
 *.sublime-workspace
+
+# Aider: historial y caché local, no se versionan
+.aider*
