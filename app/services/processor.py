@@ -1,29 +1,60 @@
+import hashlib
+import io
 import fitz  # PyMuPDF
 import cv2
 import numpy as np
-import hashlib
-from fastapi import UploadFile
-from typing import List, Optional
+from PIL import Image
 
-def process_pdf(file: UploadFile) -> List[bytes]:
-    document = fitz.open(file.file)
-    pages = []
-    for page_num in range(len(document)):
-        page = document.load_page(page_num)
-        pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))  # 150 DPI
-        pages.append(pix.tobytes("png"))
-    return pages
+def compute_sha256(file_bytes: bytes) -> str:
+    """Calcula el hash SHA256 de los bytes del archivo original para control anti-duplicados."""
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(file_bytes)
+    return sha256_hash.hexdigest()
 
-async def process_image(file: UploadFile) -> bytes:
-    image_bytes = await file.read()
-    image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+def preprocess_image_for_ocr(image_bytes: bytes) -> np.ndarray:
+    """
+    Preprocesa una imagen con OpenCV:
+    1. Redimensiona manteniendo proporción a un ancho máximo de 1024px.
+    2. Convierte a escala de grises.
+    3. Aplica CLAHE (Contrast Limited Adaptive Histogram Equalization) para mejorar tickets de baja calidad.
+    """
+    # Convertir bytes a imagen OpenCV (numpy array)
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if img is None:
+        raise ValueError("No se pudo decodificar la imagen con OpenCV.")
+
+    # 1. Redimensionar manteniendo proporción (ancho máximo 1024px)
+    height, width = img.shape[:2]
+    max_width = 1024
+    if width > max_width:
+        ratio = max_width / float(width)
+        new_height = int(height * ratio)
+        img = cv2.resize(img, (max_width, new_height), interpolation=cv2.INTER_AREA)
+
+    # 2. Convertir a escala de grises
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # 3. Aplicar CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    image = clahe.apply(image)
-    return cv2.imencode('.png', image)[1].tobytes()
+    processed = clahe.apply(gray)
 
-def calculate_sha256(file: UploadFile) -> str:
-    sha256 = hashlib.sha256()
-    while chunk := file.file.read(8192):
-        sha256.update(chunk)
-    return sha256.hexdigest()
+    return processed
+
+def process_pdf_page_to_image(pdf_bytes: bytes, page_number: int = 0) -> bytes:
+    """
+    Extrae una página de un archivo PDF usando PyMuPDF (fitz) a 150 DPI y la convierte a bytes PNG.
+    """
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if page_number >= len(doc):
+        raise ValueError(f"La página {page_number} no existe en el PDF.")
+    
+    page = doc[page_number]
+    # Configurar zoom para 150 DPI (el valor base por defecto es 72 DPI, 150/72 ≈ 2.083)
+    zoom = 150 / 72
+    matrix = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=matrix)
+    
+    # Retornar los bytes de la imagen generada
+    return pix.tobytes("png")
