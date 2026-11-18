@@ -140,3 +140,4 @@ test-files/*.pdf
 # IDE specific
 *.sublime-project
 *.sublime-workspace
+.aider*
