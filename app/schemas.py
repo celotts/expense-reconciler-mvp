@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 from decimal import Decimal
 
 class Item(BaseModel):
@@ -20,10 +20,22 @@ class Item(BaseModel):
 
 class Order(BaseModel):
     items: list[Item]
+    subtotal: Decimal
+    tax: Decimal
     total: Decimal
 
-    @validator('total')
-    def total_must_match_items(cls, v, values):
-        if v != sum(item.price * item.quantity for item in values['items']):
-            raise ValueError('Total must match items')
-        return v
+    @model_validator(mode='after')
+    def total_must_match_items(cls, values):
+        total_calculated = sum(item.price * item.quantity for item in values['items']) + values['tax']
+        if not values['total'] == total_calculated:
+            raise ValueError('Total must match items and tax')
+        return values
+
+class Report(BaseModel):
+    country: str
+    rfc_rut: str
+    date: str
+    items: list[Item]
+    payment_methods: list[str]
+    total: Decimal
+    hash_sha256: str
