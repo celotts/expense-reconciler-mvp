@@ -30,12 +30,3 @@ class Order(BaseModel):
         if not values['total'] == total_calculated:
             raise ValueError('Total must match items and tax')
         return values
-
-class Report(BaseModel):
-    country: str
-    rfc_rut: str
-    date: str
-    items: list[Item]
-    payment_methods: list[str]
-    total: Decimal
-    hash_sha256: str
