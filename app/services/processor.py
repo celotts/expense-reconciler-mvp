@@ -14,7 +14,7 @@ def process_pdf(file: UploadFile) -> List[bytes]:
         pages.append(pix.tobytes("png"))
     return pages
 
-def process_image(file: UploadFile) -> bytes:
+async def process_image(file: UploadFile) -> bytes:
     image_bytes = await file.read()
     image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
