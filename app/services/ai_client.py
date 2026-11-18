@@ -1,19 +1,75 @@
 import httpx
-from app.core.config import settings
+import json
+import logging
+from typing import Optional, Dict, Any
 
-class AIClient:
-    def __init__(self):
-        self.client = httpx.AsyncClient(base_url="http://localhost:11434")
+logger = logging.getLogger(__name__)
 
-    async def extract_data(self, content: bytes) -> dict:
-        response = await self.client.post(
-            "/api/extract",
-            json={
-                "model": "qwen2.5-vl:7b",
-                "temperature": 0.0,
-                "format": "json",
-                "content": content.decode("utf-8")
-            }
+class OllamaVisionClient:
+    def __init__(self, base_url: str = "http://localhost:11434", model_name: str = "qwen2.5-vl:7b"):
+        self.base_url = base_url
+        self.model_name = model_name
+
+    async def extract_receipt_data(self, image_base64: str) -> Dict[str, Any]:
+        """
+        Envía la imagen procesada al modelo local qwen2.5-vl:7b en Ollama con temperature 0.0
+        y formato JSON estricto para extraer los datos de la factura/recibo.
+        """
+        url = f"{self.base_url}/api/chat"
+        
+        prompt = (
+            "Eres un extractor experto de datos contables y fiscales para México y Chile. "
+            "Analiza la imagen del ticket o factura proporcionada y extrae la información solicitada "
+            "estrictamente en el siguiente formato JSON puro, sin texto adicional ni bloques markdown:\n"
+            "{\n"
+            '  "country": "MEX o CHL",\n'
+            '  "comercio": "Nombre del establecimiento",\n'
+            '  "identificacion_fiscal": "RFC o RUT del comercio",\n'
+            '  "fecha": "YYYY-MM-DD",\n'
+            '  "items": [\n'
+            '    {\n'
+            '      "name": "Nombre del producto",\n'
+            '      "price": 0.00,\n'
+            '      "quantity": 1\n'
+            '    }\n'
+            '  ],\n'
+            '  "subtotal": 0.00,\n'
+            '  "tax": 0.00,\n'
+            '  "total": 0.00,\n'
+            '  "metodo_pago": "Efectivo / Tarjeta / Transferencia",\n'
+            '  "link_o_folio_facturacion": null\n'
+            "}"
         )
-        response.raise_for_status()
-        return response.json()
+
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_base64]
+                }
+            ],
+            "format": "json",
+            "options": {
+                "temperature": 0.0
+            },
+            "stream": False
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                result_data = response.json()
+                
+                content_str = result_data.get("message", {}).get("content", "{}")
+                parsed_json = json.loads(content_str)
+                return parsed_json
+            
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error HTTP al comunicarse con Ollama: {e.response.status_code} - {e.response.text}")
+                raise RuntimeError(f"Fallo en el servicio de IA local: {e.response.text}")
+            except json.JSONDecodeError as e:
+                logger.error(f"El modelo no devolvió un JSON válido: {e}")
+                raise ValueError("La respuesta de Ollama no pudo ser decodificada como JSON.")
