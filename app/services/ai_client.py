@@ -1,14 +1,15 @@
 """
 AI Client Service - Unified interface for OpenAI / Azure OpenAI / Ollama / Local embeddings
 """
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-import logging
-
 import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
+
+from app.core.config import settings
 
 # Un modulo que llama a un proveedor externo y no dice nada cuando el proveedor
 # contesta un error: el fallo aparece como "el sistema no lee bien los tickets".
@@ -43,8 +44,6 @@ logger = logging.getLogger(__name__)
 # evaluadas en tiempo de ejecucion, asi que se cita el nombre y ya.
 if TYPE_CHECKING:  # pragma: no cover - solo para el editor
     from sentence_transformers import SentenceTransformer
-
-from app.core.config import settings
 
 
 class AIProvider(str, Enum):
