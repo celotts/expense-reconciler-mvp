@@ -743,6 +743,16 @@ class TicketExtractionResult(BaseModel):
     # IA: se estaria promediando la IA con un regex que casi nunca falla.
     confidence_source: ConfidenceSource = ConfidenceSource.LLM
 
+    # Campos multi-pais / fiscales (0019). Se propagan de la extraccion/persistencia
+    # sin romper rutas existentes; la normalizacion/autoridad final de algunos
+    # (p.ej. hash_duplicado) se resuelve en servicios de negocio.
+    pais: str | None = None
+    identificacion_fiscal: str | None = None
+    folio: str | None = None
+    metodo_pago: str | None = None
+    link_facturacion: str | None = None
+    hash_duplicado: str | None = None
+
     @field_validator("raw_text")
     @classmethod
     def _topa_raw_text(cls, v: str) -> str:

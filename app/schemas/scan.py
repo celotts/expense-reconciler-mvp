@@ -83,6 +83,19 @@ class DatosTicketResponse(BaseModel):
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
 
+    # Campos multi-pais / fiscales / control (0019), expuestos desde la fila.
+    pais: str | None = None
+    identificacion_fiscal: str | None = None
+    folio: str | None = None
+    metodo_pago: str | None = None
+    link_facturacion: str | None = None
+    hash_duplicado: str | None = None
+    estado_conciliacion: str | None = None
+    periodo_cerrado_override: bool | None = None
+    periodo_cerrado_motivo: str | None = None
+    periodo_cerrado_autorizado_por: str | None = None
+    periodo_cerrado_autorizado_at: datetime | None = None
+
 class ScanFileResponse(BaseModel):
     """Un archivo del registro, tal como esta en la tabla."""
 
@@ -332,6 +345,10 @@ class ScanItemResponse(BaseModel):
     # porque la pregunta "movi este papel aunque el sistema no lo entendiera?" se
     # responde mirando los dos juntos, no por separado.
     extraction_status: str | None = None
+    estado_conciliacion: str | None = None
+    pais: str | None = None
+    folio: str | None = None
+    hash_duplicado: str | None = None
     estaba_pendiente: bool | None = None
     # Cuando fue `simular`, esto dice "se moveria aqui" sin que se mueva nada.
     solo_simulado: bool = False

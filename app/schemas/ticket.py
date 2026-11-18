@@ -12,6 +12,49 @@ from app.core.enums import UNKNOWN_PROVIDER as UNKNOWN_PROVIDER
 
 # RFC mexicano: 3 letras (moral) o 4 (fisica), 6 digitos (YYMMDD), 3 homoclave
 RFC_REGEX = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$")
+# RUT chileno (formatos comunes con/sin puntos y guion, DV numerico o K)
+RUT_REGEX = re.compile(r"^\d{1,2}\.?\d{3}\.?\d{3}-?[\dK]$")
+
+PAISES_SOPORTADOS = {"MEX", "CHL"}
+ESTADOS_CONCILIACION = {"PENDIENTE", "CONCILIADO", "CON_DISCREPANCIA"}
+
+
+def _normalizar_pais(v: str | None) -> str | None:
+    if v is None:
+        return None
+    pais = v.strip().upper()
+    return pais or None
+
+
+def _normalizar_identificacion_fiscal(v: str | None, pais: str | None = None) -> str | None:
+    if v is None or not str(v).strip():
+        return None
+    identificacion = str(v).strip().upper().replace(" ", "")
+    # Normalizacion ligera para RUT (quita puntos, conserva guion si existe)
+    if pais == "CHL":
+        limpio = identificacion.replace(".", "")
+        if "-" not in limpio and len(limpio) >= 2:
+            limpio = f"{limpio[:-1]}-{limpio[-1]}"
+        return limpio.upper()
+    return identificacion
+
+
+def _validar_identificacion_fiscal(identificacion: str, pais: str | None) -> str:
+    """Valida RFC/RUT segun pais. Sin pais, mantiene compatibilidad RFC mexicana."""
+    if pais == "CHL":
+        if not RUT_REGEX.fullmatch(identificacion):
+            raise ValueError(
+                f"RUT invalido: {identificacion!r}. "
+                "Formato esperado chileno (ej. 12.345.678-5 o 12345678-5)."
+            )
+        return identificacion
+    # Compatibilidad historica: MEX o pais no especificado => RFC mexicano.
+    if not RFC_REGEX.fullmatch(identificacion):
+        raise ValueError(
+            f"RFC invalido: {identificacion!r}. Formato esperado: "
+            "3-4 letras, 6 digitos (YYMMDD) y 3 caracteres alfanumericos."
+        )
+    return identificacion
 
 
 
@@ -23,6 +66,12 @@ class TicketBase(BaseModel):
     expense_date: date
     category: str | None = Field(None, max_length=100)
     raw_text: str | None = None
+    # Campos multi-pais / fiscales (aditivos, compatibilidad hacia atras).
+    pais: str | None = Field(None, max_length=3)
+    identificacion_fiscal: str | None = Field(None, max_length=50)
+    folio: str | None = Field(None, max_length=100)
+    metodo_pago: str | None = Field(None, max_length=50)
+    link_facturacion: str | None = None
 
     @field_validator("provider_name")
     @classmethod
@@ -38,22 +87,60 @@ class TicketBase(BaseModel):
             )
         return name
 
-    @field_validator("provider_tax_id")
+    @field_validator("pais")
     @classmethod
-    def _validate_rfc(cls, v: str | None) -> str | None:
-        """RFC mexicano: 3 letras (moral) o 4 (fisica), 6 digitos, 3 alfanumericos."""
-        if v is None or not v.strip():
+    def _validar_pais(cls, v: str | None) -> str | None:
+        pais = _normalizar_pais(v)
+        if pais is None:
             return None
-        rfc = v.strip().upper()
-        if not RFC_REGEX.fullmatch(rfc):
+        if pais not in PAISES_SOPORTADOS:
             raise ValueError(
-                f"RFC invalido: {rfc!r}. Formato esperado: "
-                "3-4 letras, 6 digitos (YYMMDD) y 3 caracteres alfanumericos."
+                f"Pais no soportado: {pais!r}. Valores permitidos: MEX, CHL."
             )
-        return rfc
+        return pais
+
+    @field_validator("provider_tax_id", "identificacion_fiscal")
+    @classmethod
+    def _normalizar_ids_fiscales(cls, v: str | None) -> str | None:
+        # La validacion estricta RFC/RUT depende de `pais` y se hace en model_validator.
+        # Aqui solo se normaliza para no perder compatibilidad con entradas legacy.
+        if v is None or not str(v).strip():
+            return None
+        return str(v).strip().upper().replace(" ", "")
+
+    @field_validator("folio", "metodo_pago")
+    @classmethod
+    def _normalizar_textos_cortos(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        texto = str(v).strip()
+        return texto or None
 
     @model_validator(mode="after")
-    def _tax_not_greater_than_total(self) -> "TicketBase":
+    def _sincronizar_y_validar_fiscal(self) -> "TicketBase":
+        self.pais = _normalizar_pais(self.pais)
+        if self.pais is not None and self.pais not in PAISES_SOPORTADOS:
+            raise ValueError(
+                f"Pais no soportado: {self.pais!r}. Valores permitidos: MEX, CHL."
+            )
+
+        # Canon multi-pais: si llega uno, completa el otro (compatibilidad).
+        if self.identificacion_fiscal and not self.provider_tax_id:
+            self.provider_tax_id = self.identificacion_fiscal
+        elif self.provider_tax_id and not self.identificacion_fiscal:
+            self.identificacion_fiscal = self.provider_tax_id
+
+        fiscal = self.identificacion_fiscal or self.provider_tax_id
+        if fiscal:
+            fiscal_norm = _normalizar_identificacion_fiscal(fiscal, self.pais)
+            if fiscal_norm is None:
+                self.identificacion_fiscal = None
+                self.provider_tax_id = None
+            else:
+                fiscal_ok = _validar_identificacion_fiscal(fiscal_norm, self.pais)
+                self.identificacion_fiscal = fiscal_ok
+                self.provider_tax_id = fiscal_ok
+
         if self.tax_amount > self.total_amount:
             raise ValueError(
                 f"tax_amount ({self.tax_amount}) no puede ser mayor "
@@ -111,6 +198,19 @@ class TicketUpdate(BaseModel):
     # comprobante SI imprime: es escribir a mano lo que el OCR no lee.
     ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
 
+    # Campos multi-pais / fiscales (0019). Compatibles: solo aplican si se envian.
+    pais: str | None = Field(None, max_length=3)
+    identificacion_fiscal: str | None = Field(None, max_length=50)
+    folio: str | None = Field(None, max_length=100)
+    metodo_pago: str | None = Field(None, max_length=50)
+    link_facturacion: str | None = None
+
+    # Override trazable de periodo cerrado (0019): el cliente puede solicitarlo,
+    # pero `autorizado_por/at` los define el servidor desde el token/contexto.
+    # `hash_duplicado` y `estado_conciliacion` no son editables por el cliente.
+    periodo_cerrado_override: bool | None = None
+    periodo_cerrado_motivo: str | None = Field(None, max_length=2000)
+
     # LAS LINEAS, Y POR QUE ESTAN AQUI
     # -------------------------------
     # `PATCH /tickets/{id}` aceptaba el encabezado y NO las lineas. Eso hacia
@@ -150,21 +250,55 @@ class TicketUpdate(BaseModel):
             )
         return name
 
-    @field_validator("provider_tax_id")
+    @field_validator("provider_tax_id", "identificacion_fiscal")
     @classmethod
-    def _validate_rfc(cls, v: str | None) -> str | None:
-        if v is None or not v.strip():
+    def _normalizar_ids_fiscales(cls, v: str | None) -> str | None:
+        # Normaliza; la validacion country-aware y sincronizacion van en model_validator.
+        return _normalizar_identificacion_fiscal(v)
+
+    @field_validator("pais")
+    @classmethod
+    def _validar_pais(cls, v: str | None) -> str | None:
+        pais = _normalizar_pais(v)
+        if pais is None:
             return None
-        rfc = v.strip().upper()
-        if not RFC_REGEX.fullmatch(rfc):
+        if pais not in PAISES_SOPORTADOS:
             raise ValueError(
-                f"RFC invalido: {rfc!r}. Formato esperado: "
-                "3-4 letras, 6 digitos (YYMMDD) y 3 caracteres alfanumericos."
+                f"Pais no soportado: {pais!r}. Valores permitidos: MEX, CHL."
             )
-        return rfc
+        return pais
+
+    @field_validator("folio", "metodo_pago")
+    @classmethod
+    def _normalizar_textos_cortos(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        texto = str(v).strip()
+        return texto or None
+
+    @field_validator("periodo_cerrado_motivo")
+    @classmethod
+    def _normalizar_motivo_periodo(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        texto = str(v).strip()
+        return texto or None
 
     @model_validator(mode="after")
-    def _tax_not_greater_than_total(self) -> "TicketUpdate":
+    def _sincronizar_y_validar_fiscal(self) -> "TicketUpdate":
+        # Sincroniza provider_tax_id <-> identificacion_fiscal cuando alguno viene.
+        if self.identificacion_fiscal and not self.provider_tax_id:
+            self.provider_tax_id = self.identificacion_fiscal
+        elif self.provider_tax_id and not self.identificacion_fiscal:
+            self.identificacion_fiscal = self.provider_tax_id
+
+        fiscal = self.identificacion_fiscal or self.provider_tax_id
+        if fiscal:
+            fiscal_norm = _normalizar_identificacion_fiscal(fiscal, self.pais)
+            fiscal_ok = _validar_identificacion_fiscal(fiscal_norm or fiscal, self.pais)
+            self.identificacion_fiscal = fiscal_ok
+            self.provider_tax_id = fiscal_ok
+
         if (
             self.tax_amount is not None
             and self.total_amount is not None
@@ -174,6 +308,14 @@ class TicketUpdate(BaseModel):
                 f"tax_amount ({self.tax_amount}) no puede ser mayor "
                 f"que total_amount ({self.total_amount})."
             )
+
+        if self.periodo_cerrado_override is True and not self.periodo_cerrado_motivo:
+            raise ValueError(
+                "periodo_cerrado_motivo es obligatorio cuando se solicita override de periodo cerrado."
+            )
+        if self.periodo_cerrado_override is False:
+            # Desactivar override limpia el motivo solicitado en la misma operacion.
+            self.periodo_cerrado_motivo = None
         return self
 
 
@@ -315,6 +457,23 @@ class TicketResponse(BaseModel):
     reviewed_at: datetime | None = None
     review_notes: str | None = None
 
+    # Campos multi-pais / fiscales / control (0019). Lectura no restrictiva:
+    # pueden venir nulos en tickets antiguos o parcialmente leidos.
+    pais: str | None = None
+    identificacion_fiscal: str | None = None
+    folio: str | None = None
+    metodo_pago: str | None = None
+    link_facturacion: str | None = None
+    # Huella de negocio calculada en servidor (no editable por cliente).
+    hash_duplicado: str | None = None
+    # Estado sincronizado desde conciliaciones (PENDIENTE/CONCILIADO/CON_DISCREPANCIA).
+    estado_conciliacion: str | None = None
+    # Override trazable de periodo cerrado: solicitud y auditoria del override.
+    periodo_cerrado_override: bool = False
+    periodo_cerrado_motivo: str | None = None
+    periodo_cerrado_autorizado_por: str | None = None
+    periodo_cerrado_autorizado_at: datetime | None = None
+
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="before")
@@ -437,6 +596,83 @@ class TicketReviewRequest(BaseModel):
     # imprime. El ticket se queda en la cola para siempre.
     subtotal: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
     ieps_amount: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=2)
+
+    # Campos multi-pais / fiscales (0019), opcionales en correccion.
+    pais: str | None = Field(None, max_length=3)
+    identificacion_fiscal: str | None = Field(None, max_length=50)
+    folio: str | None = Field(None, max_length=100)
+    metodo_pago: str | None = Field(None, max_length=50)
+    link_facturacion: str | None = None
+
+    # Override trazable de periodo cerrado (0019). El cliente solicita; el servidor
+    # registra `autorizado_por/at` al aplicar el override.
+    periodo_cerrado_override: bool | None = None
+    periodo_cerrado_motivo: str | None = Field(None, max_length=2000)
+
+    @field_validator("provider_tax_id", "identificacion_fiscal")
+    @classmethod
+    def _normalizar_ids_fiscales(cls, v: str | None) -> str | None:
+        return _normalizar_identificacion_fiscal(v)
+
+    @field_validator("pais")
+    @classmethod
+    def _validar_pais(cls, v: str | None) -> str | None:
+        pais = _normalizar_pais(v)
+        if pais is None:
+            return None
+        if pais not in PAISES_SOPORTADOS:
+            raise ValueError(
+                f"Pais no soportado: {pais!r}. Valores permitidos: MEX, CHL."
+            )
+        return pais
+
+    @field_validator("folio", "metodo_pago")
+    @classmethod
+    def _normalizar_textos_cortos(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        texto = str(v).strip()
+        return texto or None
+
+    @field_validator("periodo_cerrado_motivo")
+    @classmethod
+    def _normalizar_motivo_periodo(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        texto = str(v).strip()
+        return texto or None
+
+    @model_validator(mode="after")
+    def _sincronizar_y_validar_fiscal(self) -> "TicketReviewRequest":
+        if self.identificacion_fiscal and not self.provider_tax_id:
+            self.provider_tax_id = self.identificacion_fiscal
+        elif self.provider_tax_id and not self.identificacion_fiscal:
+            self.identificacion_fiscal = self.provider_tax_id
+
+        fiscal = self.identificacion_fiscal or self.provider_tax_id
+        if fiscal:
+            fiscal_norm = _normalizar_identificacion_fiscal(fiscal, self.pais)
+            fiscal_ok = _validar_identificacion_fiscal(fiscal_norm or fiscal, self.pais)
+            self.identificacion_fiscal = fiscal_ok
+            self.provider_tax_id = fiscal_ok
+
+        if (
+            self.tax_amount is not None
+            and self.total_amount is not None
+            and self.tax_amount > self.total_amount
+        ):
+            raise ValueError(
+                f"tax_amount ({self.tax_amount}) no puede ser mayor "
+                f"que total_amount ({self.total_amount})."
+            )
+
+        if self.periodo_cerrado_override is True and not self.periodo_cerrado_motivo:
+            raise ValueError(
+                "periodo_cerrado_motivo es obligatorio cuando se solicita override de periodo cerrado."
+            )
+        if self.periodo_cerrado_override is False:
+            self.periodo_cerrado_motivo = None
+        return self
 
 
 class TicketReviewQueueResponse(BaseModel):

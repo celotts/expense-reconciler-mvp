@@ -1219,6 +1219,130 @@ COMMENT ON COLUMN tickets.motivo_rechazo IS
 
 
 -- =====================================================================
+-- 0019 - Extraccion multi-pais, controles fiscales y conciliacion
+-- =====================================================================
+--
+-- Replica aditiva de db/migrations/0019_extraccion_multipaís_y_controles.sql
+-- para que una base creada desde cero tenga el mismo estado final que una
+-- migrada. `IF NOT EXISTS` / `IF EXISTS` / `ON CONFLICT` mantienen idempotencia.
+--
+-- Integracion: `hash_duplicado` es huella de negocio (servidor) y complementa
+-- `source_hash`/`ticket_documents.sha256`; `identificacion_fiscal` canoniza RFC/RUT
+-- sin romper `provider_tax_id`; `estado_conciliacion` se sincroniza con
+-- `reconciliations`; el override de periodo cerrado es trazable (quien/cuando/motivo).
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS pais VARCHAR(3);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS identificacion_fiscal VARCHAR(50);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS folio VARCHAR(100);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(50);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS link_facturacion TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS hash_duplicado VARCHAR(64);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS estado_conciliacion VARCHAR(30) NOT NULL DEFAULT 'PENDIENTE';
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS periodo_cerrado_override BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS periodo_cerrado_motivo TEXT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS periodo_cerrado_autorizado_por VARCHAR(255);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS periodo_cerrado_autorizado_at TIMESTAMP WITH TIME ZONE;
+
+COMMENT ON COLUMN tickets.pais IS
+    'Pais del comprobante, normalizado (MEX/CHL). NULL en registros previos a la extraccion multi-pais.';
+COMMENT ON COLUMN tickets.identificacion_fiscal IS
+    'Identificacion fiscal del emisor: RFC (Mexico) o RUT (Chile). Canonico para validacion/anti-duplicado multi-pais.';
+COMMENT ON COLUMN tickets.folio IS
+    'Folio o numero de factura/comprobante declarado por el documento.';
+COMMENT ON COLUMN tickets.metodo_pago IS
+    'Metodo de pago declarado (efectivo, tarjeta, transferencia, etc.).';
+COMMENT ON COLUMN tickets.link_facturacion IS
+    'Liga o referencia para facturacion proporcionada por el comprobante.';
+COMMENT ON COLUMN tickets.hash_duplicado IS
+    'Huella SHA-256 de negocio (identificacion_fiscal + fecha + folio + monto), calculada/confirmada en servidor. Complementa source_hash del archivo.';
+COMMENT ON COLUMN tickets.estado_conciliacion IS
+    'Estado de conciliacion sincronizado: PENDIENTE, CONCILIADO o CON_DISCREPANCIA.';
+COMMENT ON COLUMN tickets.periodo_cerrado_override IS
+    'TRUE cuando un administrador autorizo registrar/corregir el ticket pese a caer en un periodo cerrado. Trazable.';
+COMMENT ON COLUMN tickets.periodo_cerrado_motivo IS
+    'Motivo del override de periodo cerrado. Obligatorio cuando periodo_cerrado_override es TRUE.';
+COMMENT ON COLUMN tickets.periodo_cerrado_autorizado_por IS
+    'Identidad (email/usuario del token) que autorizo el override. Texto para sobrevivir bajas de cuenta.';
+COMMENT ON COLUMN tickets.periodo_cerrado_autorizado_at IS
+    'Momento en que se autorizo el override de periodo cerrado.';
+
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS ck_tickets_pais;
+ALTER TABLE tickets ADD CONSTRAINT ck_tickets_pais
+    CHECK (pais IS NULL OR pais IN ('MEX', 'CHL'));
+
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS ck_tickets_estado_conciliacion;
+ALTER TABLE tickets ADD CONSTRAINT ck_tickets_estado_conciliacion
+    CHECK (estado_conciliacion IN ('PENDIENTE', 'CONCILIADO', 'CON_DISCREPANCIA'));
+
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS ck_tickets_periodo_override_trazable;
+ALTER TABLE tickets ADD CONSTRAINT ck_tickets_periodo_override_trazable
+    CHECK (
+        (
+            periodo_cerrado_override = FALSE
+            AND periodo_cerrado_motivo IS NULL
+            AND periodo_cerrado_autorizado_por IS NULL
+            AND periodo_cerrado_autorizado_at IS NULL
+        )
+        OR (
+            periodo_cerrado_override = TRUE
+            AND periodo_cerrado_motivo IS NOT NULL
+            AND length(trim(periodo_cerrado_motivo)) > 0
+            AND periodo_cerrado_autorizado_por IS NOT NULL
+            AND length(trim(periodo_cerrado_autorizado_por)) > 0
+            AND periodo_cerrado_autorizado_at IS NOT NULL
+        )
+    );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tickets_empresa_hash_duplicado
+    ON tickets (company_id, hash_duplicado)
+    WHERE hash_duplicado IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_tickets_estado_conciliacion
+    ON tickets (estado_conciliacion);
+
+CREATE INDEX IF NOT EXISTS ix_tickets_folio
+    ON tickets (folio)
+    WHERE folio IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_tickets_identificacion_fiscal
+    ON tickets (identificacion_fiscal)
+    WHERE identificacion_fiscal IS NOT NULL;
+
+-- Backfill compatible para bases que ya tienen datos al reconstruirse desde un dump
+-- o al reejecutar este script: no inventa folio/hash de negocio, solo canoniza lo seguro.
+UPDATE tickets
+SET identificacion_fiscal = provider_tax_id
+WHERE identificacion_fiscal IS NULL
+  AND provider_tax_id IS NOT NULL
+  AND length(trim(provider_tax_id)) > 0;
+
+UPDATE tickets t
+SET estado_conciliacion = 'CON_DISCREPANCY'
+WHERE EXISTS (
+    SELECT 1
+    FROM reconciliations r
+    WHERE r.ticket_id = t.id
+      AND r.match_status = 'DISCREPANCY'
+);
+
+UPDATE tickets t
+SET estado_conciliacion = 'CONCILIADO'
+WHERE EXISTS (
+    SELECT 1
+    FROM reconciliations r
+    WHERE r.ticket_id = t.id
+      AND r.match_status IN ('PERFECT', 'MANUAL')
+)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM reconciliations r
+    WHERE r.ticket_id = t.id
+      AND r.match_status = 'DISCREPANCY'
+);
+
+
+-- =====================================================================
 -- El registro de que esta base ya esta al dia (0015)
 -- =====================================================================
 --
@@ -1250,17 +1374,15 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     aplicada_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Una base creada desde `init.sql` esta AL DIA con las 18 migraciones, porque
--- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 18
+-- Una base creada desde `init.sql` esta AL DIA con las 19 migraciones, porque
+-- `init.sql` las replica todas. Sin estas filas, `make migrar` correria 19
 -- archivos sobre una base que ya tiene todo: `IF NOT EXISTS` los haria
 -- idempotentes, pero el operador veria "aplicando 0002..." y pensaria que su
 -- base estaba vieja. El registro tiene que decir la verdad, y la verdad es que
 -- esa base no necesita nada.
 --
--- Son 18 y no 12 porque la 0018 se anadio despues. Esa omision es exactamente
--- el fallo que `test_init_sql_espeja_los_modelos.py` existe para cazar, y lo
--- cazó: faltaba la tabla `tipos_gasto` entera y no solo columnas. Si anades una
--- migracion, la copias aqui Y agregas su fila a esta lista.
+-- Son 19 porque la 0019 se anadio despues de 0018. Si anades una migracion, la
+-- copias aqui Y agregas su fila a esta lista.
 --
 -- `INSERT ... ON CONFLICT DO NOTHING` porque el `init.sql` se puede volver a
 -- correr sin reventar, y estas filas ya pueden estar.
@@ -1281,5 +1403,6 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0015_fecha_provisional.sql'),
     ('0016_perfil_usuario.sql'),
     ('0017_auditoria.sql'),
-    ('0018_tipos_gasto.sql')
+    ('0018_tipos_gasto.sql'),
+    ('0019_extraccion_multipaís_y_controles.sql')
 ON CONFLICT (nombre) DO NOTHING;

@@ -313,6 +313,34 @@ class TicketModel(Base):
     # SET NULL se perderia justo ese dato.
     spot_checked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # --- Extraccion multi-pais y controles fiscales (0019) ---------------
+    # Campos canonicos para salida estricta MX/CL y conciliacion/controles.
+    # Se mantienen aditivos para no romper tickets ni APIs existentes.
+    pais: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    identificacion_fiscal: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    folio: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metodo_pago: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    link_facturacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Huella de negocio (RFC/RUT + fecha + folio + monto), calculada en servidor.
+    # Complementa `source_hash` (archivo) y `ticket_documents.sha256` (bytes/version).
+    hash_duplicado: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Estado sincronizado desde conciliaciones: PENDIENTE / CONCILIADO / CON_DISCREPANCIA.
+    estado_conciliacion: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="PENDIENTE"
+    )
+
+    # Override administrativo trazable cuando el ticket cae en periodo cerrado.
+    # La validacion/registro del override vive en servicios de periodo; el modelo
+    # solo persiste la traza (quien, cuando, por que).
+    periodo_cerrado_override: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    periodo_cerrado_motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    periodo_cerrado_autorizado_por: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    periodo_cerrado_autorizado_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
     # `passive_deletes=True`: la FK ya es `ON DELETE CASCADE` en la base
     # (`db/init.sql:63`), asi que el borrado en cascada lo sabe hacer Postgres.
     # Sin este `True`, SQLAlchemy intercepta el DELETE de la empresa y manda
