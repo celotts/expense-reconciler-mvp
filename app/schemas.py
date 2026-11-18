@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, validator, model_validator
 from decimal import Decimal
+from typing import List, Optional
 
 class Item(BaseModel):
     name: str
@@ -18,11 +19,18 @@ class Item(BaseModel):
             raise ValueError('Quantity must be positive')
         return v
 
-class Order(BaseModel):
-    items: list[Item]
+class ExpenseReceiptSchema(BaseModel):
+    country: str
+    comercio: str
+    identificacion_fiscal: str
+    fecha: str
+    items: List[Item]
     subtotal: Decimal
     tax: Decimal
     total: Decimal
+    metodo_pago: str
+    link_o_folio_facturacion: Optional[str]
+    hash_duplicado: str
 
     @model_validator(mode='after')
     def total_must_match_items(cls, values):
