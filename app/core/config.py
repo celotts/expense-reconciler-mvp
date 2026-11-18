@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # 2000 px de lado largo es el mismo numero que ya usa `vista_previa.py`
     # (`_LADO_MAXIMO`), y por el mismo motivo: es donde un ticket de caja sigue
     # leyendo su total y su RFC de sobra. Si se sube, el tiempo sube con el.
-    MAX_LADO_VISION: int = 2000
+    MAX_LADO_VISION: int = 1400
 
     # Para una FOTO, consultar al modelo de vision ANTES que al OCR local.
     #
