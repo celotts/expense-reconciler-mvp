@@ -138,6 +138,17 @@ export interface Ticket {
   reviewed_by: string | null;
   reviewed_at: string | null;
   review_notes: string | null;
+  pais: string | null;
+  identificacion_fiscal: string | null;
+  folio: string | null;
+  metodo_pago: string | null;
+  link_facturacion: string | null;
+  hash_duplicado: string | null;
+  estado_conciliacion: string | null;
+  periodo_cerrado_override: boolean;
+  periodo_cerrado_motivo: string | null;
+  periodo_cerrado_autorizado_por: string | null;
+  periodo_cerrado_autorizado_at: string | null;
 }
 
 export interface TicketReviewQueue {

@@ -335,6 +335,8 @@ class TestElInitSqlDiceLoMismoQueLosModelos:
             # porque `init.sql` replica las 12 migraciones y una base nueva se ve
             # igual que una migrada. Ver `scripts/migrar.sh`.
             "schema_migrations": "la escribe scripts/migrar.sh, no la aplicacion",
+            # Tabla DDL creada en db/init.sql; aun sin modelo ORM activo en app/models.
+            "closed_accounting_periods": "tabla DDL en db/init.sql sin modelo ORM aun en app/models",
         }
 
         huerfanas = creadas - conocidas - set(sin_modelo)

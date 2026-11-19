@@ -346,6 +346,7 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("PATCH", "/inventario/productos/{producto_id}"): "i13. Renombrar / verificar / dar de baja",
     # Cuentas. Sin numero correlativo tampoco: es otra etapa.
     ("GET", "/usuarios"): "u1. Cuentas del sistema",
+    ("POST", "/usuarios"): "u0. Alta de cuenta",
     ("GET", "/usuarios/{usuario_id}"): "u2. Ver una cuenta",
     ("PATCH", "/usuarios/{usuario_id}"): "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
     ("POST", "/usuarios/{usuario_id}/contrasena"): "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",

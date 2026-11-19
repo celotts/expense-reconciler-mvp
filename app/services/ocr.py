@@ -857,7 +857,7 @@ def _leer_tesseract(datos: bytes) -> ResultadoOCR:
     # El early-exit devuelve ResultadoOCR vacío. Con 0 puntos el gate emite
     # `total_not_positive`: el ticket va a la cola con su motivo, igual que hoy,
     # pero en < 50 ms en vez de en ~19 s.
-    _FRACCION_OSCUROS_MINIMA = 0.003  # 0.3%
+    _FRACCION_OSCUROS_MINIMA = 0.005  # 0.5%
     # `bytearray` y `memoryview` van en la tupla aunque `_preparar` declare
     # `bytes`: sin ellos el type checker no descarta los tipos buffer y
     # `base.convert(...)` queda como acceso a un `bytearray`, que no lo tiene.

@@ -1,7 +1,7 @@
 import hashlib
+import importlib
 
 import cv2
-import fitz  # PyMuPDF
 import numpy as np
 
 
@@ -42,10 +42,17 @@ def process_pdf_page_to_image(pdf_bytes: bytes, page_number: int = 0) -> bytes:
     if page_number < 0:
         raise ValueError(f"El número de página no puede ser negativo: {page_number}.")
 
-    zoom = 150 / 72
-    matrix = fitz.Matrix(zoom, zoom)
+    try:
+        fitz_mod = importlib.import_module("fitz")
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyMuPDF (fitz) no está instalado en el entorno para renderizar páginas PDF."
+        ) from exc
 
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+    zoom = 150 / 72
+    matrix = fitz_mod.Matrix(zoom, zoom)
+
+    with fitz_mod.open(stream=pdf_bytes, filetype="pdf") as doc:
         if page_number >= len(doc):
             raise ValueError(f"La página {page_number} no existe en el PDF.")
 

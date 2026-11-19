@@ -30,15 +30,16 @@ la carpeta.
 
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
+from app.core.deps import UsuarioActual
 from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
@@ -57,14 +58,13 @@ from app.schemas.scan import (
     ScanResetRequest,
     ScanResetResponse,
     ScanResponse,
-    ResumenScan,
     ScanStatsResponse,
 )
 from app.services import scan_registry, scan_reset, scan_service
-from app.services.scan_reset import FRASE_CONFIRMACION
-from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ai_client import disponibilidad as disponibilidad_ia
+from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ocr import disponibilidad as disponibilidad_ocr
+from app.services.scan_reset import FRASE_CONFIRMACION
 
 router = APIRouter(tags=["Scan"])
 
@@ -228,28 +228,34 @@ def _reset_habilitado() -> None:
 
 
 def _reset_permitido(
-    _flag: None = Depends(_reset_habilitado),
-    usuario: UsuarioVerificado = None,  # type: ignore[assignment]
+    usuario: UsuarioActual = None,  # type: ignore[assignment]
+    contrasena: Annotated[str | None, Header(alias="X-Contrasena-Actual")] = None,
 ):
-    """El flag y la contrasena, EN ESE ORDEN.
+    """Autenticacion y contrasena del actor (401 si falta o no coincide)."""
+    from app.core.security import verificar_contrasena
 
-    Encadenarlos aqui y no declararlos sueltos en el handler es lo unico que hace
-    el orden fiable: dentro de una dependencia, `Depends(_reset_habilitado)` se
-    resuelve antes que el `UsuarioVerificado` del segundo parametro. Puestos como
-    parametros sueltos del handler, el orden no esta garantizado, y el test lo
-    demostro devolviendo 401 con el flag apagado.
-
-    Lo devuelve el usuario para que el handler lo pueda auditar aunque hoy no lo
-    use: el `actor` de un borrado es el dato que uno querria tener dentro de seis
-    meses, y anadirlo despues al endpoint es cambiar un contrato.
-    """
+    if not contrasena:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "Falta X-Contrasena-Actual. Dar de baja una cuenta o cambiar una "
+                "contrasena pide la contrasena de quien lo hace."
+            ),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not verificar_contrasena(contrasena, usuario.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="La contrasena no es la correcta",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return usuario
 
 
-@router.post("/reset")
+@router.post("/reset", dependencies=[Depends(_reset_habilitado)])
 async def limpiar_base_de_datos(
     cuerpo: ScanResetRequest,
-    db: Sesion,
+    db: Annotated[AsyncSession | None, Depends(get_db)] = None,
     usuario: UserModel = Depends(_reset_permitido),
 ) -> ScanResetResponse:
     """Deja la base limpia para volver a probar el escaneo.
