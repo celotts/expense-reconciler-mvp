@@ -16,15 +16,13 @@ de verdad:
 
 from __future__ import annotations
 
-import hashlib
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-from app.core.enums import ExtractionStatus, ScanStatus, SourceType
+from app.core.enums import ExtractionStatus, ScanStatus
 from app.models.scan_file import ScanFileModel
 from app.models.ticket import TicketModel
 from app.services import scan_service

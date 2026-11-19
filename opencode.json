@@ -1,4 +1,7 @@
 {
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/qwen3:8b",
+  "small_model": "ollama/qwen3:8b",
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
@@ -7,8 +10,10 @@
         "baseURL": "http://localhost:11434/v1"
       },
       "models": {
-        "qwen2.5-coder:3b": {
-          "name": "Qwen 2.5 Coder 3B (Recomendado Mac 16GB)"
+        "qwen3:8b": {
+          "name": "Qwen3 8B (Agente)",
+          "tools": true,
+          "limit": { "context": 32768, "output": 8192 }
         }
       }
     }

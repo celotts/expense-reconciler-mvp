@@ -38,10 +38,9 @@ from uuid import uuid4
 import pytest
 
 from app.core.enums import SourceType
-from app.models.company import CompanyModel
 from app.services.capture import capture_ticket
 from app.services.document_service import (
-    documento_de_ticket, guardar_documento, reemplazar_documento,
+    documento_de_ticket, reemplazar_documento,
 )
 
 

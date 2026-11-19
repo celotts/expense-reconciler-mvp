@@ -1,7 +1,7 @@
 import pytest
 from decimal import Decimal
 from datetime import date
-from app.services.parser_service import parse_bank_csv, extract_ticket_data, _parse_receipt_text
+from app.services.parser_service import parse_bank_csv, _parse_receipt_text
 
 
 class TestBankCSVParser:
@@ -312,7 +312,6 @@ TOTAL: $100.00
 
     def test_extract_ticket_data_pdf_returns_structured_result(self, sample_ticket_text):
         # Test usando la función de parseo directo (sin PDF real)
-        from app.services.parser_service import TicketExtractionResult
         result = _parse_receipt_text(sample_ticket_text)
         
         assert isinstance(result.provider_name, str)

@@ -4,3 +4,375 @@
 
 # 2026-11-15 17:26:37.626460
 +No
+
+# 2026-11-18 16:41:42.968295
++Yes
+
+# 2026-11-18 16:42:42.956447
++Revisa los archivos de mi proyecto. Necesito que actualices app/schemas.py para usar Pydantic v2 con Decimal y añade las validaciones de totales en los items. Modifica el archivo directamente.
++
+
+# 2026-11-18 16:43:38.024449
++Y
+
+# 2026-11-18 16:45:50.270100
++Actúa como un Arquitecto de Software Senior y Desarrollador Full-Stack experto en Python, FastAPI, Pydantic v2, OpenCV, SQLAlchemy/Alembic y Ollama. 
++
++Tu objetivo es refactorizar el proyecto actual "expense-reconciler-mvp" de forma no destructiva, implementando la siguiente arquitectura profesional de procesamiento híbrido y validación estricta para ejecutar en un MacBook Pro M3 (16GB RAM):
++
++Por favor, crea o modifica los siguientes archivos en el workspace según corresponda:
++
++1. **`app/services/processor.py` (Ingesta y OpenCV):**
++   - Implementa un procesador que soporte archivos PDF (usando PyMuPDF/fitz para extraer páginas a 150 DPI) e imágenes individuales (.jpg, .png, .webp, .heic).
++   - Añade preprocesamiento con OpenCV: redimensionar a un ancho máximo de 1024px manteniendo proporción, conversión a escala de grises y aplicación de CLAHE (Contrast Limited Adaptive Histogram Equalization) para mejorar tickets de baja calidad.
++   - Implementa una función para calcular el hash SHA256 de los bytes del archivo original para control anti-duplicados.
++
++2. **`app/schemas.py` (Pydantic v2 Estricto):**
++   - Define modelos utilizando tipos `Decimal` para todos los montos monetarios (items, subtotal, impuestos, total).
++   - Añade un `@model_validator(mode='after')` que valide rigurosamente que la suma de los subtotales de los items más los impuestos coincida exactamente con el total general (con una tolerancia máxima de centavos).
++   - Asegura la estructura de salida multi-país (MEX/CHL), incluyendo comercio, identificación fiscal (RFC/RUT), fecha (YYYY-MM-DD), items, métodos de pago y hash sha256.
++
++3. **`app/services/ai_client.py` (Cliente Ollama Local):**
++   - Configura el cliente HTTP asíncrono para comunicarse con Ollama (http://localhost:11434).
++   - Utiliza estrictamente el modelo `qwen2.5-vl:7b`, configurando `temperature: 0.0`, `format: "json"` y un prompt estructurado para eliminar alucinaciones y extraer datos exactos en formato JSON puro.
++
++4. **`app/routers/expenses.py` (Endpoints Asíncronos con Control de Concurrencia):**
++   - Implementa un endpoint POST `/upload-batch` que reciba múltiples archivos (`UploadFile`).
++   - Utiliza `asyncio.Semaphore(3)` para limitar la concurrencia a 3 tareas simultáneas y proteger la memoria del Mac M3.
++   - Integra la validación contra duplicados usando el hash SHA256 y verifica que las fechas de los tickets no correspondan a periodos contables cerrados.
++
++5. **`migrations/versions/` (Migración Alembic No Destructiva):**
++   - Propón o actualiza el script de migración para añadir las columnas `hash_duplicado` (con índice único), `identificacion_fiscal`, `estado_conciliacion`, y la tabla de control de periodos contables cerrados (`closed_accounting_periods`).
++
++Utiliza tus herramientas de lectura y escritura de archivos para aplicar estos cambios de manera limpia y ordenada en el proyecto.
++
+
+# 2026-11-18 16:45:56.765114
++y
+
+# 2026-11-18 16:52:44.925095
++terminaste? si la respuesta es si, dame un resumen de lo que hiciste?
+
+# 2026-11-18 17:00:40.446688
++Continúa editando app/schemas.py. Termina la clase Order, añade el model_validator en modo 'after' para validar que la suma de los subtotales más los impuestos coincida con el total, y asegúrate de guardar los cambios en el archivo físico.
++
+
+# 2026-11-18 17:02:35.577867
++Reemplaza todo el contenido de app/schemas.py con un esquema limpio y completo usando Pydantic v2 que incluya el modelo Item, el modelo ExpenseReceiptSchema (con pais, comercio, identificacion_fiscal, fecha, items, subtotal, impuestos, total, metodo_pago, link_o_folio_facturacion y hash_duplicado), usando Decimal para los montos y un @model_validator(mode='after') para validar la suma matemática de los totales.
++
+
+# 2026-11-18 17:04:17.779513
++Escribe exactamente este contenido en el archivo app/schemas.py:
++
++from decimal import Decimal
++from typing import List, Optional
++from pydantic import BaseModel, Field, field_validator, model_validator
++
++class Item(BaseModel):
++    name: str
++    price: Decimal
++    quantity: int
++
++    @field_validator('price', 'quantity')
++    @classmethod
++    def must_be_positive(cls, v):
++        if v <= 0:
++            raise ValueError('Must be greater than zero')
++        return v
++
++class ExpenseReceiptSchema(BaseModel):
++    country: str
++    comercio: str
++    identificacion_fiscal: str
++    fecha: str
++    items: List[Item]
++    subtotal: Decimal
++    tax: Decimal
++    total: Decimal
++    metodo_pago: str
++    link_o_folio_facturacion: Optional[str] = None
++    hash_duplicado: str
++
++    @model_validator(mode='after')
++    def total_must_match_items(self) -> 'ExpenseReceiptSchema':
++        calculated_subtotal = sum(item.price * item.quantity for item in self.items)
++        expected_total = calculated_subtotal + self.tax
++        # Tolerancia de centavos para evitar errores de redondeo de punto flotante/Decimal
++        if abs(self.total - expected_total) > Decimal('0.05'):
++            raise ValueError(f'Total general ({self.total}) no coincide con la suma de items y tax ({expected_total})')
++        return self
++
+
+# 2026-11-18 17:06:09.953561
++Actualiza app/services/processor.py para integrar PyMuPDF (fitz) a 150 DPI para PDFs, el preprocesamiento con OpenCV (redimensionar a máx 1024px, escala de grises y CLAHE) y la función para calcular el hash SHA256 de los bytes del archivo original.
++
+
+# 2026-11-18 17:07:45.843600
++Continúa completando app/services/processor.py. Asegúrate de añadir:
++1. La función para extraer páginas de PDF a 150 DPI y procesar imágenes individuales (.jpg, .png, .webp, .heic).
++2. El preprocesamiento con OpenCV: redimensionar manteniendo proporción a un ancho máximo de 1024px, convertir a escala de grises y aplicar CLAHE (Contrast Limited Adaptive Histogram Equalization).
++3. La función para calcular el hash SHA256 de los bytes del archivo original.
++
+
+# 2026-11-18 17:09:59.465862
++Escribe exactamente este contenido en el archivo app/services/processor.py:
++
++import hashlib
++import io
++import fitz  # PyMuPDF
++import cv2
++import numpy as np
++from PIL import Image
++
++def compute_sha256(file_bytes: bytes) -> str:
++    """Calcula el hash SHA256 de los bytes del archivo original para control anti-duplicados."""
++    sha256_hash = hashlib.sha256()
++    sha256_hash.update(file_bytes)
++    return sha256_hash.hexdigest()
++
++def preprocess_image_for_ocr(image_bytes: bytes) -> np.ndarray:
++    """
++    Preprocesa una imagen con OpenCV:
++    1. Redimensiona manteniendo proporción a un ancho máximo de 1024px.
++    2. Convierte a escala de grises.
++    3. Aplica CLAHE (Contrast Limited Adaptive Histogram Equalization) para mejorar tickets de baja calidad.
++    """
++    # Convertir bytes a imagen OpenCV (numpy array)
++    nparr = np.frombuffer(image_bytes, np.uint8)
++    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
++    
++    if img is None:
++        raise ValueError("No se pudo decodificar la imagen con OpenCV.")
++
++    # 1. Redimensionar manteniendo proporción (ancho máximo 1024px)
++    height, width = img.shape[:2]
++    max_width = 1024
++    if width > max_width:
++        ratio = max_width / float(width)
++        new_height = int(height * ratio)
++        img = cv2.resize(img, (max_width, new_height), interpolation=cv2.INTER_AREA)
++
++    # 2. Convertir a escala de grises
++    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
++
++    # 3. Aplicar CLAHE (Contrast Limited Adaptive Histogram Equalization)
++    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
++    processed = clahe.apply(gray)
++
++    return processed
++
++def process_pdf_page_to_image(pdf_bytes: bytes, page_number: int = 0) -> bytes:
++    """
++    Extrae una página de un archivo PDF usando PyMuPDF (fitz) a 150 DPI y la convierte a bytes PNG.
++    """
++    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
++    if page_number >= len(doc):
++        raise ValueError(f"La página {page_number} no existe en el PDF.")
++    
++    page = doc[page_number]
++    # Configurar zoom para 150 DPI (el valor base por defecto es 72 DPI, 150/72 ≈ 2.083)
++    zoom = 150 / 72
++    matrix = fitz.Matrix(zoom, zoom)
++    pix = page.get_pixmap(matrix=matrix)
++    
++    # Retornar los bytes de la imagen generada
++    return pix.tobytes("png")
++
+
+# 2026-11-18 17:12:48.556134
++Escribe exactamente este contenido en el archivo app/services/ai_client.py:
++
++import httpx
++import json
++import logging
++from typing import Optional, Dict, Any
++
++logger = logging.getLogger(__name__)
++
++class OllamaVisionClient:
++    def __init__(self, base_url: str = "http://localhost:11434", model_name: str = "qwen2.5-vl:7b"):
++        self.base_url = base_url
++        self.model_name = model_name
++
++    async def extract_receipt_data(self, image_base64: str) -> Dict[str, Any]:
++        """
++        Envía la imagen procesada al modelo local qwen2.5-vl:7b en Ollama con temperature 0.0
++        y formato JSON estricto para extraer los datos de la factura/recibo.
++        """
++        url = f"{self.base_url}/api/chat"
++        
++        prompt = (
++            "Eres un extractor experto de datos contables y fiscales para México y Chile. "
++            "Analiza la imagen del ticket o factura proporcionada y extrae la información solicitada "
++            "estrictamente en el siguiente formato JSON puro, sin texto adicional ni bloques markdown:\n"
++            "{\n"
++            '  "country": "MEX o CHL",\n'
++            '  "comercio": "Nombre del establecimiento",\n'
++            '  "identificacion_fiscal": "RFC o RUT del comercio",\n'
++            '  "fecha": "YYYY-MM-DD",\n'
++            '  "items": [\n'
++            '    {\n'
++            '      "name": "Nombre del producto",\n'
++            '      "price": 0.00,\n'
++            '      "quantity": 1\n'
++            '    }\n'
++            '  ],\n'
++            '  "subtotal": 0.00,\n'
++            '  "tax": 0.00,\n'
++            '  "total": 0.00,\n'
++            '  "metodo_pago": "Efectivo / Tarjeta / Transferencia",\n'
++            '  "link_o_folio_facturacion": null\n'
++            "}"
++        )
++
++        payload = {
++            "model": self.model_name,
++            "messages": [
++                {
++                    "role": "user",
++                    "content": prompt,
++                    "images": [image_base64]
++                }
++            ],
++            "format": "json",
++            "options": {
++                "temperature": 0.0
++            },
++            "stream": False
++        }
++
++        async with httpx.AsyncClient(timeout=60.0) as client:
++            try:
++                response = await client.post(url, json=payload)
++                response.raise_for_status()
++                result_data = response.json()
++                
++                content_str = result_data.get("message", {}).get("content", "{}")
++                parsed_json = json.loads(content_str)
++                return parsed_json
++            
++            except httpx.HTTPStatusError as e:
++                logger.error(f"Error HTTP al comunicarse con Ollama: {e.response.status_code} - {e.response.text}")
++                raise RuntimeError(f"Fallo en el servicio de IA local: {e.response.text}")
++            except json.JSONDecodeError as e:
++                logger.error(f"El modelo no devolvió un JSON válido: {e}")
++                raise ValueError("La respuesta de Ollama no pudo ser decodificada como JSON.")
++
+
+# 2026-11-18 17:12:57.449928
++Y
+
+# 2026-11-18 17:15:41.249783
++Escribe exactamente este contenido en el archivo app/routers/expenses.py:
++
++import asyncio
++import base64
++from decimal import Decimal
++from typing import List
++from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
++from sqlalchemy.ext.asyncio import AsyncSession
++from sqlalchemy import select
++
++# Asumiendo la estructura actual del proyecto
++from app.schemas import ExpenseReceiptSchema
++from app.services.processor import compute_sha256, preprocess_image_for_ocr, process_pdf_page_to_image
++from app.services.ai_client import OllamaVisionClient
++
++router = APIRouter(prefix="/expenses", tags=["Expenses"])
++
++# Semáforo global estricto para limitar la concurrencia a 3 tareas simultáneas en el Mac M3
++concurrency_semaphore = asyncio.Semaphore(3)
++
++ai_client = OllamaVisionClient()
++
++@router.post("/upload-batch", response_model=List[dict])
++async def upload_batch_expenses(files: List[UploadFile] = File(...)):
++    """
++    Sube y procesa un lote de archivos (PDFs o imágenes) de manera concurrente (máx 3 hilos),
++    aplicando preprocesamiento OpenCV, extracción con Ollama Vision, validación estricta Pydantic
++    y control anti-duplicados por hash SHA256.
++    """
++    results = []
++    
++    async def process_single_file(file: UploadFile):
++        async with concurrency_semaphore:
++            try:
++                file_bytes = await file.read()
++                
++                # 1. Calcular hash SHA256 para control anti-duplicados
++                file_hash = compute_sha256(file_bytes)
++                
++                # TODO: Verificar aquí en base de datos si el file_hash ya existe antes de procesar
++                
++                # 2. Ingesta y preprocesamiento según tipo de archivo
++                filename = file.filename.lower()
++                if filename.endswith(".pdf"):
++                    # Extraer primera página del PDF a 150 DPI
++                    image_bytes = process_pdf_page_to_image(file_bytes, page_number=0)
++                elif filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic")):
++                    image_bytes = file_bytes
++                else:
++                    return {
++                        "filename": file.filename,
++                        "status": "error",
++                        "detail": "Formato de archivo no soportado."
++                    }
++                
++                # 3. Preprocesar con OpenCV (escala de grises, redimensionado, CLAHE)
++                processed_img_array = preprocess_image_for_ocr(image_bytes)
++                
++                # Codificar imagen procesada a PNG y luego a Base64 para Ollama Vision
++                success, encoded_img = cv2.imencode('.png', processed_img_array)
++                if not success:
++                    raise ValueError("Error al codificar la imagen procesada por OpenCV.")
++                
++                img_base64 = base64.b64encode(encoded_img.tobytes()).decode('utf-8')
++                
++                # 4. Invocación al modelo local qwen2.5-vl:7b en Ollama
++                extracted_data = await ai_client.extract_receipt_data(img_base64)
++                
++                # Inyectar el hash en los datos extraídos
++                extracted_data["hash_duplicado"] = file_hash
++                
++                # 5. Validación estricta con Pydantic v2 (Decimal y Model Validator)
++                validated_receipt = ExpenseReceiptSchema(**extracted_data)
++                
++                # TODO: Validar si la fecha pertenece a un periodo contable cerrado (closed_accounting_periods)
++                
++                return {
++                    "filename": file.filename,
++                    "status": "success",
++                    "data": validated_receipt.model_dump()
++                }
++                
++            except Exception as e:
++                return {
++                    "filename": file.filename,
++                    "status": "error",
++                    "detail": str(e)
++                }
++
++    # Ejecutar todas las tareas en paralelo respetando el semáforo de concurrencia
++    tasks = [process_single_file(file) for file in files]
++    results = await asyncio.gather(*tasks)
++    
++    return results
++
+
+# 2026-11-18 17:21:35.271974
++y
+
+# 2026-11-18 17:25:03.165305
++Y
+
+# 2026-11-18 17:29:01.529034
++Yes
+
+# 2026-11-18 17:29:01.545186
++Que paso?
+
+# 2026-11-18 17:33:12.209209
++Y
+
+# 2026-11-18 17:37:26.081070
++y

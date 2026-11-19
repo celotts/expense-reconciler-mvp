@@ -180,7 +180,7 @@ class TestSinVectoresDeEjecucion:
         seguridad = d.get("security", {})
         confianza = seguridad.get("workspace", {}).get("trust", {})
 
-        assert not (seguridad.get("workspace") or {}).get("trust", {}).get("enabled") is False, (
+        assert (seguridad.get("workspace") or {}).get("trust", {}).get("enabled") is not False, (
             "No se desactiva la confianza del workspace desde el repo: eso hace "
             "que VS Code ejecute lo que encuentre en la carpeta sin preguntar."
         )

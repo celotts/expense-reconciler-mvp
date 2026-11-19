@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
 from app.core.enums import ScanStatus
 from app.services import scan_registry

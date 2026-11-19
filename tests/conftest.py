@@ -193,7 +193,6 @@ REF: 123456789012
 #    Los tests que EXPLICITAMENTE prueban el archivado lo encienden.
 @pytest.fixture(autouse=True)
 def _aislar_el_archivado(tmp_path, monkeypatch):
-    from app.core.config import settings
 
     destino = tmp_path / "escaneados"
     destino.mkdir(exist_ok=True)

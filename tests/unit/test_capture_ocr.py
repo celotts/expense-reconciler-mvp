@@ -591,7 +591,7 @@ class TestLaCalidadDesempataLasLecturas:
         Es lo que impide que una lectura de mucho texto y sin datos le robe el
         lugar a una corta que si tiene RFC y total.
         """
-        from app.services.ocr import Lectura, _calidad_del_texto, _puntuar
+        from app.services.ocr import _calidad_del_texto, _puntuar
 
         con_datos = "RFC: GODE561231GR8\nTOTAL: 1100.00"
         mucho_texto_sin_datos = ("linea de relleno del ticket " * 40)

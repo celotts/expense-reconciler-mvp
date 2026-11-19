@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from app.core.enums import ScanStatus
 from app.core.security import crear_token, hashear_contrasena
@@ -720,7 +720,6 @@ class TestAutorizarLaCompraEnLaMismaCorrida:
         """
         from app.models.inventario import CompraModel, MovimientoInventarioModel
         from app.models.inventario import ProductoModel
-        from app.services import inventario_service as inv
 
         _escribir(carpeta, "ocho.pdf")
         _, token = con_token

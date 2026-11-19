@@ -394,7 +394,7 @@ class TestElTopeDeRawText:
         pasar por el parser, tambien queda recortado.
         """
         from app.services.parser_service import (
-            RAW_TEXT_MAX_CHARS, TicketExtractionResult,
+            RAW_TEXT_MAX_CHARS,
         )
 
         resultado = TicketExtractionResult(

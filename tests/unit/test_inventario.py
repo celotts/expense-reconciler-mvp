@@ -73,7 +73,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.enums import EstadoCompra, ProductoOrigen, TipoMovimiento
 from app.models.company import CompanyModel
 from app.models.inventario import (
-    CompraItemModel,
     CompraModel,
     MovimientoInventarioModel,
     ProductoModel,

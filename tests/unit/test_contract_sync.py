@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.enums import AUTO_APPROVE_CONFIDENCE, REVIEW_CONFIDENCE, UNKNOWN_PROVIDER
+from app.core.enums import AUTO_APPROVE_CONFIDENCE, UNKNOWN_PROVIDER
 from app.schemas.ticket import TicketResponse
 
 RAIZ = Path(__file__).resolve().parents[2]

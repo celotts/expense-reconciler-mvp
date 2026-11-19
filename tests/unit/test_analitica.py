@@ -22,7 +22,6 @@ habia, estas pruebas darian verde en local y fallarian en el contenedor, que es
 peor que no tenerlas.
 """
 
-import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -32,7 +31,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from app.core.database import Base
 from app.models.bank_transaction import BankTransactionModel
 from app.models.company import CompanyModel
-from app.models.reconciliation import ReconciliationModel
 from app.models.ticket import TicketModel
 from app.services import analitica
 
@@ -197,7 +195,6 @@ class TestTotales:
         cuadre y que nadie sepa donde esta la diferencia.
         """
         from datetime import date, datetime as dt
-        from app.core.time import utcnow
         t = TicketModel(
             id=__import__("uuid").uuid4(),
             company_id=None,

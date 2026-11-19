@@ -23,8 +23,6 @@ import zlib
 
 import pytest
 
-from app.core.enums import ExtractionStatus
-from app.models.ticket import TicketModel
 from app.schemas.reporte import ReporteCierreMensual
 from app.services import accuracy_service
 from app.services.reporte_cierre import (
@@ -254,9 +252,7 @@ class TestA6NadaDeFloatEnDinero:
         serializa ya convertido: el decimal exacto se pierde antes de que nadie lo
         mire. Por eso se comprueba la anotacion.
         """
-        import typing
 
-        import typing
 
         gasto = ReporteCierreMensual.model_fields["gasto"].annotation
         campos = _campos_de(gasto)

@@ -1,16 +1,17 @@
 """
 AI Document Extraction Service - Extract structured data from invoices/receipts using LLM
 """
-import json
+
 import base64
 import io
+import json
 import logging
-from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
 from datetime import date
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional
 
-from app.services.ai_client import AIProvider, ai_client, AIResponse
+import app.services.ai_client as _ai_client_module
 from app.core.config import settings
 
 # HEIC/HEIF: el producto se define por "la foto del telefono" y un iPhone
@@ -30,6 +31,8 @@ from app.core.config import settings
 # Es opcional a proposito: si la dependencia no esta, `DISPONIBLE` queda en
 # `False` y se sigue funcionando sin HEIC, que es como estaba antes.
 from app.core.heif import DISPONIBLE as _HEIC_DISPONIBLE
+
+ai_client: Any = _ai_client_module.ai_client
 
 
 def _a_jpeg(image_bytes: bytes) -> bytes | None:
@@ -290,20 +293,10 @@ class AIExtractor:
 
     def __init__(self):
         self.enabled = settings.AI_ENABLED
-        # Detect provider from ai_client
-        # `AIProvider` es un `str` Enum, asi que comparar contra "ollama"/"openai"
-        # funciona con las dos formas. La anotacion declara las DOS porque el
-        # `getattr` devuelve un `str` si el atributo no existe, y sin ella el
-        # `hasattr(...).value` de abajo parecia un error del type checker
-        # cuando es justamente la comprobacion que lo hace seguro.
-        self._provider: AIProvider | str = getattr(ai_client, "_provider", "openai")
-        # `isinstance` y no `hasattr(self._provider, "value")`: los dos dicen lo
-        # mismo en ejecucion, pero `hasattr` no le da al type checker la prueba
-        # de que `.value` existe —marca "Attribute value is unknown" sobre una
-        # linea que funciona—, y el `isinstance` ademas documenta que lo que se
-        # busca es "es un enum o es la cadena de texto".
-        if isinstance(self._provider, AIProvider):
-            self._provider = self._provider.value
+        # Normalize enum-like providers to their string value without depending
+        # on a particular enum class being imported into this module.
+        provider = getattr(ai_client, "_provider", "openai")
+        self._provider: str = str(getattr(provider, "value", provider))
 
     @property
     def _chat_model(self) -> str:
@@ -407,7 +400,7 @@ class AIExtractor:
             last_result = result
         return last_result or self._fallback_extraction(b64_image.encode())
 
-    def _parse_ai_response(self, response: AIResponse, method: str) -> ExtractedInvoice:
+    def _parse_ai_response(self, response: Any, method: str) -> ExtractedInvoice:
         """Parse and validate AI response, tolerating imperfect model output."""
         raw = response.content.strip()
         data: Dict[str, Any] = {}

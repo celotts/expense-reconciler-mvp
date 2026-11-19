@@ -123,7 +123,7 @@ class TestTodaRutaTieneNombre:
             if (metodo, ruta) not in spec_api
         ]
         assert not sobran, (
-            f"NOMBRES tiene entradas para rutas que ya no existen:\n  "
+            "NOMBRES tiene entradas para rutas que ya no existen:\n  "
             + "\n  ".join(sorted(sobran))
             + "\n\nBorrarlas evita que el proximo lea 'esta ruta existe' de un "
             "diccionario que nadie ha revisado desde el ultimo commit."
@@ -292,7 +292,7 @@ class TestLosSecretosNoSalen:
                     if clave in recurso.get("data", {}):
                         if recurso["data"][clave] != "":
                             vacias.append(f"{clave} = {recurso['data'][clave]!r}")
-        assert not vacias, f"variables con valor en la coleccion:\n  " + "\n  ".join(vacias)
+        assert not vacias, "variables con valor en la coleccion:\n  " + "\n  ".join(vacias)
 
 
 # ---------------------------------------------------------------------------

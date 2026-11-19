@@ -18,7 +18,7 @@ Cada seccion dice que mutacion la mata, porque un test sin la mutacion que lo
 mata es un test que no prueba nada.
 """
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 import pytest

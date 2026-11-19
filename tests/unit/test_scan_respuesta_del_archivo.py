@@ -29,7 +29,6 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 import re
-from uuid import uuid4
 
 import pytest
 
@@ -75,7 +74,6 @@ class TestElContratoDeRetiro:
         """Si `retiro` acepta cualquier texto, el cliente tiene que conocer la
         lista de valores validos para no romper. Un enum de tres elementos se
         documenta solo."""
-        import re
 
         from app.services import scan_service
 

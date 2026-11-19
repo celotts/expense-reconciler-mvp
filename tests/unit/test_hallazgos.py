@@ -15,7 +15,6 @@ prueba con una lista de meses, no levantando Postgres.
 
 from decimal import Decimal
 
-import pytest
 
 from app.services import hallazgos
 from app.services.hallazgos import hallazgos_tendencia

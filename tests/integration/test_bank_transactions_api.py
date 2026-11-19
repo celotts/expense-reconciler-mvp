@@ -1,8 +1,5 @@
 import pytest
 from httpx import AsyncClient
-from uuid import uuid4
-from decimal import Decimal
-from datetime import date
 
 
 class TestBankTransactionsAPI:

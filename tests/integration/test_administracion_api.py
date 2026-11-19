@@ -46,10 +46,9 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 
-from app.core.enums import EstadoCompra, ProductoOrigen, TipoMovimiento
+from app.core.enums import EstadoCompra, ProductoOrigen
 from app.models.inventario import (
     CompraModel,
     MovimientoInventarioModel,
@@ -738,7 +737,7 @@ class TestAdministrarCuentas:
         assert r.status_code == 400
 
     async def test_cambiar_la_contrasena_rota_de_verdad(self, async_client, usuario_de_prueba, db_session):
-        from app.core.security import hashear_contrasena, verificar_contrasena
+        from app.core.security import verificar_contrasena
 
         r = await async_client.post(
             f"/api/v1/usuarios/{usuario_de_prueba.id}/contrasena",

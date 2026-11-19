@@ -13,7 +13,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from httpx import AsyncClient
 
 from app.core.enums import SourceType
 from app.services.parser_service import TicketExtractionResult

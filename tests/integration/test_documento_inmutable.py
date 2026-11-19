@@ -35,9 +35,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 
-from app.models.ticket_document import TicketDocumentModel
 from app.services.document_service import (
     documento_de_ticket,
     documentos_del_ticket,

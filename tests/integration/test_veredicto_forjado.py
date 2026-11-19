@@ -14,10 +14,7 @@ gana. Ambas capas juntas son la defensa.
 
 from __future__ import annotations
 
-from decimal import Decimal
-from uuid import uuid4
 
-import pytest
 from httpx import AsyncClient
 
 
@@ -41,7 +38,7 @@ class TestElVeredictoNoSePuedeForjar:
             "confidence_source": "IA",
         }
         r = await async_client.post(
-            f"/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
+            "/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
         )
         assert r.status_code == 201, f"201 esperado, llego {r.status_code}: {r.text}"
         data = r.json()
@@ -73,7 +70,7 @@ class TestElVeredictoNoSePuedeForjar:
             "confidence": "0.999",
         }
         r = await async_client.post(
-            f"/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
+            "/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
         )
         assert r.status_code == 201
         data = r.json()
@@ -92,7 +89,7 @@ class TestElVeredictoNoSePuedeForjar:
             "confidence_source": "MANUAL",
         }
         r = await async_client.post(
-            f"/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
+            "/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
         )
         assert r.status_code == 201
         data = r.json()
@@ -113,7 +110,7 @@ class TestElVeredictoNoSePuedeForjar:
             "reviewed_by": "atacante@example.com",
         }
         r = await async_client.post(
-            f"/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
+            "/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
         )
         assert r.status_code == 201
         data = r.json()
@@ -143,7 +140,7 @@ class TestMutacionVeredictoForjado:
             "extraction_status": "AUTO_APROBADO",
         }
         r = await async_client.post(
-            f"/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
+            "/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
         )
         assert r.status_code == 201
         data = r.json()
@@ -176,7 +173,7 @@ class TestMutacionVeredictoForjado:
             "expense_date": "2025-06-01",
         }
         r = await async_client.post(
-            f"/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
+            "/api/v1/tickets/", json=payload | {"company_id": str(test_company.id)}
         )
         assert r.status_code == 201
         data = r.json()

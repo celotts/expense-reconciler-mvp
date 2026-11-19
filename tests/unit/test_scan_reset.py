@@ -53,7 +53,6 @@ esta en `tests/integration/test_scan_reset_orden.py`, contra Postgres.
 
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -61,9 +60,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.core.security import hashear_contrasena
 from app.models.company import CompanyModel
-from app.models.inventario import CompraItemModel, CompraModel, ProductoModel
+from app.models.inventario import CompraModel, ProductoModel
 from app.models.scan_file import ScanFileModel
 from app.models.ticket import TicketModel
 from app.models.ticket_document import TicketDocumentModel

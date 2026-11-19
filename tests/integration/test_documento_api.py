@@ -27,9 +27,7 @@ from uuid import uuid4
 import pytest
 
 from app.core.enums import SourceType
-from app.models.company import CompanyModel
 from app.services.capture import capture_ticket
-from app.services.confidence_gate import compute_source_hash
 
 
 TICKET_TEXTO = (

@@ -311,7 +311,6 @@ class TestLaConfianzaDelOcr:
         auto-aprobaria. Un "1" mal leido como "l" no lo detecta ningun regex, y
         un total erroneo auto-aprobado es un error financiero.
         """
-        from app.core.enums import ConfidenceSource
         from app.services.capture import (
             confianza_por_campos,
             confianza_por_campos_ocr,

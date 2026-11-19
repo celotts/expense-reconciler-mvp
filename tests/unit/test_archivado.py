@@ -21,11 +21,9 @@ la parte que mueve.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
-from app.core.config import settings
 from app.services import archivado_service as arch
 
 

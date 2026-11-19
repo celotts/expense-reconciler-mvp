@@ -83,7 +83,6 @@ def _texto_del_pdf(pdf: bytes) -> str:
     `x`. El filtro estaba descartando el unico flujo que importaba, y el test
     fallaba con `b''` sin dar ninguna pista de por que.
     """
-    import zlib
 
     partes: list[bytes] = []
     for crudo in re.findall(rb"stream\r?\n(.*?)\r?\nendstream", pdf, re.S):

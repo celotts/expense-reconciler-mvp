@@ -19,7 +19,6 @@ Ver el criterio del corte en el docstring de `app/services/parser_lineas.py`.
 
 from __future__ import annotations
 
-import logging
 from decimal import Decimal
 
 import pytest

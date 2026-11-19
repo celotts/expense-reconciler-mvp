@@ -10,12 +10,10 @@ import time
 from uuid import uuid4
 
 import pytest
-from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import rate_limit
 from app.core.security import crear_token, hashear_contrasena
-from app.models.company import CompanyModel
 from app.models.user import UserModel
 
 
