@@ -107,15 +107,29 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Error desconocido' }));
-    const detail = error.detail;
+    // El cuerpo NO siempre es JSON: un 500 de uvicorn responde `text/plain`
+    // ("Internal Server Error") y `response.json()` revienta. Antes eso se
+    // convertia en "Error desconocido", que no dice ni el codigo ni que el
+    // servidor cayo: quien lo lee cree que el front no supo que paso y repite
+    // la operacion. Se lee como TEXTO y se intenta parsear; si no es JSON, el
+    // codigo y el texto son lo unico que hay, y se muestran los dos.
+    const texto = await response.text().catch(() => '');
+    let detail: unknown;
+    try {
+      detail = texto ? JSON.parse(texto)?.detail : undefined;
+    } catch {
+      detail = undefined;
+    }
     let mensaje = `Error ${response.status}`;
     if (typeof detail === 'string') {
       mensaje = detail;
     } else if (Array.isArray(detail)) {
       mensaje = detail.map(d => d.msg || d.detail || JSON.stringify(d)).join('; ');
     } else if (detail && typeof detail === 'object') {
-      mensaje = detail.msg || detail.message || JSON.stringify(detail);
+      mensaje = (detail as { msg?: string; message?: string }).msg ||
+        (detail as { message?: string }).message || JSON.stringify(detail);
+    } else if (texto.trim()) {
+      mensaje = `${mensaje}: ${texto.trim().slice(0, 200)}`;
     }
     throw new Error(mensaje);
   }

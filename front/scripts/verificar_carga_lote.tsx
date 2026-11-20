@@ -22,6 +22,7 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import React from 'react';
+import { fetchApi } from '../src/services/api';
 import { CargaPorLote, PanelResultadoDirectorio, PanelResultadoLote } from '../src/pages/Scan';
 import type { DatosTicket, DigitalizacionDirectorio, ScanItem } from '../src/types/scan';
 
@@ -246,8 +247,36 @@ comprobar(
   panelDirectorio.includes('1 por tope de corrida'),
 );
 
-if (fallos.length > 0) {
-  console.error(`\n${fallos.length} comprobaciones fallaron:\n- ${fallos.join('\n- ')}`);
-  process.exit(1);
+// Un 500 de uvicorn responde text/plain, no JSON. El mensaje tiene que dar el
+// codigo Y el cuerpo: "Error desconocido" no distingue una caida del servidor
+// de un fallo del front, y lleva a repetir la peticion. Se prueba la funcion
+// real con un fetch falso, no el HTML: es la capa que produjo el error.
+async function comprobarError500() {
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('Internal Server Error', {
+    status: 500,
+    headers: { 'Content-Type': 'text/plain' },
+  })) as typeof fetch;
+  let mensaje = '';
+  try {
+    // `sinToken`: en Node no hay `localStorage`, y la puerta de caducidad
+    // saltaria antes del fetch. Aqui se prueba SOLO el manejo del 500.
+    await fetchApi('/scan/files', { sinToken: true });
+  } catch (e) {
+    mensaje = e instanceof Error ? e.message : String(e);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+  comprobar(
+    'un 500 en texto plano dice el codigo y el cuerpo, no "Error desconocido"',
+    mensaje === 'Error 500: Internal Server Error' && !mensaje.includes('Error desconocido'),
+  );
 }
-console.log('\nTodo lo que se promete en la carga por lote se ve en pantalla.');
+
+void comprobarError500().then(() => {
+  if (fallos.length > 0) {
+    console.error(`\n${fallos.length} comprobaciones fallaron:\n- ${fallos.join('\n- ')}`);
+    process.exit(1);
+  }
+  console.log('\nTodo lo que se promete en la carga por lote se ve en pantalla.');
+});

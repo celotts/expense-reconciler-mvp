@@ -2237,6 +2237,40 @@ entorno**, no por código: pasan en host con
 `python3 -m pytest --noconftest tests/unit/test_lockfile.py
 tests/unit/test_vscode_settings.py -q` (28 passed).
 
+### 46. El Escáner decía "Error desconocido" ante un 500 en texto plano — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-20.** Al abrir **Escáner**, el cartel rojo decía `Error
+desconocido` y dos peticiones a `GET /api/v1/scan/files` respondían 500. El mensaje
+no era el bug: era el síntoma de dos defectos apilados.
+
+**Causa 1 — la base en vivo venía de otra rama.** `schema_migrations` tenía
+`0019_lotes.sql`, `0020_usuario_empresa.sql` y `0021_scan_files_status_revisar_foto.sql`,
+pero **no** `0019_extraccion_multipaís_y_controles.sql`, que es la que este checkout
+usa. Faltaban 11 columnas de `tickets` (`pais`, `folio`, `hash_duplicado`,
+`estado_conciliacion`, `periodo_cerrado_*`, ...) y el SELECT del ORM moría con
+`column tickets.pais does not exist`. La suite no lo ve: construye el esquema desde
+los modelos, no desde la base que ya existe. Se aplicó la migración pendiente con
+`psql -f /docker-entrypoint-initdb.d/migrations/0019_...sql` (idempotente) y los dos
+endpoints pasaron a 200. **No se tocó `init.sql`**: ya declara esas columnas; el
+problema era una base vieja, no el DDL.
+
+**Causa 2 — el front no sabía mostrar un 500.** `fetchApi` hacía
+`response.json().catch(() => ({detail: 'Error desconocido'}))`. Un 500 de uvicorn
+responde `text/plain` con `Internal Server Error`, así que el parseo fallaba y el
+`detail` inventado **reemplazaba** al `Error ${status}` que ya estaba calculado.
+El operador veía un texto que no distinguía una caída del servidor de un fallo del
+front, y la reacción era repetir la corrida.
+
+Ahora se lee el cuerpo como texto y se intenta parsear como JSON solo después: si
+no hay `detail`, el mensaje es `Error 500: Internal Server Error` (código **y**
+cuerpo, con el texto acotado a 200 chars). La comprobación va en
+`front/scripts/verificar_carga_lote.tsx` con un `fetch` falso; se verificó que
+**muere** al revertir el arreglo (el mensaje vuelve a ser `Error desconocido`).
+
+> Una base con migraciones de otra rama no se arregla borrando el cartel: el 500
+> era verdadero. Y un mensaje que no dice el código ni el cuerpo convierte un fallo
+> diagnosticable en un "no sé qué pasó" que invita a repetir la operación.
+
 ---
 
 ## Arreglados en el pasado (no reabrir)
