@@ -2115,6 +2115,128 @@ y el log del 500) — **36 mutaciones, 36 mueren**.
 
 ---
 
+### 45. `/expenses` era un router muerto con un `folder_path` del cliente — ✅ CORREGIDO
+
+`app/routers/expenses.py` existía, **no estaba montado**, no tenía tests y hacía una
+**segunda canalización de lectura**: OpenCV + Ollama directo + un Pydantic propio, con
+dos TODO (`dedup` y `periodo cerrado`) que nunca se implementaron. Parecía una feature
+y no podía cumplir nada de lo que prometía. Peor: su `batch_upload` aceptaba una
+carpeta del cuerpo y hacía `Path().glob()` — la misma puerta de lectura arbitraria
+por la que se borró `app/modules/expenses/`. **Un módulo muerto no se arregla, se borra
+o se declara muerto**: montarlo habría abierto la puerta que por eso estaba muerta.
+
+Ahora es un adaptador fino sobre `procesar_archivo`, el único camino de captura:
+
+| Endpoint | Qué hace | Respuesta |
+|---|---|---|
+| `POST /expenses/upload-batch` | `files[]` + `company_id` | `list[ScanItemResponse]` |
+| `POST /expenses/digitalizar-directorio` | `carpeta` opcional + `company_id` | `DigitalizacionDirectorioResponse` |
+
+Los dos exigen `UsuarioActual`, comprueban la empresa (404 si no existe) y pasan por
+el **mismo** `_validador_de_periodo`. `ExpenseReceiptSchema` sigue vivo como contrato
+estrecho de la lectura de IA, **no como respuesta**: devolverlo aparte habría dejado
+los números del papel separados del veredicto del gate, que es justo lo que el gate se
+niega a afirmar.
+
+**Cuatro defensas con mutación que muere al quitarlas:**
+
+1. **Dedup por SHA-256, no por nombre.** `relative_path` se deriva de los bytes
+   (`<sha>.<ext>`) tanto en la carga como en el directorio. Dos personas suben el
+   mismo comprobante con distinto nombre → una sola fila en `scan_files`. El nombre
+   solo conserva la extensión para que la clave siga diciendo qué tipo era.
+2. **Periodo cerrado se decide DENTRO del pipeline**, justo después de leer la fecha
+   del papel y antes de escribir el ticket. Si se validara en el router, el rechazo
+   llegaría al cliente con el gasto **ya contabilizado** en un mes cerrado, y
+   deshacerlo exigiría borrar un ticket con documento adjunto. La fila de
+   `scan_files` queda `ERROR`, `resumen.accion = PERIODO_CERRADO`, el evento es
+   `OMITIDO` con `PERIODO_CERRADO: <motivo>` en el detalle y el cliente ve el motivo.
+   > El evento NO se llama `PERIODO_CERRADO`: `ck_scan_events_action` es una
+   > constraint cerrada en la base y añadir un valor al DDL sin migrar deja el
+   > `INSERT` rechazado en producción (precedente de `BORRADO` en `archivado_service`).
+3. **Quien firma el override sale del token.** `autorizado_por = usuario.email`, nunca
+   un campo del formulario (regla 23). Un solo callback compartido por las dos puertas
+   evita que una se olvide del override o firme con otro nombre.
+4. **Secuencial sobre una sola sesión.** El router anterior usaba `asyncio.gather`
+   con semáforo de 3 sobre una `AsyncSession` compartida: no es concurrency-safe, y el
+   `commit` de un archivo podía intercalarse con el `flush` de otro. La concurrencia
+   se consigue con más workers, no compartiendo la sesión.
+
+**La ruta escrita no abre el disco.** `digitalizacion_directorio.py` es un servicio
+aparte porque `scan_service.escanear` guarda `relative_path` relativo a
+`TICKETS_INPUT_DIR`: meter una ruta arbitraria haría colisionar `factura.pdf` de dos
+carpetas y la segunda saldría "sin cambios" con bytes distintos. `resolver_carpeta`
+comprueba `is_relative_to` **después** de `resolve()` contra
+`raices_permitidas()` (`TICKETS_INPUT_DIR` + `TICKETS_SCAN_RUTAS_PERMITIDAS`,
+separadas por `os.pathsep`); un `..` o un symlink a `/etc` no cuela. Los symlinks
+dentro de la carpeta se reportan, no se leen. El tope por archivos y por bytes se
+cuenta, no se silencia.
+
+**Lo rechazado se nombra.** `archivos_no_permitidos` lleva nombre, extensión y motivo;
+`archivos` solo contiene lo que se leyó. Un `.docx` mezclado en la tabla parecería un
+ticket que falló, cuando es un archivo que nadie intentó leer. `nombres` y `formatos`
+son arrays paralelos a `archivos` y se emparejan por índice en el front.
+
+**`formatos` no es `origen`.** `formatos` es qué son los bytes (`pdf`, `image`, `xml`),
+`origen` es quién leyó (`pdf_text`, `ocr`, `llm`, `xml`) y `modelo_ia` es el modelo
+concreto. El `accept` del selector es comodidad: los bytes deciden el lector. El set
+mide el caso que separa las tres preguntas: un `.jpg` con bytes de PDF da
+`bytes=pdf · lector=texto del PDF`.
+
+**El front no copia la configuración.** `GET /scan/config` expone
+`rutas_permitidas` y `extensiones_permitidas`; `Scan.tsx` arma el `accept` y el
+`datalist` con esas listas. Antes ofrecía `.txt`, que el backend rechaza, y las rutas
+eran texto write-only. `npm run verify:lote` mira **el HTML renderizado**, no el retorno
+de las funciones: 18 comprobaciones, y tres mutaciones verificadas a mano (quitar
+`formatos`, sustituir el nombre del rechazado por texto genérico, vaciar el datalist)
+mueren.
+
+### 45.bis. El set de pruebas parecía medir OCR y no lo hacía
+
+El set versionado en `test-files/set-digitalizacion/` se genera con
+`scripts/generar_set_pruebas_digitalizacion.py` y se mide con
+`scripts/inspeccionar_set_pruebas.py --con-ocr` (solo Tesseract, sin llamada de red).
+
+La primera versión de `ideal/04_foto_requiere_ocr.jpg` tenía **0.12 %** de píxeles
+oscuros. `tesseract` por línea de comandos la leía, pero `leer_imagen()` devolvía
+`texto=''`: `ocr.py` descarta imágenes con menos de 0.5 % de tinta para no hacer 16
+llamadas sobre una foto del techo. El set decía "foto con OCR" y el OCR no corría.
+
+**Se arregló el artefacto, no la defensa.** 800×600 con fuente 22 da ~1.1 % de tinta y
+`leer_imagen()` devuelve las seis líneas con confianza 0.9475. Bajar
+`_FRACCION_OSCUROS_MINIMA` habría sido quitar una protección para que un test pasara.
+
+Medido con `--con-ocr`: el PDF con capa de texto da `pdf_text` sin OCR ni modelo
+(total 1100.00, fecha 2025-03-15); el XML por firma da `xml`; la extensión en
+mayúsculas, el `.jpg` con bytes PDF, el `.HEIC` que es JPEG y la copia con otro nombre
+se leen igual; `Sub-Total` no compite con `Total`; el PDF corrupto da `llm`, total
+`0.00` y el error `Failed to load document (PDFium: Data format error).` visible.
+
+### 45.ter. La colección de Insomnia mandaba `files` como texto
+
+`scripts/generar_insomnia.py` reconocía solo `file` como campo de archivo.
+`POST /expenses/upload-batch` declara `files: list[UploadFile]`, así que el request
+exportado ponía el campo como texto y respondía **422**: el archivo parecía opcional
+cuando FastAPI lo exige. `CAMPOS_ARCHIVO` incluye ahora `files` y el generador produce
+87 peticiones en 16 carpetas con `files` como `type: file`.
+
+> La regeneración se validó primero con `--spec /app/openapi-local.json --check`
+> sobre el OpenAPI de `app.openapi()` porque `expense_api_service` estaba
+> `unhealthy`. Cuando el servicio volvió a estar sano se corrió **`make
+> insomnia-check` contra la API viva**: `expense-reconciler-insomnia.json esta al
+> dia (87 peticiones, 16 carpetas)`. El archivo temporal `openapi-local.json` se
+> borró; `--spec` no comprueba que el servidor sirva lo que dice, por eso valía
+> la pena repetirlo contra el vivo.
+
+**Verificación:** 7/7 mutaciones en `verify_expenses_batch_mutations.py`, 10/10 en
+`verify_expenses_directorio_mutations.py`, 18/18 en `verify_scan_mutations.py` (con
+`git` instalado en el contenedor y `core.excludesfile` apuntando al global del host),
+y 3/3 en el front. Suite completa en verde: **1818 recolectados, 1815 passed, 3
+skipped** con `git` instalado en el contenedor y `core.excludesfile` apuntando al
+global del host. Sin `git`, esos 6 tests de `.gitignore`/lockfile fallan **por
+entorno**, no por código: pasan en host con
+`python3 -m pytest --noconftest tests/unit/test_lockfile.py
+tests/unit/test_vscode_settings.py -q` (28 passed).
+
 ---
 
 ## Arreglados en el pasado (no reabrir)

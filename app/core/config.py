@@ -1,5 +1,6 @@
 
 import logging
+import os
 import secrets
 from pathlib import Path
 
@@ -166,6 +167,19 @@ class Settings(BaseSettings):
     # arrastrables como una unidad, y separadas de cualquier otra carpeta de
     # papel que haya en `Documents`.
     TICKETS_INPUT_DIR: str = "/Users/carloslott/Documents/Tickets/Tickets_app"
+
+    # Otras carpetas que el operador puede escribir a mano en la pantalla de
+    # digitalizacion. VACIO = solo `TICKETS_INPUT_DIR`, que es lo que habia antes.
+    # Se separan con `os.pathsep` (`:` en Linux/macOS, `;` en Windows), no con
+    # coma: una carpeta puede tener comas en el nombre.
+    #
+    # No es comodidad: es la frontera de seguridad. Sin esta lista, un campo de
+    # texto que acepa una ruta cualquiera permite leer `/etc` o el `.env` como
+    # si fueran comprobantes. Con ella, el cliente elige DENTRO de lo que el
+    # servidor ya decidio exponer, y `..` no sirve para salirse: se comprueba
+    # despues de `resolve()`, igual que en el escanner de carpeta.
+    # En Docker estas rutas son las del CONTENEDOR: hay que montarlas aparte.
+    TICKETS_SCAN_RUTAS_PERMITIDAS: str = ""
 
     # Se crea si no existe. Un escaner que aborta porque la carpeta todavia no
     # esta es un escaner que nadie ejecuta la primera vez: el primer arranque
@@ -409,6 +423,23 @@ class Settings(BaseSettings):
             logger.info("se creo la carpeta de tickets: %s", ruta)
         elif not ruta.is_dir():
             raise ValueError(f"TICKETS_INPUT_DIR no es una carpeta: {ruta}")
+
+        # Las rutas extra se resuelven aqui, no en cada peticion, por la misma
+        # razon que la principal: un valor relativo debe significar lo mismo
+        # siempre. No se crean solas —son carpetas que el operador ya tiene— y
+        # un archivo aqui es un error de configuracion, no un comprobante.
+        extra: list[str] = []
+        for valor in self.TICKETS_SCAN_RUTAS_PERMITIDAS.split(os.pathsep):
+            if not valor.strip():
+                continue
+            candidata = Path(valor).expanduser().resolve()
+            if candidata.is_file():
+                raise ValueError(
+                    "TICKETS_SCAN_RUTAS_PERMITIDAS contiene un archivo, no una "
+                    f"carpeta: {candidata}"
+                )
+            extra.append(str(candidata))
+        self.TICKETS_SCAN_RUTAS_PERMITIDAS = os.pathsep.join(extra)
 
         return self
 

@@ -151,7 +151,12 @@ POR_TIPO: dict[str, Any] = {
 
 # Campos que son un archivo. En Insomnia van como param de tipo `file`, y el
 # cuerpo entero pasa a ser multipart/form-data.
-CAMPOS_ARCHIVO = {"file"}
+#
+# `files` (plural) es el de `/expenses/upload-batch`. Con solo `file` el
+# generador ponia el campo como texto y la peticion exportada respondia 422:
+# el archivo parecia opcional cuando FastAPI lo exige. Es la misma trampa que
+# `base_url` con `/api/v1` duplicado: un request que no funciona y no avisa.
+CAMPOS_ARCHIVO = {"file", "files"}
 
 # Prefijo de ruta -> carpeta, ya SIN el prefijo de la v1.
 #
@@ -166,6 +171,7 @@ CARPETAS: list[tuple[str, str]] = [
     ("/categorias", "Categorias"),
     ("/companies", "Companies"),
     ("/tickets", "Tickets"),
+    ("/expenses", "Expenses"),
     ("/scan", "Scan"),
     ("/usuarios", "Usuarios"),
     ("/inventario", "Inventario"),
@@ -258,6 +264,14 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/scan/files/{file_id}/diagnostico"): "4c. DIAGNOSTICO de un archivo ya escaneado, NO guarda",
     ("POST", "/scan/"): "5. Escanear carpeta (SI guarda)",
     ("POST", "/tickets/extract-and-create"): "6. Subir un comprobante (SI guarda)  <- fija {{ ticket_id }}",
+    # La carga por lote usa la MISMA captura que los dos de arriba. La diferencia
+    # no es el lector sino la puerta: viene con `company_id` y con el override de
+    # periodo cerrado, y por eso el nombre lo dice —un "subir varios" cualquiera
+    # no avisaria de que un mes cerrado puede rechazar el lote entero.
+    ("POST", "/expenses/upload-batch"): "6b. Subir un LOTE (misma captura; respeta periodo cerrado)",
+    ("POST", "/expenses/digitalizar-directorio"): (
+        "6c. Digitalizar DIRECTORIO (ruta permitida; reporta extensiones no permitidas)"
+    ),
     # --- Ver y corregir lo leido -----------------------------------------
     ("GET", "/tickets/"): "7. Listar Tickets  <- fija {{ ticket_id }}",
     ("GET", "/tickets/review-queue"): "8. Cola de revision (lo que el sistema NO pudo leer)",

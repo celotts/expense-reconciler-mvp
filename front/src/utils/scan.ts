@@ -149,6 +149,11 @@ export function accionLabel(accion: string): string {
     case 'ACTUALIZADO': return 'actualizado';
     case 'SIN_CAMBIOS': return 'sin cambios';
     case 'OMITIDO': return 'omitido';
+    // La accion del `scan_events` es OMITIDO, pero la respuesta le dice al
+    // cliente PERIODO_CERRADO para que no tenga que leer el detalle a ver que
+    // paso. Sin esta entrada se vera el codigo crudo, que es mejor que mentir,
+    // pero peor que decirlo en palabras como las demas acciones.
+    case 'PERIODO_CERRADO': return 'periodo cerrado';
     case 'ERROR': return 'error';
     default: return accion;
   }

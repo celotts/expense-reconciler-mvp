@@ -62,6 +62,10 @@ from app.schemas.scan import (
 )
 from app.services import scan_registry, scan_reset, scan_service
 from app.services.ai_client import disponibilidad as disponibilidad_ia
+from app.services.digitalizacion_directorio import (
+    EXTENSIONES_PERMITIDAS,
+    raices_permitidas,
+)
 from app.services.lectura_diagnostico import diagnosticar_lectura
 from app.services.ocr import disponibilidad as disponibilidad_ocr
 from app.services.scan_reset import FRASE_CONFIRMACION
@@ -101,8 +105,15 @@ async def _archivo_o_404(db: AsyncSession, file_id: UUID) -> ScanFileModel:
     return fila
 
 
-def _de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
-    """El dataclass del servicio al schema de la API, en un solo lugar."""
+def de_resumen(detalle: scan_service.ResumenArchivo) -> ScanItemResponse:
+    """El dataclass del servicio al schema de la API, en un solo lugar.
+
+    Publica porque la usa tambien `app/routers/expenses.py`: la carga por lote
+    devuelve el MISMO `ScanItemResponse` que el escaner de carpeta. Si cada
+    router convirtiera el resumen por su cuenta, un campo nuevo se agregaria
+    en uno y no en el otro, y el cliente recibiria dos formas distintas de
+    describir el mismo archivo.
+    """
     return ScanItemResponse(
         relative_path=detalle.relative_path,
         scan_file_id=detalle.scan_file_id,
@@ -403,10 +414,20 @@ async def configuracion_del_escaneo(usuario: UsuarioActual) -> dict:
     Una casilla de archivado que arranca marcada cuando el archivado esta apagado es
     una forma de mover comprobantes de carpeta sin querer, y el operador no tendria
     forma de saber por que desaparecieron de la bandeja.
+
+    `rutas_permitidas` y `extensiones_permitidas` son las dos listas que la
+    pantalla de carga por lote necesita para no adivinar. Salen de las MISMAS
+    funciones que defiende el endpoint (`raices_permitidas` y la constante del
+    servicio): si el front tuviera su propia copia, una ruta cambiada en el
+    `.env` seguiria apareciendo como sugerencia y el 400 posterior pareceria un
+    error del servidor. Son informacion, no autorizacion: el back comprueba la
+    ruta de nuevo en cada peticion.
     """
     del usuario
     return {
         "carpeta": scan_service.raiz().as_posix(),
+        "rutas_permitidas": [r.as_posix() for r in raices_permitidas()],
+        "extensiones_permitidas": sorted(EXTENSIONES_PERMITIDAS),
         "carpeta_existe": scan_service.raiz().is_dir(),
         "recursivo": settings.TICKETS_SCAN_RECURSIVO,
         "max_por_corrida": settings.TICKETS_SCAN_MAX_ARCHIVOS,
@@ -687,7 +708,7 @@ async def escanear(
         quedan_en_bandeja=resumen.quedan_en_bandeja,
         compras_confirmadas=resumen.compras_confirmadas,
         compras_no_confirmadas=resumen.compras_no_confirmadas,
-        detalles=[_de_resumen(d) for d in resumen.detalles],
+        detalles=[de_resumen(d) for d in resumen.detalles],
         # El total, validado aqui: el servicio lo arma como `dict` para no
         # importar de `schemas/`.
         resumen=resumen.resumen,
@@ -850,4 +871,4 @@ async def reprocesar_archivo(
             detail=resultado.detalle or "no se pudo reprocesar el archivo",
         )
 
-    return ReprocessResponse(archivo=_de_resumen(resultado))
+    return ReprocessResponse(archivo=de_resumen(resultado))

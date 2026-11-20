@@ -12,6 +12,7 @@ import type {
 } from '../types/api';
 import type { Categoria, DashboardResponse } from '../types/dashboard';
 import type {
+  DigitalizacionDirectorio,
   ScanConfig, ScanCorrida, ScanFileDetail, ScanFilePage, ScanIaEstado, ScanItem, ScanOcrEstado,
   ScanRequest, ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
@@ -466,6 +467,55 @@ export const ticketsApi = {
     formData.append('file_type', fileType);
     formData.append('company_id', companyId);
     return fetchApi<Ticket>('/tickets/extract-and-create', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
+  /** Digitaliza un LOTE de una sola vez, sea PDF, JPG, HEIC, TIFF o XML.
+   *
+   *  Es el mismo `POST /expenses/upload-batch` que usa la coleccion de
+   *  Insomnia y la MISMA captura que `/scan`: el router no elige el lector
+   *  por la extension, lo decide el backend por los bytes. Por eso aqui no
+   *  hay `file_type`, y por eso una carpeta mezclada entra entera.
+   *
+   *  Cada archivo se manda con la clave `files` (el nombre del parametro del
+   *  router). Un `FormData` con varios `append` de la misma clave es lo que
+   *  FastAPI lee como `list[UploadFile]`.
+   *
+   *  Quien firma el override NO se manda: `autorizado_por` sale del token
+   *  en el backend. Aqui solo se pide el motivo, que es la decision humana. */
+  uploadBatch: (
+    files: File[],
+    companyId: string,
+    opciones: { override?: boolean; motivo?: string } = {},
+  ): Promise<ScanItem[]> => {
+    const formData = new FormData();
+    files.forEach(archivo => formData.append('files', archivo));
+    formData.append('company_id', companyId);
+    formData.append('periodo_cerrado_override', String(opciones.override ?? false));
+    if (opciones.motivo) formData.append('periodo_cerrado_motivo', opciones.motivo);
+    return fetchApi<ScanItem[]>('/expenses/upload-batch', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
+  /** Digitaliza una carpeta del SERVIDOR. `carpeta` vacia = la configurada.
+   *
+   *  No es un `folder_path` cualquiera: el servidor solo acepta rutas dentro
+   *  de su lista blanca, y devuelve 400 si se intenta salir de ella. La lista
+   *  de archivos no permitidos llega en la respuesta con sus nombres. */
+  digitalizarDirectorio: (
+    companyId: string,
+    opciones: { carpeta?: string; override?: boolean; motivo?: string } = {},
+  ): Promise<DigitalizacionDirectorio> => {
+    const formData = new FormData();
+    formData.append('company_id', companyId);
+    if (opciones.carpeta) formData.append('carpeta', opciones.carpeta);
+    formData.append('periodo_cerrado_override', String(opciones.override ?? false));
+    if (opciones.motivo) formData.append('periodo_cerrado_motivo', opciones.motivo);
+    return fetchApi<DigitalizacionDirectorio>('/expenses/digitalizar-directorio', {
       method: 'POST',
       body: formData,
     });

@@ -872,3 +872,29 @@ class TestConfiguracion:
         assert cuerpo["carpeta"].endswith("tickets")
         assert cuerpo["carpeta_existe"] is True
         assert cuerpo["recursivo"] is True
+
+    async def test_config_dice_rutas_y_extensiones_permitidas(
+        self, async_client, con_token
+    ):
+        """El front no adivina donde puede leer ni que archivos entran.
+
+        Las listas salen de las mismas funciones que defienden
+        `/expenses/digitalizar-directorio`: si se copiaran en el cliente, una
+        ruta nueva del `.env` seguiria apareciendo como sugerencia y el 400
+        pareceria un error del servidor. `rutas_permitidas` trae la raiz por
+        omision aunque `TICKETS_SCAN_RUTAS_PERMITIDAS` este vacia.
+        """
+        _, token = con_token
+
+        respuesta = await async_client.get(
+            f"{P}/scan/config", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert respuesta.status_code == 200
+        cuerpo = respuesta.json()
+        assert cuerpo["rutas_permitidas"][0] == cuerpo["carpeta"]
+        assert all(r.startswith("/") for r in cuerpo["rutas_permitidas"])
+        assert ".pdf" in cuerpo["extensiones_permitidas"]
+        assert ".jpg" in cuerpo["extensiones_permitidas"]
+        assert ".xml" in cuerpo["extensiones_permitidas"]
+        assert ".docx" not in cuerpo["extensiones_permitidas"]

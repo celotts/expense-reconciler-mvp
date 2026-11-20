@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { registrarEventoFrontend } from '../services/auditoria';
 import { companiesApi, ticketsApi, type Company, type Ticket } from '../services/api';
 import type {
+  ArchivoNoPermitido, DigitalizacionDirectorio,
   ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
   ScanResultado, ScanStats, ScanStatus,
 } from '../types/scan';
@@ -310,6 +311,19 @@ export function Scan() {
         </Button>
       </div>
 
+      {/* La carga por lote es la OTRA puerta de entrada: la de arriba lee una
+          carpeta del SERVIDOR; esta manda archivos de ESTA maquina. Las dos
+          pasan por el mismo `procesar_archivo`, asi que no hay dos lectores
+          que puedan divergir. Va junto a los botones y no en Tickets porque
+          ahi el archivo se sube uno a uno y se puede corregir antes de crear
+          el ticket; aqui se digitaliza un monton de una vez. */}
+      <CargaPorLote
+        companyId={companyId}
+        carpetaDefecto={config?.carpeta}
+        rutasPermitidas={config?.rutas_permitidas}
+        extensionesPermitidas={config?.extensiones_permitidas}
+      />
+
       {/* Antes del panel, no despues: si hay un modelo configurado que no esta
           instalado, eso explica POR QUE los tickets de abajo salieron como
           salieron, y verlo despues de leerlos es leerlo al reves. */}
@@ -397,6 +411,417 @@ export function Scan() {
           />
         </Modal>
       )}
+    </div>
+  );
+}
+
+/** Carga de archivos de ESTA maquina, en una sola accion y con formatos mezclados.
+ *
+ *  La ruta de arriba lee una carpeta del servidor; esta manda los bytes desde
+ *  el navegador. Las dos caen en `procesar_archivo`, asi que el PDF con capa
+ *  de texto, el JPG con OCR y el HEIC con vision no pueden divergir: no hay
+ *  un segundo lector aqui, solo una segunda puerta de entrada.
+ *
+ *  El `accept` del selector es una comodidad, no una decision: si el nombre
+ *  miente (hay un `IMG_4253.HEIC` que por sus bytes es JPEG), el backend lee
+ *  los bytes y el resultado sigue siendo el mismo. Por eso el texto de abajo
+ *  lo dice, y por eso no se calcula `file_type` en el front.
+ */
+export function CargaPorLote({
+  companyId,
+  carpetaDefecto = '',
+  rutasPermitidas = [],
+  extensionesPermitidas = [],
+}: {
+  companyId: string;
+  carpetaDefecto?: string;
+  rutasPermitidas?: string[];
+  extensionesPermitidas?: string[];
+}) {
+  const [archivos, setArchivos] = useState<File[]>([]);
+  const [procesando, setProcesando] = useState(false);
+  const [resultado, setResultado] = useState<ScanItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [override, setOverride] = useState(false);
+  const [motivo, setMotivo] = useState('');
+  const carpetaRef = useRef<HTMLInputElement>(null);
+
+  // La ruta por omision NO se escribe a mano en el front: sale de `/scan/config`,
+  // que es el mismo sitio del que sale la carpeta del escaner de arriba. Si la
+  // configuracion cambia, el campo la sigue; si el operador ya escribio otra,
+  // no se la pisamos por debajo.
+  const [ruta, setRuta] = useState(carpetaDefecto);
+  const [resultadoRuta, setResultadoRuta] = useState<DigitalizacionDirectorio | null>(null);
+  const [procesandoRuta, setProcesandoRuta] = useState(false);
+  const [errorRuta, setErrorRuta] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRuta(anterior => anterior || carpetaDefecto);
+  }, [carpetaDefecto]);
+
+  useEffect(() => {
+    // `webkitdirectory` no esta en los tipos de React. Se pone como atributo
+    // crudo para que el navegador deje elegir una carpeta entera: es la unica
+    // forma de mandar "la carpeta con jpg, pdf y lo demas" en un solo gesto.
+    const entrada = carpetaRef.current;
+    if (!entrada) return;
+    entrada.setAttribute('webkitdirectory', '');
+    entrada.setAttribute('directory', '');
+  }, []);
+
+  const tomar = (lista: FileList | null) => {
+    if (!lista) return;
+    setArchivos(Array.from(lista));
+    setResultado(null);
+    setError(null);
+  };
+
+  const enviar = async () => {
+    if (archivos.length === 0) return;
+    setProcesando(true);
+    setError(null);
+    try {
+      setResultado(await ticketsApi.uploadBatch(archivos, companyId, {
+        override,
+        motivo: motivo.trim() || undefined,
+      }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No se pudo digitalizar el lote');
+      setResultado(null);
+    } finally {
+      setProcesando(false);
+    }
+  };
+
+  const enviarDirectorio = async () => {
+    setProcesandoRuta(true);
+    setErrorRuta(null);
+    try {
+      setResultadoRuta(await ticketsApi.digitalizarDirectorio(companyId, {
+        carpeta: ruta.trim() || undefined,
+        override,
+        motivo: motivo.trim() || undefined,
+      }));
+    } catch (e) {
+      setErrorRuta(e instanceof Error ? e.message : 'No se pudo digitalizar la ruta');
+      setResultadoRuta(null);
+    } finally {
+      setProcesandoRuta(false);
+    }
+  };
+
+  // El accept se arma con la lista del servidor para no ofrecer `.txt` (que el
+  // backend rechaza) ni quedarse viejo cuando se agregue un formato nuevo. Es
+  // comodidad, no decision: si el nombre miente, los bytes mandan.
+  const accept = extensionesPermitidas.length > 0
+    ? extensionesPermitidas.join(',')
+    : '.pdf,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.heic,.heif,.psd,.xml';
+
+  return (
+    <Card className="mt-4">
+      <h3 className="font-semibold text-gray-900">Digitalizar desde esta máquina</h3>
+      <p className="text-sm text-gray-600 mt-1">
+        PDF, JPG, PNG, HEIC, TIFF o XML: <strong>mezcla los formatos en la misma carga</strong>.
+        El tipo lo decide el backend por los bytes, no por el nombre ni por lo que
+        diga el selector. Los archivos se leen con el mismo pipeline que el escáner
+        de carpeta y se registran en `scan_files`, así que reenviar los mismos bytes
+        no crea tickets duplicados.
+      </p>
+
+      <input
+        id="carga-lote-archivos"
+        type="file"
+        multiple
+        accept={accept}
+        onChange={e => tomar(e.target.files)}
+        className="sr-only"
+      />
+      <input
+        ref={carpetaRef}
+        id="carga-lote-carpeta"
+        type="file"
+        multiple
+        onChange={e => tomar(e.target.files)}
+        className="sr-only"
+      />
+
+      <div className="mt-3 flex flex-wrap gap-3">
+        <Button
+          variant="secondary"
+          onClick={() => document.getElementById('carga-lote-archivos')?.click()}
+          disabled={procesando}
+        >
+          Elegir archivos
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => document.getElementById('carga-lote-carpeta')?.click()}
+          disabled={procesando}
+          title="Selecciona una carpeta completa; se mandan todos sus archivos"
+        >
+          Elegir carpeta
+        </Button>
+        <Button
+          onClick={enviar}
+          disabled={archivos.length === 0 || procesando || !companyId}
+          title={!companyId ? 'Elige una empresa: sin ella no se puede atribuir ningún gasto' : undefined}
+        >
+          {procesando
+            ? 'Digitalizando…'
+            : `Digitalizar ${archivos.length} ${archivos.length === 1 ? 'archivo' : 'archivos'}`}
+        </Button>
+      </div>
+
+      {archivos.length > 0 && !procesando && (
+        <p className="text-xs text-gray-500 mt-2">
+          {archivos.length} seleccionados: {archivos.slice(0, 5).map(a => a.name).join(', ')}
+          {archivos.length > 5 ? ` … y ${archivos.length - 5} más` : ''}
+        </p>
+      )}
+
+      {/* La otra forma de leer un directorio: escribir la ruta en el SERVIDOR.
+          La de arriba elige carpetas de ESTA maquina; esta no puede leer el
+          disco del navegador, asi que el backend valida que la ruta caiga
+          dentro de su lista blanca. No es una sugerencia: `/etc` da 400. */}
+      <div className="mt-4 pt-4 border-t border-gray-200">
+        <h4 className="font-medium text-gray-900">Ruta del servidor</h4>
+        <p className="text-xs text-gray-600 mt-1">
+          Vacía usa la carpeta configurada. Para otra, elige o escribe una ruta
+          dentro de las permitidas por el servidor. Se leen imágenes y PDF (y
+          XML), y se informa por nombre qué archivos se quedaron fuera.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <input
+            id="carga-lote-ruta"
+            type="text"
+            list="carga-lote-rutas"
+            value={ruta}
+            onChange={e => setRuta(e.target.value)}
+            placeholder={carpetaDefecto || '/ruta/permitida'}
+            className="flex-1 min-w-64 border border-gray-300 rounded-md px-3 py-2 text-sm font-mono"
+            disabled={procesandoRuta}
+          />
+          <datalist id="carga-lote-rutas">
+            {rutasPermitidas.map(r => <option key={r} value={r} />)}
+          </datalist>
+          <Button
+            onClick={enviarDirectorio}
+            disabled={procesandoRuta || !companyId}
+            title={!companyId ? 'Elige una empresa antes de digitalizar' : undefined}
+          >
+            {procesandoRuta ? 'Digitalizando ruta…' : 'Digitalizar esta ruta'}
+          </Button>
+        </div>
+        {rutasPermitidas.length > 0 && (
+          <p className="text-xs text-gray-500 mt-2">
+            Rutas permitidas:{' '}
+            {rutasPermitidas.map((r, i) => (
+              <span key={r}>
+                {i > 0 && ' · '}
+                <button
+                  type="button"
+                  className="font-mono underline decoration-dotted"
+                  onClick={() => setRuta(r)}
+                  title="Usar esta ruta"
+                >
+                  {r}
+                </button>
+              </span>
+            ))}
+          </p>
+        )}
+        {errorRuta && (
+          <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
+            {errorRuta}
+          </div>
+        )}
+        {resultadoRuta && <PanelResultadoDirectorio resultado={resultadoRuta} />}
+      </div>
+
+      <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+        <input
+          type="checkbox"
+          checked={override}
+          onChange={e => setOverride(e.target.checked)}
+          disabled={procesando}
+          className="mt-0.5 w-4 h-4 text-blue-600 rounded"
+        />
+        <span>
+          Autorizar la lectura de periodos cerrados. Quien firma sale de tu sesión,
+          no de este formulario; el motivo queda en el ticket.
+        </span>
+      </label>
+      {override && (
+        <div className="mt-2">
+          <label htmlFor="carga-lote-motivo" className="block text-xs text-gray-600 mb-1">
+            Motivo (obligatorio para que la autorización sea trazable)
+          </label>
+          <input
+            id="carga-lote-motivo"
+            type="text"
+            value={motivo}
+            onChange={e => setMotivo(e.target.value)}
+            placeholder="Factura tardía del mes cerrado, revisada por la contadora"
+            className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+          />
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
+          {error}
+        </div>
+      )}
+
+      {resultado && <PanelResultadoLote resultado={resultado} archivos={archivos} />}
+    </Card>
+  );
+}
+
+/** El resultado se empareja con el archivo LOCAL por posicion.
+ *
+ *  El backend devuelve los items en el mismo orden en que los mando el router,
+ *  y el router los procesa en secuencia. `relative_path` es el sha256 por
+ *  diseno (es la clave de dedup), asi que no sirve para decirle al operador
+ *  cual de sus archivos fallo: el nombre que elijo aqui viene del `File`. */
+export function PanelResultadoLote({
+  resultado,
+  archivos,
+  nombres,
+  formatos,
+}: {
+  resultado: ScanItem[];
+  archivos: File[];
+  /** Nombres del directorio, en el mismo orden que `resultado`. */
+  nombres?: string[];
+  /** Tipos detectados por los bytes, en el mismo orden. Distinto de `origen`. */
+  formatos?: string[];
+}) {
+  if (resultado.length === 0) return null;
+
+  const creados = resultado.filter(r => r.accion === 'CREADO').length;
+  const periodoCerrado = resultado.filter(r => r.accion === 'PERIODO_CERRADO').length;
+
+  return (
+    <div className="mt-4">
+      <div className="flex flex-wrap gap-2 text-sm mb-2">
+        <Badge variant="info">{resultado.length} archivos</Badge>
+        <Badge variant="success">{creados} creados</Badge>
+        {periodoCerrado > 0 && (
+          <Badge variant="warning">{periodoCerrado} en periodo cerrado</Badge>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-xs uppercase text-gray-500 border-b">
+            <tr>
+              <th className="py-2 pr-3 text-left">Archivo</th>
+              <th className="py-2 pr-3 text-left">Qué pasó</th>
+              <th className="py-2 pr-3 text-left">Estado</th>
+              <th className="py-2 pr-3 text-left">Bytes y lector</th>
+              <th className="py-2 pr-3 text-left">Datos leídos y veredicto</th>
+            </tr>
+          </thead>
+          <tbody>
+            {resultado.map((item, indice) => (
+              <tr key={item.scan_file_id ?? `${item.relative_path}-${indice}`} className="border-b last:border-0 align-top">
+                <td className="py-2 pr-3 font-mono text-xs break-all">
+                  {nombres?.[indice] ?? archivos[indice]?.name ?? item.relative_path}
+                </td>
+                <td className="py-2 pr-3">{accionLabel(item.accion)}</td>
+                <td className="py-2 pr-3">
+                  <span className={`px-2 py-0.5 rounded text-xs ${COLOR_ESTADO[item.status] ?? ''}`}>
+                    {SCAN_STATUS_META[item.status]?.label ?? item.status}
+                  </span>
+                </td>
+                <td className="py-2 pr-3">
+                  {formatos?.[indice] ? (
+                    <span className="text-xs font-mono">
+                      bytes={formatos[indice]} · lector={motorLabel(item.origen)}
+                    </span>
+                  ) : (
+                    motorLabel(item.origen)
+                  )}
+                </td>
+                <td className="py-2 pr-3">
+                  {item.datos ? (
+                    <span className="text-xs">
+                      {item.datos.provider_name ?? 'sin proveedor'} ·{' '}
+                      {item.datos.total_amount ? `$${item.datos.total_amount}` : 'sin total'} ·{' '}
+                      <span className="font-medium">
+                        veredicto: {item.datos.extraction_status ?? 'sin decidir'}
+                      </span>
+                      {item.datos.validation_errors && (
+                        <span className="block text-amber-700">
+                          {item.datos.validation_errors}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-500">
+                      {item.detalle ?? 'sin ticket'}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Resultado de una ruta del servidor: primero lo que NO se leyó.
+ *
+ *  Los rechazados van arriba y con su nombre. Es la unica parte de la respuesta
+ *  que el operador tiene que ARREGLAR en su carpeta: un PDF y un JPG ya se
+ *  leyeron, pero un `.docx` sigue ahi esperando a que alguien decida que hacer.
+ *  Si se pintara abajo, despues de una tabla de veinte filas, nadie lo veria.
+ */
+export function PanelResultadoDirectorio({ resultado }: { resultado: DigitalizacionDirectorio }) {
+  const rechazados = resultado.archivos_no_permitidos;
+
+  return (
+    <div className="mt-4">
+      <div className="flex flex-wrap gap-2 text-sm mb-2">
+        <Badge variant="info">{resultado.archivos.length} leídos</Badge>
+        {rechazados.length > 0 && (
+          <Badge variant="warning">{rechazados.length} no permitidos</Badge>
+        )}
+        {resultado.archivos_omitidos_por_tope > 0 && (
+          <Badge variant="warning">
+            {resultado.archivos_omitidos_por_tope} por tope de corrida
+          </Badge>
+        )}
+      </div>
+
+      <p className="text-xs text-gray-500 mb-2 font-mono break-all">
+        {resultado.carpeta}
+      </p>
+
+      {rechazados.length > 0 && (
+        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <p className="text-sm font-medium text-amber-900 mb-2">
+            Estos archivos NO se digitalizaron:
+          </p>
+          <ul className="list-disc pl-5 text-sm text-amber-900">
+            {rechazados.map((archivo: ArchivoNoPermitido, indice: number) => (
+              <li key={`${archivo.nombre}-${indice}`}>
+                <span className="font-mono break-all">{archivo.nombre}</span>
+                <span className="text-amber-700"> — {archivo.motivo}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <PanelResultadoLote
+        resultado={resultado.archivos}
+        archivos={[]}
+        nombres={resultado.nombres}
+        formatos={resultado.formatos}
+      />
     </div>
   );
 }

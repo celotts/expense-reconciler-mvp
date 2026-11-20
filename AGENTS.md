@@ -25,7 +25,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 
 | Capa | Ubicación |
 |---|---|
-| API | `app/api/` — 10 routers bajo `/api/v1` |
+| API | `app/api/` — 11 routers bajo `/api/v1`, más `app/routers/expenses.py` (carga por lote y directorio) |
 | Captura | `app/services/capture.py` → cascada de 5 escalones |
 | OCR local | `app/services/ocr.py` → Tesseract, lazy |
 | Escáner | `app/services/scan_service.py` → recorre `TICKETS_INPUT_DIR` |
@@ -37,12 +37,36 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 9 páginas |
-| Tests | **1639** — 1243 unit, 396 integration, 2 skip |
+| Tests | **1818**: 1373 unit, 445 integration. **1815 passed, 3 skip** con `git` en la imagen; sin él fallan 6 tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
 `/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports`
 Sin auth: solo `GET /health` y `POST /api/v1/auth/login`. `/health` **consulta la base**
 (ver *La app no levanta antes de que sus dependencias estén arriba*).
+
+### Las dos puertas de digitalización (ambas autenticadas)
+
+`POST /api/v1/expenses/upload-batch` (archivos del navegador) y
+`POST /api/v1/expenses/digitalizar-directorio` (ruta del servidor) son adaptadores
+sobre `procesar_archivo`: **no hay segundo lector**. Responden `ScanItemResponse` y
+`DigitalizacionDirectorioResponse`, con los datos del papel **junto** al veredicto
+del gate, no separados. `app/routers/expenses.py` era un router muerto con
+`folder_path` del cliente y dos TODO; arreglado y documentado en
+`docs/known-issues.md` §45.
+
+- Dedup por SHA-256 (`<sha>.<ext>`) en las dos puertas, no por nombre de archivo.
+- `SourceType.BULK` distingue la carga explícita del escaneo de carpeta.
+- El periodo cerrado se valida **dentro** del pipeline, tras leer la fecha y antes de
+  guardar; evento `OMITIDO` con `PERIODO_CERRADO: ...`. Quien firma el override sale
+  del token (`usuario.email`).
+- La ruta manual solo puede caer dentro de `TICKETS_INPUT_DIR` o
+  `TICKETS_SCAN_RUTAS_PERMITIDAS` (separadas por `os.pathsep`); `resolve()` antes de
+  `is_relative_to`, symlinks rechazados. `GET /scan/config` expone las raíces y las
+  extensiones para que el front no copie la lista.
+- `formatos` (bytes: `pdf`/`image`/`xml`) ≠ `origen` (quién leyó) ≠ `modelo_ia`.
+  Lo rechazado vuelve en `archivos_no_permitidos` con **nombre**, extensión y motivo.
+- Pantalla: `CargaPorLote` en `Scan.tsx`, una sola acción para archivos o directorio.
+  Front: `npm run build` y `npm run verify:lote` (18 comprobaciones sobre el HTML).
 
 ### Dos máquinas de estado — no las confundas
 
@@ -165,6 +189,8 @@ python3 scripts/verify_reconciliation_mutations.py  # 18 mutaciones
 python3 scripts/verify_spot_check_mutations.py      # 20 mutaciones: muestreo
 python3 scripts/verify_reporte_mutations.py          # 17 mutaciones: informe de cierre + DDL
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
+python3 scripts/verify_expenses_batch_mutations.py     # 7: lote autenticado + periodo + dedup
+python3 scripts/verify_expenses_directorio_mutations.py # 10: ruta, allowlist, nombres, formatos
 python3 scripts/verify_ocr_mutations.py             # 16 mutaciones: binarización + modelo de línea
 python3 scripts/verify_fecha_mutations.py           # 8 mutaciones: las reglas de fecha del parser
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo

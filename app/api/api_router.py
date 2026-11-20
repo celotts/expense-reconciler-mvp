@@ -14,6 +14,7 @@ from app.api.sistema import router as sistema_router
 from app.api.tickets import router as tickets_router
 from app.api.usuarios import router as usuarios_router
 from app.core.deps import get_current_user
+from app.routers.expenses import router as expenses_router
 
 api_router = APIRouter()
 
@@ -65,6 +66,18 @@ api_router.include_router(
     tickets_router,
     prefix="/tickets",
     tags=["Tickets"],
+    dependencies=[Depends(get_current_user)],
+)
+# Carga explicita por lote. Es la misma captura que `/tickets` y que `/scan`:
+# `procesar_archivo` con `source_type=BULK`. El token se exige a nivel de router
+# como en todos los demas, y ademas el endpoint toma `UsuarioActual` porque
+# necesita el correo para firmar el override de periodo cerrado. Que el schema
+# de respuesta sea `ScanItemResponse` es lo que hace que los datos del papel
+# y el veredicto del gate viajen juntos y no se puedan leer por separado.
+api_router.include_router(
+    expenses_router,
+    prefix="/expenses",
+    tags=["Expenses"],
     dependencies=[Depends(get_current_user)],
 )
 # El escaner de carpeta. Mismo criterio que los demas: token obligatorio a nivel

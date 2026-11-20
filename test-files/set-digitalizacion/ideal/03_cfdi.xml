@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Comprobante>
+  <Emisor>TIENDAS RAMIREZ SA DE CV RFC: TRAM910101XXX</Emisor>
+  <Fecha>Fecha: 2025/03/15</Fecha>
+  <Subtotal>Subtotal: 948.28</Subtotal>
+  <Impuestos>IVA (16%): 151.72</Impuestos>
+  <Total>TOTAL: 1100.00</Total>
+</Comprobante>

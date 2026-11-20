@@ -62,6 +62,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -99,6 +100,12 @@ from app.services.auditoria import (
 )
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.confidence_gate import gate_ticket
+from app.services.parser_service import TicketExtractionResult
+from app.services.periodo_contable_service import (
+    OverridePeriodoCerrado,
+    PeriodoCerradoError,
+    aplicar_override_en_ticket,
+)
 from app.services.ticket_persistence import persistir_extraccion
 
 logger = logging.getLogger(__name__)
@@ -420,7 +427,7 @@ class ResumenArchivo:
     # de `schemas/`, la frontera esa la respeta el resto del servicio. El router
     # lo valida en `_de_resumen`.
     #
-    # Lo arma `_resolver_datos_de_tickets`, DESPUES del bucle y en una sola
+    # Lo arma `resolver_datos_de_tickets`, DESPUES del bucle y en una sola
     # consulta, y no dentro de `procesar_archivo`. La razon es que
     # `procesar_archivo` tiene trece salidas y el dato depende de una fila que
     # a veces todavia no existe: el DUPLICADO no crea ticket y apunta al de otro
@@ -540,6 +547,13 @@ async def _registrar(
     una tabla de historico detendria el procesamiento de archivos que si se
     pudieron leer, y el operador veria cero tickets en vez de algunos.
     """
+    # La ruta se lee ANTES del flush. Despues de un flush fallido la sesion
+    # queda pendiente de rollback y `fila.relative_path` puede estar expirado:
+    # acceder a el desde el `except` lanza PendingRollbackError, y entonces
+    # `logger.warning` —la linea que promete que la auditoria no tumba el
+    # escaneo— es justo la que tumba la peticion. Medido al registrar un evento
+    # con una accion que la constraint no aceptaba.
+    ruta = fila.relative_path
     db.add(
         ScanEventModel(
             scan_file_id=fila.id,
@@ -552,7 +566,7 @@ async def _registrar(
     try:
         await db.flush()
     except Exception as exc:  # pragma: no cover - depende del motor
-        logger.warning("no se pudo registrar el evento %s de %s: %s", accion, fila.relative_path, exc)
+        logger.warning("no se pudo registrar el evento %s de %s: %s", accion, ruta, exc)
         await db.rollback()
 
 
@@ -690,6 +704,11 @@ async def procesar_archivo(
     actor: str,
     *,
     forzar: bool = False,
+    source_type: SourceType = SourceType.DIRECTORY,
+    validar_antes_de_guardar: (
+        Callable[[TicketExtractionResult], Awaitable[OverridePeriodoCerrado | None]]
+        | None
+    ) = None,
 ) -> ResumenArchivo:
     """Lee UN archivo y deja su registro al dia. Nunca lanza por el archivo.
 
@@ -698,6 +717,13 @@ async def procesar_archivo(
     quedarían sin procesar porque en la carpeta habia uno malo, y el operador
     no tendria forma de saber cual era: el error estaria en la cara de la
     peticion, no en la fila del archivo.
+
+    `source_type` y `validar_antes_de_guardar` existen para que la carga por
+    lote use ESTE mismo pipeline y no un segundo. El escaner de carpeta no mira
+    el periodo (un escaner con corte mensual pierde los comprobantes tardios),
+    pero la subida explicita si: el llamador pasa la politica como callable y
+    aqui se corre ANTES de escribir el ticket. Sin el `antes`, un periodo
+    cerrado se descubriria despues de haber contabilizado el gasto.
     """
     resumen = ResumenArchivo(relative_path=vista.relative_path)
     ahora = utcnow()
@@ -904,6 +930,34 @@ async def procesar_archivo(
     resumen.modelo_ia = extracted.model_name
     resumen.proveedor_ia = extracted.model_provider
 
+    # La validacion de periodo va AQUI y no en el router: es el unico punto en
+    # que ya se leyo la fecha del papel y todavia no se escribio nada. Si se
+    # hiciera despues de `persistir_extraccion`, el rechazo llegaria al cliente
+    # pero el gasto ya estaria en el mes cerrado y el cierre no podria deshacerlo
+    # sin borrar un ticket con documento adjunto.
+    traza_periodo: OverridePeriodoCerrado | None = None
+    if validar_antes_de_guardar is not None and company_id is not None:
+        try:
+            traza_periodo = await validar_antes_de_guardar(extracted)
+        except PeriodoCerradoError as exc:
+            fila.status = ScanStatus.ERROR.value
+            fila.last_error = str(exc)
+            await db.commit()
+            resumen.status = ScanStatus.ERROR
+            resumen.accion = "PERIODO_CERRADO"
+            resumen.detalle = str(exc)
+            # La accion del `scan_events` es `OMITIDO`, no `PERIODO_CERRADO`.
+            # `ck_scan_events_action` es una constraint cerrada en la base, y
+            # anadir un valor al enum del DDL sin migrar deja el INSERT
+            # rechazado en produccion (ver el precedente de `BORRADO` en
+            # `archivado_service.py`). El motivo NO se pierde: va en `detail`,
+            # y `resumen.accion` sigue diciendo `PERIODO_CERRADO` al cliente.
+            detalle_evento = f"PERIODO_CERRADO: {exc}"
+            await _registrar(
+                db, fila, "OMITIDO", detalle_evento, actor, resumen.confianza
+            )
+            return resumen
+
     # Sin empresa no hay donde dejar el ticket. Se registra como leido para que
     # el operador vea que el archivo SI se entendio, y no como error: el
     # archivo no esta roto, lo que falta es la decision de a que empresa
@@ -962,9 +1016,10 @@ async def procesar_archivo(
 
             ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
-                source_type=SourceType.DIRECTORY,
+                source_type=source_type,
                 source_file=vista.relative_path,
             )
+            aplicar_override_en_ticket(ticket, traza_periodo)
             fila.status = ScanStatus.PROCESADO.value
             fila.ticket_id = ticket.id
             fila.company_id = company_id
@@ -989,9 +1044,10 @@ async def procesar_archivo(
         if fila.ticket_id is None:
             ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
-                source_type=SourceType.DIRECTORY,
+                source_type=source_type,
                 source_file=vista.relative_path,
             )
+            aplicar_override_en_ticket(ticket, traza_periodo)
             fila.ticket_id = ticket.id
             await db.commit()
             resumen.status = ScanStatus.PROCESADO
@@ -1008,9 +1064,10 @@ async def procesar_archivo(
             # El ticket se borro. Se crea uno nuevo con el contenido actual.
             nuevo_ticket = await persistir_extraccion(
                 db, company_id, extracted, contenido,
-                source_type=SourceType.DIRECTORY,
+                source_type=source_type,
                 source_file=vista.relative_path,
             )
+            aplicar_override_en_ticket(nuevo_ticket, traza_periodo)
             fila.ticket_id = nuevo_ticket.id
             await db.commit()
             resumen.status = ScanStatus.PROCESADO
@@ -1044,6 +1101,7 @@ async def procesar_archivo(
             return resumen
 
         await _actualizar_ticket(db, ticket, extracted, contenido)
+        aplicar_override_en_ticket(ticket, traza_periodo)
         fila.ticket_id = ticket.id
         await db.commit()
         resumen.status = ScanStatus.PROCESADO
@@ -1228,7 +1286,7 @@ async def escanear(
             # La salida de ese problema NO es esperar: es leer el importe del
             # TICKET, que ya existe en la fila que `procesar_archivo` acaba de
             # escribir. `datos` existe para no hacer una consulta por archivo
-            # (`_resolver_datos_de_tickets`), y para el feed —que corre una vez
+            # (`resolver_datos_de_tickets`), y para el feed —que corre una vez
             # por archivo y solo mientras hay alguien mirando— eso no aplica: el
             # ticket ya esta en la sesion.
             #
@@ -1444,7 +1502,7 @@ async def escanear(
                     resumen.lecturas_por_motor.get(clave, 0) + 1
                 )
 
-    await _resolver_datos_de_tickets(db, resumen.detalles)
+    await resolver_datos_de_tickets(db, resumen.detalles)
 
     # La autorizacion va AL FINAL y FUERA del bucle, y las dos cosas importan.
     #
@@ -1930,7 +1988,7 @@ async def _registrar_en_el_feed(
     TICKET y no de `detalle.datos`.
 
     **POR QUE NO DE `detalle.datos`.** `datos` se resuelve DESPUES del bucle, en
-    `_resolver_datos_de_tickets`, y su docstring explica por que: hay trece
+    `resolver_datos_de_tickets`, y su docstring explica por que: hay trece
     salidas y el dato depende de una fila que a veces todavia no existe. Leyendo
     de ahi, el feed salia con `monto: null` en los 7 archivos reales. Medido.
 
@@ -2064,7 +2122,7 @@ def _motivo_de_bandeja(extraction_status: str) -> str:
     return f"queda en la bandeja: el veredicto es {extraction_status}, no uno resuelto."
 
 
-async def _resolver_datos_de_tickets(
+async def resolver_datos_de_tickets(
     db: AsyncSession, detalles: list[ResumenArchivo]
 ) -> None:
     """Rellena `detalle.datos` con los datos del ticket de cada archivo.
@@ -2072,7 +2130,10 @@ async def _resolver_datos_de_tickets(
     Recibe la LISTA y no el `ResumenEscaneo` porque lo usan dos caminos con
     alcances distintos: la corrida entera y el reproceso de un archivo suelto.
     Los dos devuelven la misma `ScanItemResponse`, y por eso los dos tienen que
-    traer los mismos datos.
+    traer los mismos datos. Es publica por lo mismo: la carga por lote de
+    `app/routers/expenses.py` tambien arma `ScanItemResponse` y no puede tener
+    su propia copia de esta consulta —dos copias son dos verdades sobre el
+    mismo ticket—.
 
     Va despues del bucle y no dentro por lo que dice el comentario de
     `ResumenArchivo.datos`: hay una sola consulta para toda la corrida en vez de
@@ -2361,7 +2422,7 @@ async def reprocesar_uno(
     # responderia sin `datos` mientras la corrida completa si los trae, y la
     # diferencia pareceria un bug del gate cuando es que este camino nunca los
     # resolvio.
-    await _resolver_datos_de_tickets(db, [resumen])
+    await resolver_datos_de_tickets(db, [resumen])
     # Y NO se le pega un `resumen.resumen`: los contadores de la corrida son de
     # `ResumenEscaneo`, y `ResumenArchivo` no tiene ese campo. La linea que
     # estaba aqui lo fabricaba en memoria y lo tiraba —`_de_resumen` no lo lee

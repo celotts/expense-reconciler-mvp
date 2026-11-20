@@ -184,6 +184,10 @@ services:
       - ${TICKETS_SCAN_OUTPUT_HOST_DIR:-/Users/carloslott/Documents/Tickets/Tickets_Scan}:/tickets_scan:rw
       - ${TICKETS_EXPORT_HOST_DIR:-/Users/carloslott/Documents/Tickets/comprobantes}:/tickets_export:rw
       - ${TICKETS_VERDAD_HOST_DIR:-/Users/carloslott/Documents/Tickets/verdad}:/verdad:ro
+    # `TICKETS_SCAN_RUTAS_PERMITIDAS` NO se declara en `environment:`: se lee de
+    # `.env` por `env_file`. Las rutas son las del CONTENEDOR, no las del host:
+    # para poder escribir otra en la pantalla, antes hay que montarla en
+    # `volumes:` con ese mismo nombre.
     env_file:
       - path: .env
         required: true
@@ -219,7 +223,7 @@ services:
       start_period: 60s
     mem_limit: 1750m
     mem_reservation: 512m
-    cpus: 4.0
+    cpus: 6.0
     restart: unless-stopped
     networks:
       - expense_network

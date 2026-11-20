@@ -396,6 +396,32 @@ GET /api/v1/reconciliations/export/generic?company_id=...&columns=Fecha,Proveedo
 | **Bank Transactions** | `/api/v1/bank-transactions` | CRUD + `/import-csv` + `/import-csv-and-create` |
 | **Reconciliations** | `/api/v1/reconciliations` | `/run`, CRUD, `/export/*`, `/mappings` |
 | **Reports** | `/api/v1/reports` | `/cierre-mensual` (JSON) · `/cierre-mensual.pdf` |
+| **Scan** | `/api/v1/scan` | `POST /` (carpeta del servidor) · `GET /config` · `/ocr` · `/ia` · `/runs` · `/files/{id}` |
+| **Expenses** | `/api/v1/expenses` | `POST /upload-batch` (archivos) · `POST /digitalizar-directorio` (ruta permitida) |
+
+### Probar la lectura de una carpeta mezclada
+
+En la pantalla **Escanear** hay una sola acción, *Digitalizar desde esta máquina*:
+acepta varios archivos PDF, imagen o XML a la vez, o una ruta del servidor. Los
+archivos con extensión no permitida se nombran uno por uno en el panel, no se
+mezclan con los tickets. La ruta solo puede estar dentro de las que devuelve
+`GET /api/v1/scan/config`; los bytes deciden el lector, no la extensión.
+
+```bash
+# Set de ideal / borde / fallido, generado por script (no a mano)
+docker compose exec expense-api python scripts/generar_set_pruebas_digitalizacion.py
+docker compose exec expense-api python scripts/inspeccionar_set_pruebas.py --con-ocr
+# Especificación y resultados medidos:
+cat test-files/set-digitalizacion/README.md
+
+# Front: la puerta que sirve es esta, no `npm run verify`
+cd front && npm run build && npm run verify:lote
+```
+
+Para subir el set por HTTP, usar `POST /api/v1/expenses/digitalizar-directorio` con
+`company_id` y `carpeta=/app/test-files/set-digitalizacion` (dentro del contenedor),
+o el archivo `expense-reconciler-insomnia.json`, que ya trae los dos endpoints con
+autenticación y el campo `files` como archivo.
 
 ### 6. Cerrar el mes y entregar el informe
 
@@ -493,7 +519,7 @@ El endpoint `GET /api/v1/dashboard` es la **vista de aterrizaje** del frontend. 
 ## Tests
 
 ```bash
-# Todos (1507 tests - incluye seguridad + regresión)
+# Todos (1818 recolectados; 1815 passed, 3 skipped con git instalado)
 python3 -m pytest tests/ -q
 
 # Unitarios

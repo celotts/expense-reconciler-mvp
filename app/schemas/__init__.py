@@ -8,6 +8,7 @@ from app.schemas.bank_transaction import (
     BankTransactionUpdate,
 )
 from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
+from app.schemas.expense import ExpenseReceiptSchema, Item
 from app.schemas.reconciliation import (
     ReconciliationCreate,
     ReconciliationResponse,
@@ -30,4 +31,6 @@ __all__ = [
     "ReconciliationRunRequest",
     "AccountingMappingCreate",
     "AccountingMappingResponse",
+    "Item",
+    "ExpenseReceiptSchema",
 ]

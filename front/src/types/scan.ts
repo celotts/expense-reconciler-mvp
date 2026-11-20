@@ -121,6 +121,75 @@ export interface ScanItem {
   respaldo_verificado?: boolean | null;
   /** Donde se recupera el comprobante original. */
   recuperable_desde?: string | null;
+
+  /** Los datos del papel y el veredicto del gate, en el MISMO objeto.
+   *  `null` no es "no se pudo leer": es "no hay ticket del que sacar datos"
+   *  (ERROR, NO_SOPORTADO, OMITIDO por periodo cerrado). */
+  datos?: DatosTicket | null;
+}
+
+/** Un archivo de la carpeta que NO se mando a leer. */
+export interface ArchivoNoPermitido {
+  nombre: string;
+  extension: string;
+  motivo: string;
+}
+
+/** Resultado de digitalizar una carpeta del servidor. */
+export interface DigitalizacionDirectorio {
+  carpeta: string;
+  extensiones_permitidas: string[];
+  archivos: ScanItem[];
+  /** Nombres originales, en el MISMO orden que `archivos`. */
+  nombres: string[];
+  /** Tipo detectado por los BYTES (`pdf`, `image`, `xml`), en el MISMO orden
+   *  que `archivos` y `nombres`. NO es el lector: un `.jpg` con bytes de PDF
+   *  dice `pdf` aqui y se lee con `pdf_text`. Se pinta como
+   *  `bytes=pdf · lector=texto del PDF` para que las dos preguntas no se
+   *  mezclen en una sola palabra. */
+  formatos: string[];
+  archivos_no_permitidos: ArchivoNoPermitido[];
+  archivos_omitidos_por_tope: number;
+}
+
+/** Lo que el sistema afirmo que dice el papel, con el veredicto al lado.
+ *
+ *  Viene de la FILA del ticket, no de lo que devolvio el lector, y por eso
+ *  `extraction_status` viaja en el MISMO objeto que los importes. Si el gate
+ *  mando la lectura a revision, aqui se ve el numero Y la razon; separarlos
+ *  dejaria a quien lee el JSON creyendo que el sistema respondio por el total.
+ *
+ *  Los importes son TEXTO: son `Decimal` en la API y un `number` de JS ya
+ *  perdio los centavos antes de llegar aqui. */
+export interface DatosTicket {
+  provider_name: string | null;
+  provider_tax_id: string | null;
+  total_amount: string | null;
+  subtotal: string | null;
+  tax_amount: string | null;
+  ieps_amount: string | null;
+  expense_date: string | null;
+  category: string | null;
+  /** Lineas crudas: el sistema no inventa aqui una estructura que no verifico. */
+  items: Array<Record<string, unknown>> | null;
+  confidence: string | null;
+  confidence_source: string | null;
+  extraction_status: string | null;
+  validation_errors: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  /** Rastro del override firmado, cuando el papel era de un periodo cerrado. */
+  pais: string | null;
+  identificacion_fiscal: string | null;
+  folio: string | null;
+  metodo_pago: string | null;
+  link_facturacion: string | null;
+  hash_duplicado: string | null;
+  estado_conciliacion: string | null;
+  periodo_cerrado_override: boolean | null;
+  periodo_cerrado_motivo: string | null;
+  periodo_cerrado_autorizado_por: string | null;
+  periodo_cerrado_autorizado_at: string | null;
 }
 
 /** Un archivo que el escaner ya termino de leer, con lo que leyo de el. */
@@ -271,6 +340,16 @@ export interface ScanConfig {
   recursivo: boolean;
   max_por_corrida: number;
   max_bytes_por_archivo: number;
+
+  /** Raices que el servidor acepta para la carga por ruta. La primera es la
+   *  configurada por defecto. Salen de `/scan/config`, no de una copia en el
+   *  front: si alguien cambia el `.env`, el campo de texto lo sigue. Son
+   *  informacion para el operador, no autorizacion: el back lo comprueba. */
+  rutas_permitidas: string[];
+  /** Extensiones que el backend admite en la cola de digitalizacion. El
+   *  `accept` del selector se arma con esta lista para no ofrecer `.txt`
+   *  cuando el servidor lo va a rechazar. El LECTOR sigue eligiendo por bytes. */
+  extensiones_permitidas: string[];
 
   /** El valor REAL del archivado, tal como quedo configurado.
    *
