@@ -44,6 +44,16 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 Sin auth: solo `GET /health` y `POST /api/v1/auth/login`. `/health` **consulta la base**
 (ver *La app no levanta antes de que sus dependencias estén arriba*).
 
+## Modo agente y uso de Ollama local (Mac M3 · 16 GB RAM)
+
+- **Respuesta directa sin herramientas:** En saludos, preguntas de estado (`¿estás activo?`), dudas conceptuales o explicaciones donde no se pida leer/editar archivos ni ejecutar comandos, responde **directamente en texto normal** sin llamar a `shell`, `question` ni otras herramientas.
+- **Actuar antes de preguntar:** Si el objetivo, el archivo o el módulo están claros, lee lo mínimo necesario, aplica el cambio acotado y verifica. Usa `question` solo cuando haya ambigüedad real o dos caminos incompatibles con impacto en contrato/esquema.
+- **Un modelo pesado a la vez y contexto acotado:** En 16 GB de RAM unificada, evita tener varios modelos cargados en paralelo (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=5m`) y mantén un contexto controlado (`num_ctx` 8192–16384 según la tarea) para evitar *swap* y esperas largas.
+- **Alcance quirúrgico por turno:** Trabaja por archivo, endpoint, esquema o componente a la vez. Evita pedir refactorizaciones masivas de todo el repo en un solo turno.
+- **Verificación acotada antes de la suite completa:** Tras editar un área, corre primero el test puntual o el `scripts/verify_*_mutations.py` / `npm run build` correspondiente antes de lanzar `pytest tests/ -q` completo.
+- **Sesión limpia al cambiar de tarea:** Abre sesión nueva en OpenCode al cambiar de módulo o cuando el historial acumule salidas largas para no saturar la ventana de contexto.
+
+
 ### Las dos puertas de digitalización (ambas autenticadas)
 
 `POST /api/v1/expenses/upload-batch` (archivos del navegador) y
@@ -67,6 +77,8 @@ del gate, no separados. `app/routers/expenses.py` era un router muerto con
   Lo rechazado vuelve en `archivos_no_permitidos` con **nombre**, extensión y motivo.
 - Pantalla: `CargaPorLote` en `Scan.tsx`, una sola acción para archivos o directorio.
   Front: `npm run build` y `npm run verify:lote` (18 comprobaciones sobre el HTML).
+
+
 
 ### Dos máquinas de estado — no las confundas
 
