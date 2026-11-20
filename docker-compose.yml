@@ -168,6 +168,44 @@ services:
     mem_limit: 512m
     restart: "no"
 
+  # Aplica las migraciones pendientes de una base que YA EXISTE. Es un servicio
+  # de una pasada, igual que `modelos`: `make up` levanta la app, y la app no
+  # arranca hasta que esto termino. Un paso en un README es un paso que no se
+  # da; un `depends_on: service_completed_successfully` no se puede olvidar.
+  #
+  # MEDIDO el 2026-11-20: la base en vivo tenia `0019_lotes.sql`, `0020` y
+  # `0021` registradas pero no `0019_extraccion_multipaís_y_controles.sql`.
+  # `init.sql` solo corre con el volumen VACIO, asi que una base existente se
+  # quedaba sin 11 columnas de `tickets` y `GET /scan/files` daba 500 con
+  # `column tickets.pais does not exist`. Arreglarlo con `psql` a mano era
+  # volatil: se ponia bien en el contenedor, no en el proyecto.
+  #
+  # `PGPASSWORD` sale de la misma variable que creo la base, para que el
+  # `psql` del script no pida contraseña. El usuario y la base vienen de
+  # `.env` por `env_file` — NO de un literal escrito aqui: el rol es `admin`.
+  migraciones:
+    image: pgvector/pgvector:pg16
+    container_name: expense_migraciones
+    depends_on:
+      postgres-reconciler:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
+    environment:
+      - POSTGRES_HOST=postgres-reconciler
+      - MIGRACIONES_DIR=/docker-entrypoint-initdb.d/migrations
+      - PGPASSWORD=${password_inicial:?password_inicial no esta definida. Copia .env.example a .env y rellenala}
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - ./scripts/migrar_auto.sh:/migrar_auto.sh:ro
+    entrypoint: ["/bin/bash", "/migrar_auto.sh"]
+    networks:
+      - expense_network
+    restart: "no"
+
   expense-api:
     build:
       context: .
@@ -210,6 +248,15 @@ services:
         # "empezo a bajar", vale "termino". El script sale con 0 aunque no pueda
         # descargar (la app sin modelo escanea igual con OCR), asi que esta
         # espera no puede dejar el sistema sin levantar por una red caida.
+        condition: service_completed_successfully
+      migraciones:
+        # La API no puede arrancar contra una base a la que le falten columnas:
+        # el healthcheck de Postgres pregunta por `tickets`, que existe desde
+        # `init.sql`, pero NO por las columnas que anade una migracion nueva.
+        # Sin esta espera el arranque daba 500 en /scan/files aunque Compose
+        # dijera que todo estaba healthy. Aqui si vale "termino": si una
+        # migracion falla, `set -e` hace que el servicio salga con 1 y `make up`
+        # lo reporta en vez de servir una base a medio camino.
         condition: service_completed_successfully
     healthcheck:
       # `-f` hace que un 503 cuente como fallo: sin el, curl sale con 0 y el

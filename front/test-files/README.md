@@ -63,5 +63,5 @@ pulsa su propio botón. Es independiente de la selección de carpeta del navegad
 ```bash
 cd front
 npm run build        # corre tsc: es la puerta que sí sirve
-npm run verify:lote  # 18 comprobaciones sobre el HTML renderizado
+npm run verify:lote  # 19 comprobaciones sobre el HTML renderizado
 ```

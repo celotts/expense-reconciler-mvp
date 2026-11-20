@@ -96,7 +96,7 @@ Solo se exporta lo que está en `SETTLED_STATUSES` (`enums.py:94-97`) = `AUTO_AP
 ## Comandos
 
 ```bash
-make up          # reconstruye imágenes y levanta (SIEMPRE usa este, no `docker compose up`)
+make up          # reconstruye, aplica migraciones pendientes y levanta (SIEMPRE usa este, no `docker compose up`)
 make logs        # seguir logs
 make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
@@ -1259,7 +1259,7 @@ Lo que el modelo hace, y cada regla tiene su test:
 
 **`/health` NO comprueba el esquema.** `SELECT 1` pregunta *hay conexión*, no *está la base completa*. Una base sin `tickets` lo pasa y falla en todos los endpoints: por eso hay **dos** healthchecks y cada uno contesta una pregunta. `por_categoria` en el PDF lee `categoria`, que no existe en el JSON → ver `known-issues.md` §0.h.
 
-**El orden completo es `front → api → postgres`, y `make up` usa `--wait --wait-timeout 120`.** Sin `--wait`, `docker compose up -d` devuelve en cuanto los contenedores **existen**, y quien lo corre abre `localhost:3000` al segundo 2.
+**El orden completo es `front → api → migraciones → postgres`, y `make up` usa `--wait --wait-timeout 120`.** Sin `--wait`, `docker compose up -d` devuelve en cuanto los contenedores **existen**, y quien lo corre abre `localhost:3000` al segundo 2.
 
 **MEDIDO el 2026-11-04: el healthcheck de Postgres conectaba como `postgres` y el rol se llama `admin`.** `make up` moría en `Container expense_pgvector Error dependency postgres-reconciler failed to start`, con `expense_pgvector` en `Up (unhealthy)` y la API en `Created` sin llegar a arrancar. En el log, `FATAL: role "postgres" does not exist` cada 5 segundos.
 
@@ -1278,6 +1278,16 @@ Las dos mitades usan ahora `"$$POSTGRES_USER"` y `"$$POSTGRES_DB"`. El `$$` es e
 > Las otras dos no eran defensas rotas sino **tests que dejaron de ver la defensa**:
 > - `make up` creció `$(COMPOSE_FILES)` (multi-entorno) y `test_up_usa_wait` buscaba la cadena `"docker compose up"`, que ya no aparece nunca. La defensa (`--wait`) estaba puesta. El arreglo **no** fue relajar la comprobación a `"--wait" in linea` —eso daría verde con un `--wait` en un comentario— sino quitar `$(...)` de la línea antes de compararla (`_sin_variables`), y se comprobó que sigue muriendo si se quita el `--wait`.
 > - `test_init_sql_espeja_los_modelos` acusaba a `auditoria` de "tabla huerfana" cuando **el modelo existía** (`app/models/auditoria.py`, migración `0017_auditoria.sql`): la lista de tablas del test es una constante escrita a mano y nadie la actualizó. El síntoma era el inverso del que el archivo critica —una tabla si declarada y con el DDL presente, tratada como si no tuviera modelo— y un test que acusa de huérfana lo que tiene modelo hace lo que este archivo critica: **mentir sobre el esquema para que quien lo lea busque un problema que no está**.
+
+### Las migraciones se aplican al arrancar, no a mano (2026-11-20)
+
+`init.sql` corre **solo con el volumen vacío**. Una base existente se quedaba sin las columnas de una migración nueva: la base en vivo tenía `0019_lotes.sql`, `0020` y `0021` registradas pero no `0019_extraccion_multipaís_y_controles.sql`, y `GET /scan/files` moría con `column tickets.pais does not exist`. El Escáner mostraba `Error desconocido`. Aplicarlo con `psql` a mano arreglaba el contenedor, **no el proyecto**.
+
+La defensa es el servicio `migraciones` en `docker-compose.yml`: corre `scripts/migrar_auto.sh` contra Postgres y la API lo espera con `depends_on: service_completed_successfully` — el mismo patrón de `modelos`. Funciona con `make up` y con `docker compose up` directo. El script crea `schema_migrations` si no existe y aplica los `.sql` pendientes en orden; todas las migraciones son aditivas e idempotentes (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`). **El registro se escribe después del `psql -f`**: si falla, `set -e` sale con 1, la API no arranca y `make up` lo reporta.
+
+`scripts/migrar.sh` del host ya no aplica por su cuenta: para `--estado` consulta con el usuario de `.env` (antes decía `USUARIO="postgres"`, un rol inexistente) y para aplicar delega en el mismo servicio con `docker compose run --rm --no-deps migraciones`. **Una sola implementación del bucle**; dos copias divergen y la del arranque es la que nadie mira.
+
+> La validación del nombre de migración permite acentos a propósito: el archivo real se llama `0019_extraccion_multipaís_y_controles.sql`. Una validación ASCII la rechazó en la primera corrida, el servicio salió con 1 y `make up` no levantó. Sí se prohíben comillas y punto y coma, porque el nombre se pega al `INSERT`. Ver `tests/unit/test_arranque_por_healthcheck.py::TestLasMigracionesSeAplicanAlArrancar`.
 
 ### La foto que se contradice a sí misma se relee (MEDIDO 2026-10-15)
 `IMAGENES_VISION_PRIMERO=false` y `ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`

@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
-# Aplica las migraciones que faltan en una base que YA EXISTE.
+# Muestra o aplica las migraciones pendientes de una base que YA EXISTE.
 #
-# POR QUE ESTE SCRIPT Y NO UN RECIPE DE MAKE
-# ==========================================
+# POR QUE ESTE SCRIPT YA NO APLICA NADA POR SU CUENTA
+# ===================================================
+# Aqui vivia el bucle que corria los .sql con `docker compose exec`. Funcionaba
+# si lo llamaba una persona desde el host, pero NO podia correr como servicio
+# de Compose: dentro de un contenedor no hay CLI de Docker ni socket. Y `make
+# up` tiene que aplicar las migraciones sin que nadie recuerde llamar a nada.
+# Las dos opciones eran dos copias del bucle o una sola; dos copias divergen, y
+# la del arranque es justo la que nadie mira. La logica vive en
+# `scripts/migrar_auto.sh`, que corre dentro del servicio `migraciones`. Este
+# archivo es el adaptador del host (y el que responde `--estado`).
 #
-# La primera version de esto eran dos bloques del `Makefile`, y fallaba de una
-# forma que es facil de no ver: imprimia el estado de la base, no aplicaba nada,
-# y salia con codigo 0. Un `make` que dice "ok" y no hace nada es peor que uno
-# que falla, porque el operador cree que migro.
-#
-# La causa son dos cosas de Make, ambas conocidas y ninguna un bug:
-#
-#   1. **Cada linea de un recipe es un shell distinto.** Un `if ... fi` y un
-#      `for ... done` en lineas separadas son dos procesos que no comparten ni
-#      las variables.
-#   2. **El shell por defecto es `/bin/sh`, no bash**, y `read -p`, `case` con
-#      `;;` y los acentos en los patrones se portan mal.
-#
-# En un script hay un shell, el quoting es normal, y el exit code es el del
-# script. Ademas el script se puede correr solo, sin `make`, que es lo que
-# necesita alguien que no conoce el Makefile.
+# POR QUE HACE FALTA LA TABLA `schema_migrations`
+# ----------------------------------------------
+# Mirar el esquema NO sirve para saber si una base necesita migraciones:
+# `init.sql` replica todas las migraciones, asi que una base creada de cero y
+# una migrada son IDENTICAS. Se intento usar `cierres_periodo` como
+# discriminante y dio "base vieja" sobre una base recien creada. El registro es
+# lo mismo que hace Alembic con su tabla de version, sin la dependencia.
 #
 # USO
 # ---
@@ -31,12 +30,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SERVICIO="postgres-reconciler"
-DB="expense_db"
-USUARIO="postgres"
-# El compose monta `./db` en `/docker-entrypoint-initdb.d` (docker-compose.yml:25).
-# NO es `/db`. Usar la ruta equivocada da "No such file or directory" y parece
-# que las migraciones no existen.
-CONTENEDOR_DB="/docker-entrypoint-initdb.d/migrations"
+# El usuario hardcodeado era `postgres`, un rol que NO existe: el entrypoint
+# crea solo `POSTGRES_USER` (admin). MEDIDO el 2026-11-20: con ese literal este
+# script decia "La base no respondio" aunque la base estuviera sana, porque el
+# `psql` moria con `FATAL: role "postgres" does not exist` y el `2>/dev/null` se
+# lo tragaba. Se lee del mismo `.env` que configura Compose, con el literal
+# `admin` solo como ultimo recurso si alguien corrio el script sin .env.
+USUARIO="$(sed -n 's/^POSTGRES_USER=//p' .env 2>/dev/null | head -1)"
+USUARIO="${USUARIO:-admin}"
+DB="$(sed -n 's/^POSTGRES_DB=//p' .env 2>/dev/null | head -1)"
+DB="${DB:-expense_db}"
 
 CONFIRMAR=1
 case "${1:-}" in
@@ -51,7 +54,11 @@ esta_levantada() {
   [ -n "$(sql "SELECT 1")" ]
 }
 
-# Los archivos de migracion que existen en el HOST, en orden.
+if ! esta_levantada; then
+  echo "La base no respondio. Levanta el ambiente con 'make up' y reintenta." >&2
+  exit 1
+fi
+
 pendientes() {
   local f n ya
   for f in db/migrations/*.sql; do
@@ -61,30 +68,30 @@ pendientes() {
   done
 }
 
-if ! esta_levantada; then
-  echo "La base no respondio. Levanta el ambiente con 'make up' y reintenta." >&2
-  exit 1
-fi
-
-echo "Migraciones en db/migrations/:"
-ls -1 db/migrations/ | sed 's/^/  /'
-echo ""
-
-# Una base creada antes de que existiera `schema_migrations` no tiene registro, y
-# SIN registro no se puede saber que le falta. Adivinar seria peor que no
-# decir nada: se corre el archivo entero a ciegas sobre una base que quizas ya
-# esta al dia.
 if [ "$(sql "SELECT to_regclass('public.schema_migrations') IS NOT NULL")" != "t" ]; then
-  echo "ATENCION: esta base es anterior al registro de migraciones." >&2
-  echo "No se puede saber que le falta, y 'init.sql' no corre en una base que ya" >&2
-  echo "existe. Las dos salidas honestas:" >&2
-  echo "  1. compara db/init.sql con lo que hay, y corrige a mano lo que falte, o" >&2
-  echo "  2. crea la base de cero:  docker compose down -v && make up" >&2
-  echo "NO corras esto a ciegas." >&2
+  # El servicio de arranque crea el registro y corre las migraciones (todas son
+  # idempotentes), asi que esto ya no bloquea `make up`. Aqui se dice porque el
+  # modo --estado no puede contestar sin registro: adivinar seria peor.
+  echo "Esta base es anterior al registro de migraciones." >&2
+  echo 'make up lo crea y aplica las pendientes. make migrar tambien.' >&2
   exit 1
 fi
 
 faltan=$(pendientes)
+
+if [ "$CONFIRMAR" = "-1" ]; then
+  echo "Migraciones en db/migrations/:"
+  ls -1 db/migrations/ | sed 's/^/  /'
+  echo ""
+  if [ -z "$faltan" ]; then
+    echo "  Esta base esta AL DIA. No hace falta migrar nada."
+  else
+    echo "  FALTAN en esta base:"
+    echo "$faltan" | sed 's/^/    /'
+    echo "  Para aplicarlas:  make migrar"
+  fi
+  exit 0
+fi
 
 if [ -z "$faltan" ]; then
   echo "  Esta base esta AL DIA. No hace falta migrar nada."
@@ -95,13 +102,8 @@ echo "  FALTAN en esta base:"
 echo "$faltan" | sed 's/^/    /'
 echo ""
 
-if [ "$CONFIRMAR" = "-1" ]; then
-  echo "  Para aplicarlas:  make migrar"
-  exit 0
-fi
-
 if [ "$CONFIRMAR" = "1" ]; then
-  echo "Esto es para una base YA EXISTE."
+  echo "Esto es para una base que YA EXISTE."
   echo "Si acabas de instalar de cero, 'init.sql' ya hizo todo y esto no hace falta."
   echo ""
   read -r -p "¿Aplicar las que faltan? [s/N] " r
@@ -111,39 +113,6 @@ if [ "$CONFIRMAR" = "1" ]; then
   esac
 fi
 
-echo ""
-aplicadas=0
-# `docker compose exec -T` NO hereda un stdin que valga: se queda con el
-# descriptor 0 del bucle y se lo come. Medido: con dos migraciones pendientes
-# aplicaba la primera, registraba la primera, y el `read` del bucle ya no tenia
-# que leer — Loop sobre la lista de pendientes, aplicaba 1 de 2 y salia
-# diciendo "1 migracion(es) aplicada(s)". Sin error, sin fallo, y la segunda
-# migracion sin aplicar.
-#
-# Por eso el bucle lee de un descriptor propio (fd 3) y los `docker` reciben
-# `/dev/null` explicito: cada uno es un proceso que no debe ver la entrada del
-# bucle ni la del teclado.
-while read -r n <&3; do
-  [ -n "$n" ] || continue
-  echo "  aplicando $n..."
-  if ! docker compose exec -T "$SERVICIO" psql -U "$USUARIO" -d "$DB" \
-        -q -v ON_ERROR_STOP=1 -f "$CONTENEDOR_DB/$n" < /dev/null; then
-    echo ""
-    echo "  FALLO en $n. La base quedo a medio camino." >&2
-    echo "  Corrigela a mano y vuelve a correr 'make migrar'." >&2
-    echo "  (migraciones-registro.sh revisa que conste como aplicada)" >&2
-    exit 1
-  fi
-  # Se registra SOLO si el archivo se aplico entero. Registrar antes seria
-  # mentirle al proximo que la base esta al dia cuando no lo esta.
-  bash "$(dirname "$0")/migraciones-registro.sh" "$n" < /dev/null
-  aplicadas=$((aplicadas + 1))
-done 3<<< "$faltan"
-
-echo ""
-if [ "$aplicadas" = "0" ]; then
-  echo "  No habia nada pendiente."
-else
-  echo "  $aplicadas migracion(es) aplicada(s)."
-fi
-echo ""
+# El MISMO servicio que corre en el arranque. `--no-deps` para no volver a
+# levantar Postgres ni arrastrar a la API: solo se quiere aplicar el DDL.
+docker compose run --rm --no-deps migraciones

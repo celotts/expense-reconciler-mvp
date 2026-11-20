@@ -412,3 +412,144 @@ class TestMakeUpEspera:
             "con la imagen anterior y un `requirements.txt` nuevo deja la API "
             "con imports rotos, sin error visible"
         )
+
+
+class TestLasMigracionesSeAplicanAlArrancar:
+    """`init.sql` solo corre con el volumen VACIO.
+
+    MEDIDO el 2026-11-20: la base en vivo venia de otra rama, tenia registradas
+    `0019_lotes.sql`, `0020` y `0021`, y no tenia las 11 columnas que anade
+    `0019_extraccion_multipaís_y_controles.sql`. `GET /scan/files` daba 500 con
+    `column tickets.pais does not exist` y el Escáner mostraba "Error
+    desconocido". Aplicar la migracion con `psql` a mano arreglaba el
+    contenedor, no el proyecto: al recrearlo volveria a estar roto.
+
+    La defensa es un servicio de una pasada del que depende la API, con el
+    mismo patron que `modelos`. Si se quita, la API arranca contra una base
+    desactualizada y vuelve el 500.
+    """
+
+    def test_existe_el_servicio_de_migraciones(self, compose):
+        assert "migraciones" in compose["services"], (
+            "tiene que existir un servicio `migraciones`: sin el, `init.sql` "
+            "solo corre en una base nueva y una base existente se queda sin "
+            "las columnas de las migraciones nuevas"
+        )
+        servicio = _servicio(compose, "migraciones")
+
+        assert _condicion_de(servicio["depends_on"], "postgres-reconciler") == "service_healthy", (
+            "el servicio de migraciones no puede correr antes de que Postgres "
+            "este sano: `psql` fallaria con connection refused"
+        )
+        assert servicio["restart"] == "no", (
+            "es un trabajo de una pasada: con `restart: always` una migracion "
+            "fallida se reintentaria en bucle"
+        )
+
+        montajes = [str(m) for m in servicio["volumes"]]
+        assert any("./db:" in m for m in montajes), (
+            "tiene que montar `./db` para ver los .sql de db/migrations/"
+        )
+        assert any("migrar_auto.sh" in m for m in montajes), (
+            "tiene que montar el script que aplica, no copiarlo dentro de la imagen"
+        )
+        entrypoint = " ".join(str(p) for p in servicio["entrypoint"])
+        assert "migrar_auto.sh" in entrypoint, (
+            "el entrypoint tiene que correr `migrar_auto.sh`: si apunta a otro "
+            "script, el que se comprueba aqui no es el que se ejecuta"
+        )
+
+    def test_la_api_no_arranca_hasta_que_las_migraciones_terminan(self, compose):
+        depends = _servicio(compose, "expense-api")["depends_on"]
+
+        assert _condicion_de(depends, "migraciones") == "service_completed_successfully", (
+            "la API tiene que esperar a `migraciones` con "
+            "`service_completed_successfully`. El healthcheck de Postgres solo "
+            "pregunta por `tickets`, que existe desde `init.sql`, NO por las "
+            "columnas nuevas: sin esta espera el arranque daba 500 en "
+            "/scan/files aunque Compose dijera que todo estaba healthy"
+        )
+
+    def test_el_servicio_toma_el_password_y_el_usuario_de_la_misma_configuracion(self, compose):
+        servicio = _servicio(compose, "migraciones")
+        environment = " ".join(str(v) for v in servicio.get("environment", []))
+
+        assert any(".env" in str(f) for f in servicio.get("env_file", [])), (
+            "el servicio tiene que leer `.env`: ahi estan POSTGRES_USER y "
+            "POSTGRES_DB. sin el, el script caeria a sus defaults"
+        )
+        assert "PGPASSWORD" in environment, (
+            "el `psql` del script necesita la contraseña: sin PGPASSWORD intenta "
+            "pedirla por stdin y el contenedor se queda esperando"
+        )
+
+    def test_el_wrapper_del_host_usa_el_usuario_que_existe(self):
+        script = (RAIZ / "scripts/migrar.sh").read_text(encoding="utf-8")
+
+        assert 'USUARIO="postgres"' not in script, (
+            "`postgres` no es un rol de esta base: el entrypoint crea solo "
+            "`POSTGRES_USER` (admin). MEDIDO: `FATAL: role \"postgres\" does "
+            'not exist` -> "La base no respondio" aunque estuviera sana'
+        )
+        assert "POSTGRES_USER" in script and "POSTGRES_DB" in script, (
+            "el wrapper tiene que leer usuario y base de `.env`, igual que "
+            "Compose; un segundo sitio con el rol escrito a mano puede "
+            "dejar de coincidir"
+        )
+
+    def test_no_hay_dos_bucles_que_apliquen_las_migraciones(self):
+        wrapper = (RAIZ / "scripts/migrar.sh").read_text(encoding="utf-8")
+        auto = (RAIZ / "scripts/migrar_auto.sh").read_text(encoding="utf-8")
+
+        assert "docker compose run --rm --no-deps migraciones" in wrapper, (
+            "`make migrar` tiene que delegar al MISMO servicio que corre en el "
+            "arranque, no aplicar por su cuenta"
+        )
+        assert "-f \"$CONTENEDOR_DB" not in wrapper, (
+            "el bucle viejo con `docker compose exec ... psql -f` sigue en el "
+            "wrapper: dos implementaciones divergen y la del arranque es la "
+            "que nadie mira"
+        )
+        assert "CREATE TABLE IF NOT EXISTS schema_migrations" in auto, (
+            "el script del contenedor tiene que crear el registro si la base "
+            "es anterior a el; las migraciones son idempotentes"
+        )
+
+    def test_el_registro_se_escribe_despues_de_aplicar(self):
+        auto = (RAIZ / "scripts/migrar_auto.sh").read_text(encoding="utf-8")
+
+        aplica = auto.find('-f "$archivo"')
+        registra = auto.find("INSERT INTO schema_migrations")
+
+        assert aplica >= 0 and registra >= 0, (
+            "el script tiene que aplicar el archivo y registrar que lo aplico"
+        )
+        assert aplica < registra, (
+            "registrar antes del `psql -f` marcaría como al dia una base a la "
+            "que no le corrio el DDL: el proximo arranque saltaria la migracion"
+        )
+        assert "ON_ERROR_STOP=1" in auto, (
+            "sin `ON_ERROR_STOP=1`, un error a mitad del archivo no detiene "
+            "`psql` y la migracion se daria por aplicada"
+        )
+
+    def test_la_validacion_acepta_el_nombre_real_y_sigue_cazando_inyeccion(self):
+        auto = (RAIZ / "scripts/migrar_auto.sh").read_text(encoding="utf-8")
+        real = next((RAIZ / "db/migrations").glob("0019_extraccion*.sql"), None)
+
+        assert real is not None, "no existe la migracion 0019 de extraccion"
+        assert "í" in real.name, (
+            "el nombre real lleva acento: si un dia se renombra sin el, este "
+            "test tiene que cambiar con el archivo"
+        )
+        assert "[!A-Za-z0-9_.-]" not in auto, (
+            "la validacion ASCII rechazo `0019_extraccion_multipaís...` en la "
+            "primera corrida: el servicio salio con 1, la API no arranco y "
+            "`make up` fallo. El nombre se pega al SQL, pero los acentos son "
+            "legitimos; lo que se prohibe son las comillas y el punto y coma"
+        )
+        assert "*\"'\"*" in auto and "*';'*" in auto, (
+            "se pueden aceptar acentos, pero NO se puede soltar la defensa "
+            "contra una comilla simple o un punto y coma en el nombre: se pega "
+            "al INSERT y seria DDL arbitrario"
+        )

@@ -309,7 +309,7 @@ class TestElInitSqlDiceLoMismoQueLosModelos:
 
         ## POR QUE HACE FALTA UNA EXCEPCION
 
-        `schema_migrations` la escribe `scripts/migrar.sh`, no la aplicacion. Es
+        `schema_migrations` la escribe `scripts/migrar_auto.sh`, no la aplicacion. Es
         el registro de que migraciones se aplicaron, y el registro lo escribe la
         herramienta que migra.
 
@@ -329,12 +329,12 @@ class TestElInitSqlDiceLoMismoQueLosModelos:
         # Anadir una aqui es facil y por eso hay un test aparte que comprueba que
         # cada una sigue teniendo su `porque`.
         sin_modelo = {
-            # El registro de migraciones aplicadas. La escribe `scripts/migrar.sh`
+            # El registro de migraciones aplicadas. La escribe `scripts/migrar_auto.sh`
             # despues de que `psql` salga con 0, y NADIE mas: por eso no es un
             # modelo. Sin ella no hay forma de saber si una base ya esta al dia,
             # porque `init.sql` replica las 12 migraciones y una base nueva se ve
-            # igual que una migrada. Ver `scripts/migrar.sh`.
-            "schema_migrations": "la escribe scripts/migrar.sh, no la aplicacion",
+            # igual que una migrada. Ver `scripts/migrar_auto.sh`.
+            "schema_migrations": "la escribe scripts/migrar_auto.sh, no la aplicacion",
             # Tabla DDL creada en db/init.sql; aun sin modelo ORM activo en app/models.
             "closed_accounting_periods": "tabla DDL en db/init.sql sin modelo ORM aun en app/models",
         }

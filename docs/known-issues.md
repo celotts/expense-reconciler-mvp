@@ -2249,10 +2249,29 @@ pero **no** `0019_extraccion_multipaís_y_controles.sql`, que es la que este che
 usa. Faltaban 11 columnas de `tickets` (`pais`, `folio`, `hash_duplicado`,
 `estado_conciliacion`, `periodo_cerrado_*`, ...) y el SELECT del ORM moría con
 `column tickets.pais does not exist`. La suite no lo ve: construye el esquema desde
-los modelos, no desde la base que ya existe. Se aplicó la migración pendiente con
-`psql -f /docker-entrypoint-initdb.d/migrations/0019_...sql` (idempotente) y los dos
-endpoints pasaron a 200. **No se tocó `init.sql`**: ya declara esas columnas; el
-problema era una base vieja, no el DDL.
+los modelos, no desde la base que ya existe. **`init.sql` no se tocó**: ya declara
+esas columnas; el problema era una base vieja, no el DDL.
+
+**El arreglo manual no era aceptable.** Aplicar la migración con `psql -f ...`
+desbloqueó los dos endpoints (pasaron a 200), pero arreglaba el contenedor, **no
+el proyecto**: al recrearlo volvería a estar roto. La solución durable es el
+servicio one-shot `migraciones` en `docker-compose.yml`: corre
+`scripts/migrar_auto.sh` contra Postgres y la API lo espera con
+`depends_on: service_completed_successfully`, igual que a `modelos`. Funciona con
+`make up` y con `docker compose up` directo. El script crea `schema_migrations`
+si no existe, aplica los `.sql` pendientes en orden (todos son aditivos e
+idempotentes) y **registra después del `psql -f`**: si falla, `set -e` sale con 1
+y la API no arranca. `scripts/migrar.sh` del host ya solo consulta (`--estado`)
+o delega en el mismo servicio (`make migrar`); usuario y base salen de `.env`
+(antes decía `USUARIO="postgres"`, un rol inexistente). Una sola implementación
+del bucle: dos copias divergen y la del arranque es la que nadie mira.
+
+> La validación del nombre de migración permite acentos a propósito: el archivo
+> real se llama `0019_extraccion_multipaís_y_controles.sql`. Una validación ASCII
+> lo rechazó en la primera corrida del servicio, `make up` falló y la API no
+> arrancó. Sí se prohíben comillas y punto y coma, porque el nombre se pega al
+> `INSERT`. 7 tests en `tests/unit/test_arranque_por_healthcheck.py`, con 5
+> mutaciones verificadas.
 
 **Causa 2 — el front no sabía mostrar un 500.** `fetchApi` hacía
 `response.json().catch(() => ({detail: 'Error desconocido'}))`. Un 500 de uvicorn
