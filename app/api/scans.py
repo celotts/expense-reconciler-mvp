@@ -33,10 +33,11 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.archivo_real import media_type_real
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
@@ -44,6 +45,7 @@ from app.core.enums import ScanStatus
 from app.models.company import CompanyModel
 from app.models.scan_file import ScanEventModel, ScanFileModel
 from app.models.ticket import TicketModel
+from app.models.ticket_document import content_type_servible
 from app.models.user import UserModel
 from app.schemas.lectura import DiagnosticoLecturaResponse
 from app.schemas.scan import (
@@ -60,7 +62,10 @@ from app.schemas.scan import (
     ScanResponse,
     ScanStatsResponse,
 )
-from app.services import scan_registry, scan_reset, scan_service
+from app.services import scan_registry, scan_reset, scan_service, vista_previa
+from app.services.archivado_service import carpeta_de_escaneados
+from app.services.auditoria import registrar_auditoria
+from app.services.document_service import documento_de_ticket
 from app.services.ai_client import disponibilidad as disponibilidad_ia
 from app.services.digitalizacion_directorio import (
     EXTENSIONES_PERMITIDAS,
@@ -266,6 +271,7 @@ def _reset_permitido(
 @router.post("/reset", dependencies=[Depends(_reset_habilitado)])
 async def limpiar_base_de_datos(
     cuerpo: ScanResetRequest,
+    request: Request,
     db: Annotated[AsyncSession | None, Depends(get_db)] = None,
     usuario: UserModel = Depends(_reset_permitido),
 ) -> ScanResetResponse:
@@ -329,6 +335,25 @@ async def limpiar_base_de_datos(
                 "desaparezcan."
             ),
         ) from exc
+
+    # Solo la ejecucion real deja rastro de borrado: en modo simulado
+    # (`ejecutar=false`) no se borro nada, y auditarlo como borrado mentiria.
+    # `db` puede ser None: en ese caso `registrar_auditoria` abre su propia
+    # sesion, igual que los demas llamadores que no la pasan.
+    if not resultado.simulado:
+        await registrar_auditoria(
+            accion="limpiar_base",
+            modulo="scan",
+            usuario_id=str(usuario.id),
+            detalles={
+                "borrado": resultado.borrado,
+                "conteo": resultado.conteo.a_dict(),
+            },
+            rol=usuario.perfil,
+            ip=request.client.host if request.client else "desconocida",
+            resultado="exito",
+            db=db,
+        )
 
     return ScanResetResponse(
         simulado=resultado.simulado,
@@ -838,6 +863,141 @@ async def detalle_archivo(
     respuesta = ScanFileDetailResponse.model_validate(fila)
     respuesta.events = [ScanEventResponse.model_validate(e) for e in eventos]
     return respuesta
+
+
+async def _bytes_del_archivo_escaneado(
+    db: AsyncSession, fila: ScanFileModel
+) -> tuple[bytes, str] | None:
+    """Los bytes del archivo escaneado, tal como estan en el disco.
+
+    Solo lectura: no se mueve, no se borra y no se reescribe nada. Se busca
+    primero en la carpeta de entrada y luego en la de escaneados (un archivo
+    ya resuelto se mueve ahi con `archivar`, con los mismos bytes). Si ya no
+    esta en ninguna de las dos, se usa el documento guardado en
+    `ticket_documents` cuando el archivo produjo un ticket: esos bytes son el
+    original respaldado, con su sha256. Sin disco ni respaldo, `None`.
+    """
+    try:
+        ruta = scan_service.ruta_de_relativo(fila.relative_path)
+    except scan_service.ArchivoFueraDeLaCarpeta:
+        ruta = None
+    if ruta is not None and ruta.is_file():
+        return ruta.read_bytes(), ruta.name
+    # Carpeta de escaneados: hermana de la de entrada, misma estructura de
+    # subdirectorios que el origen. La comprobacion va DESPUES de resolver,
+    # igual que en `ruta_de_relativo`: un symlink no se ve en la cadena.
+    base_destino = carpeta_de_escaneados()
+    candidato = (base_destino / fila.relative_path).resolve()
+    if candidato.is_relative_to(base_destino) and candidato.is_file():
+        return candidato.read_bytes(), candidato.name
+    if fila.ticket_id is not None:
+        documento = await documento_de_ticket(db, fila.ticket_id)
+        if documento is not None:
+            return (
+                documento.contenido,
+                documento.nombre_archivo or fila.relative_path,
+            )
+    return None
+
+
+@router.get("/files/{file_id}/documento", response_class=Response)
+async def documento_archivo_escaneado(
+    file_id: UUID,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """El archivo escaneado, tal como esta, sin modificarlo.
+
+    Es lo que faltaba en el Escaner: un archivo "omitido" (leido sin empresa,
+    sin ticket) no tenia documento que mostrar, porque `VerDocumento` solo
+    sabe mirar `ticket_documents`. Este endpoint sirve el papel de la carpeta
+    —entrada o escaneados— para que en el detalle se vea el original al lado
+    de los datos leidos, aunque todavia no haya ticket.
+
+    El `Content-Type` sale de una lista cerrada por los BYTES, igual que en
+    `GET /tickets/{id}/documento`: un archivo que no esta en ella se sirve
+    como `application/octet-stream`, que conserva los bytes intactos.
+    Requiere autenticacion, como el de tickets: un UUID no es un secreto.
+    """
+    # La importacion va aqui y no arriba: `tickets.py` importa cosas de este
+    # modulo en otro camino, y a nivel de modulo seria un ciclo. Es el mismo
+    # patron que `diagnosticar_archivo` con `_a_diagnostico`.
+    from app.api.tickets import _nombre_seguro
+
+    del usuario
+    fila = await _archivo_o_404(db, file_id)
+    hallado = await _bytes_del_archivo_escaneado(db, fila)
+    if hallado is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "El archivo ya no está en la carpeta de entrada ni en la de "
+                "escaneados, y no tiene documento guardado."
+            ),
+        )
+    contenido, nombre = hallado
+    return Response(
+        content=contenido,
+        media_type=content_type_servible(media_type_real(contenido)),
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="{_nombre_seguro(nombre)}"'
+            ),
+            "Access-Control-Expose-Headers": "Content-Disposition",
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
+@router.get("/files/{file_id}/documento/vista-previa", response_class=Response)
+async def vista_previa_archivo_escaneado(
+    file_id: UUID,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """El archivo escaneado en un formato que el navegador SI pinta.
+
+    Solo HEIC/HEIF se convierte a JPEG, con `vista_previa.convertir_a_jpeg`:
+    un PDF, un JPEG o un PNG salen con sus bytes originales, sin tocarlos.
+    La conversion es una representacion para mostrar, no una reescritura:
+    el archivo del disco y el documento guardado siguen intactos.
+    """
+    del usuario
+    fila = await _archivo_o_404(db, file_id)
+    hallado = await _bytes_del_archivo_escaneado(db, fila)
+    if hallado is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "El archivo ya no está en la carpeta de entrada ni en la de "
+                "escaneados, y no tiene documento guardado."
+            ),
+        )
+    contenido, _nombre = hallado
+    tipo_real = media_type_real(contenido)
+    if not vista_previa.es_convertible(tipo_real):
+        return Response(
+            content=contenido,
+            media_type=content_type_servible(tipo_real),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+    jpeg = vista_previa.convertir_a_jpeg(contenido)
+    if jpeg is None:
+        # Se sirve el original en vez de un 404: el archivo EXISTE y hay que
+        # poder mirarlo, aunque sea descargando.
+        return Response(
+            content=contenido,
+            media_type=content_type_servible(tipo_real),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": 'inline; filename="vista_previa.jpg"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @router.post("/files/{file_id}/reprocess", response_model=ReprocessResponse)

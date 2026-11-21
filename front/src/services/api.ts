@@ -223,6 +223,55 @@ export async function fetchVistaPrevia(ticketId: string): Promise<Blob> {
   return response.blob();
 }
 
+/** El archivo escaneado de la carpeta, como Blob, y su vista previa.
+ *
+ *  El mismo patron que `fetchDocumento` / `fetchVistaPrevia`, pero sobre el
+ *  registro del escaner (`GET /scan/files/{id}/documento`) y no sobre un
+ *  ticket: un archivo "omitido" no tiene ticket y por eso no tenia documento
+ *  que mostrar. Los bytes son el original tal como esta en el disco, sin
+ *  modificarlo; la vista previa solo convierte HEIC/HEIF a JPEG para poder
+ *  pintarlo, igual que la de tickets. */
+export async function fetchDocumentoArchivo(fileId: string): Promise<BlobDocumento> {
+  const response = await fetch(`${API_BASE}/scan/files/${fileId}/documento`, {
+    headers: { ...cabeceraDeAutorizacion() },
+  });
+
+  if (response.status === 401) {
+    notificarCaducidad(false);
+    throw new SesionVencida(false);
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    const detalle = error && typeof error.detail === 'string' ? error.detail : null;
+    throw new Error(detalle || `Error ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  return Object.assign(blob, {
+    disposition: response.headers.get('content-disposition'),
+  });
+}
+
+export async function fetchVistaPreviaArchivo(fileId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/scan/files/${fileId}/documento/vista-previa`, {
+    headers: { ...cabeceraDeAutorizacion() },
+  });
+
+  if (response.status === 401) {
+    notificarCaducidad(false);
+    throw new SesionVencida(false);
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    const detalle = error && typeof error.detail === 'string' ? error.detail : null;
+    throw new Error(detalle || `Error ${response.status}`);
+  }
+
+  return response.blob();
+}
+
 /** La descarga de un archivo, que no es JSON.
  *
  *  Va aparte de `fetchApi` porque el resultado es un `Blob` y no un objeto, y
@@ -457,6 +506,9 @@ export const ticketsApi = {
    *  no distinguiria "el documento no esta" de "la peticion fallo". */
   documento: (ticketId: string): Promise<BlobDocumento> => fetchDocumento(ticketId),
   vistaPrevia: (ticketId: string): Promise<Blob> => fetchVistaPrevia(ticketId),
+  /** El archivo escaneado tal como esta en la carpeta, aunque no tenga ticket. */
+  documentoArchivo: (fileId: string): Promise<BlobDocumento> => fetchDocumentoArchivo(fileId),
+  vistaPreviaArchivo: (fileId: string): Promise<Blob> => fetchVistaPreviaArchivo(fileId),
 
   /** Vuelve a subir el comprobante de un ticket que ya existe.
    *

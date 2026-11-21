@@ -63,6 +63,8 @@ class AuditoriaListadoItem(BaseModel):
     ip_inet: str | None = None
     fecha: datetime | None = None
     usuario_email: str | None = None
+    usuario_nombre: str | None = None
+    resultado: str | None = None
 
 class AuditoriaListaResponse(BaseModel):
     total: int
@@ -103,14 +105,18 @@ async def listar_auditoria(
     total = (await AsyncSessionLocal().execute(cq)).scalar_one()
     rows = (await AsyncSessionLocal().execute(q.limit(limit).offset(offset))).scalars().all()
 
-    # E-mail de usuario en UNA consulta (evita N+1 por fila)
+    # Nombre y e-mail del usuario que hizo cada evento, en UNA consulta
+    # (evita N+1 por fila). Es el usuario ya logueado en esa sesión: no se
+    # crea usuario ni autenticación nueva, solo se muestra quién fue.
     user_ids = [r.usuario_id for r in rows if r.usuario_id is not None]
     email_map = {}
+    nombre_map = {}
     if user_ids:
         us = (await AsyncSessionLocal().execute(
             select(UserModel).where(UserModel.id.in_(user_ids))
         )).scalars().all()
         email_map = {str(u.id): u.email for u in us}
+        nombre_map = {str(u.id): u.nombre for u in us}
 
     items = []
     for r in rows:
@@ -119,6 +125,9 @@ async def listar_auditoria(
                 id=int(r.id),
                 usuario_id=str(r.usuario_id) if r.usuario_id is not None else None,
                 usuario_email=email_map.get(str(r.usuario_id))
+                if r.usuario_id is not None
+                else None,
+                usuario_nombre=nombre_map.get(str(r.usuario_id))
                 if r.usuario_id is not None
                 else None,
                 rol=r.rol,
@@ -132,6 +141,7 @@ async def listar_auditoria(
                 detalles=r.detalles,
                 ip_inet=r.ip_inet,
                 fecha=r.fecha,
+                resultado=getattr(r, 'resultado', None),
             )
         )
 

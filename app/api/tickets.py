@@ -11,6 +11,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
     status,
@@ -217,7 +218,10 @@ def _tipo_real_del_archivo(contenido: bytes, declarado: str | None) -> str:
 
 @router.post("/", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
 async def create_ticket(
-    ticket_in: TicketCreate, usuario: UsuarioActual, db: AsyncSession = Depends(get_db)
+    ticket_in: TicketCreate,
+    request: Request,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
 ) -> TicketModel:
     """Create a new ticket manually.
 
@@ -276,8 +280,13 @@ async def create_ticket(
         detalles={
             "provider_name": ticket.provider_name,
             "total_amount": str(ticket.total_amount),
+            "expense_date": str(ticket.expense_date) if ticket.expense_date else None,
+            "provider_tax_id": ticket.provider_tax_id,
         },
         rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
     )
 
     return ticket
@@ -638,6 +647,7 @@ async def get_review_queue(
 @router.patch("/categoria", response_model=ClasificarLoteResponse)
 async def clasificar_lote(
     datos: ClasificarLoteRequest,
+    request: Request,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
 ) -> ClasificarLoteResponse:
@@ -677,6 +687,24 @@ async def clasificar_lote(
     # cast no cambia lo que corre, es lo que pyright necesita para leer la unica
     # cifra que esta respuesta reporta.
     actualizados = cast(CursorResult[Any], resultado).rowcount
+
+    # Un solo `UPDATE` toca muchos tickets: el rastro guarda los ids, no un
+    # `registro_afectado` unico, y la categoria (None = desclasifica).
+    await registrar_auditoria(
+        accion="clasificar",
+        modulo="tickets",
+        usuario_id=str(usuario.id),
+        detalles={
+            "ticket_ids": [str(tid) for tid in ids],
+            "category": datos.category,
+            "actualizados": actualizados,
+            "pedidos": len(ids),
+        },
+        rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )
 
     return ClasificarLoteResponse(actualizados=actualizados, pedidos=len(ids))
 
@@ -862,6 +890,10 @@ async def review_ticket(
         detalles={
             "provider_name": ticket.provider_name,
             "total_amount": str(ticket.total_amount),
+            "expense_date": str(ticket.expense_date) if ticket.expense_date else None,
+            "provider_tax_id": ticket.provider_tax_id,
+            "correcciones": {k: str(v) for k, v in corrections.items() if v is not None},
+            "hubo_correccion": hubo_correccion,
         },
         rol=usuario.perfil,
     )
@@ -1023,6 +1055,7 @@ async def get_spot_check_queue(
 async def registrar_veredicto(
     ticket_id: UUID,
     payload: SpotCheckRequest,
+    request: Request,
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db),
 ) -> SpotCheckItemResponse:
@@ -1077,6 +1110,27 @@ async def registrar_veredicto(
     )
     await db.commit()
     await db.refresh(row)
+
+    # El veredicto es la evidencia de exactitud: sin esta fila, el reporte
+    # promedia veredictos sin dueno.
+    await registrar_auditoria(
+        accion="veredicto",
+        modulo="tickets",
+        usuario_id=str(usuario.id),
+        registro_afectado=str(row.id),
+        detalles={
+            "veredicto": row.spot_check_status,
+            "campos_incorrectos": list(payload.campos_incorrectos),
+            "provider_name": row.provider_name,
+            "total_amount": str(row.total_amount),
+            "expense_date": str(row.expense_date) if row.expense_date else None,
+            "provider_tax_id": row.provider_tax_id,
+        },
+        rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )
 
     return SpotCheckItemResponse(
         ticket=TicketResponse.model_validate(row),
@@ -1632,6 +1686,8 @@ async def put_documento(
         detalles={
             "provider_name": ticket.provider_name,
             "total_amount": str(ticket.total_amount),
+            "expense_date": str(ticket.expense_date) if ticket.expense_date else None,
+            "provider_tax_id": ticket.provider_tax_id,
         },
         rol=usuario.perfil,
     )
@@ -1692,6 +1748,8 @@ async def update_ticket(
     # columna JSON. Setearlo como objeto y dejar que lo caste el driver seria
     # escribir `[{'LineaTicketUpdate': ...}]`.
     lineas = update_data.pop("items", None)
+    # Valores ANTES de tocar nada: son los que permiten decir "cambió X de A a B".
+    valores_antes = {k: getattr(ticket, k, None) for k in update_data}
     # Si la fecha viene en el cuerpo y es distinta de la que estaba, la escribio
     # una persona mirando el papel, y deja de ser provisional. Es el mismo
     # criterio que `review_ticket`: la procedencia de la fecha cambia cuando una
@@ -1795,6 +1853,10 @@ async def update_ticket(
     # del token (regla 23), no de un cuerpo que el cliente pueda mandar.
     # MEDIDO: se registraba como `update_ticket`, igual que la creacion y que la
     # revision. Son tres hechos distintos y el rastro no los distinguia.
+    cambios = [
+        {'campo': k, 'antes': str(valores_antes.get(k)), 'despues': str(v)}
+        for k, v in update_data.items() if str(valores_antes.get(k)) != str(v)
+    ]
     await registrar_auditoria(
         accion="actualizar_ticket",
         modulo="tickets",
@@ -1803,6 +1865,9 @@ async def update_ticket(
         detalles={
             "provider_name": ticket.provider_name,
             "total_amount": str(ticket.total_amount),
+            "expense_date": str(ticket.expense_date) if ticket.expense_date else None,
+            "provider_tax_id": ticket.provider_tax_id,
+            "cambios": cambios,
         },
         rol=usuario.perfil,
     )
@@ -1811,7 +1876,12 @@ async def update_ticket(
 
 
 @router.delete("/{ticket_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ticket(ticket_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_ticket(
+    ticket_id: UUID,
+    request: Request,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> None:
     """Delete a ticket."""
     result = await db.execute(select(TicketModel).where(TicketModel.id == ticket_id))
     ticket = result.scalar_one_or_none()
@@ -1820,5 +1890,24 @@ async def delete_ticket(ticket_id: UUID, db: AsyncSession = Depends(get_db)) -> 
             status_code=status.HTTP_404_NOT_FOUND, detail="El ticket no existe"
         )
 
+    # Se capturan ANTES de borrar: despues del commit los atributos pueden
+    # estar expirados y el rastro quedaria sin el proveedor ni el total.
+    proveedor = ticket.provider_name
+    total = str(ticket.total_amount)
+    fecha = str(ticket.expense_date) if ticket.expense_date else None
+    rfc = ticket.provider_tax_id
+
     await db.delete(ticket)
     await db.commit()
+
+    await registrar_auditoria(
+        accion="delete",
+        modulo="tickets",
+        usuario_id=str(usuario.id),
+        registro_afectado=str(ticket_id),
+        detalles={"provider_name": proveedor, "total_amount": total, "expense_date": fecha, "provider_tax_id": rfc},
+        rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )

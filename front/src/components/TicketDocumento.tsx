@@ -58,8 +58,8 @@ function nombreDelContentDisposition(cd: string | null): string | null {
 }
 
 /** El veredicto de vida, con los mismos datos que el PDF que se descarga. */
-export function VerDocumento({ ticket }: { ticket: Ticket }) {
-  const [abierto, setAbierto] = useState(false);
+export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ticket; abiertoPorDefecto?: boolean }) {
+  const [abierto, setAbierto] = useState(abiertoPorDefecto);
   const [url, setUrl] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +96,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
   // anterior, que es peor que no mostrar nada: es la forma de que alguien
   // apruebe un ticket mirando el comprobante equivocado.
   useEffect(() => {
-    setAbierto(false);
+    setAbierto(abiertoPorDefecto);
     setUrl(null);
     setError(null);
     setTipo(undefined);
@@ -145,12 +145,11 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
 
   const nombreLegible = tipo === 'application/pdf' ? 'PDF' : (esHeic ? 'archivo HEIC/HEIF' : 'archivo');
 
-  const alternar = async () => {
-    if (abierto) {
-      setAbierto(false);
-      return;
-    }
-    setAbierto(true);
+  // Se carga al abrir, y tambien al montar cuando viene `abiertoPorDefecto`:
+  // en el detalle del Escaner el papel es lo que se viene a ver, no un
+  // desplegable mas. Sin esto, el original seguiria escondido detras de un
+  // boton justo donde se contrastan los datos leidos contra el papel.
+  const cargar = async () => {
     if (url) return; // ya esta cargado
 
     setCargando(true);
@@ -219,6 +218,22 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
     }
   };
 
+  const alternar = async () => {
+    if (abierto) {
+      setAbierto(false);
+      return;
+    }
+    setAbierto(true);
+    await cargar();
+  };
+
+  useEffect(() => {
+    if (abiertoPorDefecto) void cargar();
+    // Solo al montar: recargar en cada render pediria el comprobante entero
+    // una y otra vez.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="mt-3">
       <div className="mb-3 p-3 rounded-lg bg-gray-50 border border-gray-200 text-xs space-y-2">
@@ -261,7 +276,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
           <img
             src={url}
             alt={`Comprobante original de ${ticket.provider_name}`}
-            className="mt-2 max-h-96 w-full rounded border border-gray-200 object-contain"
+            className="mt-2 max-h-[70vh] w-full rounded border border-gray-200 object-contain"
           />
           {/* Cuando lo que se ve es el JPEG derivado, se dice. */}
           {esVistaPrevia && (
@@ -277,7 +292,7 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
         <object
           data={url}
           type={tipo ?? 'application/pdf'}
-          className="mt-2 w-full h-96 border border-gray-200 rounded"
+          className="mt-2 w-full h-[70vh] border border-gray-200 rounded"
           aria-label={`Comprobante original de ${ticket.provider_name}`}
         >
           {/* Aqui solo llega lo que NO se pinto, y ya se sabe por que: o es un
@@ -326,6 +341,129 @@ export function VerDocumento({ ticket }: { ticket: Ticket }) {
               rel="noopener noreferrer"
               className="text-blue-600 underline"
             >
+              Abrir en tamaño completo
+            </a>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * El archivo escaneado de la carpeta, tal como esta en el disco.
+ *
+ * Es lo que faltaba en el Escaner: un archivo "omitido" no tiene ticket y
+ * `VerDocumento` no tenia de donde sacar su papel, asi que el detalle solo
+ * mostraba los datos leidos. Este componente pide el original con
+ * `ticketsApi.documentoArchivo` (el endpoint nuevo, con token) y la vista
+ * previa con `ticketsApi.vistaPreviaArchivo` (solo HEIC/HEIF a JPEG, para
+ * poder pintarlo; un PDF, JPEG o PNG salen con sus bytes originales).
+ *
+ * Se carga solo, sin boton: en el detalle del Escaner el papel es lo que se
+ * viene a ver, al lado de los datos leidos. El archivo no se modifica al
+ * mirarlo: la conversion a JPEG es solo una representacion para la pantalla.
+ */
+export function VerArchivoEscaneado({ fileId, nombre }: { fileId: string; nombre: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [nombreArchivo, setNombreArchivo] = useState<string | null>(null);
+  const [esVistaPrevia, setEsVistaPrevia] = useState(false);
+  const [tipo, setTipo] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let vivo = true;
+    setCargando(true);
+    setError(null);
+    Promise.allSettled([
+      ticketsApi.documentoArchivo(fileId),
+      ticketsApi.vistaPreviaArchivo(fileId),
+    ]).then(([original, previa]) => {
+      if (!vivo) return;
+      if (original.status === 'rejected') {
+        setError(original.reason instanceof Error
+          ? original.reason.message
+          : 'No se pudo cargar el archivo escaneado');
+        setCargando(false);
+        return;
+      }
+      const blobOriginal = original.value;
+      setTipo(blobOriginal.type || undefined);
+      setNombreArchivo(nombreDelContentDisposition(blobOriginal.disposition));
+      if (previa.status === 'fulfilled' && previa.value.type.startsWith('image/')) {
+        setEsVistaPrevia(true);
+        setTipo(previa.value.type);
+        setUrl(URL.createObjectURL(previa.value));
+      } else {
+        setEsVistaPrevia(false);
+        setUrl(URL.createObjectURL(blobOriginal));
+      }
+      setCargando(false);
+    });
+    return () => {
+      vivo = false;
+      setUrl((previo) => {
+        if (previo) URL.revokeObjectURL(previo);
+        return null;
+      });
+    };
+  }, [fileId]);
+
+  const esImagen = tipo?.startsWith('image/') ?? false;
+  const octetStream = tipo === 'application/octet-stream' || !tipo;
+  const esHeic = octetStream && (nombreArchivo ?? nombre).match(/\.(heic|heif)$/i) !== null;
+  const nombreLegible = tipo === 'application/pdf' ? 'PDF' : (esHeic ? 'archivo HEIC/HEIF' : 'archivo');
+
+  return (
+    <div>
+      <p className="text-sm font-medium text-gray-700">Comprobante original escaneado</p>
+      <p className="text-xs text-gray-500 truncate" title={nombre}>{nombreArchivo ?? nombre}</p>
+      {cargando && (
+        <p className="mt-1 text-xs text-gray-500">Cargando comprobante…</p>
+      )}
+      {error && (
+        <p className="mt-1 text-xs text-red-700">
+          No se pudo cargar el archivo escaneado: {error}. Puede que el archivo ya no esté en la carpeta.
+        </p>
+      )}
+      {url && esImagen && (
+        <>
+          <img
+            src={url}
+            alt={`Archivo escaneado ${nombre}`}
+            className="mt-2 max-h-[70vh] w-full rounded border border-gray-200 object-contain"
+          />
+          {esVistaPrevia && (
+            <p className="mt-1 text-[11px] text-gray-500">
+              Vista previa convertida a JPEG para poder mostrarla aquí. El archivo original no se ha modificado.
+            </p>
+          )}
+        </>
+      )}
+      {url && !esImagen && (
+        <object
+          data={url}
+          type={tipo ?? 'application/pdf'}
+          className="mt-2 w-full h-[70vh] border border-gray-200 rounded"
+          aria-label={`Archivo escaneado ${nombre}`}
+        >
+          <p className="text-xs text-gray-600">
+            Este comprobante es un <strong>{nombreLegible}</strong>, un formato que el navegador no pinta.
+            {esHeic && (
+              <> Descárgalo y ábrelo con una app que lo lea (en macOS, Vista Previa).</>
+            )}
+          </p>
+        </object>
+      )}
+      {url && (
+        <p className="mt-1 text-xs text-gray-500">
+          {esHeic ? (
+            <a href={url} download={nombreArchivo ?? 'comprobante'} className="text-blue-600 underline">
+              Descargar el archivo original
+            </a>
+          ) : (
+            <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
               Abrir en tamaño completo
             </a>
           )}

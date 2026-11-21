@@ -42,13 +42,17 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
 from app.core.security import hashear_contrasena, verificar_contrasena
 from app.models.user import UserModel
+from app.services.auditoria import (
+    registrar_auditoria,
+    registrar_update_auditoria,
+)
 from app.schemas.auth import (
     CambioContrasenaRequest,
     UsuarioCreate,
@@ -110,8 +114,9 @@ async def listar_cuentas(
 @router.post("", response_model=UsuarioResponse, status_code=status.HTTP_201_CREATED)
 async def registrar_usuario(
     datos: UsuarioCreate,
+    request: Request,
     db: Sesion,
-    _: UsuarioVerificado,
+    actor: UsuarioVerificado,
 ) -> UsuarioResponse:
     """Registra una nueva cuenta en el sistema.
 
@@ -157,6 +162,24 @@ async def registrar_usuario(
         ) from err
 
     await db.refresh(nuevo_usuario)
+    # Sin contraseñas ni hashes en el rastro: solo quien la creo y con que
+    # perfil y grupo nacio la cuenta.
+    await registrar_auditoria(
+        accion="crear_usuario",
+        modulo="usuarios",
+        usuario_id=str(actor.id),
+        registro_afectado=str(nuevo_usuario.id),
+        detalles={
+            "nombre": nuevo_usuario.nombre,
+            "email": correo,
+            "perfil": nuevo_usuario.perfil,
+            "grupo": nuevo_usuario.grupo,
+        },
+        rol=actor.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )
     return UsuarioResponse.model_validate(nuevo_usuario)
 
 
@@ -172,6 +195,7 @@ async def obtener_cuenta(
 async def actualizar_cuenta(
     usuario_id: UUID,
     datos: UsuarioUpdate,
+    request: Request,
     db: Sesion,
     actor: UsuarioVerificado,
 ) -> UsuarioResponse:
@@ -241,10 +265,26 @@ async def actualizar_cuenta(
                 ),
             )
 
+    valores_antes = {k: getattr(cuenta, k, None) for k in cambios}
     for campo, valor in cambios.items():
         setattr(cuenta, campo, valor)
     await db.commit()
     await db.refresh(cuenta)
+    # Cubre el cambio de perfil y la baja (`is_active=False`): los dos son
+    # el mismo hecho para la auditoria, que campos cambiaron y quien lo hizo.
+    # Solo los campos que venian en el cuerpo (`exclude_unset`).
+    await registrar_update_auditoria(
+        modelo="usuarios",
+        registro_id=str(cuenta.id),
+        campos_modificados=sorted(cambios.keys()),
+        usuario_id=str(actor.id),
+        valores_anteriores=valores_antes,
+        valores_nuevos=cambios,
+        nombre=cuenta.nombre,
+        rol=actor.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        db=db,
+    )
     return UsuarioResponse.model_validate(cuenta)
 
 
@@ -252,8 +292,9 @@ async def actualizar_cuenta(
 async def cambiar_contrasena(
     usuario_id: UUID,
     cuerpo: CambioContrasenaRequest,
+    request: Request,
     db: Sesion,
-    _: UsuarioVerificado,
+    actor: UsuarioVerificado,
 ) -> None:
     """Rota la contrasena de una cuenta.
 
@@ -303,3 +344,16 @@ async def cambiar_contrasena(
     # para el login.
     cuenta.password_hash = hashear_contrasena(cuerpo.contrasena_nueva)  # type: ignore
     await db.commit()
+    # Se audita QUE se roto la contrasena y quien lo hizo, nunca el valor:
+    # ni la nueva, ni la actual, ni el hash entran en el rastro.
+    await registrar_auditoria(
+        accion="cambiar_contrasena",
+        modulo="usuarios",
+        usuario_id=str(actor.id),
+        registro_afectado=str(cuenta.id),
+        detalles={"nombre": cuenta.nombre, "email": cuenta.email},
+        rol=actor.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )

@@ -22,6 +22,7 @@ class Auditoria(Base):
     registro_afectado = Column(UUID(as_uuid=True), nullable=True)
     detalles = Column(Text, nullable=True)
     ip_inet = Column(String(45), nullable=True)
+    resultado = Column(String(20), nullable=False, default='exito')
     fecha = Column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:

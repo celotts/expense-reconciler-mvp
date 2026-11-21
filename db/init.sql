@@ -32,10 +32,45 @@ CREATE TABLE IF NOT EXISTS auditoria (
     registro_afectado UUID,
     detalles TEXT,
     ip_inet VARCHAR(45),
+    resultado VARCHAR(20) NOT NULL DEFAULT 'exito',
     fecha TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_auditoria_fecha ON auditoria (fecha DESC);
 CREATE INDEX IF NOT EXISTS ix_auditoria_usuario ON auditoria (usuario_id);
+
+-- Auditoria es append-only: ni UPDATE ni DELETE (mismo patron que
+-- ticket_documents, migracion 0020_auditoria_segura.sql).
+ALTER TABLE auditoria DROP CONSTRAINT IF EXISTS ck_auditoria_resultado;
+ALTER TABLE auditoria ADD CONSTRAINT ck_auditoria_resultado
+    CHECK (resultado IN ('exito', 'fallo'));
+
+CREATE OR REPLACE FUNCTION auditoria_no_actualizar() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'auditoria es append-only: un registro de auditoria no se actualiza. Id %',
+        OLD.id
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION auditoria_no_borrar() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'auditoria es append-only: un registro de auditoria no se borra. Id %',
+        OLD.id
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_auditoria_no_actualizar ON auditoria;
+CREATE TRIGGER trg_auditoria_no_actualizar
+    BEFORE UPDATE ON auditoria
+    FOR EACH ROW EXECUTE FUNCTION auditoria_no_actualizar();
+
+DROP TRIGGER IF EXISTS trg_auditoria_no_borrar ON auditoria;
+CREATE TRIGGER trg_auditoria_no_borrar
+    BEFORE DELETE ON auditoria
+    FOR EACH ROW EXECUTE FUNCTION auditoria_no_borrar();
 
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (lower(email));
 CREATE INDEX IF NOT EXISTS ix_users_activos ON users (lower(email)) WHERE is_active;
@@ -646,7 +681,8 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0016_perfil_usuario.sql'),
     ('0017_auditoria.sql'),
     ('0018_tipos_gasto.sql'),
-    ('0019_extraccion_multipaís_y_controles.sql')
+    ('0019_extraccion_multipaís_y_controles.sql'),
+    ('0020_auditoria_segura')
 ON CONFLICT (nombre) DO NOTHING;
 
 CREATE TABLE ticket_persistence (

@@ -711,14 +711,35 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           {conPapel && editingTicket && (
             <div className="order-2 lg:order-1 lg:sticky lg:top-0 lg:self-start lg:border-r lg:border-gray-200 lg:pr-5">
               <ComprobanteAlLado ticket={editingTicket} />
-              <a
-                href={`/ticket/${editingTicket.id}/documento`}
-                target="_blank"
-                rel="noopener noreferrer"
+              {/* Antes esto era un enlace a `/ticket/{id}/documento`, una ruta
+                  que el front no tiene (App.tsx no tiene router): abria la
+                  pagina normal de la app. Ahora se descarga el original con
+                  token (el endpoint exige `Authorization`, y una pestana nueva
+                  no lo lleva) y se abre el `Blob` ya descargado. La pestana
+                  se abre ANTES de pedirlo, porque abrirla despues del `await`
+                  la bloquea el navegador como emergente. */}
+              <button
+                type="button"
+                onClick={async () => {
+                  const ventana = window.open('', '_blank', 'noopener,noreferrer');
+                  try {
+                    const blob = await ticketsApi.documento(editingTicket.id);
+                    const url = URL.createObjectURL(blob);
+                    if (ventana) ventana.location.href = url;
+                    else window.open(url, '_blank', 'noopener,noreferrer');
+                    // El Blob se libera pasado un minuto: revocarlo antes
+                    // cerraria la pestana que se acaba de abrir.
+                    setTimeout(() => URL.revokeObjectURL(url), 60000);
+                  } catch {
+                    ventana?.close();
+                    /* Si falla, el papel ya esta visible arriba en
+                       ComprobanteAlLado; no se tumba el modal por esto. */
+                  }
+                }}
                 className="mt-2 inline-block text-xs text-blue-600 underline"
               >
-                Abrir el comprobante en otra pestaña (para verlo en grande)
-              </a>
+                Abrir el comprobante original en otra pestaña (para verlo en grande)
+              </button>
             </div>
           )}
           <div className={conPapel ? 'order-1 lg:order-2' : ''}>

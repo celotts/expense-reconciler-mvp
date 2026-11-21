@@ -40,6 +40,7 @@ from app.schemas.auth import LoginRequest, TokenResponse, UsuarioResponse
 from app.services.auditoria import (
     registrar_intento_fallido_auditoria,
     registrar_login_auditoria,
+    registrar_logout_auditoria,
 )
 
 router = APIRouter()
@@ -129,6 +130,7 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
             rol=None,
             ip=ip,
             motivo='usuario_no_existe',
+            db=db,
         )
         raise _credenciales_malas()
 
@@ -143,9 +145,11 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
             modulo='auth',
             accion='login',
             usuario_identificacion=correo,
+            usuario_id=str(usuario.id),
             rol=None,
             ip=ip,
             motivo='contrasena_incorrecta',
+            db=db,
         )
         raise _credenciales_malas()
 
@@ -160,9 +164,11 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
             modulo='auth',
             accion='login',
             usuario_identificacion=correo,
+            usuario_id=str(usuario.id),
             rol=None,
             ip=ip,
             motivo='cuenta_inactiva',
+            db=db,
         )
         raise _credenciales_malas()
 
@@ -191,6 +197,29 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
         access_token=token,
         expires_in=segundos,
         user=UsuarioResponse.model_validate(usuario),
+    )
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Auth"],
+    summary="Cerrar sesion",
+)
+async def logout(usuario: UsuarioActual, request: Request, db: Sesion) -> None:
+    """Cierra la sesion y deja el rastro en auditoria.
+
+    El token NO se revoca en el servidor: no hay lista de revocacion ni `jti`
+    (ver el docstring del modulo y `app/core/security.py`), asi que un token
+    emitido sigue siendo valido hasta que caduca. Lo que hace este endpoint es
+    registrar el cierre y decirle al cliente que descarte el token: es el
+    cliente quien lo borra de donde lo guarde.
+    """
+    await registrar_logout_auditoria(
+        usuario_id=str(usuario.id),
+        rol=usuario.perfil,
+        ip=_ip(request),
+        db=db,
     )
 
 

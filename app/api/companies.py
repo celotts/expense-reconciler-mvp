@@ -1,13 +1,19 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import UsuarioActual
 from app.models.company import CompanyModel
 from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
+from app.services.auditoria import (
+    registrar_auditoria,
+    registrar_delete_auditoria,
+    registrar_update_auditoria,
+)
 
 router = APIRouter(tags=["Companies"])
 
@@ -15,6 +21,8 @@ router = APIRouter(tags=["Companies"])
 @router.post("/", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
 async def create_company(
     company_in: CompanyCreate,
+    request: Request,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> CompanyModel:
     """Create a new company."""
@@ -31,6 +39,17 @@ async def create_company(
     db.add(company)
     await db.commit()
     await db.refresh(company)
+    await registrar_auditoria(
+        accion="crear_empresa",
+        modulo="companies",
+        usuario_id=str(usuario.id),
+        registro_afectado=str(company.id),
+        detalles={"nombre": company.name, "tax_id": company.tax_id},
+        rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )
     return company
 
 
@@ -63,6 +82,8 @@ async def get_company(
 async def update_company(
     company_id: UUID,
     company_in: CompanyUpdate,
+    request: Request,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> CompanyModel:
     """Update a company."""
@@ -89,17 +110,34 @@ async def update_company(
                 detail="Ya hay una empresa con ese RFC"
             )
     
+    valores_antes = {k: getattr(company, k, None) for k in update_data}
     for field, value in update_data.items():
         setattr(company, field, value)
     
     await db.commit()
     await db.refresh(company)
+    # Solo los campos que venian en el cuerpo (`exclude_unset`): un PATCH sin
+    # cambios no tiene nada que auditar como modificado.
+    await registrar_update_auditoria(
+        modelo="companies",
+        registro_id=str(company.id),
+        campos_modificados=sorted(update_data.keys()),
+        usuario_id=str(usuario.id),
+        valores_anteriores=valores_antes,
+        valores_nuevos=update_data,
+        nombre=company.name,
+        rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        db=db,
+    )
     return company
 
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_company(
     company_id: UUID,
+    request: Request,
+    usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> None:
     """Delete a company."""
@@ -127,3 +165,15 @@ async def delete_company(
             detail="La empresa tiene datos asociados (comprobantes, productos, "
                    "movimientos). Elimínelos primero o dé de baja la empresa.",
         )
+    # Solo si el borrado se confirmo: un 409 no borro nada y no hay nada que
+    # auditar como borrado.
+    await registrar_delete_auditoria(
+        modelo="companies",
+        registro_id=str(company_id),
+        usuario_id=str(usuario.id),
+        nombre=company.name,
+        detalles={"nombre": company.name, "tax_id": company.tax_id},
+        rol=usuario.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        db=db,
+    )

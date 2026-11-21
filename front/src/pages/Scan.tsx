@@ -8,7 +8,7 @@ import type {
 } from '../types/scan';
 import { Button, Card, Badge, Loading, EmptyState, Select, Modal } from '../components/ui';
 import { SCAN_STATUS_META, motorLabel, accionLabel, COLOR_ESTADO, hayDiscrepanciaDeFormato } from '../utils/scan';
-import { VerDocumento } from '../components/TicketDocumento';
+import { VerArchivoEscaneado, VerDocumento } from '../components/TicketDocumento';
 import { PanelProgreso } from '../components/ScanProgreso';
 import { CasillaArchivar } from '../components/CasillaArchivar';
 import { EstadoDeIa } from '../components/EstadoDeIa';
@@ -1178,26 +1178,17 @@ function DetalleArchivo({ detalle, ticket, onReprocesar, onCerrar }: {
       )}
 
       {/*
-        El comprobante se pide aqui y no en la tabla por una razon concreta:
-        `VerDocumento` decide si hay documento mirando `ticket.tiene_documento`,
-        y `scan_files` solo tiene el `ticket_id`. Pintar el boton a ciegas y que
-        el propio boton diga "no hay documento" seria peor que no offercerlo: el
-        escaner SI puede tener archivos sin ticket, y no todos los tickets
-        tienen el papel pegado.
+        El original, al lado de los datos leidos, haya ticket o no. Con
+        ticket se muestra el documento guardado (`VerDocumento`); sin ticket,
+        el archivo escaneado de la carpeta (`VerArchivoEscaneado`), que es el
+        mismo papel. Antes, un archivo "omitido" no mostraba nada y el aviso
+        mandaba a la pantalla de Tickets, donde no hay ticket que ver.
       */}
-      {ticket
-        ? (
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-600">Comprobante original:</span>
-            <VerDocumento ticket={ticket} />
-          </div>
-        )
-        : detalle.ticket_id && (
-          <p className="text-sm text-gray-500">
-            Ticket <span className="font-mono">{detalle.ticket_id.slice(0, 8)}</span> · el
-            comprobante original se ve en la pantalla de Tickets.
-          </p>
-        )}
+      {ticket ? (
+        <VerDocumento ticket={ticket} abiertoPorDefecto />
+      ) : (
+        <VerArchivoEscaneado fileId={detalle.id} nombre={detalle.relative_path} />
+      )}
 
       <div>
         <p className="font-medium text-gray-700 mb-1 text-sm">Historial</p>

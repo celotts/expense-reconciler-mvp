@@ -23,6 +23,48 @@ from app.models import Auditoria
 logger = logging.getLogger(__name__)
 
 
+def _descripcion_auto(accion: str, modulo: str, detalles: Dict[str, Any]) -> str:
+    """Frase con los datos clave del registro, para que Auditoría sola baste.
+
+    Sin contraseñas ni tokens: solo identificadores del registro afectado
+    (proveedor, total, fecha, RFC, nombre, email, empresa, folio si lo hay)
+    y, en actualizaciones, qué campo cambió de qué valor a qué valor.
+    """
+    nombre = detalles.get('nombre') or detalles.get('provider_name') or detalles.get('empresa') or detalles.get('email') or detalles.get('identificacion')
+    total = detalles.get('total_amount') or detalles.get('total') or detalles.get('monto') or detalles.get('importe')
+    fecha = detalles.get('expense_date') or detalles.get('fecha')
+    rfc = detalles.get('provider_tax_id') or detalles.get('rfc') or detalles.get('tax_id')
+    folio = detalles.get('folio') or detalles.get('numero') or detalles.get('invoice_number')
+    partes = []
+    if nombre:
+        partes.append(str(nombre))
+    if total is not None:
+        partes.append(f"${total}")
+    if fecha:
+        partes.append(f"fecha {fecha}")
+    if rfc:
+        partes.append(f"RFC {rfc}")
+    if folio:
+        partes.append(f"folio {folio}")
+    if detalles.get('email') and detalles.get('email') != nombre:
+        partes.append(str(detalles['email']))
+    cambios = detalles.get('cambios')
+    if isinstance(cambios, list) and cambios:
+        desc_cambios = '; '.join(
+            f"{c.get('campo')}: {c.get('antes')} → {c.get('despues')}" for c in cambios if isinstance(c, dict)
+        )
+        quien = f" de {nombre}" if nombre else ''
+        return f"Actualizó {modulo}{quien}: {desc_cambios}"
+    verbo = {'crear_ticket': 'Creó el ticket', 'crear_empresa': 'Creó la empresa', 'crear_usuario': 'Creó el usuario', 'crear': 'Creó', 'delete': 'Eliminó', 'update': 'Actualizó', 'actualizar_ticket': 'Actualizó el ticket', 'actualizar_empresa': 'Actualizó la empresa', 'actualizar_usuario': 'Actualizó el usuario', 'revisar_ticket': 'Revisó el ticket', 'veredicto': 'Veredicto del ticket', 'clasificar': 'Clasificó tickets', 'digitalizar': 'Digitalizó el ticket', 'limpiar_base': 'Limpió la base de escaneos', 'cambiar_contrasena': 'Cambió la contraseña', 'cambiar_perfil': 'Cambió el perfil'}.get(accion, accion.replace('_', ' '))
+    if accion.startswith('crear_'):
+        verbo = f"Creó {accion[6:].replace('_', ' ')}"
+    if accion.startswith('actualizar_'):
+        verbo = f"Actualizó {accion[11:].replace('_', ' ')}"
+    if accion.startswith('eliminar_'):
+        verbo = f"Eliminó {accion[9:].replace('_', ' ')}"
+    return f"{verbo} {', '.join(partes)}" if partes else verbo
+
+
 async def registrar_auditoria(
     accion: str,
     modulo: str,
@@ -31,6 +73,7 @@ async def registrar_auditoria(
     detalles: Optional[Dict[str, Any]] = None,
     rol: Optional[str] = None,
     ip: Optional[str] = None,
+    resultado: str = 'exito',
     *,
     db: Optional[AsyncSession] = None,
 ) -> None:
@@ -68,6 +111,11 @@ async def registrar_auditoria(
     entre las dos cosas es la que importa: *no tumbar la app* es una decisión;
     *no enterarse de que el rastro se perdió* es un fallo silencioso.
 
+    Eso vale cuando la función abre su propia sesión (`db is None`,
+    best-effort). Cuando el llamador pasa su sesión (`db` explícita), la
+    auditoría es parte de su transacción y el error SÍ se propaga: tragarlo
+    ahí dejaría una operación confirmada sin su rastro.
+
     ## POR QUÉ `db` ES OPCIONAL Y POR QUÉ EXISTE
 
     La sesión se puede inyectar para los tests. Sin ella, la función abre su
@@ -84,6 +132,12 @@ async def registrar_auditoria(
     Con `db` como parámetro keyword-only, el llamador de producción no lo ve
     (es después del `*`), y el test lo usa sin tocar la firma pública.
     """
+    # Si el llamador no puso frase, se genera con los datos clave del registro
+    # (proveedor, total, fecha, RFC, nombre, email, folio). Así los eventos
+    # viejos que ya traen esos datos también se describen solos.
+    if detalles is not None and 'descripcion' not in detalles:
+        detalles = {**detalles, 'descripcion': _descripcion_auto(accion, modulo, detalles)}
+
     # `usuario_id` y `registro_afectado` llegan como string desde los callers
     # (`str(usuario.id)`, `str(ticket.id)`), pero la columna es
     # `UUID(as_uuid=True)`, que espera un objeto UUID. Sin esta conversión,
@@ -106,6 +160,10 @@ async def registrar_auditoria(
     if registro_afectado is not None:
         rid = UUID(registro_afectado) if isinstance(registro_afectado, str) else registro_afectado
 
+    # db explicita: misma transaccion que el llamador. Si la escritura
+    # falla, la excepcion SE PROPAGA (no se traga): el llamador decide si
+    # su operacion se revierte; una auditoria perdida en silencio dentro
+    # de una transaccion que si se confirma mentiria sobre lo ocurrido.
     if db is not None:
         entrada = Auditoria(
             usuario_id=uid,
@@ -115,6 +173,7 @@ async def registrar_auditoria(
             registro_afectado=rid,
             detalles=detalle_a_json(detalles),
             ip_inet=ip,
+            resultado=resultado,
             fecha=datetime.now(timezone.utc),
         )
         db.add(entrada)
@@ -131,6 +190,7 @@ async def registrar_auditoria(
                 registro_afectado=rid,
                 detalles=detalle_a_json(detalles),
                 ip_inet=ip,
+                resultado=resultado,
                 fecha=datetime.now(timezone.utc),
             )
 
@@ -157,7 +217,7 @@ async def registrar_login_auditoria(
 ) -> None:
     await registrar_auditoria(
         accion='login', modulo='auth', usuario_id=usuario_id,
-        detalles={'ip': ip}, rol=rol, ip=ip, db=db,
+        detalles={'ip': ip, 'descripcion': f"Inicio de sesión correcto desde {ip}" if ip else 'Inicio de sesión correcto'}, rol=rol, ip=ip, db=db,
     )
 
 
@@ -167,7 +227,7 @@ async def registrar_logout_auditoria(
 ) -> None:
     await registrar_auditoria(
         accion='logout', modulo='auth', usuario_id=usuario_id,
-        detalles={'ip': ip}, rol=rol, ip=ip, db=db,
+        detalles={'ip': ip, 'descripcion': f"Cierre de sesión desde {ip}" if ip else 'Cierre de sesión'}, rol=rol, ip=ip, db=db,
     )
 
 
@@ -178,23 +238,24 @@ async def registrar_intento_fallido_auditoria(
     rol: str,
     ip: Optional[str] = None,
     motivo: Optional[str] = None,
+    usuario_id: Optional[str] = None,
     *,
     db: Optional[AsyncSession] = None,
 ) -> None:
-    """Un intento que NO entro. Se registra sin `usuario_id` a proposito.
+    """Un intento que NO entro.
 
-    El identificador que se guardo es el que **se escribio** (el correo del
-    intento), no el `id` de una cuenta: un login fallido no tiene cuenta
-    asociada —por eso fallo—, y rellenar la columna con algo inventado seria
-    afirmar que se sabe quien es. El correo va en `detalles`, que es donde se
-    puede buscar.
+    `usuario_id` solo se guarda cuando el llamador pasa el `id` de una cuenta
+    que existe (p. ej. contrasena incorrecta con usuario conocido): nunca se
+    inventa a partir de lo que se escribio. El identificador que se escribio
+    (el correo del intento) va en `detalles`, que es donde se puede buscar, y
+    la contrasena no se guarda nunca, ni en `detalles` ni en ninguna columna.
 
     Y `rol` tampoco se pone: no se sabe el perfil de alguien que no pudo entrar.
     """
     await registrar_auditoria(
-        accion=f'{accion}_fallido', modulo=modulo, usuario_id=None,
-        detalles={'motivo': motivo, 'ip': ip, 'identificacion': usuario_identificacion},
-        rol=None, ip=ip, db=db,
+        accion=f'{accion}_fallido', modulo=modulo, usuario_id=usuario_id,
+        detalles={'motivo': motivo, 'ip': ip, 'identificacion': usuario_identificacion, 'descripcion': f"Inicio de sesión fallido con {usuario_identificacion}" + (f": {motivo}" if motivo else '') + (f" desde {ip}" if ip else '')},
+        rol=None, ip=ip, resultado='fallo', db=db,
     )
 
 
@@ -222,14 +283,29 @@ async def registrar_update_auditoria(
     campos_modificados: list,
     usuario_id: str,
     rol: str,
+    ip: Optional[str] = None,
+    valores_anteriores: Optional[Dict[str, Any]] = None,
+    valores_nuevos: Optional[Dict[str, Any]] = None,
+    nombre: Optional[str] = None,
     *,
     db: Optional[AsyncSession] = None,
 ) -> None:
+    # Qué campo cambió y de qué valor a qué valor: sin esto el rastro solo
+    # dice "se actualizó algo" y ante una eventualidad no se sabe qué.
+    cambios = []
+    for campo in campos_modificados:
+        antes = (valores_anteriores or {}).get(campo)
+        despues = (valores_nuevos or {}).get(campo)
+        if antes != despues:
+            cambios.append({'campo': campo, 'antes': str(antes) if antes is not None else '—', 'despues': str(despues) if despues is not None else '—'})
+    detalles: Dict[str, Any] = {'campos_modificados': campos_modificados, 'cambios': cambios}
+    if nombre:
+        detalles['nombre'] = nombre
     await registrar_auditoria(
         accion='update', modulo=modelo, usuario_id=usuario_id,
         registro_afectado=registro_id,
-        detalles={'campos_modificados': campos_modificados},
-        rol=rol, db=db,
+        detalles=detalles,
+        rol=rol, ip=ip, db=db,
     )
 
 
@@ -238,12 +314,21 @@ async def registrar_delete_auditoria(
     registro_id: str,
     usuario_id: str,
     rol: str,
+    ip: Optional[str] = None,
+    nombre: Optional[str] = None,
+    detalles: Optional[Dict[str, Any]] = None,
     *,
     db: Optional[AsyncSession] = None,
 ) -> None:
+    # El registro ya no existe después del borrado: sus datos clave (nombre,
+    # proveedor, total, fecha, email) se guardan aquí, antes de borrar.
+    d: Dict[str, Any] = dict(detalles or {})
+    if nombre:
+        d['nombre'] = nombre
     await registrar_auditoria(
         accion='delete', modulo=modelo, usuario_id=usuario_id,
-        registro_afectado=registro_id, rol=rol, db=db,
+        registro_afectado=registro_id,
+        detalles=d, rol=rol, ip=ip, db=db,
     )
 
 
@@ -257,7 +342,8 @@ async def registrar_error_sistema_auditoria(
 ) -> None:
     await registrar_auditoria(
         accion='error_sistema', modulo=modulo, usuario_id=usuario_id,
-        detalles={'error': error, 'ip': ip}, rol=None, ip=ip, db=db,
+        detalles={'error': error, 'ip': ip}, rol=None, ip=ip,
+        resultado='fallo', db=db,
     )
 
 
