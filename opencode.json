@@ -1,47 +1,44 @@
 {
-  "$schema": "https://opencode.ai/config.json",
-  "model": "ollama/qwen2.5-coder:7b-instruct",
-  "agents": {
+  "model": "ollama/qwen2.5-coder-agent:7b",
+  "small_model": "ollama/qwen2.5-coder-agent:7b",
+  "agent": {
     "build": {
-      "model": "ollama/qwen2.5-coder:7b-instruct",
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "allow" },
-        { "action": "shell", "resource": "*", "effect": "ask" }
-      ]
+      "model": "ollama/qwen2.5-coder-agent:7b",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
     },
     "plan": {
-      "model": "ollama/qwen2.5-coder:14b"
+      "model": "ollama/qwen2.5-coder-agent:14b"
     },
     "title": {
-      "model": "ollama/qwen2.5-coder:7b-instruct"
+      "model": "ollama/qwen2.5-coder-agent:7b"
     }
   },
-  "providers": {
+  "provider": {
     "ollama": {
-      "settings": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
         "baseURL": "http://localhost:11434/v1"
       },
       "models": {
-        "qwen2.5-coder:7b-instruct": {
-          "name": "Qwen 2.5 Coder 7B Instruct",
-          "capabilities": { "tools": true },
-          "limit": { "context": 16384, "output": 4096 }
+        "qwen2.5-coder-agent:7b": {
+          "name": "Qwen2.5 Coder 7B Agent (32k ctx)",
+          "tools": true,
+          "limit": { "context": 32768, "output": 8192 }
         },
-        "qwen2.5-coder:14b": {
-          "name": "Qwen 2.5 Coder 14B",
-          "capabilities": { "tools": true },
+        "qwen2.5-coder-agent:14b": {
+          "name": "Qwen2.5 Coder 14B Agent (16k ctx)",
+          "tools": true,
           "limit": { "context": 16384, "output": 4096 }
         }
       }
     }
   },
   "mcp": {
-    "servers": {
-      "playwright": {
-        "type": "local",
-        "command": ["npx", "-y", "@playwright/mcp@latest"]
-      }
-    }
+    "servers": {}
   }
 }
