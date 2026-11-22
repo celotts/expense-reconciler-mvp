@@ -149,6 +149,7 @@ class ResultadoLectura:
     ticket_leido_en: datetime | None = None
     #: `True` cuando la lectura de ahora produciria el mismo estado que el guardado.
     coincide_con_guardado: bool | None = None
+    diagnostico_agente: dict | None = None
 
     @property
     def guardado(self) -> bool:
@@ -168,6 +169,7 @@ async def diagnosticar_lectura(
     nombre: str | None = None,
     ticket_id: UUID | None = None,
     ocr_reader: OcrDiagnosticoFn | None = None,
+    incluir_agente: bool = False,
 ) -> ResultadoLectura:
     """Lee un comprobante y explica como se leyo. No escribe nada.
 
@@ -257,6 +259,11 @@ async def diagnosticar_lectura(
 
     if ticket_id is not None:
         await _contrastar(db, salida, extraccion, ticket_id)
+
+    if incluir_agente:
+        from app.agent.bridge import diagnosticar_resultado_lectura
+
+        salida.diagnostico_agente = diagnosticar_resultado_lectura(salida).model_dump()
 
     return salida
 
