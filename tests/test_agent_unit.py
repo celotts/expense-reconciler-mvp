@@ -1,3 +1,4 @@
+from pathlib import Path
 from decimal import Decimal
 import unittest
 from unittest.mock import patch
@@ -141,3 +142,119 @@ class TestAgentBridge(unittest.TestCase):
         self.assertEqual(diag.estado, "ok")
         self.assertEqual(diag.pasos_ejecutados, 2)
         self.assertIn("2.00", diag.hallazgos[0])
+
+    def test_diagnosticar_lectura_incluir_agente(self) -> None:
+        import asyncio
+        import importlib.util
+        import sys
+        import types
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from app.agent.schemas import AgentDiagnosis
+
+        if "app.services" not in sys.modules:
+            pkg = types.ModuleType("app.services")
+            pkg.__path__ = [str(Path("app/services").resolve())]
+            sys.modules["app.services"] = pkg
+
+        if "sqlalchemy" not in sys.modules:
+            sa = types.ModuleType("sqlalchemy")
+            sa.select = lambda *a, **kw: None
+            sa.__getattr__ = lambda name: type(name, (), {"__init__": lambda self, *a, **kw: None})
+            sa_ext = types.ModuleType("sqlalchemy.ext")
+            sa_async = types.ModuleType("sqlalchemy.ext.asyncio")
+            sa_async.AsyncSession = object
+            sa_async.__getattr__ = lambda name: type(name, (), {"__init__": lambda self, *a, **kw: None})
+            sys.modules.update(
+                {"sqlalchemy": sa, "sqlalchemy.ext": sa_ext, "sqlalchemy.ext.asyncio": sa_async}
+            )
+
+        if "pydantic_settings" not in sys.modules:
+            ps = types.ModuleType("pydantic_settings")
+            ps.BaseSettings = object
+            ps.SettingsConfigDict = lambda **kw: kw
+            sys.modules["pydantic_settings"] = ps
+
+        if "app.models" not in sys.modules:
+            mpkg = types.ModuleType("app.models")
+            mpkg.__path__ = []
+            tmod = types.ModuleType("app.models.ticket")
+            tmod.TicketModel = object
+            sys.modules.update({"app.models": mpkg, "app.models.ticket": tmod})
+
+        if "app.services.parser_service" not in sys.modules:
+            psvc = types.ModuleType("app.services.parser_service")
+            psvc.__getattr__ = lambda name: (lambda *a, **kw: None)
+            sys.modules["app.services.parser_service"] = psvc
+
+        spec = importlib.util.spec_from_file_location(
+            "app.services.lectura_diagnostico",
+            Path("app/services/lectura_diagnostico.py").resolve(),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["app.services.lectura_diagnostico"] = mod
+        spec.loader.exec_module(mod)
+
+        diag_falso = AgentDiagnosis(
+            estado="ok",
+            diagnostico="Diferencia de 2.00 entre total calculado y reportado.",
+            hallazgos=["Paso 1: verificar_consistencia_aritmetica -> cuadra=false"],
+            pasos_ejecutados=2,
+        )
+        extraccion = SimpleNamespace(
+            provider_name="El General",
+            subtotal="100.00",
+            impuestos="16.00",
+            total="118.00",
+        )
+
+        async def _run() -> tuple:
+            with (
+                patch.object(
+                    mod,
+                    "_explorar_texto",
+                    side_effect=lambda t, s, *, exigir_items: s.pasos.append(
+                        mod.PasoLectura(
+                            escalon="extraccion",
+                            motor="stub",
+                            dio={"len": len(t)},
+                            aceptado=True,
+                            motivo=None,
+                        )
+                    ),
+                ),
+                patch.object(mod, "capture_ticket", new=AsyncMock(return_value=extraccion)),
+                patch.object(
+                    mod,
+                    "_anotar_veredicto",
+                    side_effect=lambda s, e: setattr(s, "veredicto_status", "observado"),
+                ),
+                patch(
+                    "app.agent.bridge.diagnosticar_resultado_lectura",
+                    return_value=diag_falso,
+                ) as mock_bridge,
+            ):
+                sin_ag = await mod.diagnosticar_lectura(
+                    SimpleNamespace(),
+                    b"SUBTOTAL 100.00 IVA 16.00 TOTAL 118.00",
+                    declarado="txt",
+                    nombre="ticket.txt",
+                    incluir_agente=False,
+                )
+                con_ag = await mod.diagnosticar_lectura(
+                    SimpleNamespace(),
+                    b"SUBTOTAL 100.00 IVA 16.00 TOTAL 118.00",
+                    declarado="txt",
+                    nombre="ticket.txt",
+                    incluir_agente=True,
+                )
+            return sin_ag, con_ag, mock_bridge.call_count
+
+        sin_agente, con_agente, calls = asyncio.run(_run())
+        self.assertIsNone(sin_agente.diagnostico_agente)
+        self.assertEqual(calls, 1)
+        self.assertIsInstance(con_agente.diagnostico_agente, dict)
+        self.assertEqual(con_agente.diagnostico_agente["estado"], "ok")
+        self.assertEqual(con_agente.diagnostico_agente["pasos_ejecutados"], 2)
+
