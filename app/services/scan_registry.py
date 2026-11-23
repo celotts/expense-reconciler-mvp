@@ -132,6 +132,12 @@ class Corrida:
     # nombre raro.
     con_ticket: int = 0
     con_error: int = 0
+    # Los duplicados son una pregunta DISTINTA a `con_ticket` y a `con_error`:
+    # no crearon gasto, no fallaron y no se volvieron a leer. Van aparte para que
+    # la cuenta cuadre en pantalla: archivos vistos = con ticket + duplicados +
+    # error + no soportados + vistos. Metidos en `con_ticket`, un escaneo con dos
+    # copias del mismo papel pareciera haber creado dos gastos.
+    duplicados: int = 0
     # El archivo que se esta leyendo AHORA. Es lo que mas importa en la pantalla:
     # un contador que sube solo dice "algo pasa"; el nombre del archivo dice si
     # se trabo en uno concreto.
@@ -195,6 +201,7 @@ class Corrida:
             "archivos_vistos": self.archivos_vistos,
             "con_ticket": self.con_ticket,
             "con_error": self.con_error,
+            "duplicados": self.duplicados,
             "actual": self.actual,
             "procesados": _json_safe(self.procesados),
             "segundos": round(self.segundos, 1),
@@ -307,6 +314,9 @@ def registrar_procesado(
     accion: str | None = None,
     confiable: bool = False,
     es_duplicado: bool = False,
+    # El motivo del resultado, en texto. Para un duplicado lleva la ruta del
+    # archivo original: sin ella el panel dice "hay una copia" pero no cual.
+    detalle: str | None = None,
     # --- El encabezado del ticket ---------------------------------------
     #
     # Todos opcionales y todos leidos de la FILA, no de la lectura cruda: si el
@@ -357,6 +367,7 @@ def registrar_procesado(
             "accion": accion,
             "confiable": bool(confiable),
             "es_duplicado": bool(es_duplicado),
+            "detalle": detalle,
             "proveedor": proveedor,
             "rfc": rfc,
             "fecha": fecha,
@@ -368,6 +379,12 @@ def registrar_procesado(
         })
         if len(corrida.procesados) > MAX_PROCESADOS:
             del corrida.procesados[:-MAX_PROCESADOS]
+        # El contador va con la ESCRITURA del feed, no con las filas que quedaron
+        # tras el recorte de `MAX_PROCESADOS`: cuenta duplicados de la corrida,
+        # no filas visibles. Las dos cosas se desincronizarian si se leyeran del
+        # propio `procesados` despues de podar.
+        if es_duplicado:
+            corrida.duplicados += 1
 
 
 def marcar_error(corrida: Corrida | None) -> None:

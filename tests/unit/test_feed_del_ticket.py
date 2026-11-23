@@ -50,6 +50,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.enums import ScanStatus
 from app.services import scan_registry
 
 
@@ -133,6 +134,33 @@ class TestElFeedGuardaElEncabezado:
         """
         entrada = self._registrar(lineas=None)
         assert entrada["lineas"] is None
+
+    def test_un_omitido_no_es_duplicado(self):
+        """Un OMITIDO por falta de empresa NO es una copia de otro archivo.
+
+        Los dos comparten `accion="OMITIDO"` en la respuesta, y por eso el
+        feed no puede derivar el hecho de la accion: un contador que mezclara
+        los dos haria creer que se descartaron gastos que nunca se leyeron.
+        """
+        entrada = self._registrar(accion="OMITIDO", es_duplicado=False)
+        assert entrada["es_duplicado"] is False
+        assert entrada["detalle"] is None
+
+    def test_el_duplicado_se_cuenta_y_lleva_el_destino(self):
+        """El contador va con la escritura del feed y el texto nombra el original."""
+        corrida = scan_registry.abrir_corrida("/tickets", "tester", False)
+        scan_registry.registrar_procesado(
+            corrida,
+            relative_path="IMG_4253_copia.HEIC",
+            accion="OMITIDO",
+            es_duplicado=True,
+            detalle="mismos bytes que IMG_4253 2.HEIC; se conserva su ticket",
+        )
+        assert corrida.duplicados == 1
+        assert corrida.a_dict()["duplicados"] == 1
+        assert corrida.procesados[0]["detalle"] == (
+            "mismos bytes que IMG_4253 2.HEIC; se conserva su ticket"
+        )
 
     def test_los_campos_nuevos_son_opcionales(self):
         """La firma no se rompe para quien no los pasa.
@@ -267,7 +295,8 @@ class TestElEscanerLosPasa:
         return _Ticket()
 
     def _correr(self, ticket, accion="CREADO", origen=None,
-                 modelo_ia=None, proveedor_ia=None):
+                 modelo_ia=None, proveedor_ia=None,
+                  status=ScanStatus.PENDIENTE, detalle_texto=None):
         """Ejecuta `_registrar_en_el_feed` con la sesion y el detalle falsos."""
         import uuid
         from types import SimpleNamespace
@@ -288,6 +317,8 @@ class TestElEscanerLosPasa:
             # por OCR o por reglas: no hubo modelo que responder.
             modelo_ia=modelo_ia,
             proveedor_ia=proveedor_ia,
+            status=status,
+            detalle=detalle_texto,
         )
 
         class _Sesion:
@@ -313,6 +344,24 @@ class TestElEscanerLosPasa:
         assert entrada["subtotal"] == Decimal("97.56")
         assert entrada["iva"] == Decimal("0.00")
         assert entrada["validation_errors"] == "date_missing"
+
+    def test_el_duplicado_se_distinguye_del_omitido(self, ticket_falso):
+        """El feed no puede derivar el hecho de la accion: las dos salen OMITIDO.
+
+        `status` es el dato que el escanero guardo en `scan_files`; `accion` es
+        como se reporta al cliente. Si se usara la segunda, un OMITIDO por falta
+        de empresa se pintaria como duplicado y la copia real como omitido.
+        """
+        omitido = self._correr(ticket_falso, accion="OMITIDO")
+        copia = self._correr(
+            ticket_falso,
+            accion="OMITIDO",
+            status=ScanStatus.DUPLICADO,
+            detalle_texto="mismos bytes que IMG_original.HEIC; se conserva su ticket",
+        )
+        assert omitido["es_duplicado"] is False
+        assert copia["es_duplicado"] is True
+        assert "IMG_original.HEIC" in copia["detalle"]
 
     def test_cuenta_las_lineas_solo_si_hay_lista(self, ticket_falso):
         """`items` a NULL es la ruta OCR, y `None` no es `0`."""
@@ -372,6 +421,8 @@ class TestElEscanerLosPasa:
             origen=None,
             modelo_ia=None,
             proveedor_ia=None,
+            status=ScanStatus.ERROR,
+            detalle="no se pudo leer",
         )
 
         class _Sesion:

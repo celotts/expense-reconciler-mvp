@@ -181,6 +181,14 @@ function fechaLegible(iso: string | null): string | null {
  * pendiente de hacer.
  */
 function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
+  // El duplicado se decide ANTES que `accion`: el backend lo reporta como
+  // "OMITIDO" (es el contrato de la respuesta) y un OMITIDO por falta de
+  // empresa NO es un duplicado. Mirar solo `accion` pintaba las copias como
+  // "omitido", que es la etiqueta de otra cosa y esconde que no se creo gasto.
+  if (p.es_duplicado || p.accion === 'DUPLICADO') {
+    return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'duplicado' };
+  }
+
   // ## POR QUE `ACCION` SE MIRA ANTES QUE EL ESTADO DE EXTRACCION
   //
   // MEDIDO: escaneando sin empresa, el feed llegaba VACIO (el backend solo
@@ -202,8 +210,6 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
       return { tono: 'bg-red-100 text-red-800', etiqueta: 'error' };
     case 'OMITIDO':
       return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'omitido' };
-    case 'DUPLICADO':
-      return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'duplicado' };
     case 'NO_SOPORTADO':
       return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'no soportado' };
     case 'CREADO':
@@ -225,7 +231,6 @@ function estadoVisual(p: ScanProcesado): { tono: string; etiqueta: string } {
     return { tono: 'bg-blue-100 text-blue-800', etiqueta: 'leido, sin ticket' };
   }
 
-  if (p.es_duplicado) return { tono: 'bg-gray-100 text-gray-500', etiqueta: 'duplicado' };
   if (p.extraction_status === 'AUTO_APROBADO') return { tono: 'bg-green-100 text-green-800', etiqueta: 'auto-aprobado' };
   if (p.extraction_status === 'APROBADO') return { tono: 'bg-green-100 text-green-800', etiqueta: 'aprobado' };
   if (p.extraction_status === 'REQUIERE_REVISION') return { tono: 'bg-amber-100 text-amber-800', etiqueta: 'revisar' };
@@ -306,6 +311,16 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
                 <span className="font-semibold">{corrida.con_error}</span> con error
               </span>
             )}
+            {/* Va aparte de "con ticket": una copia no creo gasto, y contarla
+                ahi haria que la bandeja pareciera haber creado dos tickets. */}
+            {corrida.duplicados > 0 && (
+              <span
+                className="text-gray-600"
+                title="Copias de archivos ya leidos: no crean ticket ni suman gasto"
+              >
+                <span className="font-semibold">{corrida.duplicados}</span> duplicados
+              </span>
+            )}
             <span className="tabular-nums">{segundosLegibles(corrida.segundos)}</span>
           </div>
         </div>
@@ -376,7 +391,11 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
                       type="button"
                       onClick={() => abrirTicket(p.ticket_id!)}
                       className="shrink-0 text-blue-600 hover:text-blue-800 p-1"
-                      title="Ver comprobante original"
+                      title={
+                        p.es_duplicado
+                          ? 'Ver el ticket original (esta fila es una copia)'
+                          : 'Ver comprobante original'
+                      }
                     >
                       {cargandoTicket ? (
                         <span className="animate-spin inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
@@ -445,6 +464,18 @@ export function PanelProgreso({ corrida, totalPosible }: { corrida: ScanCorrida;
                   <p className="mt-1 text-[11px] text-gray-500 italic">
                     leído correctamente, pero no se creó ticket (probablemente sin
                     empresa; usa «Escanear y crear tickets» con una empresa elegida)
+                  </p>
+                )}
+
+                {/* El destino del duplicado. Los importes de esta fila son del
+                    TICKET ORIGINAL —no de una lectura nueva—, asi que sin este
+                    texto el operador podria creer que la copia suma gasto. */}
+                {p.es_duplicado && (
+                  <p className="mt-1 text-[11px] text-gray-600">
+                    {p.detalle ?? 'mismos bytes que otro archivo ya procesado'} —{' '}
+                    <span className="font-medium text-gray-700">
+                      no crea ticket ni suma gasto
+                    </span>
                   </p>
                 )}
 

@@ -1865,6 +1865,20 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   con el feed real y mira **el texto que sale**, no que compile: `tsc` pasa con un
   `undefined` en pantalla. Va en `npm run verify` — ojo, ese comando **hoy falla por
   otra cosa**, ver `docs/known-issues.md` §33.
+  **Un duplicado no es un `OMITIDO` cualquiera, aunque se reporte con
+  `accion="OMITIDO"`.** El hecho está en `scan_files.status == DUPLICADO`; un
+  OMITIDO por falta de empresa también sale `OMITIDO` y no es una copia. Derivar
+  `es_duplicado` de la acción pintaba las copias como "omitido" y los omitidos
+  reales como copias. El feed lleva ahora `detalle` con la **ruta del archivo
+  original** y `Corrida.duplicados` cuenta las copias aparte de `con_ticket` y
+  `con_error`: una copia no crea gasto, no falló y no se volvió a leer. El contador
+  se incrementa al escribir el feed, antes del recorte de `MAX_PROCESADOS`, para
+  que cuente duplicados de la corrida y no filas visibles. El importe de esa fila
+  sigue siendo del **ticket original**, no de una lectura nueva, por eso va con
+  "no crea ticket ni suma gasto". **El guardia de archivado mira `status`, no
+  `accion`**: con `accion="OMITIDO"` la copia entraba en el retiro de la entrada y
+  el motivo de bandeja sobrescribía la ruta del original. Ver
+  `docs/known-issues.md` §31.bis.
 
 - **El código del motivo del gate se muestra en inglés, a propósito.**
   `total_not_positive`, `subtotal_plus_tax_mismatch`: son los mismos strings que

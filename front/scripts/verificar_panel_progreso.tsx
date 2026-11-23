@@ -21,6 +21,7 @@ const procesados = [
     relative_path: 'AA4D0E8F-EC9C-4159-9A9F-C4C84C22303E 2.JPG',
     ticket_id: '38a1c061', monto: '97.56', extraction_status: 'PENDIENTE',
     motor: 'ocr', accion: 'CREADO', confiable: false, es_duplicado: false,
+    detalle: null,
     proveedor: 'AAA AI', rfc: null, fecha: '2026-10-08', subtotal: null,
     iva: '0.00', ieps: null, lineas: null, validation_errors: 'date_missing',
   },
@@ -28,6 +29,7 @@ const procesados = [
     relative_path: 'FC3CB9F8-5AB1-4546-B9A9-016C69A158C5 2.JPG',
     ticket_id: 'd03f853c', monto: '234.00', extraction_status: 'PENDIENTE',
     motor: 'ocr', accion: 'CREADO', confiable: false, es_duplicado: false,
+    detalle: null,
     proveedor: 'Pog ae — TAPA', rfc: null, fecha: '2026-10-08',
     subtotal: '217.27', iva: '0.00', ieps: null, lineas: null,
     validation_errors: 'subtotal_plus_tax_mismatch(leido=234.00,esperado=217.27); date_missing',
@@ -36,6 +38,7 @@ const procesados = [
     relative_path: 'IMG_4222.jpeg',
     ticket_id: 'c9d3b6c1', monto: '0.00', extraction_status: 'PENDIENTE',
     motor: 'ocr', accion: 'CREADO', confiable: false, es_duplicado: false,
+    detalle: null,
     proveedor: 'A ~ NERCASTAR |', rfc: null, fecha: '2026-10-08', subtotal: null,
     iva: '0.00', ieps: null, lineas: null,
     validation_errors: 'total_not_positive; date_missing',
@@ -44,17 +47,29 @@ const procesados = [
     relative_path: 'IMG_4253 2.HEIC',
     ticket_id: '963d90e7', monto: '119.97', extraction_status: 'REQUIERE_REVISION',
     motor: 'ocr', accion: 'CREADO', confiable: false, es_duplicado: false,
+    detalle: null,
     proveedor: 'y UPO COMERCIAL DSW S.A. DE L.”.', rfc: 'GCD170101GS6',
     fecha: '2026-01-10', subtotal: '279.33', iva: '0.00', ieps: null,
     lineas: 28,
     validation_errors: 'subtotal_plus_tax_mismatch(leido=119.97,esperado=279.33)',
+  },
+  {
+    // El backend reporta la copia como OMITIDO: lo que la distingue es
+    // `es_duplicado`, no la accion. Los importes son del ticket original.
+    relative_path: 'IMG_4253_copia.HEIC',
+    ticket_id: '963d90e7', monto: '119.97', extraction_status: 'REQUIERE_REVISION',
+    motor: null, accion: 'OMITIDO', confiable: false, es_duplicado: true,
+    detalle: 'mismos bytes que IMG_4253 2.HEIC; se conserva su ticket y esta copia no se vuelve a leer',
+    proveedor: 'y UPO COMERCIAL DSW S.A. DE L.”.', rfc: 'GCD170101GS6',
+    fecha: '2026-01-10', subtotal: '279.33', iva: '0.00', ieps: null,
+    lineas: 28, validation_errors: null,
   },
 ];
 
 const corrida: ScanCorrida = {
   id: 'c1', carpeta: '/tickets', actor: 'carlos', iniciada_at: '2026-10-08T20:00:00Z',
   terminada_at: '2026-10-08T20:03:00Z', terminada: true, simulado: false,
-  archivos_vistos: 4, con_ticket: 4, con_error: 0, actual: null,
+  archivos_vistos: 5, con_ticket: 4, con_error: 0, duplicados: 1, actual: null,
   procesados, segundos: 180,
   resumen: {
     importe_total_leido: '451.53', importe_total_confiable: '0.00',
@@ -105,6 +120,24 @@ comprobar(!html.includes('null'), 'ningun null impreso');
 const i4253 = html.indexOf('IMG_4253');
 const i4222 = html.indexOf('IMG_4222');
 comprobar(i4253 > 0 && i4222 > 0 && i4253 < i4222, 'lo ultimo leido va arriba');
+
+// 6. DUPLICADOS: etiqueta propia, destino y cero gasto nuevo.
+//    El backend los reporta como OMITIDO, asi que mirar solo la accion los
+//    pintaba como "omitido" y no como lo que son.
+comprobar(html.includes('>duplicado<'), 'la copia se etiqueta duplicado, no omitido');
+comprobar(
+  html.includes('mismos bytes que IMG_4253 2.HEIC'),
+  'el destino nombra el archivo original',
+);
+comprobar(
+  html.includes('no crea ticket ni suma gasto'),
+  'la copia no afirma gasto nuevo',
+);
+comprobar(html.includes('>1</span> duplicados'), 'contador de duplicados aparte');
+comprobar(
+  html.includes('Ver el ticket original (esta fila es una copia)'),
+  'el ojo dice que abre el original',
+);
 
 console.log(`\n  ${ok.length} comprobaciones OK:`);
 ok.forEach((n) => console.log(`    ok  ${n}`));

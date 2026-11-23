@@ -221,6 +221,9 @@ export interface ScanProcesado {
   proveedor_ia?: string | null;
 
   accion: string | null;
+  /** El motivo del resultado en texto. En un duplicado trae la ruta del archivo
+   *  original: sin ella la fila dice "es una copia" pero no de cual. */
+  detalle: string | null;
   /** Si el GATE se atrevio a afirmar el importe. NO es "el monto parece bien":
    *  con OCR al 33% casi nunca se afirma nada, y esa diferencia hay que
    *  ensenarla en la pantalla en vez de dejar que se suponga. */
@@ -272,6 +275,9 @@ export interface ScanCorrida {
   archivos_vistos: number;
   con_ticket: number;
   con_error: number;
+  /** Copias de archivos ya procesados. No son tickets ni fallos: van aparte
+   *  para que la cuenta de la corrida cuadre sin contar dos veces un gasto. */
+  duplicados: number;
   /** El archivo que se esta leyendo AHORA. */
   actual: string | null;
   /** Los ultimos archivos leidos, con su importe. Acotado en el servidor. */

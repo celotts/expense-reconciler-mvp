@@ -992,13 +992,14 @@ async def procesar_archivo(
             # Se excluye la propia ruta a proposito: un archivo que se
             # reprocesa tiene su propia fila con el mismo hash, y contarse a si
             # mismo como duplicado haria que un reproceso nunca actualizara nada.
-            ticket_hermano = await _ticket_de_otro_archivo(
+            hermano = await _ticket_de_otro_archivo(
                 db, fila.content_hash, vista.relative_path
             )
-            if ticket_hermano is not None:
+            if hermano is not None:
+                ticket_hermano, archivo_original = hermano
                 detalle = (
-                    "mismos bytes que otro archivo ya procesado; se conserva el "
-                    "ticket original y este archivo no se vuelve a leer"
+                    f"mismos bytes que {archivo_original}; se conserva su ticket "
+                    "y esta copia no se vuelve a leer"
                 )
                 fila.status = ScanStatus.DUPLICADO.value
                 fila.ticket_id = ticket_hermano
@@ -1121,17 +1122,21 @@ async def procesar_archivo(
 
 async def _ticket_de_otro_archivo(
     db: AsyncSession, content_hash: str, relative_path: str
-) -> UUID | None:
-    """El ticket de otro archivo con los MISMOS bytes, o `None`.
+) -> tuple[UUID, str] | None:
+    """El ticket Y la ruta de otro archivo con los MISMOS bytes, o `None`.
 
     Se busca en `scan_files` y no en `tickets` porque la pregunta es "de que
     otro ARCHIVO salio este ticket", y esa informacion solo existe aqui: el
     ticket no guarda de que ruta vino mas que `source_file`, que es texto libre
     y no se indexa.
+
+    Devolver tambien la ruta no es adorno: con solo el `ticket_id` el panel puede
+    decir "esto es una copia", pero no "de cual archivo". El id responde que gasto
+    se conservo; la ruta responde que papel de la bandeja es el duplicado.
     """
-    ticket_id = (
+    fila = (
         await db.execute(
-            select(ScanFileModel.ticket_id)
+            select(ScanFileModel.ticket_id, ScanFileModel.relative_path)
             .where(
                 ScanFileModel.content_hash == content_hash,
                 ScanFileModel.relative_path != relative_path,
@@ -1140,8 +1145,10 @@ async def _ticket_de_otro_archivo(
             )
             .limit(1)
         )
-    ).scalar_one_or_none()
-    return ticket_id
+    ).first()
+    if fila is None or fila.ticket_id is None:
+        return None
+    return fila.ticket_id, fila.relative_path
 
 
 async def escanear(
@@ -1394,9 +1401,20 @@ async def escanear(
             # Sin coste: el archivo que se queda ya esta en `scan_files` con su
             # `content_hash`, asi que la proxima corrida lo reporta `SIN_CAMBIOS`
             # sin volver a pagar OCR.
-            if archivar and detalle.accion not in (
-                "ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO"
-            ) and detalle.ticket_id is not None:
+            # El duplicado se reporta al cliente como "OMITIDO" (es el contrato
+            # de la respuesta), asi que el guardia por cadena "DUPLICADO" nunca
+            # lo ve: con el archivado encendido la copia entraba en el retiro y
+            # `detalle` se sobrescribia con el motivo de bandeja, perdiendo la
+            # ruta del archivo original que es justo lo que el panel pinta.
+            # El hecho esta en `status`, que es lo que se guardo en scan_files.
+            if (
+                archivar
+                and detalle.status is not ScanStatus.DUPLICADO
+                and detalle.accion not in (
+                    "ERROR", "DUPLICADO", "NO_SOPORTADO", "VISTO"
+                )
+                and detalle.ticket_id is not None
+            ):
                 # Por `scan_file_id`, NO por `ticket_id`: un ticket puede tener
                 # varios `scan_files` —el original y sus duplicados por
                 # contenido— y buscar por `ticket_id` devuelve varios y revienta
@@ -2056,7 +2074,13 @@ async def _registrar_en_el_feed(
             if ticket is not None
             else False
         ),
-        es_duplicado=detalle.accion == "OMITIDO",
+        # `accion` NO distingue: el duplicado se reporta como "OMITIDO" (es el
+        # contrato de la respuesta) y un OMITIDO por falta de empresa tambien.
+        # El hecho esta en el `status` del scan_files, que es lo que se guardo.
+        es_duplicado=detalle.status is ScanStatus.DUPLICADO,
+        # El motivo en texto. En el duplicado trae la ruta del original, que es
+        # lo que convierte la fila en una respuesta y no en una etiqueta.
+        detalle=detalle.detalle,
         # El encabezado, de la MISMA fila que dio el monto. No de
         # `detalle.datos`: ese se resuelve despues del bucle y aqui saldría en
         # null, que es el problema que ya.trae este feed resuelto para el importe.

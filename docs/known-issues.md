@@ -980,6 +980,57 @@ guardarlo · `_json_safe` deja de tratar `date` · `MAX_PROCESADOS` se relaja a
 real y comprueba el **texto que sale** — incluido que no haya `undefined`,
 `NaN`, `null` ni `[object Object]`, que `tsc` no ve.
 
+### 31.bis. Los duplicados se pintaban como "omitidos" y no tenían contador — ✅ CORREGIDO
+
+El backend ya sabía qué pasaba: al encontrar otro archivo con los mismos bytes
+fija `scan_files.status = DUPLICADO`, apunta al ticket hermano y escribe en
+`detalle` el texto «mismos bytes que …». **Pero reporta la acción como
+`OMITIDO`**, que es el contrato de la respuesta. Tres huecos desde ahí:
+
+| Hueco | Consecuencia |
+|---|---|
+| `es_duplicado=detalle.accion == "OMITIDO"` | un OMITIDO por falta de empresa se marcaba como copia, y la copia real como omitido |
+| `estadoVisual` miraba `accion` antes que `es_duplicado` | el `case 'DUPLICADO'` del front quedaba inalcanzable en el escaneo |
+| `ScanItemResponse.detalle` llegaba, pero el panel no lo pintaba | el operador veía «hay una copia» sin saber **de qué archivo** |
+
+`Corrida.a_dict()` tampoco tenía `duplicados`: el contador existía solo en el
+resumen final (`ScanResponse.duplicados`), así que **la corrida en vivo no podía
+decir cuántas copias había** mientras el escaneo seguía corriendo.
+
+Lo que quedó:
+
+1. `es_duplicado` se deriva de `detalle.status is ScanStatus.DUPLICADO`, que es
+   el dato guardado, no de la etiqueta de la respuesta.
+2. `_ticket_de_otro_archivo` devuelve `(ticket_id, relative_path)`: el id responde
+   qué gasto se conservó, la ruta qué papel de la bandeja es la copia.
+3. `scan_registry.registrar_procesado` añade `detalle` a cada fila del feed e
+   incrementa `Corrida.duplicados` **en la escritura**, antes de podar con
+   `MAX_PROCESADOS`: cuenta duplicados de la corrida, no filas visibles.
+4. El front evalúa `es_duplicado` antes que `accion`, pinta el destino y el
+   «no crea ticket ni suma gasto», y muestra el contador aparte en la cabecera.
+5. El archivado excluye por `detalle.status is not ScanStatus.DUPLICADO`, no solo
+   por la cadena `"DUPLICADO"`: como la acción es `"OMITIDO"`, el guardia viejo
+   era **código inerte** aunque el comentario dijera lo contrario. Con el
+   archivado encendido la copia se retiraba de la entrada y `detalle` se
+   sobrescribía con el motivo de bandeja, borrando justo la ruta que el panel
+   necesita. `tests/unit/test_scan_service.py` lo comprueba sobre el retiro real.
+
+**Los importes de esa fila son del ticket original**, no de una segunda lectura.
+Contar la copia en `con_ticket` haría creer que la bandeja creó dos gastos; contarla
+en `con_error` sugeriría que hay algo que arreglar, cuando lo único que pasó es que
+alguien metió dos veces el mismo papel.
+
+Verificado con `tests/unit/test_feed_del_ticket.py` (el test distingue OMITIDO de
+DUPLICADO con el mismo `accion`) y con `front/scripts/verificar_panel_progreso.tsx`
+(24 comprobaciones sobre el HTML renderizado). Mutaciones comprobadas a mano:
+derivar `es_duplicado` de `accion`, cambiar la etiqueta a «omitido», apagar el
+contador, borrar el destino y quitar el guardia de `status` del archivado — las
+cinco mueren. La suite completa sigue con
+**8 fallos preexistentes de entorno/colección desfasada**, idénticos con el árbol
+limpio (`git stash`), ninguno en el feed. La muestra comparada fueron 8 fallos;
+el conteo total de la suite no se afirma aquí porque la salida completa estaba
+truncada.
+
 ### 32. El panel muestra los motivos del gate traducidos, y el código a la vista
 
 Los códigos (`total_not_positive`, `subtotal_plus_tax_mismatch`) van **en inglés y

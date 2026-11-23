@@ -535,6 +535,38 @@ class TestSoloSeArchivaLoResuelto:
         assert list(destino.iterdir()) == [], "no deberia haberse movido nada"
         assert resumen.quedan_en_bandeja == 1
 
+    async def test_un_duplicado_no_se_mueve_ni_pierde_su_destino(
+        self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
+    ):
+        """La copia se queda en la bandeja y conserva la ruta del original.
+
+        El guardia de archivado miraba `accion == "DUPLICADO"`, pero el duplicado
+        se reporta como "OMITIDO" y solo su `status` dice DUPLICADO. Con el
+        guardia inerte la copia entraba en el retiro de la entrada y `detalle`
+        se sobrescribia con el motivo de bandeja: el panel perdia justo el dato
+        que distingue una copia de un gasto nuevo.
+        """
+        destino = self._archivar_encendido(monkeypatch, tmp_path)
+        _pdf_con_texto(monkeypatch, COMPROBANTE)
+        contenido = b"%PDF-1.7 " + COMPROBANTE.encode()
+        (carpeta / "a_original.pdf").write_bytes(contenido)
+        (carpeta / "b_copia.pdf").write_bytes(contenido)
+
+        resumen = await scan_service.escanear(db_session, test_company.id, "ana")
+
+        duplicado = next(
+            d for d in resumen.detalles if d.status is ScanStatus.DUPLICADO
+        )
+        assert (carpeta / duplicado.relative_path).exists(), (
+            "la copia tiene que seguir en la entrada: moverla la saca de la "
+            "bandeja y cuenta dos veces el mismo papel"
+        )
+        assert "mismos bytes que" in (duplicado.detalle or ""), (
+            "el motivo de bandeja no puede sobrescribir la ruta del original"
+        )
+        assert list(destino.iterdir()) == []
+        assert resumen.borrados_de_entrada == 1
+
     async def test_un_auto_aprobado_se_borra_de_la_entrada(
         self, db_session, test_company, carpeta, sin_modelo, monkeypatch, tmp_path
     ):
