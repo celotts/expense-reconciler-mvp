@@ -78,7 +78,10 @@ async def usuario_de_prueba(db_session):
     tiene que poder leer esa columna de la base y compararla con algo. Un
     `MagicMock` de usuario no serviria para eso.
     """
-    correo = f"operador{uuid4().hex[:8]}@test.local"
+    # `.local` es un dominio reservado (RFC 6761) y email-validator lo rechaza
+    # en las versiones nuevas: el login daba 422 antes de llegar a la
+    # contrasena, y el test de auditoria no podia probar el intento fallido.
+    correo = f"operador{uuid4().hex[:8]}@example.com"
     usuario = UserModel(
         email=correo,
         nombre="Operador de Prueba",

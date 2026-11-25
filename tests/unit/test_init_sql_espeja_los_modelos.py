@@ -53,6 +53,9 @@ TABLAS = [
     "productos",
     "movimientos_inventario",
     "auditoria",
+    "cajas_chicas",
+    "movimientos_caja",
+    "usuarios_empresas",
 ]
 
 
@@ -142,10 +145,12 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         AccountingMappingModel,
         Auditoria,
         BankTransactionModel,
+        CajaChicaModel,
         CierrePeriodoModel,
         CompanyModel,
         CompraItemModel,
         CompraModel,
+        MovimientoCajaModel,
         MovimientoInventarioModel,
         ProductoModel,
         ReconciliationModel,
@@ -155,6 +160,7 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         TicketModel,
         TipoGastoModel,
         UserModel,
+        UsuarioEmpresaModel,
     )
 
     por_tabla = [
@@ -162,6 +168,9 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         (UserModel, "users"),
         (TicketModel, "tickets"),
         (BankTransactionModel, "bank_transactions"),
+        (CajaChicaModel, "cajas_chicas"),
+        (MovimientoCajaModel, "movimientos_caja"),
+        (UsuarioEmpresaModel, "usuarios_empresas"),
         (ReconciliationModel, "reconciliations"),
         (AccountingMappingModel, "accounting_mappings"),
         (ScanFileModel, "scan_files"),

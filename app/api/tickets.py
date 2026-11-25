@@ -66,6 +66,7 @@ from app.services.ai_extractor import ai_extractor
 from app.services.auditoria import registrar_auditoria
 from app.services.capture import ExtractionUnavailable, capture_ticket
 from app.services.confidence_gate import gate_manual_ticket
+from app.services.duplicados_service import calcular_hash_del_ticket
 from app.services.document_service import (
     documento_de_ticket,
     documentos_del_ticket,
@@ -257,6 +258,9 @@ async def create_ticket(
         confidence=decision.persisted_confidence,
         source_type=SourceType.MANUAL.value,
     )
+    # Misma huella para captura manual y extraccion: si una se calcula y la
+    # otra no, el aviso de duplicado depende de como entro el comprobante.
+    ticket.hash_duplicado = calcular_hash_del_ticket(ticket)
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)

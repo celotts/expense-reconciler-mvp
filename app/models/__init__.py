@@ -15,6 +15,8 @@ from app.models.inventario import (
 )
 from app.models.auditoria import Auditoria
 from app.models.tipo_gasto import TipoGastoModel
+from app.models.caja_chica import CajaChicaModel, MovimientoCajaModel
+from app.models.usuario_empresa import UsuarioEmpresaModel
 
 __all__ = [
     "CompanyModel",
@@ -33,4 +35,7 @@ __all__ = [
     "MovimientoInventarioModel",
     "Auditoria",
     "TipoGastoModel",
+    "CajaChicaModel",
+    "MovimientoCajaModel",
+    "UsuarioEmpresaModel",
 ]

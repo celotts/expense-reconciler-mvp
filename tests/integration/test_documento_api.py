@@ -25,6 +25,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from starlette.requests import Request
 
 from app.core.enums import SourceType
 from app.services.capture import capture_ticket
@@ -254,6 +255,9 @@ class TestLoQueNoExiste:
             ),
             usuario=usuario_de_prueba,
             db=db_session,
+            request=Request(
+                scope={"type": "http", "client": ("127.0.0.1", 1234), "headers": []}
+            ),
         )
 
         r = await async_client.get(f"/api/v1/tickets/{ticket.id}/documento")
@@ -446,6 +450,9 @@ class TestReemplazarElDocumento:
             ),
             usuario=usuario_de_prueba,
             db=db_session,
+            request=Request(
+                scope={"type": "http", "client": ("127.0.0.1", 1234), "headers": []}
+            ),
         )
 
         r = await async_client.get("/api/v1/tickets/")

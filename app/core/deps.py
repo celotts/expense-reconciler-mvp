@@ -21,7 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.enums import RolEmpresa
 from app.core.security import ErrorDeToken, TokenCaducado, leer_token
+from app.models.usuario_empresa import UsuarioEmpresaModel
 from app.models.user import UserModel
 
 # `auto_error=False` para poder responder 401 con NUESTRO mensaje en vez del
@@ -105,6 +107,140 @@ UsuarioActual = Annotated[UserModel, Depends(get_current_user)]
 
 
 # ---------------------------------------------------------------------------
+# Empresa activa y rol por empresa
+# ---------------------------------------------------------------------------
+#
+# La empresa NO viaja en el token. Un claim firmado solo se puede cambiar
+# emitiendo otro token, asi que cambiar de empresa obligaria a hacer login de
+# nuevo, y ademas un token emitido con la empresa de ayer seguiria valido hoy.
+# Se toma de la cabecera `X-Company-ID` y se comprueba contra
+# `usuarios_empresas` EN LA BASE, en la misma request: si se da de baja una
+# membresia, surte efecto inmediato, igual que `is_active` en `_usuario_del_token`.
+#
+# El rol tampoco viaja en el token, por la misma razon y por una mas: es POR
+# EMPRESA. Un mismo humano puede ser `operator` en una y `admin` en otra, y un
+# claim global no podria representar eso sin mentir.
+#
+# Compatibilidad hacia atras: si no viene la cabecera y la cuenta solo tiene
+# UNA empresa, se toma esa. Asi los clientes que hoy no envian la cabecera
+# siguen funcionando. Con dos o mas empresas, la ausencia es un 409 que pide
+# elegir: adivinar cual quiso el usuario es una decision de seguridad tomada
+# por el orden de las filas.
+
+
+async def empresa_activa(
+    usuario: UsuarioActual,
+    db: Sesion,
+    x_company_id: Annotated[str | None, Header(alias="X-Company-ID")] = None,
+) -> UUID:
+    """La empresa en la que opera esta peticion, o 403/409.
+
+    403 para "no tienes acceso a esa empresa" y 409 para "tienes acceso a
+    varias y no dijiste cual". Son respuestas distintas porque piden acciones
+    distintas: la primera no tiene arreglo del lado del cliente, la segunda se
+    arregla enviando la cabecera.
+    """
+    company_ids = set(
+        (
+            await db.execute(
+                select(UsuarioEmpresaModel.company_id).where(
+                    UsuarioEmpresaModel.user_id == usuario.id,
+                    UsuarioEmpresaModel.activo.is_(True),
+                )
+            )
+        ).scalars().all()
+    )
+
+    if not company_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta no tiene acceso a ninguna empresa",
+        )
+
+    if x_company_id is None:
+        if len(company_ids) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Elija la empresa activa con la cabecera X-Company-ID",
+            )
+        return next(iter(company_ids))
+
+    # Un header con basura es un 400, no un 500: `UUID(str)` lanza ValueError y
+    # un error de conversion aqui se veria como fallo del servidor.
+    try:
+        elegida = UUID(x_company_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Company-ID no es un UUID valido",
+        ) from exc
+
+    if elegida not in company_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta no tiene acceso a esa empresa",
+        )
+    return elegida
+
+
+EmpresaActiva = Annotated[UUID, Depends(empresa_activa)]
+
+
+async def rol_actual(
+    usuario: UsuarioActual,
+    company_id: EmpresaActiva,
+    db: Sesion,
+) -> RolEmpresa:
+    """El rol de esta cuenta EN la empresa activa, ledo de la BD.
+
+    Es una dependencia separada de `empresa_activa` porque los servicios necesitan
+    el rol para decidir alcance (un `operator` solo toca sus cajas), pero no todos
+    los endpoints exigen un rol concreto. FastAPI cachea `empresa_activa` dentro
+    de la misma request, asi que pedir las dos no duplica la consulta de empresas.
+    """
+    # No se filtra `activo` de nuevo: `company_id` VIENE de `empresa_activa`,
+    # que ya exigio una membresia activa. Poner aqui el mismo filtro seria una
+    # defensa que no puede cambiar el veredicto y que por eso no se puede probar
+    # (lo detecto el verificador de mutaciones: sobrevivio al quitarla).
+    rol = await db.scalar(
+        select(UsuarioEmpresaModel.rol).where(
+            UsuarioEmpresaModel.user_id == usuario.id,
+            UsuarioEmpresaModel.company_id == company_id,
+        )
+    )
+    if rol is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta no tiene acceso a esa empresa",
+        )
+    return RolEmpresa(rol)
+
+
+RolEnEmpresa = Annotated[RolEmpresa, Depends(rol_actual)]
+
+
+def requiere_rol(*roles: RolEmpresa):
+    """Factoria de dependencia: exige uno de estos roles EN LA EMPRESA ACTIVA.
+
+    Se consulta en BD en cada request, no se lee del token. Un token robado o
+    manipulado no puede ascender de rol, y un cambio de rol surte efecto sin
+    esperar a que caduque el token (regla 9, la misma que `is_active`).
+    """
+
+    permitidos = {rol.value for rol in roles}
+
+    async def _requiere_rol(rol: RolEnEmpresa) -> RolEmpresa:
+        if rol not in permitidos:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El rol de la cuenta no permite esta operacion",
+            )
+        return rol
+
+    return _requiere_rol
+
+
+# ---------------------------------------------------------------------------
 # Los endpoints que comprometen a otro usuario
 # ---------------------------------------------------------------------------
 #
@@ -136,18 +272,15 @@ UsuarioActual = Annotated[UserModel, Depends(get_current_user)]
 # LO QUE ESTA FUERA Y NO SE PUEDE ARREGLAR AQUI
 # ----------------------------------------------
 #
-# **No hay roles.** Cualquier cuenta autenticada puede dar de baja a otra, porque
-# `users` no tiene columna de rol y no hay multi-tenancy (`AGENTS.md`). Es una
-# limitacion real y no un olvido: el producto esta disenado para "una maquina, un
-# contador", donde las cuentas las crea quien tiene la base de datos
-# (`scripts/crear_usuario.py`).
-#
-# Lo que esta dependencia hace es acotar el dano: la contrasena del propio actor,
-# que es justo lo que un atacante con un token robado no tiene. Lo que NO hace es
-# decidir quien puede tocar a quien, porque eso necesita el modelo de roles que no
-# existe. Poner una comprobacion de rol aqui sin el modelo seria fingir que hay
-# control de acceso donde solo hay autenticacion — y un control aparente es peor
-# que ninguno, porque deja de revisarse.
+# **Roles y empresas.** Desde `0022_roles_y_empresa_activa.sql` el rol vive por
+# empresa en `usuarios_empresas` y se comprueba con `empresa_activa` y
+# `requiere_rol`. Esta dependencia SIGUE sin decidir quien puede tocar a quien:
+# solo pide la contrasena del propio actor, que es justo lo que un atacante con
+# un token robado no tiene. Anadir aqui un `requiere_rol` global seria ademas
+# incorrecto, porque el rol no es global: es por empresa, y esta dependencia no
+# recibe la empresa activa. Si en algun momento se quiere exigir ademas un rol
+# para dar de baja cuentas, hay que anadir `EmpresaActiva` a su firma y decidir
+# explicitamente que rol manda — no reutilizar `perfil`, que es texto libre.
 #
 # EL HEADER, Y POR QUE NO UN CAMPO EN EL CUERPO
 # ----------------------------------------------

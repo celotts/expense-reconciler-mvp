@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { registrarEventoFrontend } from '../services/auditoria';
-import { companiesApi, ticketsApi, type Company, type Ticket } from '../services/api';
+import { ticketsApi, type Ticket } from '../services/api';
+import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
 import type {
   ArchivoNoPermitido, DigitalizacionDirectorio,
   ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
@@ -34,8 +35,12 @@ import { EstadoDeIa } from '../components/EstadoDeIa';
  * claro que es una decision, no un efecto de correr un escaneo.
  */
 export function Scan() {
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [companyId, setCompanyId] = useState<string>('');
+  // La empresa se elige UNA vez en la barra lateral y viaja en `X-Company-ID`.
+  // Un selector aqui permitiria escanear una empresa mientras el resto de la
+  // pantalla (y el token) defendia otra; el servidor lo rechazaria con 409 y el
+  // operador no entenderia por que.
+  const { empresaActiva } = useEmpresa();
+  const companyId = empresaActiva?.company_id ?? '';
   const [config, setConfig] = useState<ScanConfig | null>(null);
   const [ocr, setOcr] = useState<ScanOcrEstado | null>(null);
   const [stats, setStats] = useState<ScanStats | null>(null);
@@ -80,12 +85,17 @@ export function Scan() {
         ticketsApi.scanConfig(),
         ticketsApi.scanOcr(),
         ticketsApi.scanStats(),
-        ticketsApi.scanFiles({
-          estado: filtro || undefined,
-          companyId: companyId || undefined,
-          limit: POR_PAGINA,
-          offset: pagina * POR_PAGINA,
-        }),
+        // Sin empresa activa NO se pide el registro: antes esta pantalla
+        // ofrecia "Todas las empresas" y mostraba comprobantes ajenos. El
+        // aviso de arriba dice por que la lista esta vacia.
+        companyId
+          ? ticketsApi.scanFiles({
+            estado: filtro || undefined,
+            companyId,
+            limit: POR_PAGINA,
+            offset: pagina * POR_PAGINA,
+          })
+          : Promise.resolve({ archivos: [], total: 0 }),
       ]);
       setConfig(c.status === 'fulfilled' ? c.value : null);
       // La casilla se siembra con el valor REAL del servidor. Solo la primera
@@ -111,11 +121,6 @@ export function Scan() {
 
   useEffect(() => { cargar(); }, [cargar]);
   useEffect(() => { if (corrida) setPreparando(false); }, [corrida]);
-  useEffect(() => { companiesApi.list().then(setCompanies).catch(() => setCompanies([])); }, []);
-  // Si solo hay UNA empresa, preseleccionarla por defecto (no todas)
-  useEffect(() => {
-    if (companies.length === 1) setCompanyId(companies[0].id);
-  }, [companies]);
 
   /** Corta el sondeo. Lo usan el `finally` del escaneo y el cleanup del unmount. */
   const clearIntervalActivo = useCallback(() => {
@@ -260,15 +265,15 @@ export function Scan() {
           </p>
         </div>
         <div className="w-56">
-          <Select
-            value={companyId}
-            onChange={(e) => { setCompanyId(e.target.value); setPagina(0); }}
-            options={[
-              { value: '', label: 'Todas las empresas' },
-              ...companies.map(c => ({ value: c.id, label: c.name })),
-            ]}
-          />
+          <p className="text-xs font-medium text-gray-500">Empresa activa</p>
+          <p className="mt-1 text-sm font-semibold text-gray-900 truncate" title={empresaActiva?.name}>
+            {empresaActiva?.name ?? 'Sin empresa activa'}
+          </p>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral antes de escanear. Sin ella no se puede atribuir ningún comprobante ni crear tickets." />
       </div>
 
       {config && <PanelConfig config={config} />}
@@ -428,16 +433,20 @@ export function Scan() {
  *  lo dice, y por eso no se calcula `file_type` en el front.
  */
 export function CargaPorLote({
-  companyId,
   carpetaDefecto = '',
   rutasPermitidas = [],
   extensionesPermitidas = [],
 }: {
-  companyId: string;
+  /** Se conserva como prop opcional solo para los verificadores que montan
+   *  este componente sin la aplicacion. La peticion usa la empresa activa del
+   *  contexto; un prop de una pantalla no puede decidirla. */
+  companyId?: string;
   carpetaDefecto?: string;
   rutasPermitidas?: string[];
   extensionesPermitidas?: string[];
 }) {
+  const { empresaActiva } = useEmpresa();
+  const companyId = empresaActiva?.company_id ?? '';
   const [archivos, setArchivos] = useState<File[]>([]);
   const [procesando, setProcesando] = useState(false);
   const [resultado, setResultado] = useState<ScanItem[] | null>(null);

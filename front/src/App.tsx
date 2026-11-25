@@ -11,8 +11,11 @@ import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { Scan } from './pages/Scan';
 import { Cierre } from './pages/Cierre';
-import { Auditoria } from './pages/Auditoria';import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
+import { CajaChica } from './pages/CajaChica';
+import { Auditoria } from './pages/Auditoria';
+import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
 import { SesionProvider, useSesion } from './contextos/Sesion';
+import { EmpresaProvider, rolPuedeCaja, useEmpresa } from './contextos/Empresa';
 import { Loading } from './components/ui';
 import './App.css';
 
@@ -36,6 +39,7 @@ const navigation = [
   { key: 'bank' as Page, label: 'Banco', icon: BankIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
   { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
   { key: 'cierre' as Page, label: 'Cierre mensual', icon: ClipboardCheckIcon, roles: ['consultor', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+  { key: 'cajachica' as Page, label: 'Caja chica', icon: WalletIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
 ];
 
 function ClipboardCheckIcon({ className = 'w-5 h-5' }: { className?: string }) {
@@ -112,6 +116,14 @@ function FolderScanIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
+function WalletIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7.5A2.5 2.5 0 015.5 5H18a2 2 0 012 2v10a2 2 0 01-2 2H5.5A2.5 2.5 0 013 16.5v-9zM3 9h15m-4 5h3" />
+    </svg>
+  );
+}
+
 function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {  return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
@@ -130,6 +142,10 @@ function XIcon({ className = 'w-6 h-6' }: { className?: string }) {
 function AppInner() {
   const { paginaActual, irA, filtroTickets } = useNavegacion();
   const { usuario, perfil, grupo, cerrarSesion } = useSesion();
+  const {
+    empresas, empresaActiva, elegirEmpresa, rol,
+    cargando: cargandoEmpresas, necesitaEleccion,
+  } = useEmpresa();
   // Validación de acceso: si no hay usuario, se oculta el menú
   // y se muestra el login (gestionado por SesionProvider)
   const hayAcceso = !!usuario && !!perfil;
@@ -147,6 +163,15 @@ function AppInner() {
       irA('dashboard');
     }
   }, [perfil, paginaActual, irA]);
+
+  // El perfil sigue filtrando el menu por compatibilidad, pero caja chica tiene
+  // ademas un rol POR EMPRESA. Mientras la lista no ha llegado no se decide
+  // nada: redirigir con `rol=null` sacaria de la pantalla a quien si tiene
+  // acceso. El backend vuelve a comprobar el rol en cada peticion.
+  useEffect(() => {
+    if (cargandoEmpresas || paginaActual !== 'cajachica') return;
+    if (!rolPuedeCaja(rol)) irA('dashboard');
+  }, [cargandoEmpresas, rol, paginaActual, irA]);
 
   // Auditoria de navegacion: cada cambio de pantalla queda registrado.
   useEffect(() => {
@@ -184,6 +209,7 @@ function AppInner() {
       case 'bank': return <BankTransactions />;
       case 'reconciliations': return <Reconciliations />;
       case 'cierre': return <Cierre />;
+      case 'cajachica': return <CajaChica />;
       case 'auditoria': return <Auditoria />;
       default: return <Dashboard />;
     }
@@ -248,6 +274,33 @@ function AppInner() {
 
           {/* Footer */}
           <div className="p-4 border-t">
+            <div className="mb-3 rounded-lg border border-blue-100 bg-blue-50 p-2">
+              <label className="text-xs font-medium text-blue-800 block mb-1" htmlFor="empresa-activa">
+                Empresa activa
+              </label>
+              {empresas.length > 1 ? (
+                <select
+                  id="empresa-activa"
+                  className="w-full text-xs border border-blue-200 rounded px-2 py-1.5 bg-white"
+                  value={empresaActiva?.company_id ?? ''}
+                  onChange={e => elegirEmpresa(e.target.value)}
+                >
+                  <option value="">Elegir empresa...</option>
+                  {empresas.map(m => (
+                    <option key={m.company_id} value={m.company_id}>{m.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-xs text-blue-800 truncate" title={empresaActiva?.name}>
+                  {cargandoEmpresas
+                    ? 'Cargando empresas...'
+                    : empresaActiva?.name ?? 'Sin empresas asignadas'}
+                </p>
+              )}
+              <p className="text-xs text-blue-600 mt-1">
+                {rol ? `Rol en esta empresa: ${rol}` : necesitaEleccion ? 'Elige una empresa para continuar' : '—'}
+              </p>
+            </div>
             <div className="mb-2">
               <p className="text-sm font-medium text-gray-800 truncate">{usuario?.nombre}</p>
               <p className="text-xs text-gray-500 truncate">{usuario?.email}</p>
@@ -325,9 +378,11 @@ function Puerta() {
   if (!usuario) return <Login onEntro={entro} aviso={aviso} />;
 
   return (
-    <NavegacionProvider>
-      <AppInner />
-    </NavegacionProvider>
+    <EmpresaProvider>
+      <NavegacionProvider>
+        <AppInner />
+      </NavegacionProvider>
+    </EmpresaProvider>
   );
 }
 

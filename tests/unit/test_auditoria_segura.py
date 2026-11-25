@@ -33,7 +33,7 @@ async def test_crear_ticket_registra_evento(
 ):
     """POST /tickets/ escribe una fila `crear_ticket` con quien lo creo."""
     respuesta = await async_client.post(
-        "/tickets/", json=_ticket_manual(test_company.id)
+        "/api/v1/tickets/", json=_ticket_manual(test_company.id)
     )
     assert respuesta.status_code == 201, respuesta.text
     ticket_id = respuesta.json()["id"]
@@ -56,12 +56,12 @@ async def test_eliminar_ticket_registra_evento(
 ):
     """DELETE /tickets/{id} escribe una fila `delete` con quien lo borro."""
     creado = await async_client.post(
-        "/tickets/", json=_ticket_manual(test_company.id)
+        "/api/v1/tickets/", json=_ticket_manual(test_company.id)
     )
     assert creado.status_code == 201, creado.text
     ticket_id = creado.json()["id"]
 
-    borrado = await async_client.delete(f"/tickets/{ticket_id}")
+    borrado = await async_client.delete(f"/api/v1/tickets/{ticket_id}")
     assert borrado.status_code == 204, borrado.text
 
     fila = (
@@ -86,7 +86,7 @@ async def test_login_fallido_registra_evento(
     este caso de un correo que no esta dado de alta, donde queda NULL.
     """
     respuesta = await async_client_sin_autenticar.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": usuario_de_prueba.email, "password": "contrasena-incorrecta"},
     )
     assert respuesta.status_code == 401, respuesta.text

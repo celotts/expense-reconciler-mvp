@@ -1066,10 +1066,12 @@ suposición:
    tocan la red) sí valen y sí pasan.
 
 Mientras siga así, `npm run verify` no es una señal verde/roja fiable del front. Lo
-que sí lo es: `npm run build` (que corre `tsc`) y `verificar_panel_progreso.tsx`
-aislado. Arreglarlo es una pieza aparte: o el script recibe un email y una contraseña
-por variables de entorno y documenta que hace falta una cuenta de prueba, o la
-etapa de red se mueve a un test de integración con su propio token.
+que sí lo es: `npm run build` (que corre `tsc`), `verificar_panel_progreso.tsx`
+aislado y los verificadores puntuales nuevos (`npm run verify:caja`,
+`npm run verify:fecha`, `npm run verify:cierre`). Arreglarlo es una pieza aparte: o el
+script recibe un email y una contraseña por variables de entorno y documenta que
+hace falta una cuenta de prueba, o la etapa de red se mueve a un test de integración
+con su propio token.
 
 ### 18. El escáner de carpeta: lo que todavía no está resuelto
 `feature/tickets-ocr-api` añadió el escáner y el registro por archivo. Estos cuatro puntos
@@ -2340,6 +2342,123 @@ cuerpo, con el texto acotado a 200 chars). La comprobación va en
 > Una base con migraciones de otra rama no se arregla borrando el cartel: el 500
 > era verdadero. Y un mensaje que no dice el código ni el cuerpo convierte un fallo
 > diagnosticable en un "no sé qué pasó" que invita a repetir la operación.
+
+### 47. La caja chica existía en el SQL, pero no en el software — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-25.** El único artefacto del proyecto era
+`db/migrations/0021_caja_chica_y_huella_fiscal.sql`: creaba `cajas_chicas`,
+`movimientos_caja`, la columna `tickets.hash_duplicado` y el índice compuesto
+`ix_tickets_company_fiscal_huella`. No había modelo, schema Pydantic, servicio,
+endpoint, pantalla ni test. Una base nueva podía tener las tablas y la API seguir
+sin saber que existían: el DDL solo no es una funcionalidad.
+
+**Lo que se construyó**, en el orden en que el dato tiene que viajar:
+`app/core/enums.py` → `app/models/caja_chica.py` → `app/schemas/caja_chica.py` →
+`app/services/caja_chica_service.py` → `app/api/caja_chica.py`, más
+`app/api/duplicados.py` sobre `duplicados_service.py`, registro de los dos routers
+en `api_router.py` con token a nivel de router, y el espejo en `db/init.sql` para
+que una base vacía no nazca sin columnas (`test_init_sql_espeja_los_modelos.py`
+lo comprueba dentro del contenedor: 24 passed).
+
+**El saldo no se calcula dos veces.** Se mueve con
+`UPDATE ... WHERE saldo_actual + delta >= 0` en la misma transacción que el
+movimiento. Dos gastos que leen el mismo saldo y escriben dos filas dejarían la
+caja en negativo; con la condición en el `UPDATE`, la segunda no escribe y recibe
+409 con los dos números. Postgres además toma `FOR UPDATE`; SQLite decide con la
+condición, que es por lo que corre la suite. La comprobación previa en Python no
+sustituye al cerrojo atómico: solo traduce el conflicto en un mensaje legible.
+
+**La huella fiscal no es el hash del archivo.** Dos fotos del mismo papel tienen
+bytes distintos, y el mismo archivo subido dos veces sí tiene el mismo hash. La
+huella de negocio canónica es RFC + fecha + folio + total, normalizados, con la
+empresa dentro. La búsqueda va por los **campos** del índice y no solo por
+`hash_duplicado`: los tickets anteriores a la migración no lo traen, y un falso
+negativo deja contar dos veces el comprobante sin aviso. Sin fecha o sin total no
+se afirma duplicado; un falso positivo bloquea una carga válida y cuesta más.
+
+**El resumen no suma filas.** `total_conciliado_sin_duplicados` cuenta una unidad
+por huella y solo si esa unidad está conciliada; los tickets sin huella se cuentan
+aparte. Sumar los `grupos` en el navegador duplicaría los reenvíos y contaría como
+gasto un ticket que nadie concilió. Por la misma razón `saldo_bajo_umbral` es un
+`@computed_field` (`<=`, no `<`) y el front solo lo lee: dos clientes calculando
+el umbral por su cuenta son dos verdades. Los importes llegan como texto (`Decimal`)
+y `dinero()` los formatea sin redondearlos de nuevo.
+
+**El front también cayó en la trampa del HTML no ejecutado.** La primera versión de
+`front/scripts/verificar_caja_en_pantalla.tsx` montaba la pantalla pero nunca
+entraba a la pestaña de duplicados: `renderToStaticMarkup` no corre clics ni
+`useEffect`, así que seis comprobaciones fallaban aunque la página estuviera bien.
+La pantalla acepta ahora `pestanaInicial` **solo** para el verificador, igual que
+ya hacía `Cierre` con `informeInicial`. Con eso pasan las 16 comprobaciones sobre
+el HTML, y se verificó que mueren al quitar el aviso de umbral, al reemplazar el
+total del backend por `0.00` y al ignorar `pestanaInicial`.
+
+**Contratos que no son lo que parecen:** `CierreCajaRequest.closed_at` es opcional
+(el servicio estampa `utcnow()` si no llega, aunque el formulario lo pide) y
+`responsable_id` **no** es una firma: el front lo toma de la sesión, pero viaja en
+el cuerpo porque es la persona a cuyo cargo se pone la caja. Quien firma los
+movimientos sí es `created_by`, y sale del token (regla 23 de `AGENTS.md`).
+
+**Verificación:** `tests/unit/test_caja_chica_y_duplicados.py` (17 tests) y la
+suite completa en verde (**1889 passed, 1 skip**, 20 warnings, medido en local
+con Python 3.14 y las variables del shells); `cd front && npm run build`,
+`npm run verify:caja` (16/16) y
+`npm run verify:fecha`. La colección de Insomnia se regeneró desde la API viva
+(102 peticiones, 18 carpetas) y `generar_insomnia.py --check` está al día.
+
+### 48. Tres pantallas, tres empresas distintas con el mismo token — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-25.** Cada pantalla tenía su propio `useState(companyId)` y
+llamaba a `companiesApi.list()`: el Escáner ofrecía «Todas las empresas», Tickets
+elegía la suya y Caja Chica otra. Con un mismo token, la interfaz podía defender
+tres empresas a la vez; el servidor respondía 409 y ninguna pantalla decía cuál
+era la elegida. `GET /companies` lista *todas* las empresas del sistema, así que
+responder «qué hay» no puede responder «en cuál opera esta cuenta».
+
+**Los roles viven en la BD, no en el JWT.** `0022_roles_y_empresa_activa.sql`
+crea `usuarios_empresas(user_id, company_id, rol, activo)` con PK compuesta. Los
+roles son `owner` · `admin` · `accountant` · `operator`; `perfil` y `grupo` son
+texto libre y no saben *en qué empresa* valen, así que reutilizarlos habría
+inventado autoridad donde solo hay una etiqueta. El backfill pone **admin en
+todas las empresas** para que aplicar la migración no deje sin acceso a una
+cuenta existente. `GET /api/v1/auth/empresas` devuelve las membresías activas
+con su rol, leídas en cada petición: cambiar un rol surte efecto sin nuevo token,
+igual que surte efecto dar de baja una cuenta (`get_current_user` no se tocó).
+
+**`X-Company-ID` no es una sugerencia:** `app/core/deps.py:empresa_activa` la
+comprueba contra las membresías de la BD antes de que corra el handler. UUID
+inválido → 400; empresa ajena o sin membresía → 403; sin header y con varias
+empresas → 409; un recurso de otra empresa → **404**, no 403, porque un 403
+confirmaría que la caja existe en otro lado. Un `company_id` en el cuerpo o en
+la query distinto del activo → 409. El query param se conserva como alias por
+compatibilidad pero se **compara**, no se confía en él. Los routers de caja y
+duplicados llevan `Depends(empresa_activa)` a nivel de router, no un `if` dentro
+de cada endpoint.
+
+**El alcance de `operator` se decide en el servicio.** Un operador solo ve y
+mueve cajas donde `cajas_chicas.responsable_id == usuario.id`; el listado ya
+viene filtrado y cada operación vuelve a comprobarlo. Meter ese filtro solo en el
+router dejaría el camino del servicio abierto para el siguiente llamador. Y el
+guardián del front (`rolPuedeCaja`) solo evita ofrecer una pantalla imposible:
+la autoridad sigue siendo la BD, leída en cada request.
+
+**La cabecera se inyecta en un solo sitio y al final.** `fetchApi` pone
+`...cabeceraDeEmpresa()` **después** de `...(resto.headers)`: si una pantalla
+manda su propio `X-Company-ID`, gana la empresa activa global. El contexto
+`front/src/contextos/Empresa.tsx` es el único que elige; Escáner, Tickets y Caja
+Chica comparten `AvisoSinEmpresa` en lugar de tres avisos que puedan divergir.
+`npm run verify:empresa` (21 comprobaciones) monta el aviso en HTML —no mira el
+retorno de una función— y comprueba el orden de inyección, que ninguna de las
+tres pantallas decida `companyId` por su cuenta, que un fallo de red no borre la
+última lista válida y que el guardián use el rol por empresa.
+
+**Verificación:** `tests/unit/test_roles_y_empresa_activa.py`,
+`test_auth_empresas.py`, `test_caja_chica_roles.py` y
+`test_caja_chica_y_duplicados.py`; las 10 mutaciones de
+`scripts/verify_roles_empresa_mutations.py` fueron detectadas. `NOMBRES` de
+`generar_insomnia.py` incluye `GET /auth/empresas`: sin esa entrada la petición
+nueva aparecía en la colección con el docstring como nombre, y el test
+`test_no_falta_ninguna_entrada_en_nombres` lo cazó antes de regenerar.
 
 ---
 

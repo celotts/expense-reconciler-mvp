@@ -20,6 +20,56 @@ import { estaVencido, leerToken, notificarCaducidad, SesionVencida } from './ses
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
+const CLAVE_EMPRESA_ACTIVA = 'empresa_activa_id';
+
+/** Un solo sitio para la empresa activa del cliente.
+ *
+ *  El backend exige `X-Company-ID` en caja y duplicados y lo valida contra las
+ *  membresias de la BD. Si el header lo pusiera cada pantalla, una pantalla
+ *  nueva nacería sin el y el fallo se vería como un 409 inexplicable; si el
+ *  navegador guardara la empresa en cada componente, dos pestañas podrían
+ *  defender empresas distintas con el mismo token. Por eso el valor vive aqui
+ *  y `fetchApi` lo inyecta en un solo punto.
+ *
+ *  `localStorage` se lee con cuidado: los verificadores corren en Node y no
+ *  tienen esa API, y un almacenamiento bloqueado no puede impedir que la app
+ *  arranque. Guardar es una comodidad (recordar la eleccion al recargar), no
+ *  la defensa: la defensa la hace el servidor en cada peticion.
+ */
+let empresaActivaEnMemoria: string | null = null;
+
+function empresaGuardada(): string | null {
+  if (empresaActivaEnMemoria) return empresaActivaEnMemoria;
+  try {
+    return typeof localStorage === 'undefined'
+      ? null
+      : localStorage.getItem(CLAVE_EMPRESA_ACTIVA);
+  } catch {
+    return null;
+  }
+}
+
+export function fijarEmpresaActiva(companyId: string | null): void {
+  empresaActivaEnMemoria = companyId;
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (companyId) localStorage.setItem(CLAVE_EMPRESA_ACTIVA, companyId);
+    else localStorage.removeItem(CLAVE_EMPRESA_ACTIVA);
+  } catch {
+    // Almacenamiento sin espacio o deshabilitado: la memoria de esta pestaña
+    // basta mientras dure. Al recargar, el contexto volvera a elegir.
+  }
+}
+
+export function empresaActivaGuardada(): string | null {
+  return empresaGuardada();
+}
+
+function cabeceraDeEmpresa(): Record<string, string> {
+  const companyId = empresaGuardada();
+  return companyId ? { 'X-Company-ID': companyId } : {};
+}
+
 /** Lo que hay que aadirle a una peticion que no es solo metodo y cuerpo. */
 interface OpcionesPeticion extends RequestInit {
   /** Esta peticion NO espera token.
@@ -66,6 +116,10 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
     ...(esFormulario ? {} : { 'Content-Type': 'application/json' }),
     ...(sinToken ? {} : cabeceraDeAutorizacion()),
     ...(resto.headers as Record<string, string> | undefined),
+    // La empresa va AL FINAL a proposito: un `headers` suelto en una pantalla
+    // no puede decidir por su cuenta que empresa esta activa. El servidor
+    // validationaria el header, pero la interfaz podria seguir mostrando otra.
+    ...(sinToken ? {} : cabeceraDeEmpresa()),
   };
 
   // Comprobacion anticipada: si el token ya caduco localmente, no se manda
@@ -728,6 +782,10 @@ export const dashboardApi = {
   },
 };
 
+// Caja chica y duplicados viven en `services/cajaChica.ts`. Se sacaron de aqui
+// porque sus rutas comparten la empresa activa: dejar dos clientes con la misma
+// URL es la forma mas barata de que uno se olvide del header.
+
 // ---------------------------------------------------------------------------
 // Informe de cierre mensual
 // ---------------------------------------------------------------------------
@@ -789,6 +847,10 @@ export type {
   AccountingMapping, AccountingMappingCreate,
   ReporteCierreMensual, EstadoPeriodo, ResumenGasto, ComparativoMes, Hallazgo,
   SeccionConciliacion, SeccionLectura, SeccionVerificacionHumana, SeccionPendientes,
+  CajaChicaResponse, CajaChicaCreate, CajaChicaUpdate, CajaChicaConMovimientos,
+  MovimientoCajaCreate, MovimientoCajaResponse, CierreCajaRequest,
+  BuscarDuplicadoRequest, DuplicadoFiscalItem, DuplicadoFiscalResponse,
+  GrupoDuplicados, ResumenDuplicados, EstadoCaja, TipoMovimientoCaja, OrigenFondo,
 } from '../types/api';
 
 // El dashboard tiene sus propias formas en `types/dashboard.ts` y se reexporta

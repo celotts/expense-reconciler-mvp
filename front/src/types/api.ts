@@ -583,3 +583,129 @@ export interface AccountingMappingCreate {
 // `PeriodStats` con doce campos que la pantalla nueva ya no pide, y dejarlo
 // описaba un API que no existe. Un tipo que describe una respuesta vieja hace
 // que un cambio en el servidor parezca un bug en el cliente.
+
+// ---------------------------------------------------------------------------
+// Caja chica y huella fiscal
+// ---------------------------------------------------------------------------
+//
+// Espejo de `app/schemas/caja_chica.py`. Los importes siguen siendo `string`:
+// vienen de `Decimal`, y el saldo de una caja se decide en centavos. El front
+// NO suma movimientos ni calcula `saldo_bajo_umbral`: los dos los afirma el
+// backend, y dos clientes calculando el umbral por su cuenta podrian defender
+// dos verdades distintas con el mismo saldo.
+
+export type EstadoCaja = 'abierta' | 'en_revision' | 'cerrada';
+export type TipoMovimientoCaja = 'apertura' | 'reposicion' | 'gasto_ticket' | 'ajuste' | 'cierre';
+export type OrigenFondo = 'efectivo' | 'banco';
+
+export interface CajaChicaResponse {
+  id: string;
+  company_id: string;
+  responsable_id: string;
+  nombre: string;
+  monto_inicial: string;
+  saldo_actual: string;
+  umbral_alerta: string;
+  estado: EstadoCaja;
+  opened_at: string;
+  closed_at: string | null;
+  /** `@computed_field` del servidor. No se re calcula aqui. */
+  saldo_bajo_umbral: boolean;
+}
+
+export interface CajaChicaCreate {
+  company_id: string;
+  responsable_id: string;
+  nombre: string;
+  monto_inicial: string;
+  umbral_alerta?: string;
+}
+
+export interface CajaChicaUpdate {
+  nombre?: string;
+  umbral_alerta?: string;
+  responsable_id?: string;
+}
+
+export interface MovimientoCajaCreate {
+  company_id?: string;
+  tipo: TipoMovimientoCaja;
+  monto: string;
+  origen_fondo?: OrigenFondo;
+  banco_nombre?: string;
+  referencia_bancaria?: string;
+  ticket_id?: string;
+  notas?: string;
+  /** Instante ISO. Solo lo exige el backend en un movimiento de `cierre`. */
+  closed_at?: string;
+  /** `ajuste` no tiene signo propio: el signo vive aqui. */
+  resta?: boolean;
+}
+
+export interface MovimientoCajaResponse {
+  id: string;
+  company_id: string;
+  caja_chica_id: string;
+  ticket_id: string | null;
+  tipo: TipoMovimientoCaja;
+  origen_fondo: OrigenFondo | null;
+  banco_nombre: string | null;
+  referencia_bancaria: string | null;
+  monto: string;
+  notas: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CajaChicaConMovimientos extends CajaChicaResponse {
+  movimientos: MovimientoCajaResponse[];
+}
+
+export interface CierreCajaRequest {
+  closed_at?: string;
+}
+
+export interface BuscarDuplicadoRequest {
+  company_id: string;
+  provider_tax_id?: string;
+  folio?: string;
+  expense_date: string;
+  total_amount: string;
+  excluir_ticket_id?: string;
+}
+
+export interface DuplicadoFiscalItem {
+  ticket_id: string;
+  company_id: string;
+  provider_name: string;
+  provider_tax_id: string | null;
+  folio: string | null;
+  expense_date: string;
+  total_amount: string;
+  hash_duplicado: string | null;
+  estado_conciliacion: string | null;
+  source_file: string | null;
+  created_at: string | null;
+}
+
+export interface DuplicadoFiscalResponse {
+  es_duplicado: boolean;
+  hash_duplicado: string | null;
+  candidatos: DuplicadoFiscalItem[];
+  mensaje: string;
+}
+
+export interface GrupoDuplicados {
+  hash_duplicado: string | null;
+  /** El primero es el original; el resto no cuenta dos veces. */
+  tickets: DuplicadoFiscalItem[];
+  monto_total: string;
+}
+
+export interface ResumenDuplicados {
+  company_id: string;
+  grupos: GrupoDuplicados[];
+  /** El backend ya descontó los reenvíos. No se vuelve a sumar aqui. */
+  total_conciliado_sin_duplicados: string;
+  advertencia: string | null;
+}

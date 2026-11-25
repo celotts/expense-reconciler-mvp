@@ -33,6 +33,7 @@ from app.models.ticket import TicketModel
 from app.services.accuracy_service import en_muestra
 from app.services.confidence_gate import compute_source_hash, gate_ticket
 from app.services.document_service import guardar_documento
+from app.services.duplicados_service import calcular_hash_del_ticket
 from app.services.inventario_service import registrar_compra
 from app.services.parser_service import TicketExtractionResult
 
@@ -236,6 +237,10 @@ async def persistir_extraccion(
             else None
         ),
     )
+    # La huella fiscal se calcula en servidor, sobre los datos YA resueltos:
+    # un cliente no puede mandar el hash que le conviene, y dos lecturas del
+    # mismo papel con distinto ORM deben caer en la misma huella.
+    ticket.hash_duplicado = calcular_hash_del_ticket(ticket)
     db.add(ticket)
     await db.flush()
 

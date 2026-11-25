@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult } from '../services/api';
-import { companiesApi, type Company } from '../services/api';
+import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult, type Company } from '../services/api';
+import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
 import type { Categoria } from '../types/dashboard';
 import { 
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload, CameraCapture 
@@ -23,12 +23,21 @@ import { ComprobanteAlLado } from '../components/ComprobanteAlLado';
 type Filtro = 'todos' | 'sinClasificar' | 'clasificados';
 
 export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
+  // La empresa activa es la misma que usan Escáner y Caja Chica. Un selector
+  // local aqui permitiria ver tickets de una empresa y crear gasto en otra; el
+  // backend rechazaria el cruce con 409, pero la pantalla ya habia mostrado
+  // datos ajenos antes de que llegara el error.
+  const { empresaActiva, empresas } = useEmpresa();
+  const companies: Array<Pick<Company, 'id' | 'name' | 'tax_id'>> = empresas.map((m) => ({
+    id: m.company_id,
+    name: m.name,
+    tax_id: m.tax_id,
+  }));
+  const selectedCompany = empresaActiva?.company_id ?? '';
   const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [companies, setCompanies] = useState<Company[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCompany, setSelectedCompany] = useState<string>('');
   const [filtro, setFiltro] = useState<Filtro>(filtroInicial ?? 'todos');
   // Que se abre en la pantalla que se acaba de llegar. Se sincroniza con
   // `filtroInicial` para que el clic en la barra gris del tablero abra aqui en
@@ -85,8 +94,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       // el cliente significaria traer los 500 tickets para descartar 400, y con
       // el limite del endpoint (100 por pagina) la cuenta seria falsa: "no hay
       // sin clasificar" cuando en realidad no salio en la primera pagina.
-      const [empresasData, ticketsData, categoriasData] = await Promise.all([
-        companiesApi.list(),
+      const [ticketsData, categoriasData] = await Promise.all([
         selectedCompany
           ? ticketsApi.list(selectedCompany, {
               sinCategoria: filtro === 'sinClasificar',
@@ -96,7 +104,6 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           : Promise.resolve([] as Ticket[]),
         ticketsApi.categorias(),
       ]);
-      setCompanies(empresasData);
       setTickets(ticketsData);
       setCategorias(categoriasData);
       setError(null);
@@ -476,18 +483,17 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
         </div>
       </div>
 
+      <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. Sin ella esta pantalla no puede mostrar tickets ni crear comprobantes." />
+
       <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
-            <select
-              value={selectedCompany}
-              onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">Seleccionar empresa...</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
-            </select>
+            <p className="text-sm font-medium text-gray-700 mb-1">Empresa activa</p>
+            <p className="text-sm text-gray-900" title={empresaActiva?.name}>
+              {empresaActiva
+                ? `${empresaActiva.name} (${empresaActiva.tax_id})`
+                : 'Sin empresa activa'}
+            </p>
           </div>
 
           {/* El filtro de clasificacion. Es lo que hace que la barra gris del

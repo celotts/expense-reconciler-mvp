@@ -694,7 +694,7 @@ class TestA9AuthYEmpresaInexistente:
         assert r.status_code == 404
 
     async def test_el_firmante_sale_del_token(
-        self, async_client, test_company, db_session
+        self, async_client, test_company, db_session, usuario_de_prueba
     ):
         """Regla 23: quien firma sale del token, nunca del cuerpo.
 
@@ -714,8 +714,9 @@ class TestA9AuthYEmpresaInexistente:
             },
         )
         assert r.status_code == 200
-        # El extra se ignora y el firmante es el del token.
-        assert "@test.local" in r.json()["firmado_por"]
+        # El extra se ignora y el firmante es el del token, no un sufijo
+        # escrito a mano que deje de coincidir si cambia el correo de prueba.
+        assert r.json()["firmado_por"] == usuario_de_prueba.email
 
 
 # ---------------------------------------------------------------------------

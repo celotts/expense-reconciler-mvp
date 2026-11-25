@@ -390,3 +390,64 @@ class TipoMovimiento(str, Enum):
         Verificado contra Postgres real en `scripts/verify_postgres_inventario.py`.
         """
         return self is not TipoMovimiento.SALIDA
+
+
+class EstadoCaja(str, Enum):
+    """Estado de una caja chica. No es el estado de un ticket.
+
+    `abierta` permite gastos y reposiciones; `en_revision` congela los movimientos
+    para que alguien cuente el efectivo; `cerrada` es definitiva y solo se alcanza
+    con `closed_at`. Las tres cadenas son las mismas que el CHECK de la base en
+    `0021_caja_chica_y_huella_fiscal.sql`.
+    """
+
+    ABIERTA = "abierta"
+    EN_REVISION = "en_revision"
+    CERRADA = "cerrada"
+
+
+class TipoMovimientoCaja(str, Enum):
+    """Que le paso al efectivo de una caja chica.
+
+    `apertura` y `reposicion` suman; `gasto_ticket` y `cierre` restan; `ajuste`
+    puede ir en cualquier direccion y por eso lleva `es_ajuste` en el servicio.
+    """
+
+    APERTURA = "apertura"
+    REPOSICION = "reposicion"
+    GASTO_TICKET = "gasto_ticket"
+    AJUSTE = "ajuste"
+    CIERRE = "cierre"
+
+    @property
+    def suma(self) -> bool:
+        return self in (TipoMovimientoCaja.APERTURA, TipoMovimientoCaja.REPOSICION)
+
+
+class OrigenFondo(str, Enum):
+    """De donde salio el dinero que entra a la caja."""
+
+    EFECTIVO = "efectivo"
+    BANCO = "banco"
+
+
+class RolEmpresa(str, Enum):
+    """Rol de una cuenta DENTRO de una empresa, no en el sistema entero.
+
+    No reemplaza a `perfil` (`digitalizador`, `supervisor`, ...): ese campo
+    describe el puesto y sigue siendo texto libre para compatibilidad. Este
+    enum es autorizacion y vive en `usuarios_empresas`, por empresa.
+
+    Las cuatro cadenas son las mismas que el CHECK de `0022`. Anadir uno sin
+    cambiar la base daria un 500 al escribir la membresia, no un 422 limpio.
+    """
+
+    OWNER = "owner"
+    ADMIN = "admin"
+    ACCOUNTANT = "accountant"
+    OPERATOR = "operator"
+
+    @property
+    def es_operador(self) -> bool:
+        """Solo `operator` tiene alcance limitado a sus propias cajas."""
+        return self is RolEmpresa.OPERATOR

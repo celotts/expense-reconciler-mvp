@@ -18,6 +18,7 @@ export type Page =
   | 'bank'
   | 'reconciliations'
   | 'cierre'
+  | 'cajachica'
   | 'auditoria';
 
 interface NavegacionContextValue {
@@ -44,7 +45,7 @@ export function NavegacionProvider({ children }: { children: ReactNode }) {
   // Empieza en la pagina del hash si esta presente, para que un refresco
   // (F5) preserve la ultima vista y la experiencia parezca un sitio real.
   const paginaInicial = (window.location.hash.replace(/^#/, '') || 'dashboard') as Page;
-  const JOBS: Page[] = ['dashboard','companies','tickets','scan','review','spotcheck','bank','reconciliations','cierre','auditoria'];
+  const JOBS: Page[] = ['dashboard','companies','tickets','scan','review','spotcheck','bank','reconciliations','cierre','cajachica','auditoria'];
   const [paginaActual, setPaginaActual] = useState<Page>(JOBS.includes(paginaInicial) ? paginaInicial : 'dashboard');
   const [filtroTickets, setFiltroTickets] = useState<FiltroTickets | null>(null);
 

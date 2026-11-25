@@ -115,6 +115,15 @@ class TicketModel(Base):
             "ix_tickets_spot_check_report", "company_id", "confidence_source",
             postgresql_where=text("spot_check_status IS NOT NULL"),
         ),
+        # Huella fiscal de negocio. No basta el indice por `source_hash`: dos
+        # archivos distintos pueden ser el mismo gasto (reimpresion, foto de
+        # otro telefono), y ese es exactamente el duplicado que aqui se busca.
+        # El orden de columnas es el de la migracion 0021, no una preferencia
+        # estetica: cambiarlo cambia el indice que Postgres puede usar.
+        Index(
+            "ix_tickets_company_fiscal_huella",
+            "company_id", "provider_tax_id", "folio", "expense_date", "total_amount",
+        ),
     )
 
     # --- Por que algunas columnas llevan `Mapped[T]` ---------------------
@@ -324,6 +333,11 @@ class TicketModel(Base):
     # Huella de negocio (RFC/RUT + fecha + folio + monto), calculada en servidor.
     # Complementa `source_hash` (archivo) y `ticket_documents.sha256` (bytes/version).
     hash_duplicado: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Caja chica que pago este gasto. `ON DELETE SET NULL` a proposito: borrar
+    # la caja no puede borrar el comprobante, que es la evidencia del gasto.
+    caja_chica_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cajas_chicas.id", ondelete="SET NULL"), nullable=True
+    )
     # Estado sincronizado desde conciliaciones: PENDIENTE / CONCILIADO / CON_DISCREPANCIA.
     estado_conciliacion: Mapped[str] = mapped_column(
         String(30), nullable=False, default="PENDIENTE"

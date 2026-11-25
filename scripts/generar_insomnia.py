@@ -180,6 +180,8 @@ CARPETAS: list[tuple[str, str]] = [
     ("/reports", "Reports"),
     ("/auditoria", "Auditoria"),
     ("/sistema", "Sistema"),
+    ("/caja-chica", "Caja chica"),
+    ("/duplicados", "Duplicados"),
 ]
 
 # El orden de ESTA lista es el orden de las carpetas, y el de las peticiones dentro de
@@ -241,7 +243,12 @@ QUERY_EJEMPLOS: dict[str, Any] = {
 NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/auth/login"): "1. Login  <- TIENE que ir primero",
     ("GET", "/auth/me"): "2. Quien soy (token valido)",
+    # Viene antes del listado de companies: responder "a cuáles puede entrar
+    # esta cuenta" no es lo mismo que "qué empresas hay", y el front ya no usa
+    # el segundo para decidir la empresa activa.
+    ("GET", "/auth/empresas"): "2a. Mis empresas (membresias y rol por empresa)",
     ("GET", "/health"): "Health",
+    ("POST", "/auth/logout"): "2b. Cerrar sesion",
     # --- Informe de cierre mensual ----------------------------------------
     # El JSON va antes que el PDF aunque el PDF sea el que se lleva, y el motivo
     # es el inverso del habitual: el PDF no se puede leer en pantalla. El preview
@@ -303,6 +310,8 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("GET", "/scan/runs/{corrida_id}"): "s5. Detalle de una corrida",
     ("POST", "/scan/files/{file_id}/reprocess"): "s6. Releer UN archivo (SI sobrescribe)",
     ("GET", "/scan/files/{file_id}"): "s7. Detalle de un archivo",
+    ("GET", "/scan/files/{file_id}/documento"): "s7b. Descargar el comprobante original",
+    ("GET", "/scan/files/{file_id}/documento/vista-previa"): "s7c. Vista previa del comprobante",
     # El reset NO es un endpoint de uso normal: da 404 salvo que
     # `TICKETS_SCAN_RESET_HABILITADO=true`, pide contrasena y la frase `BORRAR_YA`,
     # y se niega a borrar si hay un ticket revisado o una compra autorizada. El
@@ -375,6 +384,20 @@ NOMBRES: dict[tuple[str, str], str] = {
     # peticion, y quien lo lea con la coleccion delante lo comprueba en un clic.
     ("GET", "/auditoria"): "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
     ("GET", "/sistema/backup"): "s1. Respaldo de la base de datos  (descarga SQL, solo admin)",
+    # Caja chica. El orden sigue el flujo: crear, abrirla, mover dinero,
+    # enviar a revision y cerrar. Un movimiento antes de la caja no tiene
+    # sentido y la coleccion no debe sugerirlo.
+    ("POST", "/caja-chica/"): "cc1. Abrir caja chica  <- fija {{ caja_id }}",
+    ("GET", "/caja-chica/"): "cc2. Listar cajas",
+    ("GET", "/caja-chica/{caja_id}"): "cc3. Ver caja y su kardex",
+    ("PATCH", "/caja-chica/{caja_id}"): "cc4. Corregir nombre / responsable / umbral",
+    ("POST", "/caja-chica/{caja_id}/movimientos"): "cc5. Registrar movimiento  (banco solo si origen_fondo=banco)",
+    ("GET", "/caja-chica/{caja_id}/movimientos"): "cc6. Kardex de la caja",
+    ("POST", "/caja-chica/{caja_id}/en-revision"): "cc7. Enviar a revision (congela movimientos)",
+    ("POST", "/caja-chica/{caja_id}/reabrir"): "cc8. Reabrir una caja en revision",
+    ("POST", "/caja-chica/{caja_id}/cerrar"): "cc9. Cerrar caja (solo desde en_revision)",
+    ("POST", "/duplicados/buscar"): "d1. Buscar duplicado por huella fiscal ANTES de contar el gasto",
+    ("GET", "/duplicados/resumen"): "d2. Resumen de duplicados (total sin contar dos veces)",
 }
 
 # Los tres scripts que hacen que la coleccion se sustains sola.

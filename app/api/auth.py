@@ -35,8 +35,15 @@ from app.core.security import (
     verificar_contrasena,
 )
 from app.core.time import utcnow
+from app.models.company import CompanyModel
 from app.models.user import UserModel
-from app.schemas.auth import LoginRequest, TokenResponse, UsuarioResponse
+from app.models.usuario_empresa import UsuarioEmpresaModel
+from app.schemas.auth import (
+    LoginRequest,
+    MembresiaEmpresaResponse,
+    TokenResponse,
+    UsuarioResponse,
+)
 from app.services.auditoria import (
     registrar_intento_fallido_auditoria,
     registrar_login_auditoria,
@@ -238,3 +245,44 @@ async def yo(usuario: UsuarioActual) -> UsuarioResponse:
     lo que dice la verdad, y por eso se llama en cada carga de la aplicacion.
     """
     return UsuarioResponse.model_validate(usuario)
+
+
+@router.get(
+    "/empresas",
+    response_model=list[MembresiaEmpresaResponse],
+    tags=["Auth"],
+    summary="Empresas a las que esta cuenta tiene acceso",
+)
+async def mis_empresas(usuario: UsuarioActual, db: Sesion) -> list[MembresiaEmpresaResponse]:
+    """Las membresias activas y el rol en cada una, leidos de la BD.
+
+    El cliente necesita esta lista para elegir la empresa activa y para no
+    ofrecer acciones que su rol no puede ejecutar. No la saca del token: un rol
+    cambiado en la BD surte efecto en el proximo request, igual que `is_active`
+    (regla 9 de `AGENTS.md`). Tampoco la saca de `companies`: ahi estan TODAS,
+    y enumerarlas aqui seria invitar al navegador a elegir una ajena.
+    """
+    filas = (
+        await db.execute(
+            select(CompanyModel, UsuarioEmpresaModel.rol)
+            .join(
+                UsuarioEmpresaModel,
+                UsuarioEmpresaModel.company_id == CompanyModel.id,
+            )
+            .where(
+                UsuarioEmpresaModel.user_id == usuario.id,
+                UsuarioEmpresaModel.activo.is_(True),
+            )
+            .order_by(CompanyModel.name)
+        )
+    ).all()
+
+    return [
+        MembresiaEmpresaResponse(
+            company_id=company.id,
+            name=company.name,
+            tax_id=company.tax_id,
+            rol=rol,
+        )
+        for company, rol in filas
+    ]

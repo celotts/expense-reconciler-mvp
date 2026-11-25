@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends
 from app.api.auth import router as auth_router
 from app.api.auditoria import router as auditoria_router
 from app.api.bank_transactions import router as bank_transactions_router
+from app.api.caja_chica import router as caja_chica_router
 from app.api.categorias import router as categorias_router
+from app.api.duplicados import router as duplicados_router
 from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.inventario import router as inventario_router
@@ -13,7 +15,7 @@ from app.api.scans import router as scan_router
 from app.api.sistema import router as sistema_router
 from app.api.tickets import router as tickets_router
 from app.api.usuarios import router as usuarios_router
-from app.core.deps import get_current_user
+from app.core.deps import empresa_activa, get_current_user
 from app.routers.expenses import router as expenses_router
 
 api_router = APIRouter()
@@ -148,4 +150,20 @@ api_router.include_router(
     prefix="/sistema",
     tags=["Sistema"],
     dependencies=[Depends(get_current_user)],
+)
+# Caja chica y duplicados fiscales. Ademas del token se exige la empresa activa
+# A NIVEL DE ROUTER, por el mismo motivo que el token: escrito endpoint por
+# endpoint, el endpoint nuevo que se anada mañana nace sin la puerta y nadie lo
+# nota. La empresa se resuelve en BD contra las membresias, no se lee del token.
+api_router.include_router(
+    caja_chica_router,
+    prefix="/caja-chica",
+    tags=["Caja chica"],
+    dependencies=[Depends(get_current_user), Depends(empresa_activa)],
+)
+api_router.include_router(
+    duplicados_router,
+    prefix="/duplicados",
+    tags=["Duplicados"],
+    dependencies=[Depends(get_current_user), Depends(empresa_activa)],
 )

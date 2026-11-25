@@ -89,6 +89,21 @@ class UsuarioResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MembresiaEmpresaResponse(BaseModel):
+    """Una empresa a la que esta cuenta puede entrar, con SU rol en ella.
+
+    No es `CompanyResponse` con un campo pegado: la pregunta no es "qué empresas
+    hay" sino "a cuáles puede entrar esta cuenta". Un `companiesApi.list()` del
+    cliente respondería la primera y dejaría que el navegador se adjudique roles
+    que el servidor nunca le dio.
+    """
+
+    company_id: UUID
+    name: str
+    tax_id: str
+    rol: str
+
+
 class UsuarioUpdate(BaseModel):
     """Lo que se puede cambiar de una cuenta. Todo opcional.
 

@@ -25,7 +25,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 
 | Capa | Ubicación |
 |---|---|
-| API | `app/api/` — 11 routers bajo `/api/v1`, más `app/routers/expenses.py` (carga por lote y directorio) |
+| API | `app/api/` — 15 routers bajo `/api/v1` (incluidos `caja_chica.py` y `duplicados.py`), más `app/routers/expenses.py` (carga por lote y directorio) |
 | Captura | `app/services/capture.py` → cascada de 5 escalones |
 | OCR local | `app/services/ocr.py` → Tesseract, lazy |
 | Escáner | `app/services/scan_service.py` → recorre `TICKETS_INPUT_DIR` |
@@ -36,11 +36,12 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
-| Front | `front/src/` — React 18 + Vite + TS + Tailwind, 9 páginas |
-| Tests | **1818**: 1373 unit, 445 integration. **1815 passed, 3 skip** con `git` en la imagen; sin él fallan 6 tests de `.gitignore`/lockfile por entorno |
+| Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
+| Front | `front/src/` — React 18 + Vite + TS + Tailwind, 10 páginas (la nueva es `CajaChica.tsx`) |
+| Tests | **1890**: **1889 passed, 1 skip**, 20 warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
-`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports`
+`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/expenses` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports` · `/sistema` · `/auditoria` · `/caja-chica` · `/duplicados`
 Sin auth: solo `GET /health` y `POST /api/v1/auth/login`. `/health` **consulta la base**
 (ver *La app no levanta antes de que sus dependencias estén arriba*).
 
@@ -114,10 +115,17 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 1507
+python3 -m pytest tests/ -q           # 1889 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
+
+cd front && npm run build             # tsc + vite: la puerta que sí sirve
+cd front && npm run verify:caja       # 16 comprobaciones sobre el HTML de CajaChica
+cd front && npm run verify:fecha      # la fecha no se corre un día
 ```
+
+> `npm run verify` **no** es puerta fiable mientras `verify_login` falle contra la
+> API real (`docs/known-issues.md` §33). Los verificadores puntuales sí lo son.
 
 > **`--import-mode=importlib` en `pytest.ini`, y por qué está.** Hay dos archivos
 > llamados `test_reporte_cierre.py`, uno en `unit/` y otro en `integration/`: los
@@ -126,6 +134,91 @@ python3 -m pytest tests/integration -q
 > colisionan y pytest aborta el collection entero. La alternativa clásica
 > (`__init__.py` en cada carpeta) cambiaría el layout de todo el árbol de tests por
 > un problema de un solo par de archivos.
+
+### Caja chica: el saldo es una decisión, y la huella fiscal es otra
+Antes de este trabajo existía **solo** `db/migrations/0021_caja_chica_y_huella_fiscal.sql`.
+La migración creaba las tablas y el índice, pero no había modelo, schema, servicio,
+router, pantalla ni un solo test: una base con tablas y un API que no sabía de ellas.
+Ahora el recorrido está completo: `schemas/caja_chica.py` → `caja_chica_service.py` →
+`api/caja_chica.py` → `front/src/pages/CajaChica.tsx`, con el espejo en `init.sql`
+para que una base nueva no nazca rota.
+
+**`saldo_actual` se mueve con `UPDATE ... WHERE saldo_actual + delta >= 0` en la
+misma transacción que el movimiento.** Dos gastos que leen el mismo saldo no pueden
+escribir dos filas y dejar la caja en negativo: si la fila no se actualizó, no se
+escribe el movimiento y se devuelve 409. En Postgres se toma `FOR UPDATE`; en SQLite
+(la suite) decide la condición del `WHERE`. La comprobación en Python no sustituye a
+la condición atómica: la acompaña para que el 409 diga qué pasó.
+
+**Los estados son `abierta` → `en_revision` → `cerrada`, y solo `en_revision` puede
+cerrarse.** `CierreCajaRequest.closed_at` es opcional: si no llega, el servicio
+estampa `utcnow()`; el formulario lo pide igual para que la persona vea qué instante
+declara. Una caja cerrada no acepta movimientos ni cambios. Los tipos son
+`apertura` · `reposicion` · `gasto_ticket` · `ajuste` · `cierre`. Un `ajuste` no
+tiene signo propio: `resta=true` es la única forma de restar. Una `reposicion` debe
+decir `origen_fondo`; con `banco`, `banco_nombre` es obligatorio desde el schema
+(`extra="forbid"`), no desde la buena intención del front. Quien **firma** cada
+movimiento (`created_by`) sale del token, nunca del cuerpo (regla 23);
+`responsable_id` no es una firma sino la persona a cuyo cargo queda la caja, y el
+front la toma de la sesión en vez de dejar que se escriba a mano.
+
+**`saldo_bajo_umbral` es `@computed_field` y usa `<=`.** Lo calcula el servidor y
+viaja en el JSON. El front lo lee; si lo calculara, dos clientes podrían defender
+umbrales distintos con el mismo saldo. Los importes son `Decimal` cuantizados con
+`ROUND_HALF_UP` y llegan al navegador como **texto**: `dinero()` los formatea, pero
+el navegador no suma ni redondea.
+
+**Dos huellas, dos preguntas.** `source_hash` / `sha256` responden «¿son los mismos
+bytes?»; la huella fiscal responde «¿es el mismo gasto?» (RFC + fecha + folio +
+total, normalizados). Dos fotos del mismo papel tienen bytes distintos. El índice
+`ix_tickets_company_fiscal_huella` incluye la empresa porque el mismo comprobante
+en dos empresas es legítimo. `buscar_duplicados_fiscales` consulta los **campos** del
+índice, no solo `hash_duplicado`: los tickets antiguos no lo traen y un falso
+negativo dejaría contar dos veces el papel sin aviso. Sin fecha o sin total no se
+afirma duplicado: un falso positivo que bloquea la carga cuesta más que un falso
+negativo que se reporta.
+
+**`total_conciliado_sin_duplicados` cuenta una unidad por huella**, y solo si esa
+unidad está conciliada; los tickets sin huella se cuentan por separado. Sumar todas
+las filas del resumen en el front duplicaría los reenvíos y además contaría tickets
+pendientes como gasto confirmado. El aviso y el total salen del servidor.
+
+`front/scripts/verificar_caja_en_pantalla.tsx` monta la pantalla con el JSON real y
+mira **el HTML**, no el retorno de las funciones: `tsc` pasa con un `undefined` en
+pantalla. Las tres defensas que verificó (aviso de umbral, total del backend y
+pestaña de duplicados) mueren al quitarlas. `pestanaInicial` existe solo para que
+`renderToStaticMarkup` pueda entrar en la pestaña sin simular un clic.
+
+### Multi-empresa y roles: la empresa activa se decide en la BD
+`db/migrations/0022_roles_y_empresa_activa.sql` crea `usuarios_empresas`
+(`user_id`, `company_id`, `rol`, `activo`) con PK compuesta y backfill de **admin en
+todas las empresas** para que aplicar la migración no deje a nadie sin acceso.
+No se reutilizan `perfil` ni `grupo`: son texto libre y no saben *en qué empresa*
+valen. Los roles son `owner` · `admin` · `accountant` · `operator`; el ámbito de
+`operator` se resuelve en el servicio (`cajas_chicas.responsable_id == usuario.id`),
+no en el router.
+
+**El rol no va en el JWT.** `GET /api/v1/auth/empresas` devuelve las membresías
+activas con su rol, leídas de la BD en cada petición; cambiar un rol surte efecto
+sin nuevo token, igual que `is_active` (regla 9). `GET /companies` sigue listando
+**todas** las empresas y por eso el front dejó de usarlo para decidir acceso.
+
+**`X-Company-ID` es la empresa activa, y la valida el servidor.**
+`app/core/deps.py:empresa_activa` la comprueba contra las membresías: UUID inválido
+→ 400, sin membresía o empresa ajena → 403, sin header con varias empresas → 409,
+y un recurso de otra empresa → 404 (no 403: no se filtra la existencia ajena). Un
+`company_id` en el cuerpo o en la query distinto del activo → 409. El parámetro
+`company_id` se conserva como alias por compatibilidad, pero se compara, no se
+confía en él. Los routers de caja y duplicados llevan `Depends(empresa_activa)` a
+nivel de router.
+
+`front/src/contextos/Empresa.tsx` es el único sitio que elige. `api.ts` inyecta la
+cabecera **después** de los headers sueltos para que una pantalla no pueda
+sobrescribirla; Escáner, Tickets y Caja Chica muestran el mismo `AvisoSinEmpresa`
+cuando no hay elección. `App.tsx` usa el rol por empresa para no ofrecer Caja Chica
+a quien no puede entrar, pero esa es una comodidad: la autoridad sigue siendo el
+servicio. `npm run verify:empresa` monta el aviso en HTML y comprueba el orden de
+inyección y que ninguna pantalla vuelva a decidir `companyId` por su cuenta.
 
 ### El informe de cierre mensual — el documento que faltaba
 `app/services/reporte_cierre.py` + `app/api/reports.py` (`/api/v1/reports`).
