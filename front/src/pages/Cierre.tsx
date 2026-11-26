@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  companiesApi, reportsApi,
-  type Company, type ReporteCierreMensual,
+  reportsApi, type ReporteCierreMensual,
 } from '../services/api';
 import { Button, Card, Badge, Loading, EmptyState, Select } from '../components/ui';
 import { dinero, numero, porcentaje } from '../utils/format';
 import { useNavegacion } from '../contextos/Navegacion';
+import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
 import {
   periodoActual, periodosDisponibles, nombrePeriodo, lineaEstado, lineaAdvertencia,
   lineaComparativo, lineaExactitud, nombreArchivo, descargarBlob,
@@ -82,8 +82,11 @@ function Fila({ k, v }: { k: string; v: React.ReactNode }) {
  *  Con `null` (que es como la usa la aplicacion) el comportamiento es el de
  *  siempre: pedir el informe. */
 export function Cierre({ informeInicial }: { informeInicial?: ReporteCierreMensual | null } = {}) {
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [companyId, setCompanyId] = useState<string>('');
+  // La empresa activa la elige UN solo sitio: el contexto global. Un selector
+  // local permitiria pedir el informe de una empresa distinta de la cabecera
+  // `X-Company-ID` que usan el resto de las pantallas.
+  const { empresaActiva, empresas } = useEmpresa();
+  const companyId = empresaActiva?.company_id ?? '';
   const [periodo, setPeriodo] = useState<string>(periodoActual());
   const [reporte, setReporte] = useState<ReporteCierreMensual | null>(informeInicial ?? null);
   // `loading` arranca en `false` cuando el informe YA viene dado. Con `true`, el
@@ -95,22 +98,6 @@ const [loading, setLoading] = useState(!informeInicial);
   const [descargando, setDescargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { irA } = useNavegacion();
-
-  // Las empresas se cargan una vez y no en cada cambio de periodo: no cambian
-  // con el mes, y volver a pedirlas en cada cambio de selector hace parpadear la
-  // pantalla por algo que no cambio.
-  useEffect(() => {
-    companiesApi.list()
-      .then(c => {
-        setCompanies(c);
-        // Se escoge la primera por omision. Sin esto la pantalla abre sin
-        // empresa y el informe no se puede pedir: el backend exige
-        // `company_id` (required: true), y una pantalla que nace vacia obliga a
-        // un clic extra antes de poder hacer nada.
-        setCompanyId(prev => prev || (c.length > 0 ? c[0].id : ''));
-      })
-      .catch(e => setError(e instanceof Error ? e.message : 'No se pudieron cargar las empresas'));
-  }, []);
 
   const cargar = useCallback(async () => {
     if (!companyId) {
@@ -156,7 +143,7 @@ const [loading, setLoading] = useState(!informeInicial);
     }
   };
 
-  const opcionesEmpresa = companies.map(c => ({ value: c.id, label: c.name }));
+  const nombreEmpresa = empresas.find((m) => m.company_id === companyId)?.name ?? '';
   const opcionesPeriodo = periodosDisponibles().map(p => ({
     value: p, label: nombrePeriodo(p),
   }));
@@ -172,19 +159,19 @@ const [loading, setLoading] = useState(!informeInicial);
         </div>
       </header>
 
+      <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. El informe no se puede atribuir a una empresa sin saber cuál está activa." />
+
       {/* Selector. El periodo va SIEMPRE explicito al backend, incluso siendo el
           mes en curso: el `periodo` es `required` y su regex es
           `^\d{4}-(0[1-9]|1[0-2])$`. */}
       <Card>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Select
-            label="Empresa"
-            options={opcionesEmpresa.length > 0
-              ? opcionesEmpresa
-              : [{ value: '', label: 'Sin empresas' }]}
-            value={companyId}
-            onChange={e => setCompanyId(e.target.value)}
-          />
+          <div>
+            <p className="text-sm font-medium text-gray-700">Empresa activa</p>
+            <p className="mt-2 text-sm text-gray-900" title={nombreEmpresa}>
+              {nombreEmpresa || 'Sin empresa activa'}
+            </p>
+          </div>
           <Select
             label="Periodo"
             options={opcionesPeriodo}

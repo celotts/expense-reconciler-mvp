@@ -202,8 +202,16 @@ const COMPARATIVO_EN_CURSO: ReporteCierreMensual = {
  *  El `NavegacionProvider` es obligatorio: `Cierre` llama a `useNavegacion()`
  *  para el enlace al muestreo, y fuera del provider eso es un `throw`. Sin el
  *  wrapper este script no podria montar la pagina — que es justamente lo que
- *  hay que probar. */
+ *  hay que probar.
+ *
+ *  `NavegacionProvider` lee `window.location.hash` durante el render. Aqui corre
+ *  en Node, sin DOM, y sin ese minimo el verificador muere antes de mirar el
+ *  HTML. Es un stub del navegador, NO una sustitucion de ninguna comprobacion:
+ *  el periodo, el informe y el texto siguen saliendo de los datos de abajo. */
 function pintar(informe: ReporteCierreMensual): string {
+  (globalThis as { window?: unknown }).window ??= {
+    location: { hash: '' },
+  };
   return renderToStaticMarkup(
     React.createElement(
       NavegacionProvider,

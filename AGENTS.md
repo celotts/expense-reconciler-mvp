@@ -37,12 +37,17 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
-| Front | `front/src/` — React 18 + Vite + TS + Tailwind, 10 páginas (la nueva es `CajaChica.tsx`) |
-| Tests | **1890**: **1889 passed, 1 skip**, 20 warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
+| Front | `front/src/` — React 18 + Vite + TS + Tailwind, 13 archivos de página (los nuevos son `CajaChica.tsx` y `Mantenimiento.tsx`) |
+| Tests | **1925**: **1924 passed, 1 skip**, 20 warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
-`/auth` · `/dashboard` · `/categorias` · `/companies` · `/tickets` · `/expenses` · `/bank-transactions` · `/reconciliations` · `/scan` · `/inventario` · `/usuarios` · `/reports` · `/sistema` · `/auditoria` · `/caja-chica` · `/duplicados`
-Sin auth: solo `GET /health` y `POST /api/v1/auth/login`. `/health` **consulta la base**
+Las rutas del front son hashes y las decide `renderPage` en `App.tsx`: `#/dashboard` ·
+`#/companies` · `#/tickets` · `#/scan` · `#/review` · `#/spotcheck` · `#/bank` ·
+`#/reconciliations` · `#/cierre` · `#/cajachica` · `#/auditoria` · `#/mantenimiento`, además
+de la pantalla de acceso. Las páginas `categorias`, `expenses`, `inventario`, `usuarios`,
+`reports`, `sistema` y `duplicados` que se listaban aquí ya no se montan en `App.tsx`: sus
+datos se alcanzan desde otras pantallas o desde la API. Sin auth: solo `GET /health` y
+`POST /api/v1/auth/login`. `/health` **consulta la base**
 (ver *La app no levanta antes de que sus dependencias estén arriba*).
 
 ## Modo agente y uso de Ollama local (Mac M3 · 16 GB RAM)
@@ -115,12 +120,14 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 1889 passed, 1 skip
+python3 -m pytest tests/ -q           # 1924 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 
 cd front && npm run build             # tsc + vite: la puerta que sí sirve
 cd front && npm run verify:caja       # 16 comprobaciones sobre el HTML de CajaChica
+cd front && npm run verify:menu       # orden del menú y roles por empresa
+cd front && npm run verify:mantenimiento # HTML de Mantenimiento y orden de headers
 cd front && npm run verify:fecha      # la fecha no se corre un día
 ```
 
@@ -219,6 +226,46 @@ cuando no hay elección. `App.tsx` usa el rol por empresa para no ofrecer Caja C
 a quien no puede entrar, pero esa es una comodidad: la autoridad sigue siendo el
 servicio. `npm run verify:empresa` monta el aviso en HTML y comprueba el orden de
 inyección y que ninguna pantalla vuelva a decidir `companyId` por su cuenta.
+
+### Mantenimiento: crear una cuenta y darle acceso son dos decisiones
+Antes no había pantalla para administrar cuentas: `Login.tsx` decía que las creaba quien
+tenía la base de datos, y `perfil` —texto libre— decidía qué se ofrecía en el menú. Ahora
+`front/src/pages/Mantenimiento.tsx` tiene dos pestañas, **Usuarios** y **Roles por empresa**,
+y solo la ofrece `owner`/`admin` de la empresa activa. La etiqueta del rol del pie de la barra
+lateral sigue siendo la existente (`Rol en esta empresa: ${rol}`): no se creó otra.
+
+`front/src/permisos.ts` es la única matriz `Page` × rol. `ORDEN_PAGINAS` sigue el flujo
+Inicio → Escáner → Tickets → Cola → Muestreo → Banco → Conciliación → Caja chica → Cierre →
+Empresas → Auditoría → **Mantenimiento**. `App.tsx` filtra el menú con `paginasPermitidas(rol)`
+y la guardia de ruta alcanza también el hash escrito a mano; no hay un `rolPuedeCaja` suelto.
+`accountant` no ve Mantenimiento ni Caja chica; `operator` ve Inicio, Escáner, Tickets y su
+Caja chica. El menú es una comodidad: la autoridad la vuelve a leer el servidor en cada
+petición.
+
+El backend nuevo son cuatro rutas en `app/api/usuarios.py`: `GET/POST /usuarios/membresias`,
+`PATCH /usuarios/membresias/{id}` y `POST /usuarios/{id}/contrasena-admin`. Van **antes** de
+`/{usuario_id}` para que `membresias` no caiga en el placeholder UUID. Las escrituras piden
+`UsuarioVerificado` **y** `requiere_rol(owner, admin)`; `company_id` sale de `X-Company-ID`,
+nunca del cuerpo (`extra="forbid"`). `membresias_service` bloquea con 409 quitar o degradar al
+último `owner`/`admin` activo, y audita con `usuario_id` del token, `rol` de la empresa y
+`registro_afectado`. No hizo falta migración: `0022` ya crea `usuarios_empresas`.
+
+**El reset administrativo no es el cambio propio.** `POST /{id}/contrasena` sigue exigiendo la
+clave de la cuenta objetivo; un administrador no la conoce y no debe pedirla. La ruta nueva
+exige solo la clave del administrador (`X-Contrasena-Actual`) más su rol, y no guarda ni
+audita la clave nueva. En el front, `api.ts` inyecta ese header **después** de los headers
+sueltos y antes de la empresa, por el mismo motivo que `X-Company-ID`: una pantalla no puede
+decir por su cuenta que ya está verificada. La firma se pide en cada operación y no se guarda
+en `localStorage`. Como no hay `jti`, un token emitido antes del reset sigue vivo 8 horas: el
+mensaje de la pantalla lo dice en vez de prometer una revocación que no existe.
+
+Los endpoints antiguos de `/usuarios` se conservaron como estaban: ponerles `requiere_rol`
+rompía su contrato y sus pruebas. La autoridad nueva está en las rutas de Mantenimiento.
+`tests/integration/test_mantenimiento_roles.py` (16 pruebas) cubre el recorrido HTTP;
+`npm run verify:menu` y `npm run verify:mantenimiento` miran el HTML montado y el orden de
+cabeceras, no el retorno de una función. La colección de Insomnia se regeneró con las cuatro
+rutas (107 peticiones, 18 carpetas) y `RUTAS_CON_CONTRASENA` se amplió a mano: es una
+dependencia, y FastAPI no la declara en el OpenAPI.
 
 ### El informe de cierre mensual — el documento que faltaba
 `app/services/reporte_cierre.py` + `app/api/reports.py` (`/api/v1/reports`).
@@ -808,14 +855,14 @@ atribuido a otra empresa **no se mueve**.
 **de la API viva**. No lo edites a mano: se pierde en la siguiente regeneración.
 
 ```bash
-make insomnia         # regenerar (74 peticiones, 10 carpetas)
+make insomnia         # regenerar (107 peticiones, 18 carpetas)
 make insomnia-check   # sale 1 si está desfasado — para cuando añades una ruta
 ```
 
 Por qué importa: la versión anterior estaba exportada del **2025-01-21** con 25 peticiones de
-las 52 que expone hoy, y —esto es lo que la hacía inútil— **sin un solo header `Authorization`**.
-Como `api_router.py` pone el token obligatorio a nivel de router, 51 de 52 rutas respondían 401.
-Un archivo que no sabe que hay rutas nuevas no avisa; por eso es generado.
+las que hoy expone la API, y —esto es lo que la hacía inútil— **sin un solo header
+`Authorization`**. Como `api_router.py` pone el token obligatorio a nivel de router, casi todas
+respondían 401. Un archivo que no sabe que hay rutas nuevas no avisa; por eso es generado.
 
 Cuatro cosas que el generador respeta y que no hay que romper al tocarlo:
 - **`password` y `contrasena_actual` salen vacías.** El archivo está versionado con remoto en
@@ -2135,15 +2182,15 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   (`asignar_producto`, `registrar_movimiento`, y el `PATCH` de producto): es la última
   línea antes de que un dato de una acabe en el kardex de otra.
 
-- **`/usuarios` es el primer router que compromete a OTRO usuario, y no hay roles.**
-  `PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` existían solo como script de
-  CLI hasta ahora. Sin `is_admin` ni scoping, **cualquier cuenta autenticada puede dar de
-  baja a cualquier otra** — disponibilidad, no confidencialidad. Lo que sí acota el daño:
-  exigen `X-Contrasena-Actual` (`deps.get_current_user_verificado`), y la última cuenta
-  activa no se puede dar de baja (409). Lo que **no** se hizo, y sigue abierto: decidir
-  *quién puede tocar a quién*. Eso necesita columnas de rol, y una comprobación de rol
-  sin el modelo sería fingir que hay control de acceso donde solo hay autenticación.
-  Ver `docs/known-issues.md` §28.
+- **`/usuarios` sigue teniendo endpoints antiguos que no miran el rol por empresa.**
+  `PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` comprometen a otra cuenta y
+  siguen pidiendo solo token + `X-Contrasena-Actual`, sin `requiere_rol`: se conservaron
+  para no romper su contrato ni sus pruebas. Lo que sí acota el daño es que la última
+  cuenta activa no se puede dar de baja (409) y que cambiar la clave ajena exige conocer
+  la clave de esa cuenta. La autoridad nueva —roles por empresa, reset administrativo y
+  menú— vive en las rutas de Mantenimiento y en `front/src/permisos.ts`, leídas de la BD
+  en cada petición. No mezcles las dos familias: añadir `requiere_rol` a las antiguas es
+  un cambio de contrato, no una mejora local. Ver `docs/known-issues.md` §28.
 
 - **Cambiar la contraseña pide DOS contraseñas, y son distintas.** El header
   `X-Contrasena-Actual` es la de *quien llama* (prueba que no hay un token robado); el

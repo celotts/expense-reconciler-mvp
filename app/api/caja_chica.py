@@ -31,6 +31,7 @@ from app.schemas.caja_chica import (
     CajaChicaResponse,
     CajaChicaUpdate,
     CierreCajaRequest,
+    ConciliacionCajaResponse,
     MovimientoCajaCreate,
     MovimientoCajaResponse,
 )
@@ -82,6 +83,29 @@ async def listar_cajas(
     return await caja_chica_service.listar_cajas(
         db, company_id, usuario_id=usuario.id, rol=rol
     )
+
+
+@router.get(
+    "/{caja_id}/conciliacion-bancaria", response_model=ConciliacionCajaResponse
+)
+async def conciliacion_bancaria(
+    caja_id: UUID,
+    usuario: UsuarioActual,
+    company_id: EmpresaActiva,
+    rol: RolEnEmpresa,
+    db: AsyncSession = Depends(get_db),
+) -> ConciliacionCajaResponse:
+    """Reposiciones de la caja cruzadas contra movimientos del banco.
+
+    El prefijo lleva dos segmentos, asi que no choca con `/{caja_id}`; aun asi
+    se declara antes para que nadie tenga que acordarse de la trampa de FastAPI.
+    """
+    try:
+        return await caja_chica_service.conciliar_reposiciones_bancarias(
+            db, caja_id, company_id=company_id, usuario_id=usuario.id, rol=rol
+        )
+    except ErrorCaja as error:
+        _fallar(error)
 
 
 @router.get("/{caja_id}", response_model=CajaChicaConMovimientos)
@@ -227,6 +251,7 @@ async def cerrar_caja(
             caja_id,
             EstadoCaja.CERRADA,
             closed_at=datos.closed_at if datos else None,
+            efectivo_contado=datos.efectivo_contado if datos else None,
             company_id=company_id,
             usuario_id=usuario.id,
             rol=rol,

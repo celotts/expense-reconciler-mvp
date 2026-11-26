@@ -81,6 +81,10 @@ class CajaChicaResponse(BaseModel):
     estado: EstadoCaja
     opened_at: datetime
     closed_at: datetime | None
+    # El conteo del cierre lo hace una persona y lo escribe el servidor. `None`
+    # significa "esta caja no se cerro con conteo", no "se conto cero".
+    efectivo_contado: Decimal | None = None
+    diferencia_cierre: Decimal | None = None
 
     @computed_field
     @property
@@ -142,8 +146,20 @@ class MovimientoCajaCreate(BaseModel):
             raise ValueError("La reposicion debe decir si el fondo viene de efectivo o de banco")
         if self.origen_fondo is OrigenFondo.BANCO and not self.banco_nombre:
             raise ValueError("Si el fondo viene de banco, banco_nombre es obligatorio")
-        if self.origen_fondo is OrigenFondo.EFECTIVO and self.banco_nombre:
-            raise ValueError("Un fondo en efectivo no lleva banco_nombre")
+        # Los datos de banco no se "limpian" en silencio: `extra='forbid'` ya
+        # rechaza campos desconocidos y aqui se rechaza la combinacion imposible.
+        # Una referencia bancaria en una reposicion en efectivo no es un dato
+        # suelto: es una afirmacion de donde salio el dinero, y seria falsa.
+        if self.origen_fondo is OrigenFondo.EFECTIVO and (
+            self.banco_nombre or self.referencia_bancaria
+        ):
+            raise ValueError(
+                "Un fondo en efectivo no lleva banco_nombre ni referencia_bancaria"
+            )
+        if self.origen_fondo is not OrigenFondo.BANCO and (
+            self.banco_nombre or self.referencia_bancaria
+        ):
+            raise ValueError("Los datos de banco solo valen si el fondo viene de banco")
         if self.tipo is TipoMovimientoCaja.GASTO_TICKET and self.ticket_id is None:
             raise ValueError("Un gasto_ticket debe llevar ticket_id")
         if self.tipo is not TipoMovimientoCaja.GASTO_TICKET and self.ticket_id is not None:
@@ -159,6 +175,20 @@ class CierreCajaRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     closed_at: datetime | None = None
+    # Opcional por compatibilidad: un cliente que cierra sin contar sigue
+    # funcionando. Cuando llega, el servidor calcula la diferencia contra el
+    # saldo y la guarda; el front nunca la calcula.
+    efectivo_contado: Decimal | None = Field(default=None, ge=0)
+
+    @field_validator("efectivo_contado")
+    @classmethod
+    def _importes(cls, valor: Decimal | None) -> Decimal | None:
+        if valor is None:
+            return None
+        valor = _dos_decimales(valor)
+        if valor < 0:
+            raise ValueError("El efectivo contado no puede ser negativo")
+        return valor
 
 
 class MovimientoCajaResponse(BaseModel):
@@ -180,6 +210,53 @@ class MovimientoCajaResponse(BaseModel):
 
 class CajaChicaConMovimientos(CajaChicaResponse):
     movimientos: list[MovimientoCajaResponse] = Field(default_factory=list)
+
+
+class ReposicionCruzada(BaseModel):
+    """Una reposicion desde banco y, si existe, el movimiento bancario que la explica.
+
+    `bank_transaction_id=None` no es un error de lectura: es "no hay cargo
+    bancario que cuadre". Se reporta, no se inventa ni se marca como reconciliado
+    el movimiento del banco —esa decision sigue siendo de la conciliacion de
+    tickets, que responde otra pregunta.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    movimiento_id: UUID
+    fecha: datetime
+    monto: Decimal
+    banco_nombre: str | None
+    referencia_bancaria: str | None
+    bank_transaction_id: UUID | None = None
+    fecha_banco: date | None = None
+    descripcion_banco: str | None = None
+    resultado: str
+
+    @model_validator(mode="after")
+    def _coherencia(self) -> "ReposicionCruzada":
+        if self.bank_transaction_id is None and self.resultado != "SIN_CRUCE":
+            raise ValueError("Sin movimiento bancario solo puede ser SIN_CRUCE")
+        if self.bank_transaction_id is not None and self.resultado != "CRUZADA":
+            raise ValueError("Con movimiento bancario el resultado es CRUZADA")
+        return self
+
+
+class ConciliacionCajaResponse(BaseModel):
+    """Cruce de reposiciones bancarias contra `bank_transactions`, solo lectura.
+
+    Los totales los calcula el servidor con `Decimal`: si el front sumara, dos
+    clientes podrian redondear distinto el mismo conjunto de movimientos.
+    """
+
+    company_id: UUID
+    caja_chica_id: UUID
+    reposiciones: list[ReposicionCruzada] = Field(default_factory=list)
+    cruzadas: int = 0
+    sin_cruzar: int = 0
+    total_cruzado: Decimal = Decimal("0.00")
+    total_sin_cruzar: Decimal = Decimal("0.00")
+    advertencia: str | None = None
 
 
 class BuscarDuplicadoRequest(BaseModel):

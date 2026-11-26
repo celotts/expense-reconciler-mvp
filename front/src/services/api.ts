@@ -81,6 +81,11 @@ interface OpcionesPeticion extends RequestInit {
    *  usuario de la pantalla de entrar y lo mandaria a una pantalla de
    *  "vuelve a entrar" que no tiene sentido porque nunca entro. */
   sinToken?: boolean;
+  /** La contrasena de quien administra, para las operaciones que comprometen
+   *  a otra cuenta. NO se guarda: solo viaja en este header, en esta peticion.
+   *  Un campo en el cuerpo habria que declararlo en cada schema y acabaria en
+   *  un log; aqui sale del mismo sitio que el token. */
+  contrasenaActual?: string;
 }
 
 /** La cabecera de autorizacion, o `null` si no hay token que mandar.
@@ -102,7 +107,7 @@ function cabeceraDeAutorizacion(): Record<string, string> {
  *  leeria como credenciales malas, que es la unica mentira que este flujo no
  *  debe contar. */
 export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = {}): Promise<T> {
-  const { sinToken, ...resto } = options;
+  const { sinToken, contrasenaActual, ...resto } = options;
 
   // Un `FormData` NO lleva `Content-Type`. El navegador tiene que ponerlo
   // porque es el unico que sabe donde va el boundary que separa las partes del
@@ -116,6 +121,9 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
     ...(esFormulario ? {} : { 'Content-Type': 'application/json' }),
     ...(sinToken ? {} : cabeceraDeAutorizacion()),
     ...(resto.headers as Record<string, string> | undefined),
+    // La contrasena de firma se pone DESPUES de los headers sueltos: una
+    // pantalla no puede decidir por su cuenta que ya está verificada.
+    ...(sinToken || !contrasenaActual ? {} : { 'X-Contrasena-Actual': contrasenaActual }),
     // La empresa va AL FINAL a proposito: un `headers` suelto en una pantalla
     // no puede decidir por su cuenta que empresa esta activa. El servidor
     // validationaria el header, pero la interfaz podria seguir mostrando otra.
@@ -849,6 +857,7 @@ export type {
   SeccionConciliacion, SeccionLectura, SeccionVerificacionHumana, SeccionPendientes,
   CajaChicaResponse, CajaChicaCreate, CajaChicaUpdate, CajaChicaConMovimientos,
   MovimientoCajaCreate, MovimientoCajaResponse, CierreCajaRequest,
+  ConciliacionCajaResponse, ReposicionCruzada,
   BuscarDuplicadoRequest, DuplicadoFiscalItem, DuplicadoFiscalResponse,
   GrupoDuplicados, ResumenDuplicados, EstadoCaja, TipoMovimientoCaja, OrigenFondo,
 } from '../types/api';

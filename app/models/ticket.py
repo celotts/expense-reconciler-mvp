@@ -333,6 +333,10 @@ class TicketModel(Base):
     # Huella de negocio (RFC/RUT + fecha + folio + monto), calculada en servidor.
     # Complementa `source_hash` (archivo) y `ticket_documents.sha256` (bytes/version).
     hash_duplicado: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Aviso calculado ANTES de persistir, con los tickets previos que comparten
+    # huella fiscal. No bloquea la carga: un falso positivo cuesta mas que un
+    # falso negativo que se reporta. Texto y no FK para que sobreviva a bajas.
+    advertencia_duplicado_fiscal: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Caja chica que pago este gasto. `ON DELETE SET NULL` a proposito: borrar
     # la caja no puede borrar el comprobante, que es la evidencia del gasto.
     caja_chica_id: Mapped[uuid.UUID | None] = mapped_column(

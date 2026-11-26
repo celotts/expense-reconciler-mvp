@@ -21,12 +21,12 @@ Cada endpoint de escritura pide `UsuarioVerificado`, o sea token **y** la
 contrasena de quien lo hace (`X-Contrasena-Actual`). Un token robado no basta para
 dar de baja a otra cuenta ni para cambiar una contrasena.
 
-Lo que sigue SIN resolver, y conviene no olvidar: **no hay roles**. Cualquier
-cuenta autenticada puede dar de baja a otra, porque `users` no tiene columna de rol.
-Lo que hace `UsuarioVerificado` es acotar el dano —un atacante con un token robado
-tampoco tendria la contrasena—, no decidir quien puede tocar a quien. Eso necesita
-un modelo de roles que no existe. Ver la nota larga de
-`app/core/deps.py::get_current_user_verificado`.
+Lo que sigue SIN resolver aqui, y conviene no olvidar: estos endpoints no
+deciden quién puede tocar a quién con base en un rol por empresa. `perfil` es
+texto libre y sigue siendo una etiqueta; la autoridad de Mantenimiento se
+exige en las rutas NUEVAS (`/usuarios/membresias`, `/usuarios/{id}/contrasena-
+admin`), que son las que cambian roles y claves ajenas. Los endpoints
+anteriores se conservan como estaban para no romper a quien ya los usa.
 
 ORDEN DE LAS RUTAS
 ------------------
@@ -40,15 +40,24 @@ colisionan cuesta menos que demostrar que no colisionan.
 
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.deps import Sesion, UsuarioActual, UsuarioVerificado
+from app.core.deps import (
+    EmpresaActiva,
+    Sesion,
+    UsuarioActual,
+    UsuarioVerificado,
+    requiere_rol,
+)
+from app.core.enums import RolEmpresa
 from app.core.security import hashear_contrasena, verificar_contrasena
 from app.models.user import UserModel
+from app.services import membresias_service
 from app.services.auditoria import (
     registrar_auditoria,
     registrar_update_auditoria,
@@ -59,8 +68,22 @@ from app.schemas.auth import (
     UsuarioResponse,
     UsuarioUpdate,
 )
+from app.schemas.membresias import (
+    MembresiaCreate,
+    MembresiaItemResponse,
+    MembresiaUpdate,
+    ResetContrasenaAdminRequest,
+)
 
 router = APIRouter(tags=["Usuarios"])
+
+# La autoridad para administrar cuentas NO es `perfil`: es el rol EN la empresa
+# activa, ledo de la BD en cada peticion. `requiere_rol` no se aplica al router
+# entero porque listar y cambiar la propia clave no son mantenimiento.
+Administrador = Annotated[
+    RolEmpresa,
+    Depends(requiere_rol(RolEmpresa.OWNER, RolEmpresa.ADMIN)),
+]
 
 
 async def _cuenta(db: Sesion, usuario_id: UUID) -> UserModel:
@@ -183,6 +206,78 @@ async def registrar_usuario(
     return UsuarioResponse.model_validate(nuevo_usuario)
 
 
+# Estas tres rutas van ANTES de `/{usuario_id}` a proposito. El parametro esta
+# tipado como UUID, pero el patron de la ruta no tiene convertidor: sin este
+# orden, GET /usuarios/membresias caeria en `obtener_cuenta` y daria un 422
+# diciendo que "membresias" no es un UUID. El que manda es el primer match.
+@router.get("/membresias", response_model=list[MembresiaItemResponse])
+async def listar_membresias(
+    db: Sesion,
+    company_id: EmpresaActiva,
+    _: Administrador,
+) -> list[MembresiaItemResponse]:
+    """Las cuentas y sus roles EN la empresa activa.
+
+    No es `GET /companies`: aqui la pregunta es quien trabaja en ESTA empresa
+    y con que autoridad, no que empresas existen en el sistema.
+    """
+    return await membresias_service.listar_membresias(db, company_id)
+
+
+@router.post(
+    "/membresias",
+    response_model=MembresiaItemResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def asignar_membresia(
+    datos: MembresiaCreate,
+    request: Request,
+    db: Sesion,
+    company_id: EmpresaActiva,
+    actor: UsuarioVerificado,
+    rol: Administrador,
+) -> MembresiaItemResponse:
+    """Da acceso a una cuenta ya creada, con un rol en la empresa activa.
+
+    La empresa NO se toma del cuerpo: viene de `X-Company-ID`, validado contra
+    las membresias del que llama. Un `company_id` en el JSON recibe 422.
+    """
+    return await membresias_service.asignar_membresia(
+        db,
+        company_id,
+        datos,
+        actor_id=actor.id,
+        actor_rol=rol,
+        ip=request.client.host if request.client else "desconocida",
+    )
+
+
+@router.patch("/membresias/{usuario_id}", response_model=MembresiaItemResponse)
+async def actualizar_membresia(
+    usuario_id: UUID,
+    datos: MembresiaUpdate,
+    request: Request,
+    db: Sesion,
+    company_id: EmpresaActiva,
+    actor: UsuarioVerificado,
+    rol: Administrador,
+) -> MembresiaItemResponse:
+    """Cambia el rol o deja sin acceso a la cuenta EN la empresa activa.
+
+    Dar de baja la membresia (`activo=false`) no borra la fila ni la cuenta:
+    es la misma decision que `is_active` en `users`, pero con alcance de empresa.
+    """
+    return await membresias_service.actualizar_membresia(
+        db,
+        company_id,
+        usuario_id,
+        datos,
+        actor_id=actor.id,
+        actor_rol=rol,
+        ip=request.client.host if request.client else "desconocida",
+    )
+
+
 @router.get("/{usuario_id}", response_model=UsuarioResponse)
 async def obtener_cuenta(
     usuario_id: UUID, db: Sesion, _: UsuarioActual
@@ -217,8 +312,8 @@ async def actualizar_cuenta(
     ------------------------------
 
     Se permite, y es decision. Bloquearlo tendria sentido si hubiera un
-    administrador que te pudiera reponer el acceso; sin roles, "no te puedes dar de
-    baja" es tambien "no te puede dar de baja nadie", y el unico camino seria el
+    administrador que te pudiera reponer el acceso; sin roles aqui, "no te puedes
+    dar de baja" es tambien "no te puede dar de baja nadie", y el unico camino seria el
     script con la base de datos. Que sea el unico sistema con una sola cuenta y
     esta se cierre a si misma es un fallo de recuperacion, no un agujero: el
     efectivo del que se trata esta en la base y en los papeles.
@@ -353,6 +448,44 @@ async def cambiar_contrasena(
         registro_afectado=str(cuenta.id),
         detalles={"nombre": cuenta.nombre, "email": cuenta.email},
         rol=actor.perfil,
+        ip=request.client.host if request.client else "desconocida",
+        resultado="exito",
+        db=db,
+    )
+
+
+@router.post("/{usuario_id}/contrasena-admin", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_contrasena_admin(
+    usuario_id: UUID,
+    cuerpo: ResetContrasenaAdminRequest,
+    request: Request,
+    db: Sesion,
+    actor: UsuarioVerificado,
+    rol: Administrador,
+) -> None:
+    """Fija la clave de otra cuenta, firmada por un administrador de la empresa.
+
+    No es el endpoint anterior con un permiso distinto: son dos preguntas.
+    `POST /{id}/contrasena` prueba que quien llama conoce la clave DE ESA
+    cuenta, y sirve para cambiar la propia. Aqui nadie puede conocer la clave
+    ajena: la prueba es la contrasena DE QUIEN ADMINISTRA (`UsuarioVerificado`)
+    mas su rol en la empresa (`Administrador`). Sin las dos, un token robado
+    bastaria para tomar permanentemente la cuenta de otro.
+
+    La clave nueva no se guarda en texto, no se devuelve y nunca entra en la
+    auditoria. Los tokens ya emitidos siguen vivos hasta caducar: no hay `jti`
+    ni revocacion. Es una ventana que hay que decir, no disimular.
+    """
+    cuenta = await _cuenta(db, usuario_id)
+    cuenta.password_hash = hashear_contrasena(cuerpo.contrasena_nueva)  # type: ignore
+    await db.commit()
+    await registrar_auditoria(
+        accion="reset_contrasena_admin",
+        modulo="usuarios",
+        usuario_id=str(actor.id),
+        registro_afectado=str(cuenta.id),
+        detalles={"nombre": cuenta.nombre, "email": cuenta.email},
+        rol=rol.value,
         ip=request.client.host if request.client else "desconocida",
         resultado="exito",
         db=db,

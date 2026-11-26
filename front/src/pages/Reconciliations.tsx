@@ -1,9 +1,11 @@
 import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate, type Reconciliation } from '../services/api';
-import { companiesApi } from '../services/api';
 import { useState, useEffect } from 'react';
 import {
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState
 } from '../components/ui';
+import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { useNavegacion } from '../contextos/Navegacion';
+import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 
 /**
  * Un importe, o un guion si no hay dato.
@@ -41,11 +43,16 @@ export function Reconciliations() {
   // `$NaN`. Un `any` en un estado que viene de la red no es atajo, es borrar el
   // unico sitio donde se podia ver el error antes de que llegara a un humano.
   const [reconciliations, setReconciliations] = useState<Reconciliation[]>([]);
-  const [companies, setCompanies] = useState<{ id: string; name: string; tax_id: string }[]>([]);
   const [mappings, setMappings] = useState<AccountingMapping[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCompany, setSelectedCompany] = useState<string>('');
+  // La empresa NO se elige aqui. `X-Company-ID` lo decide el contexto global;
+  // un selector local permitiria conciliar una empresa distinta de la que
+  // autoriza la cabecera en el resto de la aplicacion.
+  const { empresaActiva } = useEmpresa();
+  const { irA } = useNavegacion();
+  const selectedCompany = empresaActiva?.company_id ?? '';
+  const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
   
   const [runLoading, setRunLoading] = useState(false);
   const [runResult, setRunResult] = useState<ReconciliationRunResponse | null>(null);
@@ -70,12 +77,12 @@ export function Reconciliations() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [companiesData, mappingsData] = await Promise.all([
-        companiesApi.list(),
-        selectedCompany ? reconciliationsApi.listMappings(selectedCompany) : Promise.resolve([])
+      const [mappingsData, cajas] = await Promise.all([
+        selectedCompany ? reconciliationsApi.listMappings(selectedCompany) : Promise.resolve([]),
+        selectedCompany ? cajaChicaApi.list() : Promise.resolve([]),
       ]);
-      setCompanies(companiesData);
       setMappings(mappingsData);
+      setCajasAbiertas(cajas.filter((c) => c.estado !== 'cerrada'));
       
       if (selectedCompany) {
         const reconData = await reconciliationsApi.list(selectedCompany);
@@ -88,9 +95,8 @@ export function Reconciliations() {
     }
   };
 
-  useEffect(() => { 
-    loadData(); 
-    companiesApi.list().then(setCompanies).catch(() => {});
+  useEffect(() => {
+    loadData();
   }, [selectedCompany]);
 
   // ## POR QUE EL RESULTADO SE MUESTRA DENTRO DEL MODAL Y NO DETRAS
@@ -205,18 +211,30 @@ export function Reconciliations() {
         </div>
       </div>
 
+      <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. La conciliación no puede cruzar movimientos sin saber de qué empresa son." />
+
+      {cajasAbiertas.length > 0 && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-medium text-gray-900">Cajas chicas abiertas</p>
+              <p className="mt-1 text-sm text-gray-600">
+                {cajasAbiertas.map((c) => c.nombre).join(' · ')}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Las reposiciones desde banco se cruzan en la pestaña de caja; no marcan aquí el cargo bancario.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => irA('cajachica')}>Ver caja chica</Button>
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
-            <select
-              value={selectedCompany}
-              onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">Seleccionar empresa...</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
-            </select>
+            <p className="text-sm font-medium text-gray-700 mb-1">Empresa activa</p>
+            <p className="text-sm text-gray-900">{empresaActiva?.name ?? 'Sin empresa activa'}</p>
           </div>
         </div>
       </Card>
@@ -357,17 +375,10 @@ export function Reconciliations() {
         </>
       ) : (
         <Card>
-          {companies.length === 0 ? (
-            <EmptyState 
-              message="No hay empresas registradas. Crea una para empezar a conciliar."
-              icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" /></svg>}
-            />
-          ) : (
-            <EmptyState 
-              message="Selecciona una empresa para acceder a la conciliación y exportaciones"
-              icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>}
-            />
-          )}
+          <EmptyState
+            message="Elige una empresa activa en la barra lateral para acceder a la conciliación y exportaciones"
+            icon={<svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>}
+          />
         </Card>
       )}
 

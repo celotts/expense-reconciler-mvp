@@ -18,6 +18,7 @@ import {
   type Company,
   type CajaChicaConMovimientos,
   type CajaChicaCreate,
+  type ConciliacionCajaResponse,
   type MovimientoCajaCreate,
   type DuplicadoFiscalResponse,
   type EstadoCaja,
@@ -155,6 +156,8 @@ export function CajaChica({
 
   const [cajas, setCajas] = useState<CajaChicaItem[]>(cajasIniciales ?? []);
   const [seleccionada, setSeleccionada] = useState<CajaChicaConMovimientos | null>(cajaInicial);
+  const [conciliacion, setConciliacion] = useState<ConciliacionCajaResponse | null>(null);
+  const [efectivoContado, setEfectivoContado] = useState('');
   const [resumen, setResumen] = useState<ConciliacionResumen | null>(resumenInicial);
   const [pestana, setPestana] = useState<'cajas' | 'duplicados'>(pestanaInicial);
 
@@ -200,6 +203,8 @@ export function CajaChica({
     try {
       const detalle = await cajaChicaApi.get(id);
       setSeleccionada(detalle);
+      setEfectivoContado(detalle.efectivo_contado ?? '');
+      setConciliacion(await cajaChicaApi.conciliacionBancaria(id));
       setPestana('cajas');
     } catch (e) {
       setError(mensajeDeError(e, 'No se pudo abrir la caja chica'));
@@ -428,7 +433,19 @@ export function CajaChica({
 
   const cambiarEstado = async (accion: 'enRevision' | 'reabrir' | 'cerrar', mensaje: string) => {
     if (!seleccionada) return;
-    await ejecutar(() => cajaChicaApi[accion](seleccionada.id), mensaje, seleccionada.id);
+    if (accion === 'cerrar' && efectivoContado.trim() && !montoValido(efectivoContado)) {
+      setError('El efectivo contado debe ser un monto válido.');
+      return;
+    }
+    const cuerpo = accion === 'cerrar' && efectivoContado.trim()
+      ? { efectivo_contado: efectivoContado.trim() }
+      : undefined;
+    await ejecutar(() => cajaChicaApi[accion](seleccionada.id, cuerpo), mensaje, seleccionada.id);
+    if (accion === 'cerrar') {
+      const actualizada = await cajaChicaApi.get(seleccionada.id);
+      setSeleccionada(actualizada);
+      setConciliacion(await cajaChicaApi.conciliacionBancaria(seleccionada.id));
+    }
   };
 
   const buscarDuplicado = async (evento: React.FormEvent) => {
@@ -587,6 +604,13 @@ export function CajaChica({
                   <Dato titulo="Cerrada" valor={seleccionada.closed_at ? fechaHora(seleccionada.closed_at) : '—'} />
                 </div>
 
+                {(seleccionada.efectivo_contado !== null || seleccionada.diferencia_cierre !== null) && (
+                  <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    Conteo del cierre: {dinero(seleccionada.efectivo_contado ?? '0.00')}.
+                    {' '}Diferencia calculada por el servidor: {dinero(seleccionada.diferencia_cierre ?? '0.00')}.
+                  </div>
+                )}
+
                 {seleccionada.saldo_bajo_umbral && (
                   <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
                     Saldo bajo el umbral: {dinero(seleccionada.saldo_actual)} de {dinero(seleccionada.umbral_alerta)}.
@@ -605,6 +629,18 @@ export function CajaChica({
                   )}
                   {seleccionada.estado === 'en_revision' && (
                     <>
+                      <div className="w-full sm:max-w-xs">
+                        <label htmlFor="efectivo-contado" className="text-sm font-medium text-gray-700">
+                          Efectivo contado (opcional)
+                        </label>
+                        <Input
+                          id="efectivo-contado"
+                          value={efectivoContado}
+                          onChange={(e) => setEfectivoContado(e.target.value)}
+                          placeholder="0.00"
+                          inputMode="decimal"
+                        />
+                      </div>
                       <Button variant="secondary" disabled={procesando} onClick={() => { void cambiarEstado('reabrir', 'Caja reabierta.'); }}>
                         Reabrir
                       </Button>
@@ -614,6 +650,21 @@ export function CajaChica({
                     </>
                   )}
                 </div>
+
+                {conciliacion && (
+                  <div className="rounded-lg border border-gray-200 p-3 text-sm">
+                    <p className="font-semibold text-gray-900">Reposiciones desde banco</p>
+                    <p className="mt-1 text-gray-600">
+                      {conciliacion.cruzadas} cruzadas · {conciliacion.sin_cruzar} sin cruce
+                    </p>
+                    {conciliacion.advertencia && (
+                      <p role="status" className="mt-1 text-amber-700">{conciliacion.advertencia}</p>
+                    )}
+                    <p className="mt-1 text-xs text-gray-500">
+                      Solo lectura: no marca el cargo bancario como reconciliado.
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <h3 className="mb-2 text-base font-semibold text-gray-900">Movimientos</h3>

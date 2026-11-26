@@ -278,9 +278,9 @@ def requiere_rol(*roles: RolEmpresa):
 # solo pide la contrasena del propio actor, que es justo lo que un atacante con
 # un token robado no tiene. Anadir aqui un `requiere_rol` global seria ademas
 # incorrecto, porque el rol no es global: es por empresa, y esta dependencia no
-# recibe la empresa activa. Si en algun momento se quiere exigir ademas un rol
-# para dar de baja cuentas, hay que anadir `EmpresaActiva` a su firma y decidir
-# explicitamente que rol manda — no reutilizar `perfil`, que es texto libre.
+# recibe la empresa activa. Las rutas nuevas de Mantenimiento piden las DOS
+# cosas por separado —esta dependencia y `requiere_rol(owner, admin)`— porque
+# son dos preguntas: "quien eres" y "que autoridad tienes en ESTA empresa".
 #
 # EL HEADER, Y POR QUE NO UN CAMPO EN EL CUERPO
 # ----------------------------------------------

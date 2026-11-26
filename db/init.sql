@@ -627,6 +627,7 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS folio VARCHAR(100);
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(50);
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS link_facturacion TEXT;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS hash_duplicado VARCHAR(64);
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS advertencia_duplicado_fiscal TEXT;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS estado_conciliacion VARCHAR(30) NOT NULL DEFAULT 'PENDIENTE';
 
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS periodo_cerrado_override BOOLEAN NOT NULL DEFAULT FALSE;
@@ -669,6 +670,8 @@ CREATE TABLE IF NOT EXISTS cajas_chicas (
     estado VARCHAR(20) NOT NULL DEFAULT 'abierta',
     opened_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     closed_at TIMESTAMP WITH TIME ZONE,
+    efectivo_contado NUMERIC(12, 2),
+    diferencia_cierre NUMERIC(12, 2),
 
     CONSTRAINT ck_cajas_chicas_nombre_no_vacio
         CHECK (length(trim(nombre)) > 0),
@@ -714,6 +717,11 @@ CREATE TABLE IF NOT EXISTS movimientos_caja (
         CHECK (
             origen_fondo IS DISTINCT FROM 'banco'
             OR (banco_nombre IS NOT NULL AND length(trim(banco_nombre)) > 0)
+        ),
+    CONSTRAINT ck_movimientos_caja_sin_banco_fuera_de_banco
+        CHECK (
+            origen_fondo IS NOT DISTINCT FROM 'banco'
+            OR (banco_nombre IS NULL AND referencia_bancaria IS NULL)
         ),
     CONSTRAINT ck_movimientos_caja_monto_no_negativo
         CHECK (monto >= 0)

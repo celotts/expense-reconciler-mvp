@@ -1738,7 +1738,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
-      "description": "Cambia el nombre o da de baja la cuenta.\n\nLO QUE NO SE PUEDE CAMBIAR, Y POR QUE\n-------------------------------------\n\n- **`id`.** La PK la pone la base.\n- **`email`.** El correo va dentro de la clave del rate limit del login\n  (`rate_limit.esta_bloqueado(correo, ip)`). Cambiarlo deja de contar los\n  intentos de fuerza bruta de la cuenta antigua, y el bloqueo deja de\n  proteger. Por eso no hay `email` en `UsuarioUpdate`.\n- **`password_hash` directo.** Por aqui no se cambia una contrasena: se cambia\n  con el endpoint que exige la actual. Un `PATCH {\"password_hash\": \"...\"}`\n  aceptaria un hash cualquiera sin verificar la contrasena de nadie.\n\nDAR DE BAJA A LA CUENTA PROPIA\n------------------------------\n\nSe permite, y es decision. Bloquearlo tendria sentido si hubiera un\nadministrador que te pudiera reponer el acceso; sin roles, \"no te puedes dar de\nbaja\" es tambien \"no te puede dar de baja nadie\", y el unico camino seria el\nscript con la base de datos. Que sea el unico sistema con una sola cuenta y\nesta se cierre a si misma es un fallo de recuperacion, no un agujero: el\nefectivo del que se trata esta en la base y en los papeles.\n\nLo que si se bloquea es dar de baja a la **ultima cuenta activa**, que si es\nun agujero: deja el sistema entero sin puerta de entrada y la unica\nrecuperacion es entrar a Postgres a mano.",
+      "description": "Cambia el nombre o da de baja la cuenta.\n\nLO QUE NO SE PUEDE CAMBIAR, Y POR QUE\n-------------------------------------\n\n- **`id`.** La PK la pone la base.\n- **`email`.** El correo va dentro de la clave del rate limit del login\n  (`rate_limit.esta_bloqueado(correo, ip)`). Cambiarlo deja de contar los\n  intentos de fuerza bruta de la cuenta antigua, y el bloqueo deja de\n  proteger. Por eso no hay `email` en `UsuarioUpdate`.\n- **`password_hash` directo.** Por aqui no se cambia una contrasena: se cambia\n  con el endpoint que exige la actual. Un `PATCH {\"password_hash\": \"...\"}`\n  aceptaria un hash cualquiera sin verificar la contrasena de nadie.\n\nDAR DE BAJA A LA CUENTA PROPIA\n------------------------------\n\nSe permite, y es decision. Bloquearlo tendria sentido si hubiera un\nadministrador que te pudiera reponer el acceso; sin roles aqui, \"no te puedes\ndar de baja\" es tambien \"no te puede dar de baja nadie\", y el unico camino seria el\nscript con la base de datos. Que sea el unico sistema con una sola cuenta y\nesta se cierre a si misma es un fallo de recuperacion, no un agujero: el\nefectivo del que se trata esta en la base y en los papeles.\n\nLo que si se bloquea es dar de baja a la **ultima cuenta activa**, que si es\nun agujero: deja el sistema entero sin puerta de entrada y la unica\nrecuperacion es entrar a Postgres a mano.",
       "method": "PATCH",
       "body": {
         "mimeType": "application/json",
@@ -1797,6 +1797,126 @@
       "_type": "request"
     },
     {
+      "_id": "req_52",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u5. Roles en la empresa activa  <- solo owner/admin",
+      "description": "Las cuentas y sus roles EN la empresa activa.\n\nNo es `GET /companies`: aqui la pregunta es quien trabaja en ESTA empresa\ny con que autoridad, no que empresas existen en el sistema.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/membresias",
+      "metaSortKey": 52,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_53",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u6. Dar acceso con un rol (pide X-Contrasena-Actual)",
+      "description": "Da acceso a una cuenta ya creada, con un rol en la empresa activa.\n\nLa empresa NO se toma del cuerpo: viene de `X-Company-ID`, validado contra\nlas membresias del que llama. Un `company_id` en el JSON recibe 422.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"user_id\": \"texto\",\n  \"rol\": \"owner\",\n  \"activo\": true\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        },
+        {
+          "name": "X-Contrasena-Actual",
+          "value": "{{ contrasena_actual }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/membresias",
+      "metaSortKey": 53,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_54",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u7. Cambiar rol o quitar acceso (pide X-Contrasena-Actual)",
+      "description": "Cambia el rol o deja sin acceso a la cuenta EN la empresa activa.\n\nDar de baja la membresia (`activo=false`) no borra la fila ni la cuenta:\nes la misma decision que `is_active` en `users`, pero con alcance de empresa.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"rol\": \"owner\",\n  \"activo\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        },
+        {
+          "name": "X-Contrasena-Actual",
+          "value": "{{ contrasena_actual }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/membresias/{{ usuario_id }}",
+      "metaSortKey": 54,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_55",
+      "parentId": "fld_08",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "u8. Reset administrativo de clave (pide X-Contrasena-Actual)",
+      "description": "Fija la clave de otra cuenta, firmada por un administrador de la empresa.\n\nNo es el endpoint anterior con un permiso distinto: son dos preguntas.\n`POST /{id}/contrasena` prueba que quien llama conoce la clave DE ESA\ncuenta, y sirve para cambiar la propia. Aqui nadie puede conocer la clave\najena: la prueba es la contrasena DE QUIEN ADMINISTRA (`UsuarioVerificado`)\nmas su rol en la empresa (`Administrador`). Sin las dos, un token robado\nbastaria para tomar permanentemente la cuenta de otro.\n\nLa clave nueva no se guarda en texto, no se devuelve y nunca entra en la\nauditoria. Los tokens ya emitidos siguen vivos hasta caducar: no hay `jti`\nni revocacion. Es una ventana que hay que decir, no disimular.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"contrasena_nueva\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        },
+        {
+          "name": "X-Contrasena-Actual",
+          "value": "{{ contrasena_actual }}"
+        }
+      ],
+      "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena-admin",
+      "metaSortKey": 55,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
       "_id": "fld_09",
       "parentId": "col_api",
       "modified": 1759353600000,
@@ -1812,7 +1932,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_52",
+      "_id": "req_56",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1838,12 +1958,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/cola",
-      "metaSortKey": 52,
+      "metaSortKey": 56,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_53",
+      "_id": "req_57",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1887,12 +2007,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras",
-      "metaSortKey": 53,
+      "metaSortKey": 57,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_54",
+      "_id": "req_58",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1911,12 +2031,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
-      "metaSortKey": 54,
+      "metaSortKey": 58,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_55",
+      "_id": "req_59",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1939,12 +2059,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
-      "metaSortKey": 55,
+      "metaSortKey": 59,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_56",
+      "_id": "req_60",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1967,12 +2087,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
-      "metaSortKey": 56,
+      "metaSortKey": 60,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_57",
+      "_id": "req_61",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1995,12 +2115,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/rechazar",
-      "metaSortKey": 57,
+      "metaSortKey": 61,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_58",
+      "_id": "req_62",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2019,12 +2139,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/reabrir",
-      "metaSortKey": 58,
+      "metaSortKey": 62,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_59",
+      "_id": "req_63",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2062,12 +2182,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 59,
+      "metaSortKey": 63,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_60",
+      "_id": "req_64",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2097,12 +2217,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 60,
+      "metaSortKey": 64,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_61",
+      "_id": "req_65",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2140,12 +2260,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 61,
+      "metaSortKey": 65,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_62",
+      "_id": "req_66",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2175,12 +2295,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 62,
+      "metaSortKey": 66,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_63",
+      "_id": "req_67",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2206,12 +2326,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 63,
+      "metaSortKey": 67,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_64",
+      "_id": "req_68",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2241,7 +2361,7 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 64,
+      "metaSortKey": 68,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2261,7 +2381,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_65",
+      "_id": "req_69",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2299,7 +2419,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 65,
+      "metaSortKey": 69,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2311,7 +2431,7 @@
       ]
     },
     {
-      "_id": "req_66",
+      "_id": "req_70",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2334,12 +2454,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 66,
+      "metaSortKey": 70,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_67",
+      "_id": "req_71",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2413,12 +2533,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv",
-      "metaSortKey": 67,
+      "metaSortKey": 71,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_68",
+      "_id": "req_72",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2498,12 +2618,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
-      "metaSortKey": 68,
+      "metaSortKey": 72,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_69",
+      "_id": "req_73",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2522,12 +2642,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 69,
+      "metaSortKey": 73,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_70",
+      "_id": "req_74",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2550,12 +2670,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 70,
+      "metaSortKey": 74,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_71",
+      "_id": "req_75",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2574,7 +2694,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 71,
+      "metaSortKey": 75,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2594,7 +2714,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_72",
+      "_id": "req_76",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2638,7 +2758,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 72,
+      "metaSortKey": 76,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2650,7 +2770,7 @@
       ]
     },
     {
-      "_id": "req_73",
+      "_id": "req_77",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2673,12 +2793,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 73,
+      "metaSortKey": 77,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_74",
+      "_id": "req_78",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2701,12 +2821,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/run",
-      "metaSortKey": 74,
+      "metaSortKey": 78,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_75",
+      "_id": "req_79",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2725,12 +2845,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 75,
+      "metaSortKey": 79,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_76",
+      "_id": "req_80",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2753,12 +2873,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 76,
+      "metaSortKey": 80,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_77",
+      "_id": "req_81",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2777,12 +2897,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 77,
+      "metaSortKey": 81,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_78",
+      "_id": "req_82",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2826,12 +2946,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/excel",
-      "metaSortKey": 78,
+      "metaSortKey": 82,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_79",
+      "_id": "req_83",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2881,12 +3001,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/contpaqi",
-      "metaSortKey": 79,
+      "metaSortKey": 83,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_80",
+      "_id": "req_84",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2936,12 +3056,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/generic",
-      "metaSortKey": 80,
+      "metaSortKey": 84,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_81",
+      "_id": "req_85",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2967,12 +3087,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 81,
+      "metaSortKey": 85,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_82",
+      "_id": "req_86",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2995,12 +3115,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 82,
+      "metaSortKey": 86,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_83",
+      "_id": "req_87",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3019,12 +3139,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 83,
+      "metaSortKey": 87,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_84",
+      "_id": "req_88",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3047,12 +3167,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 84,
+      "metaSortKey": 88,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_85",
+      "_id": "req_89",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3071,7 +3191,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 85,
+      "metaSortKey": 89,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3091,7 +3211,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_86",
+      "_id": "req_90",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3123,12 +3243,12 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual",
-      "metaSortKey": 86,
+      "metaSortKey": 90,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_87",
+      "_id": "req_91",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3160,7 +3280,7 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual.pdf",
-      "metaSortKey": 87,
+      "metaSortKey": 91,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3180,7 +3300,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_88",
+      "_id": "req_92",
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3203,12 +3323,12 @@
         }
       ],
       "url": "{{ base_url }}/auditoria/evento",
-      "metaSortKey": 88,
+      "metaSortKey": 92,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_89",
+      "_id": "req_93",
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3264,7 +3384,7 @@
         }
       ],
       "url": "{{ base_url }}/auditoria",
-      "metaSortKey": 89,
+      "metaSortKey": 93,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3284,7 +3404,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_90",
+      "_id": "req_94",
       "parentId": "fld_14",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3303,7 +3423,7 @@
         }
       ],
       "url": "{{ base_url }}/sistema/backup",
-      "metaSortKey": 90,
+      "metaSortKey": 94,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3323,7 +3443,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_91",
+      "_id": "req_95",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3349,12 +3469,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/",
-      "metaSortKey": 91,
+      "metaSortKey": 95,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_92",
+      "_id": "req_96",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3377,12 +3497,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/",
-      "metaSortKey": 92,
+      "metaSortKey": 96,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_93",
+      "_id": "req_97",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3401,12 +3521,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}",
-      "metaSortKey": 93,
+      "metaSortKey": 97,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_94",
+      "_id": "req_98",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3429,12 +3549,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}",
-      "metaSortKey": 94,
+      "metaSortKey": 98,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_95",
+      "_id": "req_99",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3453,12 +3573,36 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/cerrar",
-      "metaSortKey": 95,
+      "metaSortKey": 99,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_96",
+      "_id": "req_100",
+      "parentId": "fld_15",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "cc10. Conciliar caja contra el banco (solo lectura)",
+      "description": "Reposiciones de la caja cruzadas contra movimientos del banco.\n\nEl prefijo lleva dos segmentos, asi que no choca con `/{caja_id}`; aun asi\nse declara antes para que nadie tenga que acordarse de la trampa de FastAPI.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/caja-chica/{{ caja_id }}/conciliacion-bancaria",
+      "metaSortKey": 100,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_101",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3477,12 +3621,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/en-revision",
-      "metaSortKey": 96,
+      "metaSortKey": 101,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_97",
+      "_id": "req_102",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3501,12 +3645,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/movimientos",
-      "metaSortKey": 97,
+      "metaSortKey": 102,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_98",
+      "_id": "req_103",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3529,12 +3673,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/movimientos",
-      "metaSortKey": 98,
+      "metaSortKey": 103,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_99",
+      "_id": "req_104",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3553,7 +3697,7 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/reabrir",
-      "metaSortKey": 99,
+      "metaSortKey": 104,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3573,7 +3717,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_100",
+      "_id": "req_105",
       "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3596,12 +3740,12 @@
         }
       ],
       "url": "{{ base_url }}/duplicados/buscar",
-      "metaSortKey": 100,
+      "metaSortKey": 105,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_101",
+      "_id": "req_106",
       "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3627,7 +3771,7 @@
         }
       ],
       "url": "{{ base_url }}/duplicados/resumen",
-      "metaSortKey": 101,
+      "metaSortKey": 106,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3647,7 +3791,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_102",
+      "_id": "req_107",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3661,7 +3805,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 102,
+      "metaSortKey": 107,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {

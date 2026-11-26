@@ -31,6 +31,42 @@ export interface RespuestaToken {
   user: Usuario;
 }
 
+/** Una fila de `usuarios_empresas` con la cuenta legible al lado. */
+export interface MembresiaUsuario {
+  company_id: string;
+  user_id: string;
+  email: string;
+  nombre: string;
+  rol: 'owner' | 'admin' | 'accountant' | 'operator';
+  activo: boolean;
+}
+
+export interface MembresiaCreate {
+  user_id: string;
+  rol: MembresiaUsuario['rol'];
+  activo?: boolean;
+}
+
+export interface MembresiaUpdate {
+  rol?: MembresiaUsuario['rol'];
+  activo?: boolean;
+}
+
+export interface UsuarioCreate {
+  email: string;
+  nombre: string;
+  password: string;
+  perfil?: string;
+  grupo?: string;
+}
+
+export interface UsuarioUpdate {
+  nombre?: string;
+  perfil?: string;
+  grupo?: string;
+  is_active?: boolean;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -144,6 +180,8 @@ export interface Ticket {
   metodo_pago: string | null;
   link_facturacion: string | null;
   hash_duplicado: string | null;
+  /** Aviso calculado antes de persistir. No es un veredicto. */
+  advertencia_duplicado_fiscal: string | null;
   estado_conciliacion: string | null;
   periodo_cerrado_override: boolean;
   periodo_cerrado_motivo: string | null;
@@ -609,6 +647,10 @@ export interface CajaChicaResponse {
   estado: EstadoCaja;
   opened_at: string;
   closed_at: string | null;
+  /** Conteo de una persona y diferencia calculada en servidor. `null` no es
+   *  cero: es \"se cerro sin contar\". */
+  efectivo_contado: string | null;
+  diferencia_cierre: string | null;
   /** `@computed_field` del servidor. No se re calcula aqui. */
   saldo_bajo_umbral: boolean;
 }
@@ -663,6 +705,33 @@ export interface CajaChicaConMovimientos extends CajaChicaResponse {
 
 export interface CierreCajaRequest {
   closed_at?: string;
+  /** El servidor calcula la diferencia; el navegador solo la muestra. */
+  efectivo_contado?: string;
+}
+
+/** Una reposicion desde banco y, si existe, el cargo que la explica. */
+export interface ReposicionCruzada {
+  movimiento_id: string;
+  fecha: string;
+  monto: string;
+  banco_nombre: string | null;
+  referencia_bancaria: string | null;
+  bank_transaction_id: string | null;
+  fecha_banco: string | null;
+  descripcion_banco: string | null;
+  resultado: 'CRUZADA' | 'SIN_CRUCE';
+}
+
+/** Solo lectura: no es la conciliacion de tickets ni marca el banco. */
+export interface ConciliacionCajaResponse {
+  company_id: string;
+  caja_chica_id: string;
+  reposiciones: ReposicionCruzada[];
+  cruzadas: number;
+  sin_cruzar: number;
+  total_cruzado: string;
+  total_sin_cruzar: string;
+  advertencia: string | null;
 }
 
 export interface BuscarDuplicadoRequest {

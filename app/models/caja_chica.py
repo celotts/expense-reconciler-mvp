@@ -68,6 +68,10 @@ class CajaChicaModel(Base):
     estado = Column(String(20), nullable=False, default="abierta")
     opened_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     closed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # El conteo y su diferencia son un hecho del cierre, no un calculo del front.
+    # `None` = no se conto (cierre legacy); `0.00` = se conto y cuadra.
+    efectivo_contado = Column(Numeric(12, 2), nullable=True)
+    diferencia_cierre = Column(Numeric(12, 2), nullable=True)
 
     movimientos = relationship(
         "MovimientoCajaModel",
@@ -97,6 +101,14 @@ class MovimientoCajaModel(Base):
             "origen_fondo IS NULL OR origen_fondo <> 'banco' OR "
             "(banco_nombre IS NOT NULL AND length(trim(banco_nombre)) > 0)",
             name="ck_movimientos_caja_banco_cuando_banco",
+        ),
+        # La misma regla del schema, en la base: una reposicion en efectivo no
+        # puede afirmar un banco. SQLite no tiene `IS DISTINCT FROM`, por eso se
+        # escribe con `IS NULL OR <>`, que dice lo mismo aqui.
+        CheckConstraint(
+            "origen_fondo = 'banco' OR "
+            "(banco_nombre IS NULL AND referencia_bancaria IS NULL)",
+            name="ck_movimientos_caja_sin_banco_fuera_de_banco",
         ),
         CheckConstraint("monto >= 0", name="ck_movimientos_caja_monto_no_negativo"),
         Index("ix_movimientos_caja_company_caja", "company_id", "caja_chica_id", "created_at"),

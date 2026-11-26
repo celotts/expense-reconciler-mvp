@@ -466,6 +466,9 @@ class TicketResponse(BaseModel):
     link_facturacion: str | None = None
     # Huella de negocio calculada en servidor (no editable por cliente).
     hash_duplicado: str | None = None
+    # Aviso calculado por el servidor al persistir. No es un veredicto: dice que
+    # hay un comprobante previo con la misma huella, para que una persona lo mire.
+    advertencia_duplicado_fiscal: str | None = None
     # Estado sincronizado desde conciliaciones (PENDIENTE/CONCILIADO/CON_DISCREPANCIA).
     estado_conciliacion: str | None = None
     # Override trazable de periodo cerrado: solicitud y auditoria del override.

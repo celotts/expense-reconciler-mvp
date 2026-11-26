@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { registrarEventoFrontend } from '../services/auditoria';
 import { ticketsApi, type Ticket } from '../services/api';
+import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { useNavegacion } from '../contextos/Navegacion';
 import type {
   ArchivoNoPermitido, DigitalizacionDirectorio,
   ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,
@@ -40,7 +42,9 @@ export function Scan() {
   // pantalla (y el token) defendia otra; el servidor lo rechazaria con 409 y el
   // operador no entenderia por que.
   const { empresaActiva } = useEmpresa();
+  const { irA } = useNavegacion();
   const companyId = empresaActiva?.company_id ?? '';
+  const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
   const [config, setConfig] = useState<ScanConfig | null>(null);
   const [ocr, setOcr] = useState<ScanOcrEstado | null>(null);
   const [stats, setStats] = useState<ScanStats | null>(null);
@@ -81,7 +85,7 @@ export function Scan() {
       // Config, OCR y stats van en paralelo y se reportan por separado, por la
       // misma razon que en el muestreo: si uno falla y los otros no, mostrar una
       // sola pantalla de error hides lo que si funciona.
-      const [c, o, s, f] = await Promise.allSettled([
+      const [c, o, s, f, cajas] = await Promise.allSettled([
         ticketsApi.scanConfig(),
         ticketsApi.scanOcr(),
         ticketsApi.scanStats(),
@@ -96,6 +100,7 @@ export function Scan() {
             offset: pagina * POR_PAGINA,
           })
           : Promise.resolve({ archivos: [], total: 0 }),
+        companyId ? cajaChicaApi.list() : Promise.resolve([]),
       ]);
       setConfig(c.status === 'fulfilled' ? c.value : null);
       // La casilla se siembra con el valor REAL del servidor. Solo la primera
@@ -107,6 +112,11 @@ export function Scan() {
       }
       setOcr(o.status === 'fulfilled' ? o.value : null);
       setStats(s.status === 'fulfilled' ? s.value : null);
+      setCajasAbiertas(
+        cajas.status === 'fulfilled'
+          ? cajas.value.filter((caja) => caja.estado !== 'cerrada')
+          : [],
+      );
       if (f.status === 'fulfilled') {
         setArchivos(f.value.archivos);
         setTotalArchivos(f.value.total);
@@ -275,6 +285,23 @@ export function Scan() {
       <div className="mb-4">
         <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral antes de escanear. Sin ella no se puede atribuir ningún comprobante ni crear tickets." />
       </div>
+
+      {cajasAbiertas.length > 0 && (
+        <Card className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-medium text-gray-900">Cajas chicas abiertas</p>
+              <p className="mt-1 text-sm text-gray-600">
+                {cajasAbiertas.map((caja) => caja.nombre).join(' · ')}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Los comprobantes con huella fiscal repetida se avisan en el resultado de la pasada.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => irA('cajachica')}>Ver caja chica</Button>
+          </div>
+        </Card>
+      )}
 
       {config && <PanelConfig config={config} />}
       {ocr && <PanelOcr ocr={ocr} />}
@@ -968,6 +995,11 @@ function PanelResultado({ resultado }: { resultado: ScanResultado }) {
                   </span>
                 )}
                 {d.confianza !== null && ` · ${d.confianza.toFixed(2)}`}
+                {d.datos?.advertencia_duplicado_fiscal && (
+                  <span className="ml-1 text-xs text-amber-700" role="status">
+                    · huella fiscal repetida
+                  </span>
+                )}
               </span>
             </li>
           ))}

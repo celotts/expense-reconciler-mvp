@@ -185,6 +185,8 @@ export interface DatosTicket {
   metodo_pago: string | null;
   link_facturacion: string | null;
   hash_duplicado: string | null;
+  /** Aviso del servidor: otro papel ya compartia fecha, total y huella. */
+  advertencia_duplicado_fiscal: string | null;
   estado_conciliacion: string | null;
   periodo_cerrado_override: boolean | null;
   periodo_cerrado_motivo: string | null;

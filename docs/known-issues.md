@@ -1565,13 +1565,16 @@ Tres decisiones que no son obvias y estan en el codigo:
   `ON DELETE CASCADE`: borrar el producto borra su historial y `stock_de` deja de poder
   responder por el. Se da de baja con `activo=false`.
 
-### 28. No hay roles, y ahora hay endpoints que tocan otras cuentas — 🟡 ABIERTO
-`PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` son los primeros endpoints
-del proyecto que **comprometen a otro usuario**. Sin `is_admin` ni scoping, **cualquier
-cuenta autenticada puede dar de baja a cualquier otra**, y eso no estaba disponible
-antes de anadirlos.
+### 28. Los endpoints viejos de `/usuarios` no miran el rol — 🟡 PARCIALMENTE CERRADO
+`PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` fueron los primeros endpoints
+del proyecto que **comprometen a otro usuario** y siguen sin mirar `usuarios_empresas`.
+Cualquier cuenta autenticada que sepa su propia clave puede dar de baja a otra, o rotar
+la ajena si conoce la clave de esa cuenta. Se conservaron asi a proposito: ponerles
+`requiere_rol` cambiaba su contrato y rompia `test_administracion_api.py`, que es la
+defensa que existe para esos endpoints. La autoridad nueva esta en las rutas de
+Mantenimiento (§49), no aqui.
 
-Lo que si se hizo, y es lo unico que se puede sin inventar un modelo de roles:
+Lo que si se hizo desde entonces:
 
 - **Token Y contrasena** (`X-Contrasena-Actual`, `deps.get_current_user_verificado`).
   Un token robado no basta: es justo lo que el atacante de un token robado no tiene.
@@ -1582,14 +1585,15 @@ Lo que si se hizo, y es lo unico que se puede sin inventar un modelo de roles:
   *quien llama*, y `contrasena_actual` del cuerpo es la de *la cuenta que se cambia*.
   Con una sola, un atacante con un token robado rotaria la clave de cualquiera y el
   dueno ya no podria recuperarla.
-- **El alta sigue en `scripts/crear_usuario.py`.** No hay `POST /usuarios`: un endpoint
-  de alta autenticado es autorregistro con un paso mas.
+- **Ya hay modelo de roles** (`0022`, §48) y una pantalla que lo administra (§49). Ya
+  no es cierto que "no hay `POST /usuarios`" ni que no se pueda decidir *quien puede
+  tocar a quien*: lo que sigue abierto es que las rutas antiguas no usen ese modelo.
+  El alta sigue siendo autenticada, nunca publica.
 
-Lo que **no** se hizo, y sigue siendo el problema de fondo: decidir *quien puede tocar
-a quien*. Eso necesita columnas de rol, y anadir una comprobacion de rol sin el modelo
-seria fingir que hay control de acceso donde solo hay autenticacion — y un control
-aparente es peor que ninguno, porque deja de revisarse. Mientras tanto, el producto
-sigue siendo de "una maquina, un contador".
+Lo que **no** se hizo, y sigue siendo deuda: cerrar las rutas antiguas con el rol por
+empresa sin romper a quien ya las usa. Hasta entonces, el producto sigue siendo de
+"una maquina, un contador" en esa frontera, aunque el menu y el reset administrativo ya distingan
+owner/admin de contador y operador.
 
 ### 29. `verify_postgres_inventario.py` no se podia aplicar a una base ya creada
 `asyncpg` no acepta varias sentencias en una sentencia preparada
@@ -2404,7 +2408,7 @@ suite completa en verde (**1889 passed, 1 skip**, 20 warnings, medido en local
 con Python 3.14 y las variables del shells); `cd front && npm run build`,
 `npm run verify:caja` (16/16) y
 `npm run verify:fecha`. La colección de Insomnia se regeneró desde la API viva
-(102 peticiones, 18 carpetas) y `generar_insomnia.py --check` está al día.
+(107 peticiones, 18 carpetas) y `generar_insomnia.py --check` está al día.
 
 ### 48. Tres pantallas, tres empresas distintas con el mismo token — ✅ CORREGIDO
 
@@ -2459,6 +2463,65 @@ tres pantallas decida `companyId` por su cuenta, que un fallo de red no borre la
 `generar_insomnia.py` incluye `GET /auth/empresas`: sin esa entrada la petición
 nueva aparecía en la colección con el docstring como nombre, y el test
 `test_no_falta_ninguna_entrada_en_nombres` lo cazó antes de regenerar.
+
+### 49. No había dónde administrar usuarios ni roles por empresa — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-25.** El sistema ya tenía roles en la BD (§48) pero ninguna pantalla
+para usarlos: `Login.tsx` decía que las cuentas las creaba quien administra la base, y el
+menú se filtraba con `users.perfil`, un texto libre que no sabe en qué empresa vale. Un
+administrador podía entrar a `/api/v1/auth/empresas` y ver los roles, pero no había forma
+de crear una cuenta, darle acceso, cambiar su rol o reponer una clave olvidada sin tocar
+Postgres.
+
+**Dos decisiones, no una.** Alta de cuenta y acceso a una empresa son preguntas distintas:
+`POST /usuarios` crea la cuenta; `POST /usuarios/membresias` le da un rol en la empresa
+activa. La pantalla de Mantenimiento dice eso en el formulario ("crear la cuenta no da
+acceso a ninguna empresa") porque si el alta diera `admin` por defecto, un descuido en el
+alta seria un administrador nuevo. El `company_id` **no** va en el cuerpo: sale de
+`X-Company-ID` y los schemas usan `extra="forbid"` para que reenviar la fila entera reciba
+un 422 con el nombre del campo.
+
+**El reset ajeno es otra ruta, no un permiso nuevo en la vieja.**
+`POST /usuarios/{id}/contrasena` prueba dos cosas: que quien llama es quien dice ser
+(header) y que conoce la clave de la cuenta afectada (cuerpo). Un administrador no conoce
+la clave de otra persona y pedirla convertiria el reset en una adivinanza. Por eso existe
+`POST /usuarios/{id}/contrasena-admin`: exige la clave **del administrador** en el header y
+su rol en la empresa, nunca la clave objetivo, y no escribe la nueva en la auditoria. No
+hay `jti`, asi que un token emitido antes sigue vivo 8 horas; la pantalla lo dice en vez
+de prometer una revocacion inexistente.
+
+**La firma se inyecta donde no la puede falsificar una pantalla.**
+`fetchApi` pone `X-Contrasena-Actual` **después** de `...(resto.headers)` y antes de
+`cabeceraDeEmpresa()`. El mismo orden que `X-Company-ID`: un componente que mande su propio
+header no puede declararse ya verificado ni cambiar de empresa. La clave se pide en cada
+operacion, no se guarda en `localStorage`, y `verificar_mantenimiento.tsx` mide ese orden
+leyendo `api.ts` dentro de `fetchApi` —fuera de esa funcion hay menciones en comentarios que
+no inyectan nada—.
+
+**La guardia del ultimo admin no es un aviso.** `membresias_service` cuenta los
+`owner`/`admin` activos de la empresa y devuelve 409 antes de quitar el acceso o degradar
+al ultimo. Un 409 aqui es la diferencia entre "no puedes" y "te quedas sin puerta de
+entrada y hay que entrar a Postgres a mano". Las escrituras auditan con `usuario_id` del
+token, `rol` leido de la BD, `registro_afectado` y el evento correspondiente; la clave
+nunca entra en `detalles`.
+
+**El menu es comodidad; la autoridad sigue en el servidor.**
+`front/src/permisos.ts` es la unica matriz pagina × rol. `Mantenimiento` va al final del
+recorrido aprobado y solo lo ve `owner`/`admin`; `accountant` no ve ni Mantenimiento ni Caja
+chica, y `operator` ve Inicio, Escáner, Tickets y su Caja chica. `App.tsx` filtra el menu y
+cierra la ruta escrita a mano con la misma funcion, sin esperar a que `cargandoEmpresas`
+termine para sacar a alguien que si tiene acceso. La etiqueta del rol que ya existia en el
+pie de la barra (`Rol en esta empresa: ${rol}`) se conservo: no se creo un componente nuevo
+que compitiera con ella.
+
+**Verificacion:** `tests/integration/test_mantenimiento_roles.py` (16 pruebas HTTP),
+`npm run verify:menu` (13 comprobaciones) y `npm run verify:mantenimiento` (13
+comprobaciones, una de ellas cae si la firma se inyecta antes de los headers sueltos o
+despues de la empresa). `make insomnia` regenero la coleccion con las cuatro rutas nuevas
+(107 peticiones, 18 carpetas): la primera corrida dejo dos tests en rojo porque
+`NOMBRES` y `RUTAS_CON_CONTRASENA` son listas manuales —el OpenAPI no declara una
+dependencia como parametro de operacion—, y los dos se arreglaron en el generador, no
+editando el JSON. Los endpoints antiguos de `/usuarios` se dejaron intactos (§28).
 
 ---
 

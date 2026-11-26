@@ -33,7 +33,10 @@ from app.models.ticket import TicketModel
 from app.services.accuracy_service import en_muestra
 from app.services.confidence_gate import compute_source_hash, gate_ticket
 from app.services.document_service import guardar_documento
-from app.services.duplicados_service import calcular_hash_del_ticket
+from app.services.duplicados_service import (
+    buscar_duplicados_fiscales,
+    calcular_hash_del_ticket,
+)
 from app.services.inventario_service import registrar_compra
 from app.services.parser_service import TicketExtractionResult
 
@@ -163,14 +166,40 @@ async def persistir_extraccion(
     if dup is not None:
         return dup
 
+    # Los valores resueltos se calculan UNA vez: la huella fiscal se comprueba
+    # con los mismos numeros que se van a guardar. Si el aviso usara los crudos
+    # y el INSERT los normalizados, dos campos podarian contar historias
+    # distintas del mismo papel.
+    fecha_ticket = extracted.expense_date or date.today()
+    total_ticket = _al_rango_de_la_columna(
+        extracted.total_amount, cero_si_no_aplica=True
+    )
+    fiscal_ticket = extracted.identificacion_fiscal or extracted.provider_tax_id
+    # Aviso, no bloqueo. Con OCR al 60% del total, rechazar por una huella
+    # parecida tiraria comprobantes validos; dejar de avisar dejaria contar dos
+    # veces el mismo papel sin que nadie lo sepa. Ver `duplicados_service`.
+    duplicados_fiscales = await buscar_duplicados_fiscales(
+        db,
+        company_id=company_id,
+        identificacion_fiscal=fiscal_ticket,
+        fecha=fecha_ticket,
+        folio=extracted.folio,
+        total=total_ticket,
+    )
+
     ticket = TicketModel(
         company_id=company_id,
         provider_name=extracted.provider_name or UNKNOWN_PROVIDER,
         provider_tax_id=extracted.provider_tax_id,
+        # Los campos fiscales del papel se guardan: sin folio, la huella que
+        # calculamos abajo no podria distinguir dos comprobantes distintos del
+        # mismo comercio, fecha y total.
+        identificacion_fiscal=extracted.identificacion_fiscal,
+        folio=extracted.folio,
         # Los importes pasan por `_al_rango_de_la_columna`. Ver la razon entera
         # en esa funcion: el problema que evita NO es un total equivocado, es un
         # **comprobante perdido en silencio**.
-        total_amount=_al_rango_de_la_columna(extracted.total_amount, cero_si_no_aplica=True),
+        total_amount=total_ticket,
         tax_amount=_al_rango_de_la_columna(extracted.tax_amount, cero_si_no_aplica=True),
         # Se guarda, aunque antes no se guardara. Es el campo con el que el
         # gate valido que `subtotal + IVA == total`, asi que sin el no se puede
@@ -218,7 +247,7 @@ async def persistir_extraccion(
         # las 20:00 del dia 27 ya esta en el dia 28 en UTC, y el ticket
         # quedaria fechado manana. Eso es el mismo error que se esta
         # corrigiendo aqui, con un dia de diferencia.
-        expense_date=extracted.expense_date or date.today(),
+        expense_date=fecha_ticket,
         fecha_provisional=extracted.expense_date is None,
         validation_errors=decision.validation.as_text(),
         # Muestreo de exactitud: se marca al insertar, por hash de contenido, y
@@ -241,6 +270,17 @@ async def persistir_extraccion(
     # un cliente no puede mandar el hash que le conviene, y dos lecturas del
     # mismo papel con distinto ORM deben caer en la misma huella.
     ticket.hash_duplicado = calcular_hash_del_ticket(ticket)
+    if duplicados_fiscales:
+        previos = ", ".join(str(t.id) for t in duplicados_fiscales[:5])
+        ticket.advertencia_duplicado_fiscal = (
+            f"Posible duplicado fiscal: {len(duplicados_fiscales)} comprobante(s) "
+            f"previo(s) con la misma fecha, total y huella ({previos})"
+        )
+        logger.warning(
+            "Ticket con aviso de duplicado fiscal antes de persistir: %s previos (%s)",
+            len(duplicados_fiscales),
+            previos,
+        )
     db.add(ticket)
     await db.flush()
 

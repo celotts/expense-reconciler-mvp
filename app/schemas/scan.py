@@ -90,6 +90,9 @@ class DatosTicketResponse(BaseModel):
     metodo_pago: str | None = None
     link_facturacion: str | None = None
     hash_duplicado: str | None = None
+    # Aviso del servidor: otra fila ya tiene la misma fecha, total y huella.
+    # No bloquea, pero el feed tiene que decirlo al lado de los datos.
+    advertencia_duplicado_fiscal: str | None = None
     estado_conciliacion: str | None = None
     periodo_cerrado_override: bool | None = None
     periodo_cerrado_motivo: str | None = None

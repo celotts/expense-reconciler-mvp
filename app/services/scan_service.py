@@ -2198,6 +2198,7 @@ async def resolver_datos_de_tickets(
             "total_amount": ticket.total_amount,
             "subtotal": ticket.subtotal,
             "tax_amount": ticket.tax_amount,
+            "ieps_amount": ticket.ieps_amount,
             "expense_date": ticket.expense_date,
             "category": ticket.category,
             "items": ticket.items,
@@ -2207,6 +2208,21 @@ async def resolver_datos_de_tickets(
             "validation_errors": ticket.validation_errors,
             "reviewed_by": ticket.reviewed_by,
             "reviewed_at": ticket.reviewed_at,
+            # Los campos fiscales viajan con el veredicto. Sin el aviso, el
+            # feed del escaneo diria "procesado" de un papel que el servidor ya
+            # senalo como posible reenvio del mismo comprobante.
+            "pais": ticket.pais,
+            "identificacion_fiscal": ticket.identificacion_fiscal,
+            "folio": ticket.folio,
+            "metodo_pago": ticket.metodo_pago,
+            "link_facturacion": ticket.link_facturacion,
+            "hash_duplicado": ticket.hash_duplicado,
+            "advertencia_duplicado_fiscal": ticket.advertencia_duplicado_fiscal,
+            "estado_conciliacion": ticket.estado_conciliacion,
+            "periodo_cerrado_override": ticket.periodo_cerrado_override,
+            "periodo_cerrado_motivo": ticket.periodo_cerrado_motivo,
+            "periodo_cerrado_autorizado_por": ticket.periodo_cerrado_autorizado_por,
+            "periodo_cerrado_autorizado_at": ticket.periodo_cerrado_autorizado_at,
         }
 
 

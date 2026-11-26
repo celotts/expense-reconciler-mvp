@@ -18,6 +18,7 @@ import type {
   CajaChicaResponse,
   CajaChicaUpdate,
   CierreCajaRequest,
+  ConciliacionCajaResponse,
   DuplicadoFiscalResponse,
   MovimientoCajaCreate,
   MovimientoCajaResponse,
@@ -94,6 +95,10 @@ export const cajaChicaApi = {
     method: 'POST',
     body: data ? JSON.stringify(data) : undefined,
   }),
+
+  /** Solo lectura: no es la conciliacion de tickets ni marca el banco. */
+  conciliacionBancaria: (cajaId: string) =>
+    fetchApi<ConciliacionCajaResponse>(`/caja-chica/${cajaId}/conciliacion-bancaria`),
 };
 
 export const duplicadosApi = {

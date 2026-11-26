@@ -373,6 +373,14 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("GET", "/usuarios/{usuario_id}"): "u2. Ver una cuenta",
     ("PATCH", "/usuarios/{usuario_id}"): "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
     ("POST", "/usuarios/{usuario_id}/contrasena"): "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
+    # Mantenimiento. Alta de cuenta y rol son DOS pasos: crear la cuenta no da
+    # acceso a ninguna empresa, y el rol sale de X-Company-ID, no del cuerpo.
+    ("GET", "/usuarios/membresias"): "u5. Roles en la empresa activa  <- solo owner/admin",
+    ("POST", "/usuarios/membresias"): "u6. Dar acceso con un rol (pide X-Contrasena-Actual)",
+    ("PATCH", "/usuarios/membresias/{usuario_id}"): "u7. Cambiar rol o quitar acceso (pide X-Contrasena-Actual)",
+    ("POST", "/usuarios/{usuario_id}/contrasena-admin"): (
+        "u8. Reset administrativo de clave (pide X-Contrasena-Actual)"
+    ),
     ("POST", "/auditoria/evento"): "a1. Evento de auditoria  <- navegacion/pantalla",
     # MEDIDO el 2026-10-15: faltaba esta entrada y con ella tres tests en rojo
     # (`test_no_falta_ninguna_entrada_en_nombres`, el que compara la coleccion
@@ -396,6 +404,7 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/caja-chica/{caja_id}/en-revision"): "cc7. Enviar a revision (congela movimientos)",
     ("POST", "/caja-chica/{caja_id}/reabrir"): "cc8. Reabrir una caja en revision",
     ("POST", "/caja-chica/{caja_id}/cerrar"): "cc9. Cerrar caja (solo desde en_revision)",
+    ("GET", "/caja-chica/{caja_id}/conciliacion-bancaria"): "cc10. Conciliar caja contra el banco (solo lectura)",
     ("POST", "/duplicados/buscar"): "d1. Buscar duplicado por huella fiscal ANTES de contar el gasto",
     ("GET", "/duplicados/resumen"): "d2. Resumen de duplicados (total sin contar dos veces)",
 }
@@ -906,6 +915,12 @@ SIN_AUTH: set[tuple[str, str]] = {
 RUTAS_CON_CONTRASENA: set[tuple[str, str]] = {
     ("PATCH", "/usuarios/{usuario_id}"),
     ("POST", "/usuarios/{usuario_id}/contrasena"),
+    # Las de Mantenimiento firman con la clave del ADMIN, no con la de la cuenta
+    # afectada. `GET /usuarios/membresias` NO entra: leer no compromete a nadie y
+    # pedir la clave para mirar haria que la defensa se dejara de usar.
+    ("POST", "/usuarios/membresias"),
+    ("PATCH", "/usuarios/membresias/{usuario_id}"),
+    ("POST", "/usuarios/{usuario_id}/contrasena-admin"),
 }
 
 

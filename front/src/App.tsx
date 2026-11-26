@@ -13,9 +13,11 @@ import { Scan } from './pages/Scan';
 import { Cierre } from './pages/Cierre';
 import { CajaChica } from './pages/CajaChica';
 import { Auditoria } from './pages/Auditoria';
+import { Mantenimiento } from './pages/Mantenimiento';
 import { NavegacionProvider, useNavegacion, type Page } from './contextos/Navegacion';
 import { SesionProvider, useSesion } from './contextos/Sesion';
-import { EmpresaProvider, rolPuedeCaja, useEmpresa } from './contextos/Empresa';
+import { EmpresaProvider, useEmpresa } from './contextos/Empresa';
+import { paginasPermitidas, puedeVerPagina } from './permisos';
 import { Loading } from './components/ui';
 import './App.css';
 
@@ -28,18 +30,22 @@ import './App.css';
 // comprobacion -- y el sintoma era una pantalla que se podia abrir pero no
 // aparecian la barra lateral. Una lista de pantallas en dos sitios es una lista
 // que va a diferir otra vez.
-const navigation = [
-  { key: 'dashboard' as Page, label: 'Inicio', icon: HomeIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'auditoria' as Page, label: 'Auditoría', icon: ClipboardCheckIcon, roles: ['admin', 'qa', 'develop', 'programador'] },
-  { key: 'companies' as Page, label: 'Empresas', icon: BuildingIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'tickets' as Page, label: 'Tickets', icon: DocumentIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'scan' as Page, label: 'Escáner', icon: FolderScanIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'review' as Page, label: 'Cola de revisión', icon: InboxIcon, roles: ['supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'spotcheck' as Page, label: 'Muestreo', icon: CheckBadgeIcon, roles: ['supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'bank' as Page, label: 'Banco', icon: BankIcon, roles: ['consultor', 'digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'reconciliations' as Page, label: 'Conciliación', icon: ArrowPathIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'cierre' as Page, label: 'Cierre mensual', icon: ClipboardCheckIcon, roles: ['consultor', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
-  { key: 'cajachica' as Page, label: 'Caja chica', icon: WalletIcon, roles: ['digitalizador', 'supervisor', 'admin', 'qa', 'programador', 'develop'] },
+/** Las etiquetas y los iconos estan aqui; QUIEN puede ver cada pantalla esta
+ *  en `permisos.ts`. Tener las dos cosas separadas evita que una entrada nueva
+ *  herede una lista de roles copiada de la vecina. */
+const navigation: { key: Page; label: string; icon: typeof HomeIcon }[] = [
+  { key: 'dashboard', label: 'Inicio', icon: HomeIcon },
+  { key: 'scan', label: 'Escáner', icon: FolderScanIcon },
+  { key: 'tickets', label: 'Tickets', icon: DocumentIcon },
+  { key: 'review', label: 'Cola de revisión', icon: InboxIcon },
+  { key: 'spotcheck', label: 'Muestreo', icon: CheckBadgeIcon },
+  { key: 'bank', label: 'Banco', icon: BankIcon },
+  { key: 'reconciliations', label: 'Conciliación', icon: ArrowPathIcon },
+  { key: 'cajachica', label: 'Caja chica', icon: WalletIcon },
+  { key: 'cierre', label: 'Cierre mensual', icon: ClipboardCheckIcon },
+  { key: 'companies', label: 'Empresas', icon: BuildingIcon },
+  { key: 'auditoria', label: 'Auditoría', icon: ClipboardCheckIcon },
+  { key: 'mantenimiento', label: 'Mantenimiento', icon: WrenchIcon },
 ];
 
 function ClipboardCheckIcon({ className = 'w-5 h-5' }: { className?: string }) {
@@ -124,6 +130,14 @@ function WalletIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
+function WrenchIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.3 5.7a4 4 0 00-5.1 5.1l6.9 6.9a4 4 0 005.1-5.1l-6.9-6.9zM14.5 7.5l2-2m-2.6 6.6l3.6 3.6" />
+    </svg>
+  );
+}
+
 function MenuIcon({ className = 'w-6 h-6' }: { className?: string }) {  return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
@@ -146,42 +160,34 @@ function AppInner() {
     empresas, empresaActiva, elegirEmpresa, rol,
     cargando: cargandoEmpresas, necesitaEleccion,
   } = useEmpresa();
-  // Validación de acceso: si no hay usuario, se oculta el menú
-  // y se muestra el login (gestionado por SesionProvider)
-  const hayAcceso = !!usuario && !!perfil;
-  // Filtrar el menú según el perfil del usuario logueado
-  const menuFiltrado = navigation.filter(item =>
-    perfil ? item.roles.includes(perfil) : false
-  );
+  // La puerta ya no deja entrar sin sesion. `perfil` es solo una etiqueta:
+  // decidir acceso con el daria por bueno un "admin" global en una empresa
+  // donde la cuenta es solo `operator`.
+  const hayAcceso = !!usuario;
+  const permitidas = paginasPermitidas(rol);
+  const menuFiltrado = navigation.filter(item => permitidas.includes(item.key));
 
-  // Guardia: si la página actual no está permitida para el perfil,
-  // regresar al dashboard.
+  // Mientras carga la lista de empresas no se decide nada: redirigir con
+  // `rol=null` sacaria de la pantalla a quien si tiene acceso. La guardia
+  // tambien alcanza la URL escrita a mano, no solo los botones del menu.
   useEffect(() => {
-    if (!perfil) return;
-    const permitida = navigation.find(n => n.key === paginaActual)?.roles.includes(perfil);
-    if (paginaActual !== 'dashboard' && !permitida) {
+    if (cargandoEmpresas) return;
+    if (paginaActual !== 'dashboard' && !puedeVerPagina(rol, paginaActual)) {
       irA('dashboard');
     }
-  }, [perfil, paginaActual, irA]);
-
-  // El perfil sigue filtrando el menu por compatibilidad, pero caja chica tiene
-  // ademas un rol POR EMPRESA. Mientras la lista no ha llegado no se decide
-  // nada: redirigir con `rol=null` sacaria de la pantalla a quien si tiene
-  // acceso. El backend vuelve a comprobar el rol en cada peticion.
-  useEffect(() => {
-    if (cargandoEmpresas || paginaActual !== 'cajachica') return;
-    if (!rolPuedeCaja(rol)) irA('dashboard');
   }, [cargandoEmpresas, rol, paginaActual, irA]);
 
   // Auditoria de navegacion: cada cambio de pantalla queda registrado.
+  // La decision de registrar ya no depende de `perfil`: una cuenta sin perfil
+  // pero con rol en una empresa tambien navega, y esa navigation es real.
   useEffect(() => {
-    if (!usuario || !perfil) return;
+    if (!usuario) return;
     registrarEventoFrontend({
       accion: 'navegar',
       modulo: 'frontend',
       detalles: { pantalla: paginaActual },
     });
-  }, [paginaActual, usuario, perfil]);
+  }, [paginaActual, usuario]);
 
   const perfilLabels: Record<string, string> = {
     consultor: 'Consultor',
@@ -211,6 +217,7 @@ function AppInner() {
       case 'cierre': return <Cierre />;
       case 'cajachica': return <CajaChica />;
       case 'auditoria': return <Auditoria />;
+      case 'mantenimiento': return <Mantenimiento />;
       default: return <Dashboard />;
     }
   };

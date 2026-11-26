@@ -4,8 +4,8 @@
  *  descuido pendiente: el sistema guarda gastos, movimientos bancarios y
  *  veredictos que sostienen un cierre contable. Un alta publica es la forma mas
  *  rapida de que un tercero se siente a escribir ahi, y lo que escribe no se
- *  puede deshacer despues. Quien decide que alguien entra es quien tiene la
- *  base de datos, con `scripts/crear_usuario.py`.
+ *  puede deshacer despues. Quien decide que alguien entra es un owner o admin
+ *  desde Mantenimiento: crea la cuenta y despues le da un rol en la empresa.
  *
  *  Dos cosas que esta pantalla hace bien y que son easy de hacer mal:
  *
@@ -137,7 +137,7 @@ export function Login({
         </form>
 
         <p className="text-xs text-gray-400 text-center mt-6">
-          No hay autorregistro. Las cuentas las crea quien administra la base.
+          No hay autorregistro. Un owner o admin crea las cuentas en Mantenimiento.
         </p>
       </div>
     </div>

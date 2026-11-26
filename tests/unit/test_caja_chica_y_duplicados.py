@@ -180,7 +180,12 @@ class TestCajaChicaApi:
 
         detalle = await async_client.get(f"/api/v1/caja-chica/{caja['id']}")
         assert detalle.json()["saldo_actual"] == "1250.50"
-        assert len(detalle.json()["movimientos"]) == 1
+        # La apertura tambien es movimiento: el kardex empieza con ella y no
+        # se cuenta dos veces porque el saldo ya nacio con el monto inicial.
+        assert [m["tipo"] for m in detalle.json()["movimientos"]] == [
+            "apertura",
+            "reposicion",
+        ]
 
     async def test_reposicion_banco_sin_nombre_es_422(
         self, async_client, test_company, usuario_de_prueba
@@ -235,7 +240,8 @@ class TestCajaChicaApi:
         assert "hay 10.00" in respuesta.json()["detail"]
 
         movimientos = await async_client.get(f"/api/v1/caja-chica/{caja['id']}/movimientos")
-        assert movimientos.json() == []
+        # El gasto rechazado no escribe nada; la unica fila es la apertura.
+        assert [m["tipo"] for m in movimientos.json()] == ["apertura"]
 
     async def test_empresa_del_movimiento_no_puede_ser_otra(
         self, async_client, db_session, test_company, usuario_de_prueba

@@ -110,7 +110,10 @@ comprobar(
 
 const app = leer('src/App.tsx');
 comprobar('la aplicacion monta el proveedor de empresa', app.includes('<EmpresaProvider>'));
-comprobar('el guardián de caja usa el rol por empresa', app.includes('rolPuedeCaja(rol)'));
+comprobar(
+  'el menu y la guardia usan el rol por empresa',
+  app.includes('paginasPermitidas(rol)') && app.includes('puedeVerPagina(rol, paginaActual)'),
+);
 
 const servicio = leer('src/services/cajaChica.ts');
 comprobar(

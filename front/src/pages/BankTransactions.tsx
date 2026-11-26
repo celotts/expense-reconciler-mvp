@@ -1,17 +1,27 @@
 import { useState, useEffect } from 'react';
-import { bankTransactionsApi, type BankTransaction, type BankTransactionCreate, type BankTransactionRow } from '../services/api';
-import { companiesApi, type Company } from '../services/api';
-import { 
-  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload 
+import {
+  bankTransactionsApi, type BankTransaction, type BankTransactionCreate,
+  type BankTransactionRow, type ConciliacionCajaResponse,
+} from '../services/api';
+import {
+  Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload
 } from '../components/ui';
 import { fecha } from '../utils/format';
+import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { useNavegacion } from '../contextos/Navegacion';
+import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 
 export function BankTransactions() {
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
-  const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCompany, setSelectedCompany] = useState<string>('');
+  // Una sola empresa activa, la del contexto. Un selector aqui permitiria ver
+  // cargos de una empresa mientras el header autoriza otra.
+  const { empresaActiva } = useEmpresa();
+  const { irA } = useNavegacion();
+  const selectedCompany = empresaActiva?.company_id ?? '';
+  const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
+  const [conciliacionCaja, setConciliacionCaja] = useState<ConciliacionCajaResponse | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingTx, setEditingTx] = useState<BankTransaction | null>(null);
   const [formData, setFormData] = useState<BankTransactionCreate>({ 
@@ -26,12 +36,17 @@ export function BankTransactions() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [companiesData, txData] = await Promise.all([
-        companiesApi.list(),
-        selectedCompany ? bankTransactionsApi.list(selectedCompany) : Promise.resolve([])
+      const [txData, cajas] = await Promise.all([
+        selectedCompany ? bankTransactionsApi.list(selectedCompany) : Promise.resolve([]),
+        selectedCompany ? cajaChicaApi.list() : Promise.resolve([]),
       ]);
-      setCompanies(companiesData);
       setTransactions(txData);
+      const abiertas = cajas.filter((c) => c.estado !== 'cerrada');
+      setCajasAbiertas(abiertas);
+      const primera = abiertas[0];
+      setConciliacionCaja(
+        primera ? await cajaChicaApi.conciliacionBancaria(primera.id) : null
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al cargar datos');
     } finally {
@@ -39,9 +54,8 @@ export function BankTransactions() {
     }
   };
 
-  useEffect(() => { 
-    loadData(); 
-    companiesApi.list().then(setCompanies).catch(() => {});
+  useEffect(() => {
+    loadData();
   }, [selectedCompany]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -184,18 +198,38 @@ export function BankTransactions() {
         </Button>
       </div>
 
+      <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. El extracto no se puede importar sin saber a qué empresa pertenece." />
+
+      {(cajasAbiertas.length > 0 || conciliacionCaja) && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-medium text-gray-900">Caja chica y reposiciones</p>
+              <p className="mt-1 text-sm text-gray-600">
+                {cajasAbiertas.length === 0
+                  ? 'No hay cajas abiertas en esta empresa.'
+                  : `Abiertas: ${cajasAbiertas.map((c) => c.nombre).join(' · ')}`}
+              </p>
+              {conciliacionCaja && (
+                <p className="mt-1 text-sm text-gray-600">
+                  {conciliacionCaja.sin_cruzar} reposición(es) sin cargo que cuadre.{' '}
+                  {conciliacionCaja.advertencia ?? ''}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                El cruce es solo lectura: no marca el cargo como reconciliado.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => irA('cajachica')}>Ver caja chica</Button>
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="flex flex-wrap gap-4 items-end">
           <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
-            <select
-              value={selectedCompany}
-              onChange={e => setSelectedCompany(e.target.value)}
-              className="w-full px-3 py-3 sm:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">Seleccionar empresa...</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name} ({c.tax_id})</option>)}
-            </select>
+            <p className="text-sm font-medium text-gray-700 mb-1">Empresa activa</p>
+            <p className="text-sm text-gray-900">{empresaActiva?.name ?? 'Sin empresa activa'}</p>
           </div>
           {selectedCompany && (
             <FileUpload

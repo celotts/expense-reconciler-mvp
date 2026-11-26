@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult, type Company } from '../services/api';
 import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { useNavegacion } from '../contextos/Navegacion';
+import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 import type { Categoria } from '../types/dashboard';
 import { 
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload, CameraCapture 
@@ -28,12 +30,14 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
   // backend rechazaria el cruce con 409, pero la pantalla ya habia mostrado
   // datos ajenos antes de que llegara el error.
   const { empresaActiva, empresas } = useEmpresa();
+  const { irA } = useNavegacion();
   const companies: Array<Pick<Company, 'id' | 'name' | 'tax_id'>> = empresas.map((m) => ({
     id: m.company_id,
     name: m.name,
     tax_id: m.tax_id,
   }));
   const selectedCompany = empresaActiva?.company_id ?? '';
+  const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,7 +98,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       // el cliente significaria traer los 500 tickets para descartar 400, y con
       // el limite del endpoint (100 por pagina) la cuenta seria falsa: "no hay
       // sin clasificar" cuando en realidad no salio en la primera pagina.
-      const [ticketsData, categoriasData] = await Promise.all([
+      const [ticketsData, categoriasData, cajas] = await Promise.all([
         selectedCompany
           ? ticketsApi.list(selectedCompany, {
               sinCategoria: filtro === 'sinClasificar',
@@ -103,9 +107,11 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
             })
           : Promise.resolve([] as Ticket[]),
         ticketsApi.categorias(),
+        selectedCompany ? cajaChicaApi.list() : Promise.resolve([]),
       ]);
       setTickets(ticketsData);
       setCategorias(categoriasData);
+      setCajasAbiertas(cajas.filter((caja) => caja.estado !== 'cerrada'));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al cargar datos');
@@ -433,7 +439,16 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
         />
       ),
     },
-    { key: 'provider_name', header: 'Proveedor', render: (t: Ticket) => <span className="font-medium">{t.provider_name}</span> },
+    { key: 'provider_name', header: 'Proveedor', render: (t: Ticket) => (
+      <span>
+        <span className="font-medium">{t.provider_name}</span>
+        {t.advertencia_duplicado_fiscal && (
+          <span className="ml-2 text-xs text-amber-700" role="status" title={t.advertencia_duplicado_fiscal}>
+            huella repetida
+          </span>
+        )}
+      </span>
+    ) },
     { key: 'provider_tax_id', header: 'RFC Proveedor', render: (t: Ticket) => t.provider_tax_id ? <code className="text-sm">{t.provider_tax_id}</code> : <span className="text-gray-400">-</span> },
     { key: 'total_amount', header: 'Total', render: (t: Ticket) => <span className="font-medium text-green-700">{dinero(t.total_amount)}</span> },
     { key: 'tax_amount', header: 'IVA', render: (t: Ticket) => <span className="text-gray-600">{dinero(t.tax_amount)}</span> },
@@ -484,6 +499,23 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
       </div>
 
       <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. Sin ella esta pantalla no puede mostrar tickets ni crear comprobantes." />
+
+      {cajasAbiertas.length > 0 && (
+        <Card className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-medium text-gray-900">Cajas chicas abiertas</p>
+              <p className="mt-1 text-sm text-gray-600">
+                {cajasAbiertas.map((caja) => caja.nombre).join(' · ')}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                Un gasto con huella fiscal repetida lleva un aviso en la columna Proveedor; no se bloquea la carga.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => irA('cajachica')}>Ver caja chica</Button>
+          </div>
+        </Card>
+      )}
 
       <Card>
         <div className="flex flex-wrap gap-4 items-end">
