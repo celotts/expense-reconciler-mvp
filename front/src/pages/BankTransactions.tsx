@@ -8,7 +8,7 @@ import {
 } from '../components/ui';
 import { fecha } from '../utils/format';
 import { AvisoSinEmpresa } from '../contextos/Empresa';
-import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import { useNavegacion } from '../contextos/NavegacionContexto';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 
@@ -19,6 +19,7 @@ export function BankTransactions() {
   // Una sola empresa activa, la del contexto. Un selector aqui permitiria ver
   // cargos de una empresa mientras el header autoriza otra.
   const { empresaActiva } = useEmpresa();
+  const { puede } = usePermisos();
   const { irA } = useNavegacion();
   const selectedCompany = empresaActiva?.company_id ?? '';
   const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
@@ -198,9 +199,11 @@ export function BankTransactions() {
           <h1 className="text-2xl font-bold text-gray-900">Movimientos Bancarios</h1>
           <p className="text-gray-500">Importa y gestiona tus extractos bancarios</p>
         </div>
-        <Button onClick={openCreateModal} disabled={!selectedCompany}>
-          Nuevo Movimiento
-        </Button>
+        {puede('crear') && (
+          <Button onClick={openCreateModal} disabled={!selectedCompany}>
+            Nuevo Movimiento
+          </Button>
+        )}
       </div>
 
       <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. El extracto no se puede importar sin saber a qué empresa pertenece." />
@@ -286,8 +289,12 @@ export function BankTransactions() {
                 },
                 { key: 'actions', header: 'Acciones', render: (t: BankTransaction) => (
                   <div className="flex gap-2">
-                    <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
-                    <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Eliminar</Button>
+                    {puede('editar') && (
+                      <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
+                    )}
+                    {puede('borrar') && (
+                      <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Eliminar</Button>
+                    )}
                   </div>
                 )},
               ]}

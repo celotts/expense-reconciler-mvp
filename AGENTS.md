@@ -38,7 +38,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 13 archivos de página (los nuevos son `CajaChica.tsx` y `Mantenimiento.tsx`) |
-| Tests | **1925**: **1924 passed, 1 skip**, 20 warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
+| Tests | **1970**: **1969 passed, 1 skip**, 20 warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
 Las rutas del front son hashes y las decide `renderPage` en `App.tsx`: `#/dashboard` ·
@@ -120,13 +120,14 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 1924 passed, 1 skip
+python3 -m pytest tests/ -q           # 1969 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 
 cd front && npm run build             # tsc + vite: la puerta que sí sirve
 cd front && npm run verify:caja       # 16 comprobaciones sobre el HTML de CajaChica
 cd front && npm run verify:menu       # orden del menú y roles por empresa
+cd front && npm run verify:permisos   # HTML: viewer ve datos, no ve botones de firma
 cd front && npm run verify:mantenimiento # HTML de Mantenimiento y orden de headers
 cd front && npm run verify:fecha      # la fecha no se corre un día
 ```
@@ -267,6 +268,48 @@ cabeceras, no el retorno de una función. La colección de Insomnia se regeneró
 rutas (107 peticiones, 18 carpetas) y `RUTAS_CON_CONTRASENA` se amplió a mano: es una
 dependencia, y FastAPI no la declara en el OpenAPI.
 
+### Permisos por acción: `viewer` es de solo lectura también por curl
+Antes el rol decidía qué **pantalla** se veía, pero una pantalla oculta no es una ruta
+cerrada: con un token válido se podía aprobar, exportar o administrar con `curl`. Ahora
+`app/core/permisos.py` traduce el rol de la fila de `usuarios_empresas` a diez acciones
+(`leer`, `crear`, `editar`, `borrar`, `aprobar`, `conciliar`, `exportar`, `cerrar`,
+`administrar`, `auditar`), y `guardia_de_permisos()` en `app/core/deps.py` se instala en
+`PROTEGIDOS` a nivel de `api_router`: **un endpoint nuevo nace protegido**. `auth` queda
+fuera porque es la puerta que todavía no tiene token.
+
+**La acción no la decide el verbo HTTP.** `_permiso_de_la_peticion()` clasifica primero
+por ruta: un `POST /reconciliations/run` concilia, un `PATCH /tickets/{id}/review` firma,
+un `GET .../cierre-mensual.pdf` exporta, `POST /duplicados/buscar` **consulta** aunque
+sea POST. Si la guardia mirara solo el método, `operator` podría aprobar y exportar con
+las acciones que ya tiene de crear. El `X-Company-ID` basura da **400** en la guardia: sin
+eso, una cabecera inválida saltaba la comprobación en routers que no piden empresa activa.
+
+**Ningún rol existente pierde una acción.** `owner`/`admin` tienen todo; `accountant`
+todo menos `administrar`; `operator` `leer`/`crear`/`editar`/`cerrar`; el nuevo `viewer`
+solo `leer`. Un rol desconocido en la BD no se convierte en admin: `a_rol_de_empresa()` y
+`roles_validos()` lo descartan. Las cuentas **sin membresías** siguen sin bloquearse por
+compatibilidad con las anteriores a `0022`, igual que el backfill de admin. `GET
+/auth/empresas` devuelve los permisos calculados en el servidor y el front los usa
+**antes** que su matriz local: un `owner` con `permisos: ['leer']` no ve botones de
+escritura, aunque el rol diga otra cosa.
+
+`db/migrations/0024_rol_viewer_y_permisos.sql` amplía el `CHECK` y se refleja en
+`init.sql` (que además registro hasta `0023` que faltaba en el seed). El menú de
+`viewer` son solo consultas —Inicio, Tickets, Cola, Muestreo, Banco, Conciliación,
+Cierre y Auditoría— sin botones de aprobar/ejecutar/descargar; `cajachica` se añadió a
+`ORDEN_PAGINAS`, que antes la omitía. La autoridad sigue siendo el servidor: el front
+oculta por comodidad.
+
+Verificación: `tests/unit/test_permisos_por_accion.py` (38), `tests/integration/
+test_permisos_http.py` (7, con contraprueba de que `admin` sí entra), `npm run
+verify:menu`, `npm run verify:permisos` (HTML montado con contexto `viewer` real) y tres
+scripts de mutaciones: `verify_permisos_mutations.py` (12),
+`verify_permisos_http_mutations.py` (4) y `verify_permisos_front_mutations.py` (3).
+Si al desplegar aparece un 500 con `relation ... does not exist`, la base está sin migrar:
+`bash scripts/migrar.sh --estado` y `make migrar MIGRAR_SI=1`. No se arregla relajando la
+guardia, porque entonces una escritura se aceptaría sin saber qué rol la firma.
+Ver `docs/known-issues.md` §50.
+
 ### El informe de cierre mensual — el documento que faltaba
 `app/services/reporte_cierre.py` + `app/api/reports.py` (`/api/v1/reports`).
 **Es la Fase 1 del contrato** y es el eslabón que cierra la cadena de custodia
@@ -345,6 +388,9 @@ python3 scripts/verify_expenses_batch_mutations.py     # 7: lote autenticado + p
 python3 scripts/verify_expenses_directorio_mutations.py # 10: ruta, allowlist, nombres, formatos
 python3 scripts/verify_ocr_mutations.py             # 16 mutaciones: binarización + modelo de línea
 python3 scripts/verify_fecha_mutations.py           # 8 mutaciones: las reglas de fecha del parser
+python3 scripts/verify_permisos_mutations.py        # 12: mapa y clasificacion por accion
+python3 scripts/verify_permisos_http_mutations.py   # 4: guardia HTTP, PDF, header, POST-consulta
+python3 scripts/verify_permisos_front_mutations.py  # 3: menu y botones del front
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 ```
 

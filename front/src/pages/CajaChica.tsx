@@ -34,7 +34,7 @@ import {
 import { registrarEventoFrontend } from '../services/auditoria';
 import { useSesion } from '../contextos/SesionContexto';
 import { AvisoSinEmpresa } from '../contextos/Empresa';
-import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import {
   Badge, Button, Card, EmptyState, Input, Loading, Modal, Select, Table,
 } from '../components/ui';
@@ -143,6 +143,10 @@ export function CajaChica({
 }: CajaChicaProps) {
   const { usuario } = useSesion();
   const { empresaActiva, empresas } = useEmpresa();
+  // Abrir una caja y mover dinero son altas; enviar a revision, reabrir y
+  // cerrar son decisiones. Un mismo permiso no las confunde: `cerrar` no da
+  // permiso para crear movimientos, y `crear` no permite cerrar la caja.
+  const { puede } = usePermisos();
 
   // La empresa NO se elige aqui. Viene del contexto y viaja en la cabecera
   // `X-Company-ID` que inyecta `api.ts`. Los datos iniciales solo existen para
@@ -547,16 +551,18 @@ export function CajaChica({
           <Card className="lg:col-span-1">
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold text-gray-900">Cajas registradas</h2>
-              <Button size="sm" onClick={() => setModalCaja(true)} disabled={!companyId}>
-                Nueva caja
-              </Button>
+              {puede('crear') && (
+                <Button size="sm" onClick={() => setModalCaja(true)} disabled={!companyId}>
+                  Nueva caja
+                </Button>
+              )}
             </div>
             {cargando ? (
               <Loading message="Cargando cajas chicas..." />
             ) : cajas.length === 0 ? (
               <EmptyState
                 message={companyId ? 'No hay cajas chicas para esta empresa.' : 'Selecciona una empresa para ver sus cajas.'}
-                action={companyId ? { label: 'Crear la primera caja', onClick: () => setModalCaja(true) } : undefined}
+                action={companyId && puede('crear') ? { label: 'Crear la primera caja', onClick: () => setModalCaja(true) } : undefined}
               />
             ) : (
               <Table
@@ -620,15 +626,17 @@ export function CajaChica({
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={abrirMovimiento} disabled={!puedeMoverse || procesando}>
-                    Registrar movimiento
-                  </Button>
-                  {seleccionada.estado === 'abierta' && (
+                  {puede('crear') && (
+                    <Button onClick={abrirMovimiento} disabled={!puedeMoverse || procesando}>
+                      Registrar movimiento
+                    </Button>
+                  )}
+                  {seleccionada.estado === 'abierta' && puede('cerrar') && (
                     <Button variant="secondary" disabled={procesando} onClick={() => { void cambiarEstado('enRevision', 'Caja enviada a revisión.'); }}>
                       Enviar a revisión
                     </Button>
                   )}
-                  {seleccionada.estado === 'en_revision' && (
+                  {seleccionada.estado === 'en_revision' && puede('cerrar') && (
                     <>
                       <div className="w-full sm:max-w-xs">
                         <label htmlFor="efectivo-contado" className="text-sm font-medium text-gray-700">
@@ -841,7 +849,7 @@ export function CajaChica({
           </div>
           <div className="flex justify-end gap-3 border-t pt-4">
             <Button variant="ghost" onClick={() => setModalCaja(false)}>Cancelar</Button>
-            <Button type="submit" disabled={procesando}>{procesando ? 'Guardando...' : 'Crear caja'}</Button>
+            <Button type="submit" disabled={procesando || !puede('crear')}>{procesando ? 'Guardando...' : 'Crear caja'}</Button>
           </div>
         </form>
       </Modal>
@@ -957,7 +965,7 @@ export function CajaChica({
             <Button variant="ghost" onClick={() => setModalMovimiento(false)}>Cancelar</Button>
             <Button
               type="submit"
-              disabled={procesando || (movimiento.tipo === 'gasto_ticket' && duplicadoTicket?.es_duplicado === true)}
+              disabled={procesando || !puede('crear') || (movimiento.tipo === 'gasto_ticket' && duplicadoTicket?.es_duplicado === true)}
             >
               {procesando ? 'Guardando...' : 'Registrar movimiento'}
             </Button>

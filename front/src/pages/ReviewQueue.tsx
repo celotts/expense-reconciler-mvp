@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ticketsApi, companiesApi, type Company, type Ticket, type ExtractionStatus, type LineaTicketUpdate } from '../services/api';
+import { usePermisos } from '../contextos/EmpresaContexto';
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import {
   STATUS_ORDEN, explainValidationErrors, confidenceLabel, sourceLabel,
@@ -229,6 +230,7 @@ export function TicketEnCola({
   onDescartar: () => void;
   onRefresh: () => void | Promise<void>;
 }) {
+  const { puede } = usePermisos();
   const problemas = explainValidationErrors(ticket.validation_errors);
   const meta = statusMeta(ticket.extraction_status);
   const conf = confidenceLabel(ticket.confidence, ticket.confidence_source);
@@ -370,10 +372,10 @@ export function TicketEnCola({
           forma de deshacerla desde aqui. Ocultarlo dejaria un aprobado sin
           salida.
         */}
-        {!editando && (
+        {!editando && puede('editar') && (
           <div className="flex gap-2 shrink-0">
             <Button onClick={onEditar} variant="secondary">Corregir</Button>
-            {ticket.extraction_status !== 'APROBADO' && (
+            {puede('aprobar') && ticket.extraction_status !== 'APROBADO' && (
               <Button onClick={() => aprobar()} disabled={ocupado}>
                 Aprobar
               </Button>

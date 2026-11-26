@@ -15,10 +15,17 @@ from app.api.scans import router as scan_router
 from app.api.sistema import router as sistema_router
 from app.api.tickets import router as tickets_router
 from app.api.usuarios import router as usuarios_router
-from app.core.deps import empresa_activa, get_current_user
+from app.core.deps import empresa_activa, get_current_user, guardia_de_permisos
 from app.routers.expenses import router as expenses_router
 
 api_router = APIRouter()
+
+# La misma puerta para TODOS los routers protegidos, escrita una sola vez.
+# Anadir un router nuevo con solo `get_current_user` lo dejaria sin guardia de
+# permisos, que es exactamente el fallo que esta lista evita para el token.
+# `auth` queda fuera a proposito: `POST /auth/login` no puede traer token ni
+# membresia resuelta, y es la puerta por la que se obtiene la sesion.
+PROTEGIDOS = [Depends(get_current_user), Depends(guardia_de_permisos)]
 
 # ---------------------------------------------------------------------------
 # La puerta se instala primero y SIN proteccion: `POST /auth/login` es
@@ -31,7 +38,7 @@ api_router.include_router(
     auditoria_router,
     prefix="/auditoria",
     tags=["Auditoria"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 
 # A partir de aqui, TODO lo demas pide token. Se pone a nivel de router, no
@@ -47,7 +54,7 @@ api_router.include_router(
 api_router.include_router(
     dashboard_router,
     tags=["Dashboard"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # `categorias.py` ya declara su prefijo en su propio APIRouter, igual que
 # `dashboard.py`. Ponerlo tambien aqui produce `/categorias/categorias`, que es
@@ -56,19 +63,19 @@ api_router.include_router(
 api_router.include_router(
     categorias_router,
     tags=["Categorias"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 api_router.include_router(
     companies_router,
     prefix="/companies",
     tags=["Companies"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 api_router.include_router(
     tickets_router,
     prefix="/tickets",
     tags=["Tickets"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # Carga explicita por lote. Es la misma captura que `/tickets` y que `/scan`:
 # `procesar_archivo` con `source_type=BULK`. El token se exige a nivel de router
@@ -80,7 +87,7 @@ api_router.include_router(
     expenses_router,
     prefix="/expenses",
     tags=["Expenses"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # El escaner de carpeta. Mismo criterio que los demas: token obligatorio a nivel
 # de router. Que lea el disco no lo hace mas peligroso de lo que ya es el resto
@@ -91,19 +98,19 @@ api_router.include_router(
     scan_router,
     prefix="/scan",
     tags=["Scan"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 api_router.include_router(
     bank_transactions_router,
     prefix="/bank-transactions",
     tags=["Bank Transactions"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 api_router.include_router(
     reconciliations_router,
     prefix="/reconciliations",
     tags=["Reconciliations"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # Inventario. El token obligatorio por el mismo motivo que el resto.
 #
@@ -116,7 +123,7 @@ api_router.include_router(
     inventario_router,
     prefix="/inventario",
     tags=["Inventario"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # Cuentas. Token a nivel de router, como todos los demas.
 #
@@ -129,7 +136,7 @@ api_router.include_router(
     usuarios_router,
     prefix="/usuarios",
     tags=["Usuarios"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # El informe de cierre mensual. Token a nivel de router, como todos los demas.
 #
@@ -142,14 +149,14 @@ api_router.include_router(
     reports_router,
     prefix="/reports",
     tags=["Reports"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # Sistema: backup, estado, version. Token obligatorio como el resto.
 api_router.include_router(
     sistema_router,
     prefix="/sistema",
     tags=["Sistema"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=PROTEGIDOS,
 )
 # Caja chica y duplicados fiscales. Ademas del token se exige la empresa activa
 # A NIVEL DE ROUTER, por el mismo motivo que el token: escrito endpoint por
@@ -159,11 +166,11 @@ api_router.include_router(
     caja_chica_router,
     prefix="/caja-chica",
     tags=["Caja chica"],
-    dependencies=[Depends(get_current_user), Depends(empresa_activa)],
+    dependencies=[*PROTEGIDOS, Depends(empresa_activa)],
 )
 api_router.include_router(
     duplicados_router,
     prefix="/duplicados",
     tags=["Duplicados"],
-    dependencies=[Depends(get_current_user), Depends(empresa_activa)],
+    dependencies=[*PROTEGIDOS, Depends(empresa_activa)],
 )

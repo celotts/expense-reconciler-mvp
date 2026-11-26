@@ -102,6 +102,10 @@ class MembresiaEmpresaResponse(BaseModel):
     name: str
     tax_id: str
     rol: str
+    # Lo calcula el servidor desde el rol leido en BD, no el navegador desde su
+    # copia: un front desactualizado puede quedarse sin un boton nuevo, nunca
+    # puede concederse una accion que la guardia rechazaria.
+    permisos: list[str]
 
 
 class UsuarioUpdate(BaseModel):

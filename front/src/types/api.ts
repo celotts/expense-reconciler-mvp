@@ -37,7 +37,7 @@ export interface MembresiaUsuario {
   user_id: string;
   email: string;
   nombre: string;
-  rol: 'owner' | 'admin' | 'accountant' | 'operator';
+  rol: 'owner' | 'admin' | 'accountant' | 'operator' | 'viewer';
   activo: boolean;
 }
 

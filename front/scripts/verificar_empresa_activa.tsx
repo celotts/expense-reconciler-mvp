@@ -37,6 +37,7 @@ const VACIO: EmpresaContextValue = {
   empresas: [],
   empresaActiva: null,
   rol: null,
+  permisos: [],
   cargando: false,
   necesitaEleccion: false,
   error: null,
@@ -64,8 +65,8 @@ comprobar(
 
 const conEmpresa = pintar({
   ...VACIO,
-  empresas: [{ company_id: 'c1', name: 'Una', tax_id: 'RFC1', rol: 'admin' }],
-  empresaActiva: { company_id: 'c1', name: 'Una', tax_id: 'RFC1', rol: 'admin' },
+  empresas: [{ company_id: 'c1', name: 'Una', tax_id: 'RFC1', rol: 'admin', permisos: ['leer', 'crear'] }],
+  empresaActiva: { company_id: 'c1', name: 'Una', tax_id: 'RFC1', rol: 'admin', permisos: ['leer', 'crear'] },
   rol: 'admin',
 });
 comprobar('con empresa activa no se ensucia la pantalla con un aviso', !conEmpresa.includes('role="alert"'));

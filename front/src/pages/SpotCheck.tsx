@@ -6,6 +6,7 @@ import {
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import { confidenceLabel, sourceLabel, nombreProvisorLegible } from '../utils/extraction';
 import { VerDocumento } from '../components/TicketDocumento';
+import { usePermisos } from '../contextos/EmpresaContexto';
 import {
   veredictoMeta, accionSegunVeredicto, exactitudConIntervalo, porcentaje,
   etiquetaCampo, CAMPOS_MUESTRABLES, SPOT_CHECK_META, VEREDICTO_META,
@@ -337,6 +338,11 @@ export function TarjetaMuestra({
   item: SpotCheckItem;
   onRefresh: () => void | Promise<void>;
 }) {
+  // La muestra se PUEDE mirar sin permiso de aprobacion: es exactamente lo que
+  // hace un `viewer`. Registrar el veredicto si es una firma sobre la exactitud
+  // del automatismo, y el backend lo rechaza con 403. Ocultar los botones aqui
+  // es comodidad; la guardia de permisos es la autoridad.
+  const { puede } = usePermisos();
   const t = item.ticket;
   const [viendoTexto, setViendoTexto] = useState(false);
   const [marcandoIncorrecto, setMarcandoIncorrecto] = useState(false);
@@ -459,7 +465,7 @@ export function TarjetaMuestra({
           )}
         </div>
 
-        {item.spot_check_status === 'PENDIENTE' && !marcandoIncorrecto && (
+        {item.spot_check_status === 'PENDIENTE' && !marcandoIncorrecto && puede('aprobar') && (
           <div className="flex gap-2 shrink-0">
             <Button
               variant="secondary"
@@ -476,7 +482,7 @@ export function TarjetaMuestra({
         )}
       </div>
 
-      {marcandoIncorrecto && (
+      {marcandoIncorrecto && puede('aprobar') && (
         <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg space-y-3">
           <p className="text-sm text-red-900">
             ¿Qué se leyó mal? Esto no corrige el ticket: solo dice qué campo falló, que es lo que

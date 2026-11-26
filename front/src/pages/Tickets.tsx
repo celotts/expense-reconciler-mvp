@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult, type Company } from '../services/api';
 import { AvisoSinEmpresa } from '../contextos/Empresa';
-import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import { useNavegacion } from '../contextos/NavegacionContexto';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 import type { Categoria } from '../types/dashboard';
@@ -31,6 +31,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
   // backend rechazaria el cruce con 409, pero la pantalla ya habia mostrado
   // datos ajenos antes de que llegara el error.
   const { empresaActiva, empresas } = useEmpresa();
+  const { puede } = usePermisos();
   const { irA } = useNavegacion();
   const companies: Array<Pick<Company, 'id' | 'name' | 'tax_id'>> = empresas.map((m) => ({
     id: m.company_id,
@@ -463,8 +464,12 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     { key: 'category', header: 'Categoría', render: (t: Ticket) => t.category ? <Badge>{t.category}</Badge> : <span className="text-red-500 text-xs uppercase">SIN CLASIFICAR</span> },
     { key: 'actions', header: 'Acciones', render: (t: Ticket) => (
       <div className="flex gap-2">
-        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
-        <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); requestDelete(t); }}>Eliminar</Button>
+        {puede('editar') && (
+          <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(t); }}>Editar</Button>
+        )}
+        {puede('borrar') && (
+          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); requestDelete(t); }}>Eliminar</Button>
+        )}
       </div>
     )},
   ];
@@ -488,7 +493,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           <h1 className="text-2xl font-bold text-gray-900">Tickets / Facturas</h1>
           <p className="text-gray-500">Registra y gestiona tus comprobantes fiscales</p>
         </div>
-        <div className="flex gap-2">
+        {puede('crear') && <div className="flex gap-2">
           <Button
             variant="secondary"
             onClick={() => { setExtractionResult(null); setExtractionWarnings([]); setShowCamera(false); setShowExtractModal(true); }}
@@ -499,7 +504,7 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           <Button onClick={openCreateModal} disabled={!selectedCompany}>
             Nuevo Ticket
           </Button>
-        </div>
+        </div>}
       </div>
 
       <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral. Sin ella esta pantalla no puede mostrar tickets ni crear comprobantes." />

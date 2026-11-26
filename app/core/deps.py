@@ -15,13 +15,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.enums import RolEmpresa
+from app.core.permisos import a_rol_de_empresa, Permiso, roles_validos, tiene_permiso
 from app.core.security import ErrorDeToken, TokenCaducado, leer_token
 from app.models.usuario_empresa import UsuarioEmpresaModel
 from app.models.user import UserModel
@@ -208,12 +209,13 @@ async def rol_actual(
             UsuarioEmpresaModel.company_id == company_id,
         )
     )
-    if rol is None:
+    rol_validado = a_rol_de_empresa(rol)
+    if rol is None or rol_validado is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="La cuenta no tiene acceso a esa empresa",
         )
-    return RolEmpresa(rol)
+    return rol_validado
 
 
 RolEnEmpresa = Annotated[RolEmpresa, Depends(rol_actual)]
@@ -238,6 +240,137 @@ def requiere_rol(*roles: RolEmpresa):
         return rol
 
     return _requiere_rol
+
+
+# ---------------------------------------------------------------------------
+# La guardia de escrituras: el front oculta botones, esto es la autoridad
+# ---------------------------------------------------------------------------
+#
+# `requiere_rol` protege rutas concretas. La experiencia con el menu anterior
+# enseno que eso no basta: una pantalla que no pinta el boton SIGUE siendo una
+# ruta HTTP a la que se puede llamar con curl. Por eso esta guardia va a nivel
+# de router, igual que el token, y no se copia endpoint por endpoint.
+#
+# No pide `empresa_activa` como dependencia: hacerlo obligaria a elegir empresa
+# incluso para mirar el dashboard, que es una lectura. Lee las membresias solo
+# cuando la peticion ESCRIBE o exporta, y resuelve la empresa de la cabecera
+# `X-Company-ID`. Sin cabecera y con una sola membresia, usa esa; con varias,
+# basta con que una permita la accion para no bloquear a quien trabaja en otra:
+# adivinar cual quiso el usuario es una decision de seguridad, y `empresa_activa`
+# ya pide 409 cuando hace falta elegir.
+
+# POST que son una consulta, no una escritura. Estar aqui no habilita nada: la
+# ruta sigue pidiendo token y, si corresponde, empresa activa.
+_RUTAS_DE_SOLO_LECTURA = frozenset({"/api/v1/duplicados/buscar"})
+
+_PERMISO_POR_METODO: dict[str, Permiso] = {
+    "POST": Permiso.CREAR,
+    "PUT": Permiso.EDITAR,
+    "PATCH": Permiso.EDITAR,
+    "DELETE": Permiso.BORRAR,
+}
+
+
+def _permiso_de_la_peticion(request: Request) -> Permiso | None:
+    """Que accion exige esta peticion. `None` es una lectura, que no se toca.
+
+    El verbo solo no basta. Un `POST /reconciliations/run` no es "crear" sino
+    conciliar; un `PATCH /tickets/{id}/review` firma un veredicto; un PDF es una
+    salida de datos. Si la guardia mirara solo el metodo, `operator` podria
+    aprobar y exportar con un `POST` o un `GET` que el menu no le ofrece, y el
+    mapa de permisos seria decorativo. Por eso las acciones especiales se
+    comprueban ANTES del default por verbo.
+    """
+    ruta = request.url.path
+    if ruta in _RUTAS_DE_SOLO_LECTURA:
+        return None
+    metodo = request.method.upper()
+
+    # Un PDF, un Excel o un respaldo son una SALIDA de datos, no una lectura
+    # inofensiva. Un `viewer` puede mirar el informe en pantalla y no puede
+    # llevarse el archivo: son dos preguntas distintas.
+    if metodo == "GET":
+        if ruta.endswith(".pdf") or "/export/" in ruta or ruta.endswith("/backup"):
+            return Permiso.EXPORTAR
+        return None
+
+    # Aprobar no es editar: quien corrige un ticket no por eso puede firmarlo.
+    if "/spot-check" in ruta or ruta.endswith("/review"):
+        return Permiso.APROBAR
+    if ruta.startswith("/api/v1/reconciliations/run"):
+        return Permiso.CONCILIAR
+    # Cerrar, enviar a revision y reabrir son decisiones de caja, no altas.
+    if ruta.endswith(("/cerrar", "/en-revision", "/reabrir")):
+        return Permiso.CERRAR
+    # Administrar cuentas y empresas no es crear un ticket. Las rutas viejas de
+    # `/usuarios` se conservan, pero su escritura tambien cambia la autoridad.
+    if ruta.startswith("/api/v1/companies") or ruta.startswith("/api/v1/usuarios"):
+        return Permiso.ADMINISTRAR
+    # El reset borra lo digitalizado: es una decision de administrador, no un
+    # DELETE cualquiera. Su cerrojo propio sigue vigente; esto es uno mas.
+    if ruta.startswith("/api/v1/scan/reset"):
+        return Permiso.ADMINISTRAR
+    if ruta.startswith("/api/v1/auditoria/evento"):
+        return Permiso.AUDITAR
+
+    return _PERMISO_POR_METODO.get(metodo)
+
+
+async def guardia_de_permisos(
+    request: Request,
+    usuario: UsuarioActual,
+    db: Sesion,
+) -> None:
+    """403 si el rol en la empresa activa no permite escribir o exportar.
+
+    Se instala en `api_router` para todos los routers protegidos. Si no hay
+    membresias, NO bloquea: son cuentas anteriores a `0022` y quitarles el
+    acceso por una migracion seria romper lo que ya funcionaba, igual que el
+    backfill de administrador. Un rol leido de `perfil` o del JWT no cuenta.
+    """
+    permiso = _permiso_de_la_peticion(request)
+    if permiso is None:
+        return
+
+    filas = (
+        await db.execute(
+            select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id).where(
+                UsuarioEmpresaModel.user_id == usuario.id,
+                UsuarioEmpresaModel.activo.is_(True),
+            )
+        )
+    ).all()
+    if not filas:
+        return
+
+    cabecera = request.headers.get("X-Company-ID")
+    if cabecera:
+        try:
+            elegida = UUID(cabecera)
+        except ValueError as exc:
+            # No se adivina cual empresa quiso decir el cliente. Devolver aqui
+            # seria dejar que una cabecera basura saltara la guardia en routers
+            # que no piden `empresa_activa` (tickets, reconciliations, ...).
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="X-Company-ID no es un UUID valido",
+            ) from exc
+        # Un rol que no entendemos se descarta, no se convierte en admin ni
+        # revienta con ValueError en medio de la peticion.
+        roles = roles_validos(rol for rol, company_id in filas if company_id == elegida)
+        if not roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="La cuenta no tiene acceso a esa empresa",
+            )
+    else:
+        roles = roles_validos(rol for rol, _ in filas)
+
+    if not any(tiene_permiso(rol, permiso) for rol in roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"El rol de la cuenta no permite {permiso.value} en esta empresa",
+        )
 
 
 # ---------------------------------------------------------------------------

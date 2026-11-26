@@ -29,6 +29,7 @@ const ROLES = [
   { value: 'admin', label: 'Admin' },
   { value: 'accountant', label: 'Contador' },
   { value: 'operator', label: 'Operador' },
+  { value: 'viewer', label: 'Solo lectura' },
 ];
 
 const PERFILES = [

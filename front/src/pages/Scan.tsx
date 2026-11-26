@@ -3,7 +3,7 @@ import { registrarEventoFrontend } from '../services/auditoria';
 import { ticketsApi, type Ticket } from '../services/api';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 import { AvisoSinEmpresa } from '../contextos/Empresa';
-import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import { useNavegacion } from '../contextos/NavegacionContexto';
 import type {
   ArchivoNoPermitido, DigitalizacionDirectorio,
@@ -43,6 +43,7 @@ export function Scan() {
   // pantalla (y el token) defendia otra; el servidor lo rechazaria con 409 y el
   // operador no entenderia por que.
   const { empresaActiva } = useEmpresa();
+  const { puede } = usePermisos();
   const { irA } = useNavegacion();
   const companyId = empresaActiva?.company_id ?? '';
   const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
@@ -320,7 +321,7 @@ export function Scan() {
         config={config}
       />
 
-      <div className="mt-6 flex flex-wrap gap-3">
+      {puede('crear') && <div className="mt-6 flex flex-wrap gap-3">
         {/*
           Dos botones y no uno con una casilla. "Escanear" sin empresa inventaria
           y es seguro: nadie puede crear un gasto por accidente. "Escanear y
@@ -342,7 +343,7 @@ export function Scan() {
             <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
           ) : escaneando ? 'Escaneando...' : 'Escanear y crear tickets'}
         </Button>
-      </div>
+      </div>}
 
       {/* La carga por lote es la OTRA puerta de entrada: la de arriba lee una
           carpeta del SERVIDOR; esta manda archivos de ESTA maquina. Las dos
@@ -474,6 +475,7 @@ export function CargaPorLote({
   extensionesPermitidas?: string[];
 }) {
   const { empresaActiva } = useEmpresa();
+  const { puede } = usePermisos();
   const companyId = empresaActiva?.company_id ?? '';
   const [archivos, setArchivos] = useState<File[]>([]);
   const [procesando, setProcesando] = useState(false);
@@ -582,7 +584,7 @@ export function CargaPorLote({
         className="sr-only"
       />
 
-      <div className="mt-3 flex flex-wrap gap-3">
+      {puede('crear') && <div className="mt-3 flex flex-wrap gap-3">
         <Button
           variant="secondary"
           onClick={() => document.getElementById('carga-lote-archivos')?.click()}
@@ -607,7 +609,7 @@ export function CargaPorLote({
             ? 'Digitalizando…'
             : `Digitalizar ${archivos.length} ${archivos.length === 1 ? 'archivo' : 'archivos'}`}
         </Button>
-      </div>
+      </div>}
 
       {archivos.length > 0 && !procesando && (
         <p className="text-xs text-gray-500 mt-2">

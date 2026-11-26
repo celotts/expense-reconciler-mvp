@@ -4,7 +4,7 @@ import {
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState
 } from '../components/ui';
 import { AvisoSinEmpresa } from '../contextos/Empresa';
-import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import { useNavegacion } from '../contextos/NavegacionContexto';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 
@@ -52,6 +52,7 @@ export function Reconciliations() {
   // autoriza la cabecera en el resto de la aplicacion.
   const { empresaActiva } = useEmpresa();
   const { irA } = useNavegacion();
+  const { puede } = usePermisos();
   const selectedCompany = empresaActiva?.company_id ?? '';
   const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
   
@@ -208,10 +209,14 @@ export function Reconciliations() {
           <p className="text-gray-500">Ejecuta el motor automático y exporta reportes contables</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={() => { setShowExportModal(true); setExportFormat('excel'); }}>Exportar</Button>
-          <Button onClick={() => { setRunParams({...runParams, company_id: selectedCompany}); setShowRunModal(true); }} disabled={!selectedCompany || runLoading}>
-            Conciliar
-          </Button>
+          {puede('exportar') && (
+            <Button variant="secondary" onClick={() => { setShowExportModal(true); setExportFormat('excel'); }}>Exportar</Button>
+          )}
+          {puede('conciliar') && (
+            <Button onClick={() => { setRunParams({...runParams, company_id: selectedCompany}); setShowRunModal(true); }} disabled={!selectedCompany || runLoading}>
+              Conciliar
+            </Button>
+          )}
         </div>
       </div>
 

@@ -438,14 +438,18 @@ class RolEmpresa(str, Enum):
     describe el puesto y sigue siendo texto libre para compatibilidad. Este
     enum es autorizacion y vive en `usuarios_empresas`, por empresa.
 
-    Las cuatro cadenas son las mismas que el CHECK de `0022`. Anadir uno sin
-    cambiar la base daria un 500 al escribir la membresia, no un 422 limpio.
+    Las cinco cadenas son las mismas que el CHECK de `0024` (que reemplaza al
+    de `0022`). Anadir uno sin cambiar la base daria un 500 al escribir la
+    membresia, no un 422 limpio. `viewer` NO es una etiqueta decorativa: es el
+    unico rol sin permisos de escritura, y la guardia de `deps.py` lo hace
+    valer aunque el front no pinte bien los botones.
     """
 
     OWNER = "owner"
     ADMIN = "admin"
     ACCOUNTANT = "accountant"
     OPERATOR = "operator"
+    VIEWER = "viewer"
 
     @property
     def es_operador(self) -> bool:

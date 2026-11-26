@@ -3,8 +3,10 @@ import { companiesApi, type Company, type CompanyCreate } from '../services/api'
 import { 
   Button, Input, Modal, Table, Card, Loading, EmptyState 
 } from '../components/ui';
+import { usePermisos } from '../contextos/EmpresaContexto';
 
 export function Companies() {
+  const { puede } = usePermisos();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,12 +75,15 @@ export function Companies() {
     { key: 'name', header: 'Nombre', render: (c: Company) => <span className="font-medium">{c.name}</span> },
     { key: 'tax_id', header: 'RFC', render: (c: Company) => <code className="text-sm bg-gray-100 px-2 py-1 rounded">{c.tax_id}</code> },
     { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
-    { key: 'actions', header: 'Acciones', render: (c: Company) => (
-      <div className="flex gap-2">
-        <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
-        <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}>Eliminar</Button>
-      </div>
-    )},
+    {
+      key: 'actions', header: 'Acciones',
+      render: (c: Company) => puede('administrar') ? (
+        <div className="flex gap-2">
+          <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
+          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}>Eliminar</Button>
+        </div>
+      ) : null,
+    },
   ];
 
   return (
@@ -88,7 +93,7 @@ export function Companies() {
           <h1 className="text-2xl font-bold text-gray-900">Empresas</h1>
           <p className="text-gray-500">Gestiona tus empresas y perfiles fiscales</p>
         </div>
-        <Button onClick={openCreateModal}>Nueva Empresa</Button>
+        {puede('administrar') && <Button onClick={openCreateModal}>Nueva Empresa</Button>}
       </div>
 
       {error && (

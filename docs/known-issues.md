@@ -2525,6 +2525,89 @@ editando el JSON. Los endpoints antiguos de `/usuarios` se dejaron intactos (§2
 
 ---
 
+### 50. El rol decidía el menú, pero no las acciones: `viewer` era imposible — ✅ CORREGIDO
+
+**El defecto que se pide.** El usuario pidió un rol de solo lectura. Con el código anterior,
+`PAGINAS_POR_ROL` decidía qué pantallas se veían, pero **no había forma de expresar "puede
+ver esta pantalla y no puede pulsar nada"**. `accountant` veía Conciliación y por tanto
+podía ejecutarla y descargar el Excel; `operator` veía Tickets y podía aprobar. Quitar una
+pantalla del menú no cierra la ruta: con un token válido, `curl` llegaba igual. Añadir
+`viewer` a la matriz de páginas habría producido exactamente lo que se pidió **en la
+pantalla** y no en el sistema.
+
+**La solución es una autoridad, no una lista de botones.** `app/core/permisos.py` traduce
+el rol de `usuarios_empresas` a diez acciones y `guardia_de_permisos()` (`app/core/deps.py`)
+se instala en `PROTEGIDOS` en `app/api/api_router.py`, junto al token. Todo endpoint nuevo
+nace protegido sin que nadie recuerde añadirle un `Depends`. `auth` queda fuera: es la
+puerta que todavía no tiene token. Los routers de caja/duplicados que ya tenían
+`Depends(empresa_activa)` siguen comprobándolo en el servicio; la guardia no lo sustituye,
+lo precede.
+
+**Por qué el verbo HTTP NO pudo ser el criterio (mutación medida).** La primera idea —
+`POST→crear`, `PATCH→editar`, `DELETE→borrar`, `GET→leer`— deja dos agujeros: `operator`
+ya tiene `crear` y podría aprobar con el `PATCH /tickets/{id}/review` y ejecutar la
+conciliación con el `POST /reconciliations/run`; y `GET /reports/cierre-mensual.pdf`
+sería una lectura, así que `viewer` podría llevarse el PDF. `_permiso_de_la_peticion()`
+clasifica primero por ruta y solo al final cae al verbo. `POST /duplicados/buscar` está
+en `_RUTAS_DE_SOLO_LECTURA`: es una consulta, y exigirle `crear` rompería la búsqueda de
+`viewer`. El verificador de mutaciones lo comprueba.
+
+**El `X-Company-ID` basura devuelve 400 en la guardia.** No es cosmético: varios routers
+(tickets, reconciliations, reports) no piden `empresa_activa`, así que una cabecera
+inválida hacía que la guardia no encontrara roles y —según cómo se escribiera— podía
+caer al conjunto vacío o dejar pasar la escritura. Se decide antes de mirar permisos.
+
+**Roles: nadie pierde lo que ya hacía.** `owner`/`admin` conservan todo; `accountant`
+todo menos `administrar`; `operator` `leer`/`crear`/`editar`/`cerrar`; `viewer` solo
+`leer`. Un rol desconocido en la BD se descarta (`a_rol_de_empresa()` / `roles_validos()`),
+nunca se vuelve admin, y las cuentas sin membresías siguen sin bloquearse por
+compatibilidad con las anteriores a `0022`. `GET /auth/empresas` devuelve los permisos
+calculados en servidor, en orden fijo. El front los usa **antes** que su matriz: probado
+con un `owner` cuyo JSON dice `permisos: ['leer']`, que no ve Corregir ni Aprobar.
+
+**DDL y menú.** `db/migrations/0024_rol_viewer_y_permisos.sql` amplía el `CHECK` y se
+espeja en `init.sql`, que además registro hasta `0023` (faltaba en el seed de una base
+nueva). `viewer` ve Inicio, Tickets, Cola, Muestreo, Banco, Conciliación, Cierre y
+Auditoría, sin botones de firma/ejecución/descarga. `ORDEN_PAGINAS` no incluía
+`cajachica` aunque la página existía: se añadió en su sitio del flujo. `rolPuedeCaja`
+quedó sin callers y se borró; `verificar_menu_roles.tsx` comprueba que no vuelva.
+
+**Verificación (y por qué hay tres verificadores de mutaciones distintos):**
+
+| puerta | qué mide |
+|---|---|
+| `test_permisos_por_accion.py` (38) | mapa, clasificación por ruta, traducción de roles |
+| `test_permisos_http.py` (7) | 403 por cable, con contraprueba de que `admin` sí entra |
+| `verify_permisos_mutations.py` (12) | el mapa y la clasificacion |
+| `verify_permisos_http_mutations.py` (4) | la guardia desconectada, el PDF como lectura, el header basura, el POST-consulta |
+| `npm run verify:menu` | orden del menú y roles, incluido `viewer` |
+| `npm run verify:permisos` | **HTML montado**: viewer ve datos y no ve botones; admin ve los botones |
+
+`verify:permisos` monta `TicketEnCola`, `TarjetaMuestra` y `CajaChica` con el contexto que
+devuelve `/auth/empresas`, y mira el HTML, no el retorno de `puede()`: `tsc` pasa con un
+botón que no debiera estar. La contraprueba con `admin` evita el verde de una pantalla
+vacía. `verify_permisos_front_mutations.py` (3) quita guardias del front y exige que
+estos verificadores mueran: **uno de los tres sobrevivió en la primera corrida** porque
+el test de `POST /duplicados/buscar` solo comprobaba `!= 400`, así que un 403 por la vía
+equivocada daba verde. Se cambió por `== 200` y ahora muere.
+
+**Lo que NO se hizo:** no se creó tabla `roles` ni panel de edición de permisos; son roles
+fijos y el `CHECK` los declara. No se borró evidencia: no hay nuevo `DELETE`, y la baja
+sigue siendo lógica. Los endpoints viejos de `/usuarios` se conservaron (§28).
+
+**Efecto colateral medido en la base en vivo.** Al desplegar esto, la base tenía registradas
+las migraciones hasta `0021` pero **no** tenía `usuarios_empresas` ni las columnas de `0023`.
+Como la guardia consulta membresías en CADA escritura, `POST /auditoria/evento` empezó a
+devolver 500 con `relation "usuarios_empresas" does not exist`; `GET /tickets` ya fallaba por
+`column tickets.advertencia_duplicado_fiscal does not exist`. No era un bug del guardia: era
+una base sin migrar, y el guardia lo hizo visible en la primera escritura en vez de dejarlo
+oculto. `bash scripts/migrar.sh --estado` lo dijo y `make migrar MIGRAR_SI=1` aplicó `0022`,
+`0023` y `0024`. Verificado después: `POST /auditoria/evento` → 204 y `GET /tickets` → 200.
+Si vuelve a aparecer un 500 con `relation ... does not exist`, **no** se arregla relajando la
+guardia: se arregla migrando. Relajarla daría 200 a una escritura sin saber qué rol la firma.
+
+---
+
 ## Arreglados en el pasado (no reabrir)
 - **El trigger de stock negativo contaba con el signo equivocado**, y la defensa no
   bloqueaba la salida que dejaba el inventario en negativo — punto 26.

@@ -743,7 +743,7 @@ CREATE TABLE IF NOT EXISTS usuarios_empresas (
 
     PRIMARY KEY (user_id, company_id),
     CONSTRAINT ck_usuarios_empresas_rol
-        CHECK (rol IN ('owner', 'admin', 'accountant', 'operator'))
+        CHECK (rol IN ('owner', 'admin', 'accountant', 'operator', 'viewer'))
 );
 
 CREATE INDEX IF NOT EXISTS ix_usuarios_empresas_company_rol
@@ -785,7 +785,9 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0019_extraccion_multipaís_y_controles.sql'),
     ('0020_auditoria_segura'),
     ('0021_caja_chica_y_huella_fiscal.sql'),
-    ('0022_roles_y_empresa_activa.sql')
+    ('0022_roles_y_empresa_activa.sql'),
+    ('0023_caja_conteo_y_conciliacion.sql'),
+    ('0024_rol_viewer_y_permisos.sql')
 ON CONFLICT (nombre) DO NOTHING;
 
 CREATE TABLE ticket_persistence (

@@ -11,8 +11,10 @@ import { resolve } from 'node:path';
 import {
   ORDEN_PAGINAS,
   PAGINAS_POR_ROL,
+  PERMISOS_POR_ROL,
   paginasPermitidas,
   puedeVerPagina,
+  rolPuede,
 } from '../src/permisos';
 
 const leer = (ruta: string) => readFileSync(resolve(process.cwd(), ruta), 'utf8');
@@ -69,6 +71,41 @@ comprobar(
     'dashboard', 'scan', 'tickets', 'cajachica',
   ]),
   PAGINAS_POR_ROL.operator.join(','),
+);
+comprobar(
+  'viewer solo ve consultas: no digitaliza, no abre caja, no administra',
+  mismoContenido(PAGINAS_POR_ROL.viewer, [
+    'dashboard', 'tickets', 'review', 'spotcheck', 'bank', 'reconciliations', 'cierre', 'auditoria',
+  ])
+    && !puedeVerPagina('viewer', 'scan')
+    && !puedeVerPagina('viewer', 'cajachica')
+    && !puedeVerPagina('viewer', 'companies')
+    && !puedeVerPagina('viewer', 'mantenimiento'),
+  PAGINAS_POR_ROL.viewer.join(','),
+);
+comprobar(
+  'viewer solo puede leer, y no hereda ninguna accion por el rol',
+  mismoContenido(PERMISOS_POR_ROL.viewer, ['leer'])
+    && !rolPuede('viewer', 'crear')
+    && !rolPuede('viewer', 'editar')
+    && !rolPuede('viewer', 'borrar')
+    && !rolPuede('viewer', 'aprobar')
+    && !rolPuede('viewer', 'conciliar')
+    && !rolPuede('viewer', 'exportar')
+    && !rolPuede('viewer', 'cerrar')
+    && !rolPuede('viewer', 'administrar')
+    && !rolPuede('viewer', 'auditar'),
+);
+comprobar(
+  'operator no aprueba, no concilia y no exporta',
+  rolPuede('operator', 'crear') && rolPuede('operator', 'cerrar')
+    && !rolPuede('operator', 'aprobar')
+    && !rolPuede('operator', 'conciliar')
+    && !rolPuede('operator', 'exportar'),
+);
+comprobar(
+  'accountant no administra',
+  rolPuede('accountant', 'conciliar') && !rolPuede('accountant', 'administrar'),
 );
 comprobar(
   'sin empresa no se inventa un rol',

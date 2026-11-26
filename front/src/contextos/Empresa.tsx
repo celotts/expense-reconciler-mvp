@@ -83,6 +83,7 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
       empresas,
       empresaActiva,
       rol: empresaActiva?.rol ?? null,
+      permisos: empresaActiva?.permisos ?? [],
       cargando,
       necesitaEleccion: !cargando && empresas.length > 1 && empresaActiva === null,
       error,

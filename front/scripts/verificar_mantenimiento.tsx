@@ -75,12 +75,14 @@ const empresa: MembresiaEmpresa = {
   name: 'Comercial Ejemplo',
   tax_id: 'EJE010101AAA',
   rol: 'admin',
+  permisos: ['leer', 'administrar'],
 };
 
 const contexto = {
   empresas: [empresa],
   empresaActiva: empresa,
   rol: 'admin',
+  permisos: empresa.permisos,
   cargando: false,
   necesitaEleccion: false,
   error: null,

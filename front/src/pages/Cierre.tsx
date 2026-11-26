@@ -6,7 +6,7 @@ import { Button, Card, Badge, Loading, EmptyState, Select } from '../components/
 import { dinero, numero, porcentaje } from '../utils/format';
 import { useNavegacion } from '../contextos/NavegacionContexto';
 import { AvisoSinEmpresa } from '../contextos/Empresa';
-import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import {
   periodoActual, periodosDisponibles, nombrePeriodo, lineaEstado, lineaAdvertencia,
   lineaComparativo, lineaExactitud, nombreArchivo, descargarBlob,
@@ -87,6 +87,7 @@ export function Cierre({ informeInicial }: { informeInicial?: ReporteCierreMensu
   // local permitiria pedir el informe de una empresa distinta de la cabecera
   // `X-Company-ID` que usan el resto de las pantallas.
   const { empresaActiva, empresas } = useEmpresa();
+  const { puede } = usePermisos();
   const companyId = empresaActiva?.company_id ?? '';
   const [periodo, setPeriodo] = useState<string>(periodoActual());
   const [reporte, setReporte] = useState<ReporteCierreMensual | null>(informeInicial ?? null);
@@ -179,15 +180,17 @@ const [loading, setLoading] = useState(!informeInicial);
             value={periodo}
             onChange={e => setPeriodo(e.target.value)}
           />
-          <div className="flex items-end">
-            <Button
-              onClick={descargarPdf}
-              disabled={!reporte || descargando}
-              className="w-full"
-            >
-              {descargando ? 'Generando...' : 'Descargar PDF'}
-            </Button>
-          </div>
+          {puede('exportar') && (
+            <div className="flex items-end">
+              <Button
+                onClick={descargarPdf}
+                disabled={!reporte || descargando}
+                className="w-full"
+              >
+                {descargando ? 'Generando...' : 'Descargar PDF'}
+              </Button>
+            </div>
+          )}
         </div>
         {error && (
           <p className="mt-3 text-sm text-red-600" role="alert">{error}</p>
