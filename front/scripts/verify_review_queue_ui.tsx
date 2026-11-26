@@ -11,9 +11,14 @@
  * motivo no se traduce o si un campo llega en null inesperado, aqui se ve.
  *
  * Uso, desde front/:
- *     npx esbuild scripts/verify_review_queue_ui.ts --bundle --platform=node \
+ *     npx esbuild scripts/verify_review_queue_ui.tsx --bundle --platform=node \
  *         --format=cjs --outfile=/tmp/rq.cjs --log-level=error \
+ *         --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty \
  *         && node /tmp/rq.cjs
+ *
+ * El sufijo es `.tsx` porque aqui hay JSX: ESLint no habilita el parser de JSX
+ * para un `.ts`, y eso daba un error de parseo que esbuild si aceptaba por el
+ * loader. El nombre del archivo tiene que decir la verdad.
  *
  * Requiere la API levantada y con la cola sembrada.
  */
@@ -42,7 +47,10 @@ function texto(html: string): string {
 /** Etiquetas de los inputs, para ver que campos ofrece el editor. */
 function inputsDe(html: string): string[] {
   return [...html.matchAll(/<(?:input|textarea)[^>]*>/g)]
-    .map(m => (m[0].match(/value="([^"]*)"/) || [, ''])[1])
+    // `?.[1] ?? ''` en vez de `[, '']`: el array hueco es un `undefined` en la
+    // primera posicion y ESLint lo marca como error de parseo, aunque el
+    // verificador solo quiera la cadena cuando haya `value`.
+    .map(m => m[0].match(/value="([^"]*)"/)?.[1] ?? '')
     .filter(Boolean);
 }
 
@@ -106,7 +114,7 @@ async function main() {
 
   // -----------------------------------------------------------------------
   console.log('\n2) Cada ticket se renderiza sin reventar');
-  let raws: string[] = [];
+  const raws: string[] = [];
   for (const t of cola.tickets) {
     let html = '';
     try {

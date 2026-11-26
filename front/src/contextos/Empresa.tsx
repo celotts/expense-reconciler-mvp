@@ -11,47 +11,12 @@
  *  que se fiara de su propia copia del rol se quedaria creyendo que alguien
  *  sigue siendo admin despues de que le cambiaran el rol.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, ReactNode } from 'react';
 import { empresaActivaGuardada, fetchApi, fijarEmpresaActiva } from '../services/api';
-import { useSesion } from './Sesion';
-
-export interface MembresiaEmpresa {
-  company_id: string;
-  name: string;
-  tax_id: string;
-  rol: string;
-}
-
-/** Roles que pueden entrar a caja chica. `operator` entra, pero el backend
- *  limita sus cajas a las que él responsabiliza; el front no puede hacer esa
- *  comprobacion sin volver a consultar la BD, y por eso tampoco la intenta. */
-const ROLES_CAJA = new Set(['owner', 'admin', 'accountant', 'operator']);
-
-export function rolPuedeCaja(rol: string | null): boolean {
-  return rol !== null && ROLES_CAJA.has(rol);
-}
-
-interface EmpresaContextValue {
-  empresas: MembresiaEmpresa[];
-  empresaActiva: MembresiaEmpresa | null;
-  rol: string | null;
-  cargando: boolean;
-  necesitaEleccion: boolean;
-  error: string | null;
-  elegirEmpresa: (companyId: string) => void;
-}
-
-const VACIO: EmpresaContextValue = {
-  empresas: [],
-  empresaActiva: null,
-  rol: null,
-  cargando: false,
-  necesitaEleccion: false,
-  error: null,
-  elegirEmpresa: () => undefined,
-};
-
-export const EmpresaContext = createContext<EmpresaContextValue>(VACIO);
+import { useSesion } from './SesionContexto';
+import {
+  EmpresaContext, type EmpresaContextValue, type MembresiaEmpresa, useEmpresa,
+} from './EmpresaContexto';
 
 export function EmpresaProvider({ children }: { children: ReactNode }) {
   const { usuario } = useSesion();
@@ -127,14 +92,6 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
   );
 
   return <EmpresaContext.Provider value={valor}>{children}</EmpresaContext.Provider>;
-}
-
-/** No lanza si no hay proveedor: los verificadores montan pantallas sueltas
- *  con `renderToStaticMarkup` y necesitan ver el HTML, no un error de contexto.
- *  En la aplicacion real el proveedor siempre esta montado dentro de la puerta.
- */
-export function useEmpresa(): EmpresaContextValue {
-  return useContext(EmpresaContext) ?? VACIO;
 }
 
 /** El mismo aviso en las tres pantallas que escriben datos de empresa.

@@ -10,7 +10,7 @@
  *  cuentas con el mismo perfil pueden tener roles distintos en empresas
  *  distintas, y un cambio de rol surte efecto sin volver a hacer login.
  */
-import type { Page } from './contextos/Navegacion';
+import type { Page } from './contextos/NavegacionContexto';
 
 export type RolDeEmpresa = 'owner' | 'admin' | 'accountant' | 'operator';
 

@@ -21,10 +21,14 @@
  * los tres casos que de verdad rompen una pantalla.
  *
  * Uso, desde front/:
- *     npx esbuild scripts/verify_spot_check_ui.ts --bundle --platform=node \
+ *     npx esbuild scripts/verify_spot_check_ui.tsx --bundle --platform=node \
  *         --format=cjs --outfile=/tmp/sc.cjs --log-level=error \
- *         --loader:.ts=tsx --loader:.css=empty --define:import.meta='{"env":{}}' \
+ *         --loader:.ts=tsx --loader:.tsx=tsx --loader:.css=empty --define:import.meta='{"env":{}}' \
  *         && node /tmp/sc.cjs
+ *
+ * Es `.tsx` por el JSX de abajo: con `.ts`, ESLint no abre el parser de JSX y
+ * senala un `>` que esbuild aceptaba por el loader. El loader sigue siendo
+ * necesario para los `.ts` que importa este script.
  */
 
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -52,7 +56,8 @@ function texto(html: string): string {
     .trim();
 }
 
-const noop = () => undefined;
+// Aqui no hace falta el `noop` sincrono: todas las tarjetas piden un refresco
+// asincrono. Declararlo ademas del `noopAsync` de abajo es codigo muerto.
 const noopAsync = async () => undefined;
 
 // ---------------------------------------------------------------------------

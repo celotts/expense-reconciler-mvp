@@ -32,8 +32,9 @@ import {
   type ConciliacionResumen,
 } from '../services/cajaChica';
 import { registrarEventoFrontend } from '../services/auditoria';
-import { useSesion } from '../contextos/Sesion';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { useSesion } from '../contextos/SesionContexto';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
 import {
   Badge, Button, Card, EmptyState, Input, Loading, Modal, Select, Table,
 } from '../components/ui';

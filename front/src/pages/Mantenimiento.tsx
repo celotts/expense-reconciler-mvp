@@ -9,7 +9,8 @@
  *  `undefined` en pantalla, y eso es exactamente lo que aqui se quiere ver.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
 import { Button, Card, Input, Modal, Select, Table } from '../components/ui';
 import { usuariosApi } from '../services/usuarios';
 import type {

@@ -1,8 +1,11 @@
 export interface ConfigApp {
   locale: string;
   currency: string;
-  date: Record<string, string>;
-  dateTime: Record<string, string>;
+  /** Opciones de `Intl.DateTimeFormat`, no un diccionario libre: el objeto
+   *  se reparte directamente al formateador y un `as any` aqui esconderia una
+   *  opcion mal escrita hasta que el navegador la ignorara en silencio. */
+  date: Intl.DateTimeFormatOptions;
+  dateTime: Intl.DateTimeFormatOptions;
 }
 
 const defaultConfig: ConfigApp = {

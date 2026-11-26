@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ticketsApi, type Ticket } from '../services/api';
 
 /**
@@ -61,6 +61,9 @@ function nombreDelContentDisposition(cd: string | null): string | null {
 export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ticket; abiertoPorDefecto?: boolean }) {
   const [abierto, setAbierto] = useState(abiertoPorDefecto);
   const [url, setUrl] = useState<string | null>(null);
+  /** Copia de `url` para la funcion de carga: asi `cargar` puede depender solo
+   *  del ticket y no cambiar de identidad cada vez que se abre el papel. */
+  const urlRef = useRef<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** El nombre del archivo, del `Content-Disposition` de la respuesta.
@@ -87,6 +90,7 @@ export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ti
   // ticket es de hasta 10 MB, y eso no lo nota la persona que revisa, lo nota
   // el equipo cuando la pestana tarda diez segundos en abrir.
   useEffect(() => {
+    urlRef.current = url;
     if (url) {
       return () => URL.revokeObjectURL(url);
     }
@@ -94,24 +98,15 @@ export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ti
 
   // Cambiar de ticket con el panel abierto dejaria mostrando el papel del
   // anterior, que es peor que no mostrar nada: es la forma de que alguien
-  // apruebe un ticket mirando el comprobante equivocado.
+  // apruebe un ticket mirando el comprobante equivocado. `abiertoPorDefecto`
+  // entra en las dependencias porque también decide si este papel se abre.
   useEffect(() => {
     setAbierto(abiertoPorDefecto);
     setUrl(null);
+    urlRef.current = null;
     setError(null);
     setTipo(undefined);
-  }, [ticket.id]);
-
-  if (!ticket.tiene_documento) {
-    const esManual = ticket.source_type === 'manual';
-    return (
-      <p className="mt-3 text-xs text-amber-700">
-        {esManual
-          ? 'Ticket capturado a mano: no hay archivo que revisar, los datos los escribió una persona.'
-          : 'No hay comprobante guardado. Se puede volver a subir el archivo para revisarlo contra el papel.'}
-      </p>
-    );
-  }
+  }, [ticket.id, abiertoPorDefecto]);
 
   const peso = ticket.documento_tamano
     ? `${(ticket.documento_tamano / 1024).toFixed(0)} KB`
@@ -149,8 +144,8 @@ export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ti
   // en el detalle del Escaner el papel es lo que se viene a ver, no un
   // desplegable mas. Sin esto, el original seguiria escondido detras de un
   // boton justo donde se contrastan los datos leidos contra el papel.
-  const cargar = async () => {
-    if (url) return; // ya esta cargado
+  const cargar = useCallback(async () => {
+    if (urlRef.current) return; // ya esta cargado
 
     setCargando(true);
     setError(null);
@@ -201,7 +196,9 @@ export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ti
       // HEIC). Con el del original, un HEIC caeria al visor de PDF y apareceria
       // el mensaje de "no se puede mostrar" TENIENDO la foto ahi mismo.
       setTipo(previa.value.type);
-      setUrl(URL.createObjectURL(previa.value));
+      const urlPrevia = URL.createObjectURL(previa.value);
+      urlRef.current = urlPrevia;
+      setUrl(urlPrevia);
     } else {
       // Sin conversion disponible: el original tal cual, con su tipo. Un JPEG o
       // un PDF llegan por aqui con su propio `image/*` y se pintan igual, porque
@@ -209,14 +206,16 @@ export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ti
       // convertir.
       setEsVistaPrevia(false);
       setTipo(blobOriginal.type || undefined);
-      setUrl(URL.createObjectURL(blobOriginal));
+      const urlOriginal = URL.createObjectURL(blobOriginal);
+      urlRef.current = urlOriginal;
+      setUrl(urlOriginal);
     }
   } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo cargar el comprobante');
     } finally {
       setCargando(false);
     }
-  };
+  }, [ticket.id]);
 
   const alternar = async () => {
     if (abierto) {
@@ -227,12 +226,26 @@ export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ti
     await cargar();
   };
 
+  // Antes este efecto estaba DESPUES del `return` de "sin documento", o sea que
+  // era un hook condicional: con un ticket manual se saltaba y con otro no, y
+  // React no puede garantizar el orden de los hooks entre renders. Ahora todos
+  // los hooks corren siempre y el aviso se decide despues. `cargar` depende solo
+  // del ticket (el `url` se mira por ref), asi que abrir no vuelve a pedir el
+  // papel en cada render.
   useEffect(() => {
-    if (abiertoPorDefecto) void cargar();
-    // Solo al montar: recargar en cada render pediria el comprobante entero
-    // una y otra vez.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (abiertoPorDefecto && ticket.tiene_documento) void cargar();
+  }, [abiertoPorDefecto, ticket.tiene_documento, cargar]);
+
+  if (!ticket.tiene_documento) {
+    const esManual = ticket.source_type === 'manual';
+    return (
+      <p className="mt-3 text-xs text-amber-700">
+        {esManual
+          ? 'Ticket capturado a mano: no hay archivo que revisar, los datos los escribió una persona.'
+          : 'No hay comprobante guardado. Se puede volver a subir el archivo para revisarlo contra el papel.'}
+      </p>
+    );
+  }
 
   return (
     <div className="mt-3">

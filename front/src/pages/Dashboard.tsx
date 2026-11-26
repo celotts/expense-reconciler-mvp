@@ -42,7 +42,7 @@ import { companiesApi, dashboardApi, type Company } from '../services/api';
 import type {
   CategoriaGasto, DashboardResponse, Hallazgo, MesConCategorias, MesGasto, ResumenPeriodo,
 } from '../types/dashboard';
-import { useNavegacion, type FiltroTickets, type Page } from '../contextos/Navegacion';
+import { useNavegacion, type FiltroTickets, type Page } from '../contextos/NavegacionContexto';
 import { Card, Loading, EmptyState, Badge, Select, Button } from '../components/ui';
 import { FlujoGuiado } from '../components/FlujoGuiado';
 import { dinero, monto, numero, variacion } from '../utils/format';

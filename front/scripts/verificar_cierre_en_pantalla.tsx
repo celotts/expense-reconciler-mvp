@@ -212,12 +212,13 @@ function pintar(informe: ReporteCierreMensual): string {
   (globalThis as { window?: unknown }).window ??= {
     location: { hash: '' },
   };
+  const props: React.ComponentProps<typeof Cierre> = { informeInicial: informe };
   return renderToStaticMarkup(
     React.createElement(
       NavegacionProvider,
       null,
-      React.createElement(Cierre, { informeInicial: informe } as any),
-    ) as any,
+      React.createElement(Cierre, props),
+    ),
   );
 }
 

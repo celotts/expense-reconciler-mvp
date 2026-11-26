@@ -144,18 +144,22 @@ const RESUMEN: ResumenDuplicados = {
 };
 
 function pintar(caja: CajaChicaConMovimientos, pestana: 'cajas' | 'duplicados' = 'cajas'): string {
+  // `ComponentProps` lee los props REALES del componente: un `as any` aqui
+  // dejaba pasar un prop renombrado y el verificador entonces miraba una
+  // pantalla montada con valores por omision, no con los datos de abajo.
+  const props: React.ComponentProps<typeof CajaChica> = {
+    companiesIniciales: [EMPRESA],
+    cajasIniciales: [caja],
+    cajaInicial: caja,
+    resumenInicial: RESUMEN,
+    ...(pestana === 'duplicados' ? { pestanaInicial: pestana } : {}),
+  };
   return renderToStaticMarkup(
     React.createElement(
       SesionProvider,
       null,
-      React.createElement(CajaChica, {
-        companiesIniciales: [EMPRESA],
-        cajasIniciales: [caja],
-        cajaInicial: caja,
-        resumenInicial: RESUMEN,
-        ...(pestana === 'duplicados' ? { pestanaInicial: pestana } : {}),
-      } as any),
-    ) as any,
+      React.createElement(CajaChica, props),
+    ),
   );
 }
 

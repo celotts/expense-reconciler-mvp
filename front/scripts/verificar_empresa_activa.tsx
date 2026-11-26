@@ -18,7 +18,8 @@ import { resolve } from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { AvisoSinEmpresa, EmpresaContext, type EmpresaContextValue } from '../src/contextos/Empresa';
+import { AvisoSinEmpresa } from '../src/contextos/Empresa';
+import { EmpresaContext, type EmpresaContextValue } from '../src/contextos/EmpresaContexto';
 
 const leer = (ruta: string) => readFileSync(resolve(process.cwd(), ruta), 'utf8');
 

@@ -4,8 +4,9 @@ import {
 } from '../services/api';
 import { Button, Card, Badge, Loading, EmptyState, Select } from '../components/ui';
 import { dinero, numero, porcentaje } from '../utils/format';
-import { useNavegacion } from '../contextos/Navegacion';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
+import { useNavegacion } from '../contextos/NavegacionContexto';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
 import {
   periodoActual, periodosDisponibles, nombrePeriodo, lineaEstado, lineaAdvertencia,
   lineaComparativo, lineaExactitud, nombreArchivo, descargarBlob,

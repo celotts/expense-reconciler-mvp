@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   bankTransactionsApi, type BankTransaction, type BankTransactionCreate,
   type BankTransactionRow, type ConciliacionCajaResponse,
@@ -7,8 +7,9 @@ import {
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState, FileUpload
 } from '../components/ui';
 import { fecha } from '../utils/format';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
-import { useNavegacion } from '../contextos/Navegacion';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useNavegacion } from '../contextos/NavegacionContexto';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 
 export function BankTransactions() {
@@ -33,7 +34,11 @@ export function BankTransactions() {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  const loadData = async () => {
+  // `useCallback` no es adorno: el efecto de abajo solo debe recargar cuando
+  // cambia la empresa, no en cada render. Sin el, poner `loadData` en las
+  // dependencias (como exige eslint) disparaba una peticion nueva por cada
+  // tecla del formulario.
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
       const [txData, cajas] = await Promise.all([
@@ -52,11 +57,11 @@ export function BankTransactions() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedCompany]);
 
   useEffect(() => {
     loadData();
-  }, [selectedCompany]);
+  }, [loadData]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

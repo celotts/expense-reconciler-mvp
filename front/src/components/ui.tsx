@@ -275,13 +275,20 @@ export function Card({ children, className = '', ...props }: React.HTMLAttribute
 }
 
 // Table
-export function Table({ columns, data, keyField, onRowClick, className = '' }: {
-  columns: { key: string; header: string; render?: (item: any) => React.ReactNode }[];
-  data: any[];
+type FilaTabla = Record<string, React.ReactNode>;
+
+export function Table<T extends object>({ columns, data, keyField, onRowClick, className = '' }: {
+  columns: { key: string; header: string; render?: (item: T) => React.ReactNode }[];
+  data: T[];
   keyField: string;
-  onRowClick?: (item: any) => void;
+  onRowClick?: (item: T) => void;
   className?: string;
 }) {
+  // La tabla es generica para que quien la usa conserve el tipo de cada fila,
+  // pero `keyField` y `columns[].key` son TEXTO: no hay forma de que TypeScript
+  // sepa que esa clave existe en T. La conversion es local a esas dos lecturas,
+  // no un `any` que se filtre a las columnas ni a `onRowClick`.
+  const comoFila = (item: T): FilaTabla => item as FilaTabla;
   return (
     <div className={`overflow-x-auto ${className}`}>
       <table className="w-full">
@@ -296,14 +303,14 @@ export function Table({ columns, data, keyField, onRowClick, className = '' }: {
         </thead>
         <tbody className="divide-y divide-gray-200">
           {data.map(item => (
-            <tr 
-              key={item[keyField]} 
+            <tr
+              key={comoFila(item)[keyField] as React.Key}
               className={onRowClick ? 'cursor-pointer hover:bg-gray-50' : ''}
               onClick={() => onRowClick?.(item)}
             >
               {columns.map(col => (
                 <td key={col.key} className="px-4 py-3 text-sm text-gray-900">
-                  {col.render ? col.render(item) : item[col.key]}
+                  {col.render ? col.render(item) : comoFila(item)[col.key]}
                 </td>
               ))}
             </tr>

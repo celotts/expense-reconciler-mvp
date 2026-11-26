@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { ticketsApi, type Ticket, type TicketCreate, type TicketExtractionResult, type Company } from '../services/api';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
-import { useNavegacion } from '../contextos/Navegacion';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useNavegacion } from '../contextos/NavegacionContexto';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 import type { Categoria } from '../types/dashboard';
 import { 
@@ -91,7 +92,10 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
   // habia pasado por el gate, ni de si habiaauto-aprobado o no.
   const [ultimoVeredicto, setUltimoVeredicto] = useState<Ticket | null>(null);
 
-  const loadData = async () => {
+  // La carga depende de la empresa y del filtro, y solo de esos dos. Sin
+  // `useCallback`, anadir `loadData` a las dependencias (lo que pide eslint)
+  // haria que cada cambio del formulario volviera a pedir los 500 tickets.
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
       // El filtro se pide al servidor y no se filtra en el navegador. Filtrar en
@@ -118,11 +122,11 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedCompany, filtro]);
 
   useEffect(() => {
     loadData();
-  }, [selectedCompany, filtro]);
+  }, [loadData]);
 
   // Al cambiar de filtro o de empresa, la seleccion se vacia. Sin esto, se
   // seleccionan cinco tickets en "sin clasificar", se cambia a "clasificados" y

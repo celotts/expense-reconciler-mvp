@@ -56,8 +56,9 @@
  * se afirma sobre un gasto, y esa decisión es de una persona.
  */
 
-import type { Page } from '../contextos/Navegacion';
+import type { Page } from '../contextos/NavegacionContexto';
 import type { DashboardResponse } from '../types/dashboard';
+import { _estadoDe, type Paso } from './estadoFlujo';
 
 /** Los estados donde el sistema se atreve a afirmar el importe.
  *
@@ -68,28 +69,12 @@ import type { DashboardResponse } from '../types/dashboard';
  */
 const AFIRMADOS = ['AUTO_APROBADO', 'APROBADO'];
 
-export type EstadoPaso = 'hecho' | 'en_curso' | 'sin_empezar' | 'bloqueado';
-
 interface Props {
   dashboard: DashboardResponse;
   /** Navegar al paso. Viene del contexto, no se importa aqui. */
   irA: (pagina: Page) => void;
   /** La empresa elegida. `null` = todas, y cambia los conteos. */
   companyId: string | null;
-}
-
-interface Paso {
-  clave: string;
-  titulo: string;
-  /** Qué hace este paso, en una frase. Es lo que no se deduce del título. */
-  queHace: string;
-  pagina: Page;
-  /** El número de cosas que hay que hacer aquí. */
-  pendientes: number;
-  /** El total de cosas de este tipo, para el "3 de 40". */
-  total: number;
-  /** Qué impide avanzar, si es que hay algo. */
-  nota: string;
 }
 
 export function FlujoGuiado({ dashboard, irA, companyId }: Props) {
@@ -261,54 +246,4 @@ export function FlujoGuiado({ dashboard, irA, companyId }: Props) {
       )}
     </section>
   );
-}
-
-/** El estado visual de un paso, y sobre todo lo que NO implica.
- *
- *  Se exporta aunque solo la use este archivo, porque el render tiene que poder
- *  distinguir "hecho" de "en curso" y el calculo separado lo deja escribir un test
- *  sin montar React.
- *
- *  **`hecho` NO significa que el paso se pueda saltar.** Significa que no hay nada
- *  pendiente AHORA. Un paso con cero pendientes y el siguiente con diez es el caso
- *  normal, no un error.
- */
-export function _estadoDe(paso: Paso, indice: number, pasos: Paso[]): EstadoPaso {
-  if (paso.clave === 'digitalizar') {
-    // El paso 1 esta "hecho" cuando ya se leyo algo. No hay forma de saber si
-    // quedan archivos en la carpeta sin llamar a /scan/stats, y adivinar "hecho"
-    // cuando quedan comprobantes sin leer seria la peor clase de mentira.
-    return paso.total > 0 ? 'hecho' : 'sin_empezar';
-  }
-
-  const anterior = pasos[indice - 1];
-  if (anterior && _estadoDe(anterior, indice - 1, pasos) === 'sin_empezar') {
-    return 'bloqueado';
-  }
-  if (paso.clave === 'registrar') {
-    return paso.pendientes === 0 ? 'hecho' : 'en_curso';
-  }
-
-  // Conciliar.
-  //
-  // EL BLOQUEO VA PRIMERO, Y ESO ES LO QUE ARREGLO UNA CAPTURA DE PANTALLA.
-  //
-  // La primera version hacia esto:
-  //
-  //     if (!registradas && paso.pendientes > 0) return 'bloqueado';
-  //     return paso.pendientes === 0 ? 'hecho' : 'en_curso';
-  //
-  // Con 7 tickets sin confirmar y 0 sin cruzar, `pendientes` es 0, la primera
-  // linea no dispara, y la segunda devuelve **`hecho`**: una palomita verde
-  // sobre "Conciliar" cuando **no se ha conciliado nada y no se puede**. Los
-  // tests de texto no lo cazaron porque buscaban la palomita DESPUES de la
-  // palabra "Conciliar", y en el HTML la palomita va antes. Solo se vio al
-  // mirar la pantalla.
-  //
-  // El orden correcto: si hay algo sin confirmar, el paso esta bloqueado
-  // **pase lo que pase su propio contador**. Un `0 sin cruzar` con 7 sin confirmar
-  // no es "conciliado", es "todavia no le toca".
-  const registradas = pasos[1]?.pendientes === 0;
-  if (!registradas) return 'bloqueado';
-  return paso.pendientes === 0 ? 'hecho' : 'en_curso';
 }

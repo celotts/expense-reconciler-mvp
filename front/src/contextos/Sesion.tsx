@@ -13,28 +13,11 @@
  *  salta el login. El usuario ve una pantalla que no existe, y si pulsa algo en
  *  ese cuarto de segundo la peticion sale sin token.
  */
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { useCallback, useEffect, useState, ReactNode } from 'react';
 import type { Usuario } from '../types/api';
 import { comprobarSesion, salir } from '../services/auth';
 import { alCaducar, estaVencido, leerToken, type AvisoSesion } from '../services/sesion';
-
-interface SesionContextValue {
-  /** `null` = todavia no se sabe. La app NO se monta en ese estado: no hay
-   *  forma de distinguir "cargando" de "no hay sesion" si el valor es el mismo. */
-  usuario: Usuario | null;
-  cargando: boolean;
-  /** El aviso de caducidad, para mostrarlo encima del login. Se limpia al
-   *  entrar, para que el exito borre el mensaje de fracaso anterior. */
-  aviso: AvisoSesion | null;
-  /** Perfil de rol del usuario (consultor, digitalizador, supervisor, admin, qa, programador, develop) */
-  perfil: string | null;
-  /** Grupo asociado al perfil, controla el acceso CRUD y a información sensible. */
-  grupo: string | null;
-  entro: (u: Usuario) => void;
-  cerrarSesion: () => void;
-}
-
-const SesionContext = createContext<SesionContextValue | null>(null);
+import { SesionContext } from './SesionContexto';
 
 export function SesionProvider({ children }: { children: ReactNode }) {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
@@ -137,12 +120,4 @@ function borrarSiCaduca(): void {
   if (!token || estaVencido(token)) {
     salir();
   }
-}
-
-export function useSesion(): SesionContextValue {
-  const ctx = useContext(SesionContext);
-  if (!ctx) {
-    throw new Error('useSesion debe usarse dentro de SesionProvider');
-  }
-  return ctx;
 }

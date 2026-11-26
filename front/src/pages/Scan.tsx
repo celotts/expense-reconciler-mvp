@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { registrarEventoFrontend } from '../services/auditoria';
 import { ticketsApi, type Ticket } from '../services/api';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
-import { useNavegacion } from '../contextos/Navegacion';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useNavegacion } from '../contextos/NavegacionContexto';
 import type {
   ArchivoNoPermitido, DigitalizacionDirectorio,
   ScanConfig, ScanCorrida, ScanEvent, ScanFile, ScanFileDetail, ScanItem, ScanOcrEstado,

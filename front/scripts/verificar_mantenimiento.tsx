@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { EmpresaContext, type MembresiaEmpresa } from '../src/contextos/Empresa';
+import { EmpresaContext, type MembresiaEmpresa } from '../src/contextos/EmpresaContexto';
 import { Mantenimiento } from '../src/pages/Mantenimiento';
 import {
   ORDEN_PAGINAS, PAGINAS_POR_ROL, puedeVerPagina,

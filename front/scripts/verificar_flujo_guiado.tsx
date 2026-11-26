@@ -13,7 +13,8 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import React from 'react';
-import { FlujoGuiado, _estadoDe } from '../src/components/FlujoGuiado';
+import { FlujoGuiado } from '../src/components/FlujoGuiado';
+import { _estadoDe } from '../src/components/estadoFlujo';
 import type { DashboardResponse } from '../src/types/dashboard';
 
 /** El dashboard con los 7 tickets de la maquina: 6 PENDIENTE, 1 REQUIERE_REVISION. */

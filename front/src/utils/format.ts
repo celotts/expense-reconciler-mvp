@@ -90,7 +90,7 @@ export function fecha(iso: string | null | undefined): string {
   const [, anio, mes, dia] = m;
   return new Intl.DateTimeFormat(cfg.locale, {
     timeZone: 'UTC',
-    ...(cfg.date as any),
+    ...cfg.date,
   }).format(new Date(`${anio}-${mes}-${dia}T00:00:00Z`));
 }
 

@@ -1,10 +1,11 @@
 import { reconciliationsApi, type ReconciliationRunRequest, type ReconciliationRunResponse, type AccountingMapping, type AccountingMappingCreate, type Reconciliation } from '../services/api';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Button, Input, Modal, Table, Card, Badge, Loading, EmptyState
 } from '../components/ui';
-import { AvisoSinEmpresa, useEmpresa } from '../contextos/Empresa';
-import { useNavegacion } from '../contextos/Navegacion';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { useEmpresa } from '../contextos/EmpresaContexto';
+import { useNavegacion } from '../contextos/NavegacionContexto';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
 
 /**
@@ -74,7 +75,10 @@ export function Reconciliations() {
   });
   const [mappingSubmitting, setMappingSubmitting] = useState(false);
 
-  const loadData = async () => {
+  // Igual que en el banco: la carga solo cambia con la empresa. Poner la
+  // funcion en las dependencias sin estabilizarla recargaria la lista en cada
+  // pulsacion del modal de ejecucion.
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
       const [mappingsData, cajas] = await Promise.all([
@@ -93,11 +97,11 @@ export function Reconciliations() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedCompany]);
 
   useEffect(() => {
     loadData();
-  }, [selectedCompany]);
+  }, [loadData]);
 
   // ## POR QUE EL RESULTADO SE MUESTRA DENTRO DEL MODAL Y NO DETRAS
   //

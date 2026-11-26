@@ -20,55 +20,66 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import React from 'react';
 import { PanelProgreso } from '../src/components/ScanProgreso';
+import type { ScanCorrida, ScanIaEstado, ScanProcesado } from '../src/types/scan';
 
-const corrida = (procesados: any[]) =>
-  ({
-    id: 'r1',
-    iniciada_at: '2026-10-10T12:00:00Z',
-    terminada: true,
-    archivos_vistos: procesados.length,
-    // `segundos` y los dos `importe_total_*` estan porque el panel los pinta en
-    // el pie, y sin ellos sale `NaNm` en pantalla. No tienen nada que ver con el
-    // modelo: es la diferencia entre un doble completo y uno que solo tiene lo
-    // que el test mira. La primera version de este script los omitio y fallo
-    // por eso, no por el badge — que es el error clasico de un test que mide mas
-    // de lo que cree.
-    segundos: 12.5,
-    resumen: {
-      nuevos: procesados.filter((p) => p.accion === 'CREADO').length,
-      con_error: 0,
-      omitidos_por_tope: 0,
-      sin_cambios: 0,
-      duplicados: 0,
-      no_soportados: 0,
-      actualizados: 0,
-      lecturas_por_motor: {},
-      importe_total_leido: '234.00',
-      importe_total_confiable: '0',
-    },
-    procesados,
-  }) as any;
+// Los tipos reales del feed hacen de doble complete: antes `any` dejaba que el
+// fixture omitiera campos que el panel pinta y el verificador fallara por un
+// `NaNm` en el pie, creyendo que fallaba el badge del modelo.
+const corrida = (procesados: ScanProcesado[]): ScanCorrida => ({
+  id: 'r1',
+  carpeta: '/tickets',
+  actor: 'carlos@example.com',
+  iniciada_at: '2026-10-10T12:00:00Z',
+  terminada_at: '2026-10-10T12:00:12Z',
+  terminada: true,
+  simulado: false,
+  archivos_vistos: procesados.length,
+  con_ticket: procesados.length,
+  con_error: 0,
+  duplicados: 0,
+  actual: null,
+  // `segundos` y los dos `importe_total_*` estan porque el panel los pinta en
+  // el pie, y sin ellos sale `NaNm` en pantalla. No tienen nada que ver con el
+  // modelo: es la diferencia entre un doble completo y uno que solo tiene lo
+  // que el test mira. La primera version de este script los omitio y fallo
+  // por eso, no por el badge — que es el error clasico de un test que mide mas
+  // de lo que cree.
+  segundos: 12.5,
+  resumen: {
+    nuevos: procesados.filter((p) => p.accion === 'CREADO').length,
+    con_error: 0,
+    omitidos_por_tope: 0,
+    sin_cambios: 0,
+    duplicados: 0,
+    no_soportados: 0,
+    actualizados: 0,
+    lecturas_por_motor: {},
+    importe_total_leido: '234.00',
+    importe_total_confiable: '0',
+  },
+  procesados,
+});
 
-const item = (extra: any) =>
-  ({
-    relative_path: 'ticket.jpg',
-    ticket_id: '11111111-1111-1111-1111-111111111111',
-    monto: '234.00',
-    extraction_status: 'PENDIENTE',
-    motor: 'llm',
-    accion: 'CREADO',
-    confiable: false,
-    es_duplicado: false,
-    proveedor: 'WALMART',
-    rfc: 'WAL900101XXX',
-    fecha: '2026-10-09',
-    subtotal: '217.27',
-    iva: '8.14',
-    ieps: null,
-    lineas: null,
-    validation_errors: 'date_missing',
-    ...extra,
-  }) as any;
+const item = (extra: Partial<ScanProcesado> = {}): ScanProcesado => ({
+  relative_path: 'ticket.jpg',
+  ticket_id: '11111111-1111-1111-1111-111111111111',
+  monto: '234.00',
+  extraction_status: 'PENDIENTE',
+  motor: 'llm',
+  accion: 'CREADO',
+  detalle: null,
+  confiable: false,
+  es_duplicado: false,
+  proveedor: 'WALMART',
+  rfc: 'WAL900101XXX',
+  fecha: '2026-10-09',
+  subtotal: '217.27',
+  iva: '8.14',
+  ieps: null,
+  lineas: null,
+  validation_errors: 'date_missing',
+  ...extra,
+});
 
 const fallos: string[] = [];
 
@@ -89,7 +100,7 @@ const conModelo = renderToStaticMarkup(
     corrida: corrida([
       item({ modelo: 'qwen2.5:3b', proveedor_ia: 'ollama' }),
     ]),
-  }) as any,
+  }),
 );
 comprobar(
   'sale el nombre del modelo',
@@ -110,7 +121,7 @@ comprobar(
 const sinModelo = renderToStaticMarkup(
   React.createElement(PanelProgreso, {
     corrida: corrida([item({ motor: 'ocr', modelo: null, proveedor_ia: null })]),
-  }) as any,
+  }),
 );
 comprobar('sin modelo no sale un badge vacio', !/undefined|null|NaN/.test(sinModelo));
 comprobar('el motor ocr sigue saliendo', sinModelo.includes('ocr'));
@@ -119,7 +130,7 @@ comprobar('el motor ocr sigue saliendo', sinModelo.includes('ocr'));
 const raros = renderToStaticMarkup(
   React.createElement(PanelProgreso, {
     corrida: corrida([item({ modelo: undefined, proveedor_ia: undefined })]),
-  }) as any,
+  }),
 );
 comprobar('undefined no se imprime', !raros.includes('undefined'));
 comprobar('null no se imprime', !raros.includes('>null<'));
@@ -142,25 +153,24 @@ comprobar(
 // una cosa que no esta pasando entrena a ignorarlo.
 import { EstadoDeIa } from '../src/components/EstadoDeIa';
 
-const estado = (extra: any) =>
-  ({
-    configurado: {
-      proveedor: 'ollama',
-      ai_habilitado: true,
-      modelo_texto: 'moondream',
-      modelo_vision: 'qwen2.5vl:3b',
-    },
-    modelos_instalados: ['qwen2.5vl:3b'],
-    faltan: ['moondream'],
-    disponible: true,
-    error: null,
-    como_instalar: ['ollama pull moondream'],
-    ...extra,
-  }) as any;
+const estado = (extra: Partial<ScanIaEstado> = {}): ScanIaEstado => ({
+  configurado: {
+    proveedor: 'ollama',
+    ai_habilitado: true,
+    modelo_texto: 'moondream',
+    modelo_vision: 'qwen2.5vl:3b',
+  },
+  modelos_instalados: ['qwen2.5vl:3b'],
+  faltan: ['moondream'],
+  disponible: true,
+  error: null,
+  como_instalar: ['ollama pull moondream'],
+  ...extra,
+});
 
-const montar = (estadoCompleto: any): string =>
+const montar = (estadoCompleto: ScanIaEstado): string =>
   renderToStaticMarkup(
-    React.createElement(EstadoDeIa as any, { estadoInicial: estadoCompleto } as any),
+    React.createElement(EstadoDeIa, { estadoInicial: estadoCompleto }),
   );
 
 // El TEXTO QUE SE VE, sin las etiquetas. La primera version de estas
