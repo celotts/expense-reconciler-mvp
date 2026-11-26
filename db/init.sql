@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS auditoria (
     accion VARCHAR(100) NOT NULL,
     modulo VARCHAR(50),
     registro_afectado UUID,
+    -- 0026: empresa activa en la peticion. NULL en el historico anterior no
+    -- significa "todas": significa que no se registro. Sin backfill posible,
+    -- porque esta tabla es append-only (ver mas abajo).
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     detalles TEXT,
     ip_inet VARCHAR(45),
     resultado VARCHAR(20) NOT NULL DEFAULT 'exito',
@@ -37,6 +41,9 @@ CREATE TABLE IF NOT EXISTS auditoria (
 );
 CREATE INDEX IF NOT EXISTS ix_auditoria_fecha ON auditoria (fecha DESC);
 CREATE INDEX IF NOT EXISTS ix_auditoria_usuario ON auditoria (usuario_id);
+CREATE INDEX IF NOT EXISTS ix_auditoria_company_fecha ON auditoria (company_id, fecha DESC);
+COMMENT ON COLUMN auditoria.company_id IS
+    'Empresa activa (X-Company-ID) en la peticion que produjo el evento. NULL en eventos anteriores a 0026: dato no medido, no todas las empresas.';
 
 -- Auditoria es append-only: ni UPDATE ni DELETE (mismo patron que
 -- ticket_documents, migracion 0020_auditoria_segura.sql).
@@ -71,6 +78,50 @@ DROP TRIGGER IF EXISTS trg_auditoria_no_borrar ON auditoria;
 CREATE TRIGGER trg_auditoria_no_borrar
     BEFORE DELETE ON auditoria
     FOR EACH ROW EXECUTE FUNCTION auditoria_no_borrar();
+
+-- Tokens revocados (migracion 0025). La fila es un hecho: borrarla reviviria
+-- un token robado, y actualizarla permitiria cambiar el motivo despues.
+CREATE TABLE IF NOT EXISTS tokens_revocados (
+    jti UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    motivo VARCHAR(40) NOT NULL,
+    revoked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_tokens_revocados_usuario ON tokens_revocados (user_id);
+ALTER TABLE tokens_revocados DROP CONSTRAINT IF EXISTS ck_tokens_revocados_motivo;
+ALTER TABLE tokens_revocados ADD CONSTRAINT ck_tokens_revocados_motivo
+    CHECK (motivo IN ('logout', 'cambio_contrasena', 'reset_administrativo', 'baja_cuenta'));
+COMMENT ON COLUMN tokens_revocados.jti IS
+    'El claim jti del token firmado. Su existencia en esta tabla invalida el token antes de exp.';
+
+CREATE OR REPLACE FUNCTION tokens_revocados_no_actualizar() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'tokens_revocados es append-only: una revocacion no se actualiza. Jti %',
+        OLD.jti
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION tokens_revocados_no_borrar() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'tokens_revocados es append-only: una revocacion no se borra. Jti %',
+        OLD.jti
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tokens_revocados_no_actualizar ON tokens_revocados;
+CREATE TRIGGER trg_tokens_revocados_no_actualizar
+    BEFORE UPDATE ON tokens_revocados
+    FOR EACH ROW EXECUTE FUNCTION tokens_revocados_no_actualizar();
+
+DROP TRIGGER IF EXISTS trg_tokens_revocados_no_borrar ON tokens_revocados;
+CREATE TRIGGER trg_tokens_revocados_no_borrar
+    BEFORE DELETE ON tokens_revocados
+    FOR EACH ROW EXECUTE FUNCTION tokens_revocados_no_borrar();
 
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (lower(email));
 CREATE INDEX IF NOT EXISTS ix_users_activos ON users (lower(email)) WHERE is_active;
@@ -787,7 +838,9 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0021_caja_chica_y_huella_fiscal.sql'),
     ('0022_roles_y_empresa_activa.sql'),
     ('0023_caja_conteo_y_conciliacion.sql'),
-    ('0024_rol_viewer_y_permisos.sql')
+    ('0024_rol_viewer_y_permisos.sql'),
+    ('0025_tokens_revocados.sql'),
+    ('0026_auditoria_company_id.sql')
 ON CONFLICT (nombre) DO NOTHING;
 
 CREATE TABLE ticket_persistence (

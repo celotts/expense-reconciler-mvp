@@ -14,6 +14,7 @@ from app.api.reports import router as reports_router
 from app.api.scans import router as scan_router
 from app.api.sistema import router as sistema_router
 from app.api.tickets import router as tickets_router
+from app.api.tipos_gasto import router as tipos_gasto_router
 from app.api.usuarios import router as usuarios_router
 from app.core.deps import empresa_activa, get_current_user, guardia_de_permisos
 from app.routers.expenses import router as expenses_router
@@ -172,5 +173,15 @@ api_router.include_router(
     duplicados_router,
     prefix="/duplicados",
     tags=["Duplicados"],
+    dependencies=[*PROTEGIDOS, Depends(empresa_activa)],
+)
+# El catalogo de cuentas de gasto. El router trae su propio `/tipos-gasto`, asi
+# que el prefijo NO se repite aqui (misma regla que `categorias.py`). La empresa
+# se exige a nivel de router, ademas de en cada endpoint: un endpoint nuevo que
+# se anada aqui nace con la misma puerta, y la guardia de permisos de arriba
+# clasifica la autorizacion como APROBAR y no como CREAR.
+api_router.include_router(
+    tipos_gasto_router,
+    tags=["Tipos de gasto"],
     dependencies=[*PROTEGIDOS, Depends(empresa_activa)],
 )

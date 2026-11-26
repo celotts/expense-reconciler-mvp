@@ -396,6 +396,7 @@ python3 scripts/verify_permisos_mutations.py        # 12: mapa y clasificacion p
 python3 scripts/verify_permisos_http_mutations.py   # 5: guardia HTTP, PDF, header, company_id declarado
 python3 scripts/verify_permisos_front_mutations.py  # 3: menu y botones del front
 python3 scripts/verify_alcance_por_empresa_mutations.py # 14: un id ajeno no cruza la empresa
+python3 scripts/verify_revocacion_mutations.py      # 10: esquema de revocacion y auditoria por empresa
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 ```
 
@@ -1492,6 +1493,35 @@ La defensa es el servicio `migraciones` en `docker-compose.yml`: corre `scripts/
 
 > La validación del nombre de migración permite acentos a propósito: el archivo real se llama `0019_extraccion_multipaís_y_controles.sql`. Una validación ASCII la rechazó en la primera corrida, el servicio salió con 1 y `make up` no levantó. Sí se prohíben comillas y punto y coma, porque el nombre se pega al `INSERT`. Ver `tests/unit/test_arranque_por_healthcheck.py::TestLasMigracionesSeAplicanAlArrancar`.
 
+### Revocación de tokens: el esquema ya existe, la guardia todavía no (Fase 1)
+
+`0025_tokens_revocados.sql` y `0026_auditoria_company_id.sql` son la primera
+mitad de la Fase 1. `crear_token` **todavía no emite `jti`** y
+`_usuario_del_token` **todavía no consulta la tabla**: hoy el logout sigue siendo
+solo un aviso al cliente, y un token robado sigue vivo hasta `exp`. No digas lo
+contrario en una pantalla hasta que la guardia esté puesta.
+
+`tokens_revocados` es **append-only por trigger**, igual que `auditoria`: borrar
+una fila reviviría un token robado. La FK es `ON DELETE RESTRICT`, no `CASCADE`:
+una revocación no se lleva por delante aunque la cuenta se dé de baja. Los
+motivos son `logout`, `cambio_contrasena`, `reset_administrativo` y
+`baja_cuenta`, y están repetidos en `MOTIVOS_REVOCACION` y en un `CHECK` de la
+base: si aparece uno nuevo, se nombra en los dos sitios.
+
+`auditoria.company_id` es nullable y **no tiene backfill**. La tabla es
+append-only desde `0020`, así que rellenar el histórico con `UPDATE` revienta;
+apagar el trigger para hacerlo sería saltarse la regla que hace que la auditoría
+sirva. `NULL` en una fila antigua significa **"no se registró"**, no "todas las
+empresas". La exportación futura tiene que decir cuántas filas sin empresa se
+omitieron, en vez de callarlas.
+
+`init.sql` espeja las dos migraciones (DDL, índices, triggers y registro en
+`schema_migrations`) y `tests/unit/test_init_sql_espeja_los_modelos.py` vigila las
+columnas de los modelos nuevos. `scripts/verify_revocacion_mutations.py` (10
+mutaciones) comprueba que quitar cualquier trigger, el `CHECK`, la FK, la columna
+de empresa, el índice o el registro de migración hace fallar la suite. Ver
+`docs/known-issues.md` §51.
+
 ### La foto que se contradice a sí misma se relee (MEDIDO 2026-10-15)
 `IMAGENES_VISION_PRIMERO=false` y `ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`
 —los dos por omisión son `True`—, así que una foto la lee **solo Tesseract** si
@@ -1747,6 +1777,28 @@ docker compose exec expense-api python scripts/verify_postgres_inventario.py \
 El puerto `5432`, no `5434`: el `5434` es el mapeo al **host**, y desde el contenedor
 Postgres se llama por su nombre de servicio. Por eso el script no trae la URL buena por
 omisión y el mensaje de error lo dice.
+
+---
+
+## Las defensas son una puerta de CI, y el Escáner cuenta duplicados
+
+`scripts/verificar_todas_las_mutaciones.py` descubre por glob los 22
+`scripts/verify_*_mutations.py` y los corre **en secuencial**: cada verificador
+escribe el archivo original, corre los tests y lo restaura. Falla por código de
+salida o por marcas de mutación no aplicada (`NO PROBADA`, `OBSOLETA`). Añadir un
+verificador nuevo entra en la corrida sin tocar listas. La misma puerta se llama
+con `make verificar-defensas` y en `.github/workflows/defensas.yml` (push/PR).
+
+Un verificador desactualizado es deuda, no verde: en la línea base de 22, tres
+estaban en rojo por patrones movidos, no por defensas rotas. Dos mutaciones que
+no podían cambiar el veredicto (la entrada repetida de `tickets_router` y la
+comprobación de empresa ya cubierta por la guardia global) se retiraron o se
+aislaron del guardia en el test en vez de contarse como verificadas.
+
+`GET /scan/stats` expone `archivos_duplicados` **desde `por_estado[DUPLICADO]`**,
+la misma consulta que ya usa la pantalla. `PanelStats` lo muestra al lado de
+Con error y Sin ticket. El estado, no la acción del feed: un OMITIDO por falta
+de empresa también sale con `accion="OMITIDO"` y no es una copia.
 
 ---
 

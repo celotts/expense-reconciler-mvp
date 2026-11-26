@@ -124,6 +124,8 @@ class TestLaAccionNoLaDaElVerbo:
             ("POST", f"{PREFIJO}/reconciliations/run", Permiso.CONCILIAR),
             ("PATCH", f"{PREFIJO}/tickets/{uuid4()}/review", Permiso.APROBAR),
             ("POST", f"{PREFIJO}/tickets/{uuid4()}/spot-check", Permiso.APROBAR),
+            ("POST", f"{PREFIJO}/tipos-gasto/tickets/{uuid4()}/autorizar", Permiso.APROBAR),
+            ("POST", f"{PREFIJO}/tipos-gasto/tickets/{uuid4()}/rechazar", Permiso.APROBAR),
             ("POST", f"{PREFIJO}/caja-chica/{uuid4()}/cerrar", Permiso.CERRAR),
             ("DELETE", f"{PREFIJO}/companies/{uuid4()}", Permiso.ADMINISTRAR),
             ("POST", f"{PREFIJO}/usuarios", Permiso.ADMINISTRAR),

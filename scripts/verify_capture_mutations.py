@@ -122,21 +122,31 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         ],
     ),
     (
-        "una fecha ausente se reemplaza por la fecha UTC",
+        # Reapuntado el 2026-11-26: el dia provisional se resuelve UNA vez en
+        # `fecha_ticket` (para que la huella fiscal use el mismo dia que se
+        # guarda) y ya no se escribe dentro del constructor. La decision que se
+        # rompe sigue siendo la misma: una fecha ausente no puede volverse un
+        # dia cualquiera con apariencia de fecha leida.
+        "una fecha ausente se reemplaza por una fecha inventada",
         "app/services/ticket_persistence.py",
-        "        expense_date=extracted.expense_date or date.today(),",
-        "        expense_date=extracted.expense_date or utcnow().date(),",
+        "    fecha_ticket = extracted.expense_date or date.today()",
+        "    fecha_ticket = extracted.expense_date or date(2021, 8, 15)",
         [
-            "tests/integration/test_capture_pipeline.py::TestFechaInventadaEnLaFila",
+            "tests/integration/test_capture_pipeline.py::TestFechaInventadaEnLaFila"
+            "::test_la_fecha_guardada_es_la_de_hoy_pero_el_ticket_avisa",
         ],
     ),
     (
+        # La otra mitad: el dia se guarda porque la columna es NOT NULL, pero la
+        # marca tiene que decir que no vino del papel. Reapuntado a la columna
+        # `fecha_provisional`, que es donde vive hoy esa decision.
         "una fecha ausente se guarda como fecha de hoy sin avisar",
         "app/services/ticket_persistence.py",
-        "        expense_date=extracted.expense_date or date.today(),",
-        "        expense_date=extracted.expense_date or extracted.expense_date,",
+        "        fecha_provisional=extracted.expense_date is None,",
+        "        fecha_provisional=False,",
         [
-            "tests/integration/test_capture_pipeline.py::TestFechaInventadaEnLaFila",
+            "tests/integration/test_fecha_provisional_recorrido.py"
+            "::TestLaMarcaLoPoneLaCaptura::test_un_documento_sin_fecha_queda_marcado",
         ],
     ),
     (
@@ -351,16 +361,14 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         # `true` con cero modelos instalados. El endpoint que existe para decir
         # "que modelo falta" decia que no faltaba ninguno, y las fotos se leian
         # solo con Tesseract sin que ninguna pantalla lo dijera.
+        # Reapuntado el 2026-11-26: `disponibilidad` ya no itera claves, sino
+        # que compara los modelos configurados contra los que devolvio el
+        # proveedor con `_esta_instalado`. El defecto sigue siendo el mismo:
+        # `faltan` vacio aunque no haya ningun modelo instalado.
         "el diagnostico de la IA vuelve a decir que no falta nada",
         "app/services/ai_client.py",
-        "    faltan: list[str] = []\n"
-        "    if instalados is not None:\n"
-        '        base = {n.split(":")[0] for n in instalados}\n'
-        '        for clave in ("modelo_texto", "modelo_vision"):\n'
-        "            nombre = configurado.get(clave)\n"
-        '            if nombre and str(nombre).split(":")[0] not in base:\n'
-        "                faltan.append(str(nombre))",
-        "    faltan: list[str] = []",
+        "    faltan = [m for m in modelos_configurados if not _esta_instalado(m, instalados)]",
+        "    faltan = []",
         ["tests/unit/test_modelo_en_la_pantalla.py::TestElDiagnosticoNoDiceQueTodoEstaBien"],
     ),
     (
@@ -368,14 +376,13 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         # afirmar cuando lo unico que se sabe es que el proveedor RESPONDIO. Con
         # 25 modelos instalados y ninguno de los dos configurados, `error` queda
         # en `None` y `disponible` en `true`.
+        # La mitad de "disponible": la respuesta del proveedor no basta. Se
+        # muta el calculo, no el texto del error, para que `faltan` siga siendo
+        # correcto y el test de disponibilidad muera por su propia razon.
         "la IA se declara disponible sin que haya un modelo que conteste",
         "app/services/ai_client.py",
-        "    if error is None and not hay_alguno:\n"
-        "        error = (\n"
-        '            "ningun modelo configurado esta instalado en el proveedor: "\n'
-        '            + (", ".join(faltan) or "no hay modelos configurados")\n'
-        "        )",
-        "    pass",
+        "    hay_alguno_instalado = len(faltan) < len(modelos_configurados)",
+        "    hay_alguno_instalado = True",
         ["tests/unit/test_modelo_en_la_pantalla.py::TestElDiagnosticoNoDiceQueTodoEstaBien"],
     ),
     (
@@ -406,10 +413,14 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         # MEDIDO el 2026-10-15: la llamada a vision devolvio 500 dos veces y la
         # app registraba solo la URL. El motivo del proveedor -contexto, memoria,
         # o modelo que no cabe- se perdia, y con el las tres son el mismo fallo.
+        # Reapuntado el 2026-11-26: el cuerpo se lee en el `except
+        # HTTPStatusError`, no en un `if status_code >= 400`. Se calla el
+        # `logger.error` y se deja la excepcion intacta: lo que se pierde es el
+        # motivo, que es exactamente el fallo medido.
         "un 500 del proveedor se registra sin decir por que",
         "app/services/ai_client.py",
-        "        if response.status_code >= 400:",
-        "        if False:",
+        '            logger.error(\n                "Error HTTP del proveedor Ollama (%s) en %s: %s - cuerpo: %s",',
+        '            _ = (\n                "Error HTTP del proveedor Ollama (%s) en %s: %s - cuerpo: %s",',
         ["tests/unit/test_modelo_en_la_pantalla.py::TestUnErrorDelProveedorSeDice"],
     ),
 ]

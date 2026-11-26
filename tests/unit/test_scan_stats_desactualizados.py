@@ -78,7 +78,7 @@ SOBREESCRITO = (
 _contador = {"n": 0}
 
 
-async def _archivo(db_session, ticket_id, *, last_error):
+async def _archivo(db_session, ticket_id, *, last_error, status="PROCESADO"):
     """Un archivo en el registro.
 
     `relative_path` es UNIQUE (`scan_files_relative_path_key`), asi que el nombre
@@ -91,7 +91,7 @@ async def _archivo(db_session, ticket_id, *, last_error):
     fila = ScanFileModel(
         relative_path=f"a{_contador['n']}.pdf",
         content_hash=f"{_contador['n']:064d}"[-64:],
-        status="PROCESADO",
+        status=status,
         read_by="ocr",
         last_error=last_error,
         ticket_id=ticket_id,
@@ -182,4 +182,18 @@ class TestElContadorNoMiente:
         stats = (await async_client.get("/api/v1/scan/stats")).json()
         assert stats["archivos_desactualizados"] == 1
         assert stats["total_archivos"] == 3
+        assert stats["archivos_sin_ticket"] == 2
+
+    async def test_un_duplicado_no_es_un_omitido(self, async_client, db_session):
+        """El feed disfraza el duplicado con `accion=OMITIDO`; el estado no miente.
+
+        Si el contador leyera la accion, este caso contaria dos duplicados donde
+        solo hay uno: el OMITIDO por falta de empresa no es una copia.
+        """
+        await _archivo(db_session, None, last_error=None, status="DUPLICADO")
+        await _archivo(db_session, None, last_error=SIN_EMPRESA)
+
+        stats = (await async_client.get("/api/v1/scan/stats")).json()
+        assert stats["archivos_duplicados"] == 1
+        assert stats["por_estado"]["DUPLICADO"] == 1
         assert stats["archivos_sin_ticket"] == 2

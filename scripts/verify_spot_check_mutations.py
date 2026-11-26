@@ -100,7 +100,7 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "la lista de la cola deja de filtrar por estado de la muestra",
         "app/api/tickets.py",
-        "    base = base.where(\n        TicketModel.spot_check_status == (status_filter or SpotCheckStatus.PENDIENTE.value)\n    )",
+        "    base = base.where(\n        TicketModel.spot_check_status\n        == (status_filter or SpotCheckStatus.PENDIENTE.value)\n    )",
         "    base = base.where(TicketModel.spot_check_status.is_not(None))",
         [
             "tests/integration/test_spot_check_api.py::TestLaColaEsTrabajoNoHistorial",
@@ -108,10 +108,10 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         ],
     ),
     (
-        "la cola mezcla lo ya revisado con el trabajo real",
+        "por defecto se sirve lo ya revisado en vez de lo pendiente",
         "app/api/tickets.py",
-        "        TicketModel.spot_check_status == (status_filter or SpotCheckStatus.PENDIENTE.value)",
-        "        TicketModel.spot_check_status.is_not(None)",
+        "        == (status_filter or SpotCheckStatus.PENDIENTE.value)",
+        "        == (status_filter or SpotCheckStatus.CORRECTO.value)",
         ["tests/integration/test_spot_check_api.py::TestLaColaEsTrabajoNoHistorial"],
     ),
     (
@@ -156,10 +156,10 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "un subtotal desconocido se guarda como 0.00",
         "app/services/ticket_persistence.py",
-        "        subtotal=extracted.subtotal,",
+        "        subtotal=_al_rango_de_la_columna(extracted.subtotal),",
         "        subtotal=extracted.subtotal or Decimal('0.00'),",
         [
-            "tests/integration/test_spot_check_api.py::TestRegistrarElVeredicto",
+            "tests/integration/test_fecha_provisional_recorrido.py::TestElSubtotalNoLeidoNoEsCero",
         ],
     ),
     # -----------------------------------------------------------------------

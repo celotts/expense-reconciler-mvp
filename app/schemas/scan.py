@@ -602,6 +602,10 @@ class ScanStatsResponse(BaseModel):
     por_motor: dict[str, int]
     intentos_totales: int
     archivos_con_error: int
+    # Viene de `por_estado[DUPLICADO]` (misma consulta). Un OMITIDO por falta de
+    # empresa tambien sale con accion OMITIDO en el feed: contar por accion
+    # mezclaria dos cosas distintas.
+    archivos_duplicados: int
     archivos_desactualizados: int
     tickets_vinculados: int
     archivos_sin_ticket: int

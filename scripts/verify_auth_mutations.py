@@ -53,19 +53,22 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     # La puerta: que este protegida
     # -----------------------------------------------------------------------
     (
+        # Reapuntado el 2026-11-26. La puerta dejo de estar en un solo
+        # `include_router` y paso a la lista compartida `PROTEGIDOS`: quitarle el
+        # token a un router ya no abre nada si la guardia global sigue puesta, y
+        # la mutacion vieja sobrevivia sin probar defensa alguna. Lo que hay que
+        # romper es la lista que decide que TODA la v1 pida token.
         "el router de la v1 deja de pedir token",
         CABLEADO,
-        "    dependencies=[Depends(get_current_user)],\n)\napi_router.include_router(\n    tickets_router,",
-        ")\napi_router.include_router(\n    tickets_router,",
+        "PROTEGIDOS = [Depends(get_current_user), Depends(guardia_de_permisos)]",
+        "PROTEGIDOS = []",
         [API],
     ),
-    (
-        "los tickets se vuelven a dejar abiertos",
-        CABLEADO,
-        '    prefix="/tickets",\n    tags=["Tickets"],\n    dependencies=[Depends(get_current_user)],',
-        '    prefix="/tickets",\n    tags=["Tickets"],',
-        [API],
-    ),
+        # La entrada repetida de `tickets_router` NO se muta. Medido el
+        # 2026-11-26: quitar `dependencies=PROTEGIDOS` de ese include no cambia
+        # ninguna respuesta, porque la guardia global de la v1 ya exige token.
+        # Una mutacion que no puede cambiar el veredicto no es una defensa:
+        # contarla como verificada es lo que mantenia este script en rojo.
     (
         "la cuenta dada de baja conserva el token",
         DEPS,
@@ -209,10 +212,14 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
         [API],
     ),
     (
+        # Reapuntado el 2026-11-26: la rama inactiva registra auditoria antes de
+        # contestar, asi que el `if` ya no va seguido del `raise`. Se muta el
+        # raise DENTRO de esa rama (con la auditoria como contexto para no tocar
+        # el de contrasena mala), no el bloque entero.
         "la cuenta dada de baja se anuncia en el login",
         AUTH,
-        "    if not usuario.is_active:\n        # Tampoco se dice \"tu cuenta esta dada de baja\" con este mismo codigo.\n        # Lo diria el 403 mas adelante, cuando alguien intente usar un token\n        # suyo. Aqui el login falla igual que con una contrasena mala.\n        raise _credenciales_malas()",
-        '    if not usuario.is_active:\n        raise HTTPException(status_code=403, detail="Tu cuenta esta dada de baja")',
+        "            motivo='cuenta_inactiva',\n            db=db,\n        )\n        raise _credenciales_malas()",
+        '            motivo=\'cuenta_inactiva\',\n            db=db,\n        )\n        raise HTTPException(status_code=401, detail="Tu cuenta esta dada de baja")',
         [API],
     ),
     (

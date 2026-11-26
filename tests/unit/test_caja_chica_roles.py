@@ -13,7 +13,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.core.deps import guardia_de_permisos
 from app.core.security import hashear_contrasena
+from app.main import app
 from app.models.company import CompanyModel
 from app.models.usuario_empresa import UsuarioEmpresaModel
 from app.models.user import UserModel
@@ -30,6 +32,20 @@ async def membresia_de_admin(db_session, test_company, usuario_de_prueba):
         )
     )
     await db_session.commit()
+
+
+@pytest.fixture
+def sin_guardia_global():
+    """Deja pasar la peticion para probar la defensa DENTRO del adaptador.
+
+    La guardia global de `api_router` ya devuelve 409 cuando el cuerpo declara
+    otra empresa. Sin desactivarla aqui, quitar la comprobacion del servicio o
+    del router no cambia la respuesta y el test pasa por el motivo equivocado:
+    es una defensa que parece probada y no lo esta.
+    """
+    app.dependency_overrides[guardia_de_permisos] = lambda: None
+    yield
+    app.dependency_overrides.pop(guardia_de_permisos, None)
 
 
 async def _crear_caja(cliente, company_id, responsable_id):
@@ -123,7 +139,7 @@ class TestEmpresaEnCaja:
         assert de_la_ajena.json() == []
 
     async def test_cuerpo_con_otra_empresa_da_409(
-        self, async_client, db_session, test_company, usuario_de_prueba
+        self, async_client, db_session, test_company, usuario_de_prueba, sin_guardia_global
     ):
         r = await async_client.post(
             "/api/v1/caja-chica/",
@@ -154,7 +170,7 @@ class TestEmpresaEnCaja:
         assert "X-Company-ID" in r.json()["detail"]
 
     async def test_duplicados_rechaza_empresa_del_cuerpo(
-        self, async_client, db_session, test_company, usuario_de_prueba
+        self, async_client, db_session, test_company, usuario_de_prueba, sin_guardia_global
     ):
         r = await async_client.post(
             "/api/v1/duplicados/buscar",

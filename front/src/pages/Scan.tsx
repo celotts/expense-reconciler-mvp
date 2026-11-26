@@ -1018,6 +1018,7 @@ function PanelStats({ stats }: { stats: ScanStats }) {
       <Contador etiqueta="Archivos" valor={stats.total_archivos} />
       <Contador etiqueta="Con ticket" valor={stats.tickets_vinculados} />
       <Contador etiqueta="Con error" valor={stats.archivos_con_error} tono="danger" />
+      <Contador etiqueta="Duplicados" valor={stats.archivos_duplicados} />
       <Contador etiqueta="Sin ticket" valor={stats.archivos_sin_ticket} tono="warning" />
       {/*
         El desactualizado va aparte y con su propio tono, aunque se ponga en
@@ -1068,7 +1069,19 @@ function Contador({ etiqueta, valor, tono = 'default' }: {
   );
 }
 
-function TablaArchivos({ archivos, onAbrir }: {
+/** El nombre del archivo, sin la carpeta. `relative_path` puede traer
+ *  subdirectorios, y un boton que dice `2026/octubre/IMG_4409.heic` no es el
+ *  nombre de la imagen que el operador busca en su carpeta. La ruta completa se
+ *  conserva en el `title` para que dos archivos con el mismo nombre en carpetas
+ *  distintas no se confundan. */
+export function nombreDelArchivo(ruta: string): string {
+  return ruta.split(/[\\/]/).filter(Boolean).pop() ?? ruta;
+}
+
+/** Exportada para el verificador: monta la tabla con filas reales y mira el
+ *  HTML. `tsc` pasa con un texto muerto en la columna Archivo; por eso la
+ *  comprobacion es sobre lo que se pinta, no sobre el tipo de la fila. */
+export function TablaArchivos({ archivos, onAbrir }: {
   archivos: ScanFile[]; onAbrir: (id: string) => void;
 }) {
   return (
@@ -1090,8 +1103,30 @@ function TablaArchivos({ archivos, onAbrir }: {
         <tbody className="divide-y divide-gray-100">
           {archivos.map(f => (
             <tr key={f.id} className="hover:bg-gray-50">
+              {/* LA COLUMNA ARCHIVO ES UN BOTON, Y LLEVA EL NOMBRE DE LA IMAGEN.
+               *
+               *  Antes era texto: para ver el comprobante habia que usar la
+               *  columna "Detalle", al final de la fila, que no tenia ninguna
+               *  relacion visible con el archivo que se estaba mirando. La
+               *  columna que dice `IMG_4409.heic` es la que invita a pulsar, y
+               *  por eso es la que tiene que abrir el papel.
+               *
+               *  El nombre del boton es el NOMBRE del archivo (sin la carpeta),
+               *  que es lo que el operador reconoce; la ruta completa sigue en
+               *  el `title`. Abre el mismo detalle que "Detalle": ahi estan el
+               *  archivo escaneado y, si existe, el ticket con su comprobante.
+               *  No se deshabilita cuando no hay ticket: un archivo rechazado
+               *  tambien tiene papel que mirar, y es justo el que alguien tiene
+               *  que revisar. */}
               <td className="px-4 py-2 font-mono text-xs truncate max-w-xs" title={f.relative_path}>
-                {f.relative_path}
+                <button
+                  type="button"
+                  onClick={() => onAbrir(f.id)}
+                  className="text-left text-blue-600 hover:text-blue-800 hover:underline"
+                  title={`Ver el archivo ${nombreDelArchivo(f.relative_path)} y su ticket, si tiene`}
+                >
+                  {nombreDelArchivo(f.relative_path)}
+                </button>
               </td>
               <td className="px-4 py-2 text-xs text-gray-700 truncate max-w-[160px]" title={f.ticket_negocio ?? ''}>
                 {f.ticket_negocio ?? '—'}

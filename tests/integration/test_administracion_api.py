@@ -379,6 +379,7 @@ class TestRegistrarMovimientos:
                 "producto_id": str(producto.id),
                 "tipo": "SALIDA",
                 "cantidad": "4",
+                "descripcion_origen": "nota de venta 7",
             },
         )
         assert r.status_code == 201, r.text
@@ -393,6 +394,35 @@ class TestRegistrarMovimientos:
             params={"company_id": str(test_company.id)},
         )
         assert Decimal(detalle.json()["stock"]) == Decimal("6")
+
+    async def test_una_venta_sin_evidencia_da_409_y_no_mueve_stock(
+        self, async_client, db_session, test_company
+    ):
+        """El origen declarado es parte del contrato HTTP, no una sugerencia.
+
+        Un 201 sin folio seria una salida unilateral: el kardex bajaria y nadie
+        podria decir de donde vino la decision.
+        """
+        producto = await _producto(db_session, test_company, "Sin nota")
+        await _con_stock(db_session, test_company, producto, "10")
+
+        r = await async_client.post(
+            "/api/v1/inventario/movimientos",
+            params={"company_id": str(test_company.id)},
+            json={
+                "producto_id": str(producto.id),
+                "tipo": "SALIDA",
+                "cantidad": "4",
+            },
+        )
+        assert r.status_code == 409
+        assert "fuente declarada" in r.json()["detail"]
+
+        detalle = await async_client.get(
+            f"/api/v1/inventario/productos/{producto.id}",
+            params={"company_id": str(test_company.id)},
+        )
+        assert Decimal(detalle.json()["stock"]) == Decimal("10")
 
     async def test_un_ajuste_hacia_arriba_suma(self, async_client, db_session, test_company):
         """"Se conto de menos": el ajuste suma, y con `referencia_tipo='AJUSTE'`.
@@ -451,7 +481,12 @@ class TestRegistrarMovimientos:
         r = await async_client.post(
             "/api/v1/inventario/movimientos",
             params={"company_id": str(test_company.id)},
-            json={"producto_id": str(producto.id), "tipo": "SALIDA", "cantidad": "10"},
+            json={
+                "producto_id": str(producto.id),
+                "tipo": "SALIDA",
+                "cantidad": "10",
+                "descripcion_origen": "nota de venta 88",
+            },
         )
         assert r.status_code == 409
         detalle = r.json()["detail"]

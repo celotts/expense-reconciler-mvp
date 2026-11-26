@@ -335,6 +335,8 @@ export interface ScanStats {
   por_motor: Record<string, number>;
   intentos_totales: number;
   archivos_con_error: number;
+  /** Archivos con `status=DUPLICADO`: no crean ticket y no se vuelven a leer. */
+  archivos_duplicados: number;
   /** PROCESADO pero con el archivo cambiado y un ticket ya corregido a mano. */
   archivos_desactualizados: number;
   tickets_vinculados: number;

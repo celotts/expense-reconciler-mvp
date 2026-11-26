@@ -176,8 +176,14 @@ class MovimientoCreate(BaseModel):
     # True = correccion de conteo. Es lo que pone `referencia_tipo='AJUSTE'` y lo
     # que permite una ENTRADA: sin el, la entrada seria una compra disfrazada.
     es_ajuste: bool = False
-    # La venta viene de un comprobante de venta, si lo hay. NULL es lo normal.
+    # Un documento de venta digitalizado, si algun dia existe. Hoy no hay tabla
+    # de ventas: inventar el UUID apuntando a nada seria peor que dejarlo NULL.
     referencia_id: UUID | None = None
+    # La fuente declarada: folio de nota de venta, o motivo del conteo. El
+    # servicio la exige con 409 si no viene —porque el nombre del producto no es
+    # una fuente—. No se pone `min_length` aqui a propósito: un 422 generico de
+    # Pydantic no dice "falta la procedencia", y este campo es una decision, no
+    # solo una cadena con longitud. Ver `known-issues.md` §0.b.
     descripcion_origen: str | None = Field(default=None, max_length=300)
 
 

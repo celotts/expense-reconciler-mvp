@@ -60,17 +60,16 @@ MUTACIONES = [
     Mutacion(
         nombre="una membresia dada de baja sigue dando acceso",
         archivo="app/core/deps.py",
+        # Reapuntado el 2026-11-26: la consulta de membersias se unifico en
+        # `_membresias_del_usuario`, que ahora trae tambien el rol. Se muta el
+        # filtro `activo` ahi, que es el unico sitio que lo decide.
         viejo=(
-            "        (\n"
-            "            await db.execute(\n"
-            "                select(UsuarioEmpresaModel.company_id).where(\n"
+            "                select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id).where(\n"
             "                    UsuarioEmpresaModel.user_id == usuario.id,\n"
             "                    UsuarioEmpresaModel.activo.is_(True),\n"
         ),
         nuevo=(
-            "        (\n"
-            "            await db.execute(\n"
-            "                select(UsuarioEmpresaModel.company_id).where(\n"
+            "                select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id).where(\n"
             "                    UsuarioEmpresaModel.user_id == usuario.id,\n"
             "                    True,  # MUTACION: no se mira `activo`\n"
         ),
@@ -84,16 +83,14 @@ MUTACIONES = [
         prueba="test_dos_empresas_sin_header_piden_eleccion",
     ),
     Mutacion(
+        # Reapuntado el 2026-11-26: el rol se valida en `rol_actual` con
+        # `a_rol_de_empresa`, no se construye directamente en la dependencia.
+        # La mutacion hace que esa dependencia lea el `perfil` libre del usuario;
+        # el test con perfil='admin' y membership='operator' tiene que morir.
         nombre="el rol se lee de `perfil` y no de la membresia",
         archivo="app/core/deps.py",
-        viejo="    return RolEmpresa(rol)\n",
-        nuevo=(
-            "    return RolEmpresa(\n"
-            "        usuario.perfil\n"
-            "        if usuario.perfil in {r.value for r in RolEmpresa}\n"
-            "        else rol\n"
-            "    )  # MUTACION: texto libre\n"
-        ),
+        viejo="    rol_validado = a_rol_de_empresa(rol)\n",
+        nuevo="    rol_validado = a_rol_de_empresa(usuario.perfil)  # MUTACION: texto libre\n",
         prueba="test_perfil_no_es_autorizacion",
     ),
     Mutacion(

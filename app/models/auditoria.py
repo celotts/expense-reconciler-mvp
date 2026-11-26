@@ -20,6 +20,10 @@ class Auditoria(Base):
     accion = Column(String(100), nullable=False)
     modulo = Column(String(50), nullable=True)
     registro_afectado = Column(UUID(as_uuid=True), nullable=True)
+    # Empresa activa en la peticion (0026). NULL en el historico anterior:
+    # no se registro, NO "vale para todas". No se backfillea: la tabla es
+    # append-only por trigger y un UPDATE para rellenarla revienta.
+    company_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     detalles = Column(Text, nullable=True)
     ip_inet = Column(String(45), nullable=True)
     resultado = Column(String(20), nullable=False, default='exito')

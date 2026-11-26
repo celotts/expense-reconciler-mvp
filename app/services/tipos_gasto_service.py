@@ -98,7 +98,11 @@ async def asegurar_catalogo(db: AsyncSession, company_id: UUID) -> int:
     existentes = await db.execute(
         select(TipoGastoModel.clave).where(TipoGastoModel.company_id == company_id)
     )
-    ya_estan = {fila[0] for fila in existentes.scalars()}
+    # `scalars()` ya devuelve la CLAVE, no una fila: hacer `fila[0]`
+    # recortaba cada clave a su primera letra y la segunda siembra volvia
+    # a insertar las 17 cuentas, que reventaba por el indice unico. Una
+    # siembra que solo funciona la primera vez no es idempotente.
+    ya_estan = set(existentes.scalars().all())
     faltantes = [c for c in CATEGORIAS if c.clave not in ya_estan]
     for categoria in faltantes:
         db.add(
@@ -285,6 +289,59 @@ async def asignar_a_ticket(
             .values(tipo_gasto_id=tipo.id, category=tipo.clave)
         )
     await db.commit()
+
+
+async def asignar_lote_a_tickets(
+    db: AsyncSession,
+    company_id: UUID,
+    ticket_ids: list[UUID],
+    tipo_gasto_id: UUID | None,
+) -> dict[str, int]:
+    """Clasifica varios tickets con UNA sola decision y UNA sola transaccion.
+
+    El servicio individual tambien existe, pero llamarlo 200 veces son 200
+    `commit` y 200 viajes; la barra de seleccion puede traer 200. Aqui la cuenta
+    se valida una vez y el `UPDATE` es uno solo, con el mismo par
+    `(tipo_gasto_id, category)` que escribe `asignar_a_ticket`. No hay un segundo
+    escritor del texto.
+
+    Los ids que no pertenecen a la empresa no se cuentan como clasificados:
+    devolver `pedidos` sin relativizar daria un 200 que afirma haber escrito
+    cosas que nunca estuvieron a la vista.
+    """
+    ids = list(dict.fromkeys(ticket_ids))
+    if not ids:
+        raise ErrorDeTipoGasto("No se pidieron tickets para clasificar.")
+
+    tipo = None
+    if tipo_gasto_id is not None:
+        tipo = await obtener(db, company_id, tipo_gasto_id)
+        if tipo is None:
+            raise ErrorDeTipoGasto("Esa cuenta de gasto no existe.")
+        if not tipo.activo:
+            raise ErrorDeTipoGasto(
+                f"La cuenta {tipo.clave} esta dada de baja. Reactivala para usarla."
+            )
+
+    encontrados = (
+        await db.execute(
+            select(TicketModel.id).where(
+                TicketModel.company_id == company_id,
+                TicketModel.id.in_(ids),
+            )
+        )
+    ).scalars().all()
+    if encontrados:
+        await db.execute(
+            update(TicketModel)
+            .where(
+                TicketModel.company_id == company_id,
+                TicketModel.id.in_(encontrados),
+            )
+            .values(tipo_gasto_id=tipo_gasto_id, category=tipo.clave if tipo else None)
+        )
+        await db.commit()
+    return {"actualizados": len(encontrados), "pedidos": len(ids)}
 
 
 async def asignar_a_producto(

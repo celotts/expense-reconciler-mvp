@@ -1,0 +1,59 @@
+name: Defensas por mutacion
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  mutaciones:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 es la version del Dockerfile. La suite se corrio tambien en
+          # 3.14 en local, pero CI no debe depender de una version que el
+          # contenedor de produccion no tiene.
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: Binario del OCR
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-spa
+
+      - name: Dependencias de Python
+        run: pip install -r requirements.txt
+
+      - name: Dependencias del front
+        working-directory: front
+        run: npm ci
+
+      - name: Todos los verificadores de mutacion
+        # El orquestador descubre los scripts por nombre: anadir uno nuevo no
+        # pide tocar este archivo. Corre en secuencial porque cada verificador
+        # muta archivos en sitio y los restaura.
+        run: python3 scripts/verificar_todas_las_mutaciones.py
+
+      - name: Compilacion del front
+        working-directory: front
+        run: npm run build
+
+      - name: Verificaciones del front en pantalla
+        working-directory: front
+        run: npm run verify
+
+      - name: Suite completa
+        # El shell de la maquina de desarrollo exporta una SECRET_KEY corta y
+        # la .env enciende el reset del escaner. Aqui no hay .env, pero se
+        # explicita para que la misma puerta de CI se pueda correr en local.
+        run: env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. python3 -m pytest tests/ -q

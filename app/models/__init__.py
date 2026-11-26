@@ -17,6 +17,7 @@ from app.models.auditoria import Auditoria
 from app.models.tipo_gasto import TipoGastoModel
 from app.models.caja_chica import CajaChicaModel, MovimientoCajaModel
 from app.models.usuario_empresa import UsuarioEmpresaModel
+from app.models.token_revocado import MOTIVOS_REVOCACION, TokenRevocado
 
 __all__ = [
     "CompanyModel",
@@ -38,4 +39,6 @@ __all__ = [
     "CajaChicaModel",
     "MovimientoCajaModel",
     "UsuarioEmpresaModel",
+    "TokenRevocado",
+    "MOTIVOS_REVOCACION",
 ]

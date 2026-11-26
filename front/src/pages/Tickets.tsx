@@ -745,10 +745,18 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           <div className={conPapel ? 'grid grid-cols-1 lg:grid-cols-[400px_minmax(0,1fr)] gap-5' : ''}>
           {/* El comprobante, al lado de los campos que se corrigen.
               *
-              * `ComprobanteAlLado` ya acota su propia altura a `70vh` con scroll
-              * interno, asi que una foto de ticket —que es alta— no estira el
-              * modal: el modal tambien tiene `max-h-[90vh] overflow-y-auto`, y
-              * los dos scrolls estan donde toca, en el papel y en el formulario.
+              * `ComprobanteAlLado` acota su propia altura con scroll interno y
+              * amplia la imagen dentro del modal, asi que una foto de ticket
+              * —que es alta— no estira el modal ni abre el original sin
+              * convertir en una pestana. El modal tambien tiene
+              * `max-h-[90vh] overflow-y-auto`, y los dos scrolls estan donde
+              * toca, en el papel y en el formulario.
+              *
+              * Antes habia aqui un boton que abria el original "en grande": en
+              * un HEIC el original es `application/octet-stream` y se
+              * descargaba. El propio componente amplia ahora la vista previa
+              * JPEG sobre el `Blob` que ya trae token, sin pedir el papel dos
+              * veces ni abrir una pestana sin `Authorization`.
               *
               * `lg:sticky lg:self-start` es lo que hace que el papel NO se vaya
               * mientras se hace scroll en los campos: sin esto, corregir el ultimo
@@ -758,35 +766,6 @@ export function Tickets({ filtroInicial }: { filtroInicial?: Filtro }) {
           {conPapel && editingTicket && (
             <div className="order-2 lg:order-1 lg:sticky lg:top-0 lg:self-start lg:border-r lg:border-gray-200 lg:pr-5">
               <ComprobanteAlLado ticket={editingTicket} />
-              {/* Antes esto era un enlace a `/ticket/{id}/documento`, una ruta
-                  que el front no tiene (App.tsx no tiene router): abria la
-                  pagina normal de la app. Ahora se descarga el original con
-                  token (el endpoint exige `Authorization`, y una pestana nueva
-                  no lo lleva) y se abre el `Blob` ya descargado. La pestana
-                  se abre ANTES de pedirlo, porque abrirla despues del `await`
-                  la bloquea el navegador como emergente. */}
-              <button
-                type="button"
-                onClick={async () => {
-                  const ventana = window.open('', '_blank', 'noopener,noreferrer');
-                  try {
-                    const blob = await ticketsApi.documento(editingTicket.id);
-                    const url = URL.createObjectURL(blob);
-                    if (ventana) ventana.location.href = url;
-                    else window.open(url, '_blank', 'noopener,noreferrer');
-                    // El Blob se libera pasado un minuto: revocarlo antes
-                    // cerraria la pestana que se acaba de abrir.
-                    setTimeout(() => URL.revokeObjectURL(url), 60000);
-                  } catch {
-                    ventana?.close();
-                    /* Si falla, el papel ya esta visible arriba en
-                       ComprobanteAlLado; no se tumba el modal por esto. */
-                  }
-                }}
-                className="mt-2 inline-block text-xs text-blue-600 underline"
-              >
-                Abrir el comprobante original en otra pestaña (para verlo en grande)
-              </button>
             </div>
           )}
           <div className={conPapel ? 'order-1 lg:order-2' : ''}>

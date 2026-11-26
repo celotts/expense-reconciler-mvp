@@ -355,6 +355,15 @@ def _permiso_de_la_peticion(request: Request) -> Permiso | None:
         return None
 
     # Aprobar no es editar: quien corrige un ticket no por eso puede firmarlo.
+    # Autorizar un gasto tambien es firmar. Estas rutas llegaron con el catalogo
+    # de cuentas y su POST no tiene `/review` ni `/spot-check` en el nombre: sin
+    # esta linea la guardia las clasificaba como CREAR y un `operator`, que si
+    # puede crear tickets, podia autorizar gasto ajeno con un curl.
+    if (
+        "/tipos-gasto/tickets/" in ruta
+        and ruta.endswith(("/autorizar", "/rechazar"))
+    ):
+        return Permiso.APROBAR
     if "/spot-check" in ruta or ruta.endswith("/review"):
         return Permiso.APROBAR
     if ruta.startswith("/api/v1/reconciliations/run"):

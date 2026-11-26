@@ -11,7 +11,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from app.core.database import Base
 from app.core.time import utcnow
@@ -71,13 +71,18 @@ class TipoGastoModel(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
-    # `passive_deletes=True`: la FK es `ON DELETE CASCADE` en la base
-    # (`db/migrations/0018_tipos_gasto.sql:69`), y sin este `True` el ORM manda
-    # `UPDATE tipos_gasto SET company_id = NULL` antes del DELETE de la empresa,
-    # que revienta con `NotNullViolationError`. Mismo argumento que en
-    # `app/models/ticket.py`.
+    # `passive_deletes=True` en LOS DOS LADOS: la FK es `ON DELETE CASCADE` en
+    # la base (`db/migrations/0018_tipos_gasto.sql:69`), pero el `True` de la
+    # relacion muchos-a-uno no se hereda por el `backref`. Sin el `backref`
+    # explicito, al borrar la empresa el ORM recorre `tipos_gasto` y manda
+    # `UPDATE tipos_gasto SET company_id = NULL` antes del DELETE, lo que
+    # revienta con `NotNullViolationError` y convierte un borrado valido en 409.
+    # MEDIDO: `test_delete_company` fallaba desde que crear empresa siembra el
+    # catalogo (17 cuentas nuevas por empresa).
     company = relationship(
-        "CompanyModel", backref="tipos_gasto", passive_deletes=True
+        "CompanyModel",
+        backref=backref("tipos_gasto", passive_deletes=True),
+        passive_deletes=True,
     )
 
     # `back_populates` en los dos lados (convencion del proyecto). El `passive_deletes`

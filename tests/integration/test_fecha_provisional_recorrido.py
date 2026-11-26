@@ -297,3 +297,36 @@ class TestLaRelecturaVuelveAMarcar:
 
         assert t.fecha_provisional is False
         assert t.expense_date == date(2026, 3, 10)
+
+
+class TestElSubtotalNoLeidoNoEsCero:
+    """Un papel sin subtotal se guarda con NULL, no con 0.00.
+
+    `0.00` es un dato falsificado con apariencia de dato: el gate lo usaria para
+    comprobar `subtotal + IVA == total` y daria por buena una lectura que no
+    tenia con que comprobarse. Es la misma distincion que `fecha_provisional`
+    hace con la fecha, y por eso vive aqui, en el recorrido completo: un test
+    que solo mirara el parser no veria lo que se guardo.
+    """
+
+    @pytest.mark.asyncio
+    async def test_un_subtotal_ausente_llega_null_a_la_fila(
+        self, db_session, test_company
+    ):
+        from app.services import ticket_persistence
+
+        await ticket_persistence.persistir_extraccion(
+            db_session,
+            company_id=test_company.id,
+            extracted=_resultado(con_fecha=date(2026, 3, 10)),
+            content=b"PANADERIA NORTE\nTOTAL 250.00",
+            source_type=SourceType.DIRECTORY,
+            source_file="sin_subtotal.pdf",
+        )
+        await db_session.commit()
+
+        fila = (await db_session.execute(select(TicketModel))).scalars().one()
+        assert fila.subtotal is None, (
+            "un comprobante sin subtotal se guardo como 0.00: ahora parece "
+            "que el papel lo imprintio y la aritmetica cuadra sin haberse leido"
+        )

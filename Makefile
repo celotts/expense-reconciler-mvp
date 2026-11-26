@@ -1,4 +1,5 @@
 .PHONY: build up up-force down logs ps stats disk clean prune insomnia insomnia-check \
+        verificar-defensas \
         migrar migrar-list migrar-estado up-dev up-qa up-prod up_dev up_qa
 
 # Forzar el socket correcto de Docker en macOS si Docker Desktop lo requiere
@@ -104,6 +105,12 @@ insomnia:
 # anades una ruta y te quieres acordar de que hay que regenerar.
 insomnia-check:
 	python3 scripts/generar_insomnia.py --check
+
+# Todas las defensas por mutacion. El orquestador descubre los scripts por
+# nombre: anadir uno nuevo no pide tocar esta receta ni el CI. Secuencial porque
+# cada verificador escribe el archivo original, corre los tests y lo restaura.
+verificar-defensas:
+	python3 scripts/verificar_todas_las_mutaciones.py
 
 # ===========================================================================
 # Migraciones: SOLO para una base que YA EXISTE

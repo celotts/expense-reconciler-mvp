@@ -74,6 +74,31 @@ class AsignarTipoGastoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AsignarLoteRequest(BaseModel):
+    """Ponerle (o quitarle) la cuenta a varios tickets a la vez.
+
+    Es la misma decision que `AsignarTipoGastoRequest` y un solo destino para
+    todos; el lote existe para no hacer un viaje por ticket cuando la barra de
+    seleccion tiene 200. No lleva `company_id` ni quien firma (regla 23).
+    """
+
+    ticket_ids: list[UUID] = Field(min_length=1, max_length=500)
+    tipo_gasto_id: UUID | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AsignarLoteResponse(BaseModel):
+    """Cuantos se escribieron y cuantos se pidieron.
+
+    Si `actualizados` es menor que `pedidos`, algunos ids no estaban en la
+    empresa activa. El front lo dice en vez de fingir que clasifico todo.
+    """
+
+    actualizados: int
+    pedidos: int
+
+
 class AutorizarRequest(BaseModel):
     """Aprobar un gasto.
 

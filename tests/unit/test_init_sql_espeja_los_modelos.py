@@ -56,6 +56,7 @@ TABLAS = [
     "cajas_chicas",
     "movimientos_caja",
     "usuarios_empresas",
+    "tokens_revocados",
 ]
 
 
@@ -159,6 +160,7 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         TicketDocumentModel,
         TicketModel,
         TipoGastoModel,
+        TokenRevocado,
         UserModel,
         UsuarioEmpresaModel,
     )
@@ -171,6 +173,7 @@ def _columnas_de_los_modelos() -> dict[str, set[str]]:
         (CajaChicaModel, "cajas_chicas"),
         (MovimientoCajaModel, "movimientos_caja"),
         (UsuarioEmpresaModel, "usuarios_empresas"),
+        (TokenRevocado, "tokens_revocados"),
         (ReconciliationModel, "reconciliations"),
         (AccountingMappingModel, "accounting_mappings"),
         (ScanFileModel, "scan_files"),

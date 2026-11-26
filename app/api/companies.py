@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.deps import UsuarioActual
 from app.models.company import CompanyModel
 from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
+from app.services import tipos_gasto_service
 from app.services.auditoria import (
     registrar_auditoria,
     registrar_delete_auditoria,
@@ -39,6 +40,11 @@ async def create_company(
     db.add(company)
     await db.commit()
     await db.refresh(company)
+    # La empresa nace con su catalogo de cuentas. Si no, el primer dia el
+    # desplegable de Tickets esta vacio y el usuario no tiene forma de saber
+    # que le falta sembrar: la ausencia parece un bug del front. Es idempotente,
+    # asi que un reintento tras un fallo de red no duplica nada.
+    await tipos_gasto_service.asegurar_catalogo(db, company.id)
     await registrar_auditoria(
         accion="crear_empresa",
         modulo="companies",

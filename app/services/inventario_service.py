@@ -877,6 +877,17 @@ async def registrar_movimiento(
 ) -> MovimientoInventarioModel:
     """Escribe una fila del kardex a mano: una SALIDA (venta) o un AJUSTE.
 
+    POR QUE HACE FALTA UNA FUENTE DECLARADA
+    ---------------------------------------
+
+    Esta es la unica via que mueve stock sin pasar por `confirmar_compra`. Si el
+    origen no se exige, la fila dice "salieron 4 piezas" sin decir de donde viene
+    esa decision, y el kardex afirma mas de lo que puede sostener. Antes se
+    rellenaba con el nombre del producto: una etiqueta del catalogo, no una
+    fuente. Ahora `descripcion_origen` es obligatoria aqui (409, no 422, para que
+    el mensaje diga que es la procedencia lo que falta). El token da quien firma
+    y la base da cuando; la persona da el folio. Ver `known-issues.md` §0.b.
+
     POR QUE UNA `ENTRADA` SOLO SE ACEPTA CON `referencia_tipo='AJUSTE'`
     ------------------------------------------------------------------
 
@@ -961,6 +972,24 @@ async def registrar_movimiento(
     if producto.company_id != company_id:
         raise ErrorDeInventario("El producto es de otra empresa")
 
+    # Toda fila escrita aqui mueve stock fuera de una compra confirmada. Sin una
+    # procedencia declarada, el kardex afirma que algo paso sin decir de donde
+    # viene: eso es exactamente lo que `docs/known-issues.md` §0.b llama una
+    # salida unilateral. Antes el hueco se rellenaba con `producto.nombre`, que
+    # es una etiqueta del catalogo, no la fuente de un movimiento.
+    #
+    # Va DESPUES de actor, cantidad y empresa para que el 409 de cada una siga
+    # diciendo lo que paso, y ANTES del stock para que una SALIDA sin evidencia
+    # no se cuele aunque no haya stock que restar.
+    origen = (descripcion_origen or "").strip()
+    if not origen:
+        raise ErrorDeInventario(
+            "Este movimiento cambia el stock y necesita una fuente declarada: "
+            "escribe el folio o numero de nota de venta (o que se conto de mas, "
+            "si es una correccion) en descripcion_origen. El nombre del producto "
+            "no es una fuente."
+        )
+
     if tipo is TipoMovimiento.SALIDA:
         actual = await stock_de_una(db, producto.id)
         if cantidad > actual:
@@ -978,7 +1007,7 @@ async def registrar_movimiento(
         referencia_tipo=referencia_tipo,
         referencia_id=referencia_id,
         actor=actor,
-        descripcion_origen=(descripcion_origen or producto.nombre)[:300],
+        descripcion_origen=origen[:300],
         created_at=utcnow(),
     )
     db.add(movimiento)

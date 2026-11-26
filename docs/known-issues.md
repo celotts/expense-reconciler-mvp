@@ -246,17 +246,55 @@ escrito en el propio script.
 
 ---
 
-### 0.b. El inventario no tiene entrada de ventas, y eso es una asimetría real — 🟠 **ABIERTO por decisión**
+### 0.b. La SALIDA por venta: origen por defecto y valoración — ✅ **DECIDIDO (Fase 4)**
 
-El diseño implementa **solo la mitad de la regla de negocio**: la compra suma stock. `TipoMovimiento`
-ya trae `SALIDA` y la constraint `referencia_tipo` ya acepta `'VENTA'`, **pero no hay endpoint ni
-forma de registrar una venta.** No es un olvido: la compra viene de un papel y la venta viene de
-otro sitio, y esa otra fuente de datos no está definida.
+El diseño tenía solo la mitad de la regla: la compra suma stock. `TipoMovimiento` ya traía
+`SALIDA`, la constraint `referencia_tipo` aceptaba `'VENTA'` y `POST /inventario/movimientos`
+ya escribía la fila —**pero la fila no traía evidencia**. `registrar_movimiento` hacía
+`descripcion_origen=(descripcion_origen or producto.nombre)`: si el cliente no escribía nada, el
+"origen" de la venta era el **nombre del producto**. Eso no es una fuente: es una etiqueta. Una
+venta sin papel parecía tenerlo, y el kardex afirmaba algo que nadie había declarado.
 
-**Consecuencia concreta y medible:** con solo entradas, `stock_de()` es monótono creciente y el
-inventario no puede cuadrar con un conteo físico — grows sin techo. El día que se cargue la salida,
-el estado actual ya tiene lo necesario (`SALIDA` en el enum, el trigger que impide bajar de cero,
-el índice `ix_movimientos_producto` para la suma), pero **falta la entrada**.
+#### Decisión 1: la fuente por defecto es la declaración humana en el punto de venta
+
+`POST /inventario/movimientos` con `tipo=SALIDA`, `es_ajuste=false` es la vía. La evidencia
+mínima es **`descripcion_origen` con el folio o número de nota de venta**, más `actor` del token y
+`created_at` del servidor. Sin ese texto la petición se rechaza con 409: el sistema no baja stock
+por una afirmación sin procedencia.
+
+Por qué no se deriva de otra fuente, con la evidencia que hay en el repo:
+
+| Fuente candidata | Por qué no |
+|---|---|
+| `tickets` | Son comprobantes de **gasto**. Un ticket no describe una venta. |
+| Movimientos bancarios | Registran dinero que salió, no qué piezas salieron ni de qué lote. Un depósito no cuantifica unidades. |
+| `compras` / `compra_items` | Solo documentan entradas. Son la fuente de la compra, no de la salida. |
+| Un UUID de nota de venta nuevo | No existe tabla de ventas. Inventar un `referencia_id` apuntando a nada sería peor que `NULL`. |
+
+Lo que la declaración **no** afirma: que la venta ocurrió. Afirma quién la declaró, cuándo y bajo
+qué folio —la misma naturaleza que un `AJUSTE` de conteo o un cierre de caja—. `referencia_id`
+permanece `NULL` hasta que exista un documento de venta digitalizado; cuando exista, se apunta
+desde ahí **sin cambiar el esquema**. La evidencia pasa entonces de declarada a contrastada.
+
+#### Decisión 2: valoración por promedio ponderado móvil, derivada del kardex
+
+`costo_unitario` se congela en cada fila de `movimientos_inventario`:
+
+- `ENTRADA` de `confirmar_compra`: `compra_items.costo_unitario` de la línea (si la línea no tiene
+  costo, `NULL`, y la entrada se cuenta como **sin costo**, no como costo cero inventado).
+- `SALIDA` de venta: promedio ponderado de las entradas del producto hasta ese instante, con el
+  mismo signo que `stock_de`. Se guarda en la fila para que una compra posterior **no reescriba**
+  el costo de una venta anterior.
+
+El costo de ventas del periodo es `SUM(cantidad * costo_unitario)` sobre las SALIDAS. **No hay
+columna de costo de ventas**: es una suma sobre el kardex, igual que el stock es una suma sobre el
+kardex. Un campo calculado se desincronizaría con la primera corrección.
+
+FIFO se descarta con una razón de datos, no de preferencia: el kardex no registra de qué compra
+salió cada pieza. Asignar lotes sería inventar una procedencia que el papel no dice, y el
+`promedio ponderado` es lo único que se puede derivar hoy sin añadir una tabla de lotes. Si algún
+día se necesita FIFO, hace falta primero una columna de lote en la SALIDA, escrita por quien
+declara la venta.
 
 ---
 
@@ -2646,6 +2684,134 @@ oculto. `bash scripts/migrar.sh --estado` lo dijo y `make migrar MIGRAR_SI=1` ap
 `0023` y `0024`. Verificado después: `POST /auditoria/evento` → 204 y `GET /tickets` → 200.
 Si vuelve a aparecer un 500 con `relation ... does not exist`, **no** se arregla relajando la
 guardia: se arregla migrando. Relajarla daría 200 a una escritura sin saber qué rol la firma.
+
+### 51. El esquema para revocar tokens ya está; la guardia todavía no — 🟡 EN CURSO (Fase 1)
+
+**El defecto.** Un JWT HS256 firmado no se puede deshacer: `auth.py` lo decía en el
+docstring y `Mantenimiento.tsx` lo decía en pantalla —"un token emitido antes del
+reset sigue vivo 8 horas"—. Eso no era una advertencia callada: era la declaración
+de que logout, cambio de clave y reset administrativo no revocaban nada. Faltaban
+el `jti`, el sitio donde guardarlo y la comprobación en la puerta común.
+
+**Lo que se hizo en este paso (solo el esquema):**
+
+| archivo | decisión |
+|---|---|
+| `db/migrations/0025_tokens_revocados.sql` | `jti` como PK, `user_id`, `motivo`, `revoked_at`, `expires_at`. `ON DELETE RESTRICT`: borrar la cuenta no borra la revocación. Append-only por trigger: borrar una fila reviviría un token robado. CHECK de cuatro motivos, repetido en `MOTIVOS_REVOCACION`. |
+| `db/migrations/0026_auditoria_company_id.sql` | `auditoria.company_id` nullable con FK a `companies` e índice `(company_id, fecha DESC)`, para poder exportar por empresa sin adivinar desde `registro_afectado`. |
+| `db/init.sql` | Espejo de las dos: DDL, índices, triggers, `COMMENT` y registro en `schema_migrations`. Una base nueva no nace rota. |
+| `app/models/token_revocado.py`, `app/models/auditoria.py` | Los modelos declaran lo mismo. `tests/conftest.py` construye desde los modelos, así que sin esto la suite no vería el DDL nuevo. |
+
+**La trampa del backfill (por qué el histórico queda en NULL).** `auditoria` es
+append-only por trigger desde `0020`. Rellenar `company_id` en filas viejas con
+`UPDATE` revienta en Postgres; apagar el trigger para hacerlo es saltarse la regla
+que hace que la auditoría sirva de algo. `NULL` significa **"no se registró"**,
+no "todas las empresas". Cuando se escriba la exportación, el filtro por empresa
+tiene que informar de las filas omitidas en vez de dejarlas calladas. Lo contrario
+sería un informe que parece completo y no lo es.
+
+**Lo que NO se hizo todavía, y por qué no se puede decir que esté arreglado:**
+`crear_token` no emite `jti`; `leer_token` no lo exige; `_usuario_del_token` no
+consulta `tokens_revocados`; logout, cambio de clave y reset no insertan filas;
+`auth.py` y `Mantenimiento.tsx` siguen diciendo que el token vive hasta que caduca.
+La guardia global es el único sitio donde una revocación vale en **todos** los
+routers protegidos a la vez, y todavía no está. SSO/MFA y la exportación de
+auditoría tampoco: son los siguientes pasos de la fase, con su propio turno.
+
+**Verificación del paso:**
+
+| puerta | resultado |
+|---|---|
+| `tests/unit/test_revocacion_ddl.py` (10) | 10 passed |
+| `tests/unit/test_init_sql_espeja_los_modelos.py` (25) | 25 passed |
+| `scripts/verify_revocacion_mutations.py` (10) | 10 mueren; una mutación sobrevivió en la primera corrida (quitar la FK dejaba el mismo prefijo de columna) y se cazó añadiendo `test_la_columna_apunta_a_una_empresa_existente` |
+
+El verificador de mutaciones se ampliará con la mitad HTTP cuando la guardia lea
+la tabla: criterio de hecho de la fase es que un token revocado dé 401 en todos
+los routers protegidos, y que el verificador nuevo muera si se relaja la guardia.
+
+---
+
+### 52. El comprobante no se veía, y el nombre de archivo no abría nada — ✅ CORREGIDO
+
+**Medido.** `ComprobanteAlLado` pedía **solo** `GET /tickets/{id}/documento` y decidía
+por `blob.type`. El HEIC real de esta máquina (`IMG_4409.heic`, ticket
+`d4c814b1-226b-4718-a497-8b24955d7923`) se sirve como
+`application/octet-stream` —está fuera de la lista cerrada de tipos servibles a
+propósito, porque ningún navegador de escritorio lo pinta—, así que caía en el
+`<object>` y el recuadro de «Comprobante original» quedaba vacío. En Tickets, el
+botón que decía *«Abrir … en otra pestaña (para verlo en grande)»* abría ese
+mismo original: el navegador lo **descargaba** en vez de mostrarlo. `tsc` pasaba
+con los dos defectos puestos: los dos son HTML, no tipos.
+
+Y en «Registro de archivos» (Escáner), la columna **Archivo** era texto plano.
+El único acceso al papel estaba en la última columna («Detalle»), sin ninguna
+señal de que perteneciera a la fila que se estaba mirando.
+
+**Lo que se arregló, y por qué no es relajar el allowlist:**
+
+- `ComprobanteAlLado` pide ahora original **y vista previa** con
+  `Promise.allSettled`, igual que `VerDocumento`. La previa JPEG se pinta; el
+  original aporta el `Content-Disposition` (lo único que distingue un HEIC de un
+  `.zip`, que también llega como `octet-stream`) y el enlace de descarga con su
+  nombre. El tipo que decide **cómo se pinta** es el de la previa: con el del
+  original el HEIC volvía al visor de PDF teniendo la foto al lado.
+- «Ampliar» ocurre sobre el `Blob` ya descargado y con token: la misma imagen a
+  pantalla casi completa, con acercar/alejar/ajustar, `Escape` para cerrar y
+  `z-[60]` para quedar por encima del modal de edición (`z-50`). No se vuelve a
+  pedir el papel ni se abre una pestaña sin `Authorization`. Se eliminó el botón
+  de Tickets que prometía ampliar y descargaba el original.
+- `nombreDelContentDisposition` se movió a `front/src/utils/documento.ts` y lo
+  comparten los tres sitios que muestran el papel. Tres copias del lector del
+  header es la forma de que una deje de entender `filename*` sin aviso.
+- En Scan.tsx, la columna Archivo es un `<button>` con el **nombre de la imagen**
+  (sin la carpeta) que abre el mismo detalle que «Detalle». La ruta completa se
+  conserva en el `title` para no confundir dos archivos iguales en carpetas
+  distintas. El botón no se deshabilita sin ticket: un archivo rechazado es justo
+  el que alguien tiene que mirar.
+
+**Contraprueba que costó un fallo:** la primera versión decidía `esHeic` mirando
+el tipo de la imagen **pintada** (`image/jpeg` en la previa), así que el enlace
+de descarga perdía el nombre original. El verificador la cazó. Ahora `esHeic` se
+decide por el nombre del archivo, que es lo que identifica al original.
+
+**Verificación:** `cd front && npm run build`, `npm run verify:comprobante`
+(23 comprobaciones, miran el HTML montado con los datos del HEIC) y
+`npm run verify:registro` (7 comprobaciones, monta la tabla con filas reales).
+`npm run verify:papel` sigue pasando: la disposición del papel no cambió.
+Seis mutaciones controladas, **6 de 6 mueren**: quitar la vista previa, pintar
+con el tipo del original, quitar el control de acercar, usar un nombre de
+descarga genérico, desconectar el botón del Archivo y mostrar la ruta entera en
+la etiqueta.
+
+---
+
+### 53. El Escáner no contaba los duplicados, y los mutadores sin ejecutar parecían verdes
+
+**MEDIDO el 2026-11-26.** `PanelStats` de `Scan.tsx` mostraba Archivos, Con ticket,
+Con error y Sin ticket. Un duplicado no aparecía por ningún lado: el feed de la
+corrida sí trae `duplicados`, pero ese número es por corrida y se pierde al cerrar
+el panel.
+
+`GET /scan/stats` ya tenía la verdad en `por_estado[DUPLICADO]`; solo faltaba
+exponerla. Se agrega `archivos_duplicados` al schema y al panel con **la misma
+consulta**, no con un contador propio: dos cuentas distintas del mismo hecho se
+desincronizan. Un duplicado no es un `OMITIDO` cualquiera —la acción del feed lo
+disfraza—, por eso se cuenta por `status` y no por la acción.
+
+**Los verificadores que no corren también son deuda.** La línea base de los 22
+mutadores tenía dos rojos que no eran defensas rotas sino verificadores
+desactualizados: `auth` tenía 3 mutaciones supervivientes porque la puerta se
+movió a la lista compartida `PROTEGIDOS`, y `capture` tenía 5 patrones
+`NO PROBADA` porque el dia provisional paso a `fecha_ticket`/`fecha_provisional`
+y el diagnóstico de IA se reescribió. Un patrón obsoleto se contaba como verde:
+peor que un test rojo, porque nadie va a mirarlo.
+
+`scripts/verificar_todas_las_mutaciones.py` descubre los 22 por glob, los corre
+en secuencial (cada uno escribe el archivo original y lo restaura) y falla tanto
+por código de salida como por marcas de "no se aplicó". `make verificar-defensas`
+y `.github/workflows/defensas.yml` son la misma puerta. Añadir un mutador nuevo
+entra en la corrida sin tocar la lista.
 
 ---
 

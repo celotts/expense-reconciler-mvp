@@ -561,6 +561,11 @@ async def _estadisticas(db: AsyncSession) -> ScanStatsResponse:
         por_motor=por_motor,
         intentos_totales=int(intentos or 0),
         archivos_con_error=por_estado.get(ScanStatus.ERROR.value, 0),
+        # Los duplicados se cuentan desde `scan_files.status`, no desde la
+        # accion del feed: un OMITIDO por falta de empresa tambien sale con
+        # `accion="OMITIDO"` y no es una copia. `por_estado` es la misma verdad
+        # que ya usa la pantalla, asi que aqui no se inventa una segunda cuenta.
+        archivos_duplicados=por_estado.get(ScanStatus.DUPLICADO.value, 0),
         archivos_desactualizados=int(desactualizados),
         tickets_vinculados=int(con_ticket),
         archivos_sin_ticket=total - int(con_ticket),

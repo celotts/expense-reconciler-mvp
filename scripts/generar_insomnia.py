@@ -182,6 +182,7 @@ CARPETAS: list[tuple[str, str]] = [
     ("/sistema", "Sistema"),
     ("/caja-chica", "Caja chica"),
     ("/duplicados", "Duplicados"),
+    ("/tipos-gasto", "Tipos de gasto"),
 ]
 
 # El orden de ESTA lista es el orden de las carpetas, y el de las peticiones dentro de
@@ -407,6 +408,21 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("GET", "/caja-chica/{caja_id}/conciliacion-bancaria"): "cc10. Conciliar caja contra el banco (solo lectura)",
     ("POST", "/duplicados/buscar"): "d1. Buscar duplicado por huella fiscal ANTES de contar el gasto",
     ("GET", "/duplicados/resumen"): "d2. Resumen de duplicados (total sin contar dos veces)",
+    # El catalogo de cuentas va ANTES de clasificar un ticket: asignar una cuenta
+    # que no existe da 422, y la carpeta no debe invitar a hacerlo al reves. La
+    # siembra es POST porque es una escritura, aunque sea idempotente; un GET
+    # permitiria que un `viewer` escribiera el catalogo solo con mirar.
+    ("POST", "/tipos-gasto/sembrar"): "g1. Sembrar cuentas basicas (POST: es una escritura idempotente)",
+    ("GET", "/tipos-gasto"): "g2. Listar cuentas de la empresa activa",
+    ("POST", "/tipos-gasto"): "g3. Crear una cuenta",
+    ("PATCH", "/tipos-gasto/{tipo_id}"): "g4. Corregir o dar de baja una cuenta (activo=false)",
+    ("PUT", "/tipos-gasto/tickets/cuenta"): "g5. Clasificar la seleccion de una vez (avisa si no clasifico todo)",
+    ("PUT", "/tipos-gasto/tickets/{ticket_id}/cuenta"): "g5b. Asignar cuenta a un ticket (escribe id y texto juntos)",
+    ("PUT", "/tipos-gasto/productos/{producto_id}/cuenta"): "g6. Cuenta por omision de un producto (NO se hereda al gasto)",
+    ("GET", "/tipos-gasto/autorizacion"): "g7. Conteo de autorizaciones",
+    ("GET", "/tipos-gasto/autorizacion/pendientes"): "g8. Cola de autorizacion (datos planos, sin raw_text)",
+    ("POST", "/tipos-gasto/tickets/{ticket_id}/autorizar"): "g9. Autorizar un gasto (firma del token; exige APROBAR)",
+    ("POST", "/tipos-gasto/tickets/{ticket_id}/rechazar"): "g10. Rechazar con motivo (exige APROBAR)",
 }
 
 # Los tres scripts que hacen que la coleccion se sustains sola.

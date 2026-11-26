@@ -985,6 +985,7 @@ class TestElSignoDelKardex:
             cantidad=Decimal("3"),
             actor="ana@empresa.mx",
             referencia_tipo="AJUSTE",
+            descripcion_origen="conteo fisico del 2026-11-25",
         )
         # Se conto de menos: el ajuste suma.
         await inv.registrar_movimiento(
@@ -995,6 +996,7 @@ class TestElSignoDelKardex:
             cantidad=Decimal("2"),
             actor="ana@empresa.mx",
             referencia_tipo="AJUSTE",
+            descripcion_origen="conteo fisico del 2026-11-25",
         )
         await db_session.commit()
 
@@ -1077,10 +1079,66 @@ class TestRegistrarMovimiento:
             cantidad=Decimal("4"),
             actor="ana@empresa.mx",
             referencia_tipo="VENTA",
+            descripcion_origen="nota de venta 41",
         )
         await db_session.commit()
 
         assert (await inv.stock_de(db_session, empresa.id))[producto.id] == Decimal("6")
+
+    async def test_una_salida_sin_fuente_no_se_registra(self, db_session):
+        """LA DEFENSA de §0.b. Sin folio no baja stock, aunque lo pida el token.
+
+        Antes `registrar_movimiento` ponia el nombre del producto como origen y
+        la fila parecia tener procedencia. Si quitas el guard, este test muere.
+        """
+        empresa, producto = await self._preparado(db_session, stock="10")
+
+        with pytest.raises(inv.ErrorDeInventario) as exc:
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("4"),
+                actor="ana@empresa.mx",
+                referencia_tipo="VENTA",
+            )
+        assert "fuente declarada" in str(exc.value)
+        await db_session.commit()
+        assert (await inv.stock_de(db_session, empresa.id))[producto.id] == Decimal("10")
+
+    async def test_espacios_no_son_una_fuente(self, db_session):
+        """Un texto en blanco no se vuelve evidencia al recortarlo."""
+        empresa, producto = await self._preparado(db_session, stock="10")
+
+        with pytest.raises(inv.ErrorDeInventario):
+            await inv.registrar_movimiento(
+                db_session,
+                company_id=empresa.id,
+                producto_id=producto.id,
+                tipo=TipoMovimiento.SALIDA,
+                cantidad=Decimal("1"),
+                actor="ana@empresa.mx",
+                referencia_tipo="VENTA",
+                descripcion_origen="   ",
+            )
+
+    async def test_el_nombre_del_producto_nunca_se_guarda_como_origen(self, db_session):
+        """La etiqueta del catalogo no puede hacerse pasar por la nota de venta."""
+        empresa, producto = await self._preparado(db_session, stock="10")
+
+        movimiento = await inv.registrar_movimiento(
+            db_session,
+            company_id=empresa.id,
+            producto_id=producto.id,
+            tipo=TipoMovimiento.SALIDA,
+            cantidad=Decimal("1"),
+            actor="ana@empresa.mx",
+            referencia_tipo="VENTA",
+            descripcion_origen="nota 993",
+        )
+        assert movimiento.descripcion_origen == "nota 993"
+        assert movimiento.descripcion_origen != producto.nombre
 
     async def test_una_entrada_sin_ajuste_no_se_puede_escribir(self, db_session):
         """LA DEFENSA. Si quitas el `if` de `registrar_movimiento`, este test muere.
@@ -1102,6 +1160,7 @@ class TestRegistrarMovimiento:
                 cantidad=Decimal("100"),
                 actor="ana@empresa.mx",
                 referencia_tipo="VENTA",
+                descripcion_origen="nota de venta 12",
             )
 
         assert "confirmar una compra" in str(exc.value)
@@ -1129,6 +1188,7 @@ class TestRegistrarMovimiento:
             cantidad=Decimal("7"),
             actor="ana@empresa.mx",
             referencia_tipo="AJUSTE",
+            descripcion_origen="conteo fisico del 2026-11-25",
         )
         await db_session.commit()
 
@@ -1153,6 +1213,7 @@ class TestRegistrarMovimiento:
                 cantidad=Decimal("10"),
                 actor="ana@empresa.mx",
                 referencia_tipo="VENTA",
+                descripcion_origen="nota de venta 12",
             )
 
         # El mensaje lleva los dos numeros: sin ellos no se puede decidir si se
@@ -1177,6 +1238,7 @@ class TestRegistrarMovimiento:
                 cantidad=Decimal("5"),
                 actor="ana@empresa.mx",
                 referencia_tipo="AJUSTE",
+                descripcion_origen="se conto de mas en el conteo",
             )
 
     async def test_una_cantidad_negativa_no_se_puede(self, db_session):
@@ -1192,6 +1254,7 @@ class TestRegistrarMovimiento:
                 cantidad=Decimal("-4"),
                 actor="ana@empresa.mx",
                 referencia_tipo="VENTA",
+                descripcion_origen="nota de venta 12",
             )
         assert "mayor que cero" in str(exc.value)
 
@@ -1208,6 +1271,7 @@ class TestRegistrarMovimiento:
                 cantidad=Decimal("1"),
                 actor="  ",
                 referencia_tipo="VENTA",
+                descripcion_origen="nota de venta 12",
             )
         assert "quien lo registre" in str(exc.value)
 
@@ -1226,6 +1290,7 @@ class TestRegistrarMovimiento:
                 cantidad=Decimal("1"),
                 actor="ana@empresa.mx",
                 referencia_tipo="VENTA",
+                descripcion_origen="nota de venta 12",
             )
         assert "otra empresa" in str(exc.value)
 

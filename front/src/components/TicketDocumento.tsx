@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ticketsApi, type Ticket } from '../services/api';
+import { nombreDelContentDisposition } from '../utils/documento';
 
 /**
  * El comprobante original, junto a los datos que el sistema leyo de el.
@@ -39,24 +40,6 @@ import { ticketsApi, type Ticket } from '../services/api';
  * "el sistema no esta funcionando", y quien lo ve deja de mirar los otros
  * mensajes de la pantalla.
  */
-/** El nombre del archivo de un `Content-Disposition`.
- *
- *  `"attachment; filename=\"IMG_4399.HEIC\""` -> `IMG_4399.HEIC`.
- *
- *  Se mira `filename*` primero, que es la forma con codificacion UTF-8 y la
- *  unica que sobrevive a un nombre con acentos: un `filename=` a secas llega en
- *  latin-1 y un comprobante de "Café Milano" se llamaria `Caf_.pdf`, que es
- *  justo el nombre que hace dudar de que el archivo sea el correcto. */
-function nombreDelContentDisposition(cd: string | null): string | null {
-  if (!cd) return null;
-  const Star = /filename\*\s*=\s*[^']*''([^;]+)/i.exec(cd);
-  if (Star) {
-    try { return decodeURIComponent(Star[1].trim()); } catch { /* mal codificado */ }
-  }
-  const simple = /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
-  return simple ? simple[1].trim() : null;
-}
-
 /** El veredicto de vida, con los mismos datos que el PDF que se descarga. */
 export function VerDocumento({ ticket, abiertoPorDefecto = false }: { ticket: Ticket; abiertoPorDefecto?: boolean }) {
   const [abierto, setAbierto] = useState(abiertoPorDefecto);

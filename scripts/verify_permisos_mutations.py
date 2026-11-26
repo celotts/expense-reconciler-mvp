@@ -102,7 +102,7 @@ MUTACIONES: list[tuple[str, str, str, str]] = [
     (
         "una base nueva nace sin la migracion de viewer",
         "db/init.sql",
-        "    ('0024_rol_viewer_y_permisos.sql')\n",
+        "    ('0024_rol_viewer_y_permisos.sql'),\n",
         "    ('0001_inicial.sql')\n",
     ),
 ]

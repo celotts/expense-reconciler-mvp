@@ -3780,7 +3780,7 @@
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
-      "name": "Sin /api/v1",
+      "name": "Tipos de gasto",
       "environment": {},
       "metaSortKey": -983,
       "collectionId": "col_api",
@@ -3795,6 +3795,323 @@
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
+      "name": "g1. Sembrar cuentas basicas (POST: es una escritura idempotente)",
+      "description": "Crea las cuentas basicas que falten. Idempotente.\n\nExiste porque el catalogo depende de la empresa y una migracion no puede\nsembrarlo (ver la nota de la migracion 0018). Para una empresa nueva se llama\nsola al crearla; este endpoint es el botón de la pantalla para las que ya\nexisten, y se puede volver a pulsar sin que rompa nada.\n\n**POST y no GET.** Si fuera GET la guardia global lo clasificaria como lectura\ny un `viewer` podria escribir el catalogo con solo mirar una pantalla. Una\nsiembra es una escritura, aunque sea idempotente y no borre nada.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/sembrar",
+      "metaSortKey": 107,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_108",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g2. Listar cuentas de la empresa activa",
+      "description": "Las cuentas de la empresa activa.\n\nNo se acepta `company_id` del cliente: `EmpresaActiva` lo resuelve contra las\nmembresias de la BD en esta misma peticion, y la guardia de `api_router`\nrechaza ademas cualquier `company_id` declarado que no concuerde. Aceptarlo\naqui seria escribir en la cuenta de otra.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "incluir_inactivos",
+          "value": "False",
+          "disabled": true,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto",
+      "metaSortKey": 108,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_109",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g3. Crear una cuenta",
+      "description": "Da de alta una cuenta.\n\nLa clave se normaliza a mayusculas en el servicio, no aqui: `Renta` y `renta`\nson la misma cuenta y si se guardaran distintas el cierre las contaria dos\nveces.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"clave\": \"texto\",\n  \"nombre\": \"texto\",\n  \"variable\": true\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto",
+      "metaSortKey": 109,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_110",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g4. Corregir o dar de baja una cuenta (activo=false)",
+      "description": "Edita una cuenta.\n\nEl `exclude_unset` lo aplica FastAPI antes de llegar al servicio, asi que\n`nombre=None` llego como \"no lo mandaste\" y no como \"ponlo en null\" (regla 22).",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"texto\",\n  \"variable\": false,\n  \"activo\": false\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/{{ tipo_id }}",
+      "metaSortKey": 110,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_111",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g5. Clasificar la seleccion de una vez (avisa si no clasifico todo)",
+      "description": "Clasifica la seleccion de la barra con una sola operacion.\n\nLa ruta literal va antes que `/tickets/{ticket_id}/cuenta` por la regla de\nque el primer match gana. No son del mismo largo, pero la convencion evita\nque un dia se anada `/tickets/{algo}` y la nueva ruta muera sin respuesta.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"ticket_ids\": [\n    \"{{ ticket_id }}\"\n  ],\n  \"tipo_gasto_id\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/cuenta",
+      "metaSortKey": 111,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_112",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g5b. Asignar cuenta a un ticket (escribe id y texto juntos)",
+      "description": "Le pone (o le quita) la cuenta a un gasto.\n\nMandar `tipo_gasto_id: null` lo deja SIN CLASIFICAR. Es una respuesta valida y\nno un error: significa \"todavia no lo se\", y es la unica forma de corregir\nuna cuenta mal puesta.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"tipo_gasto_id\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/cuenta",
+      "metaSortKey": 112,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_113",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g6. Cuenta por omision de un producto (NO se hereda al gasto)",
+      "description": "Le pone la cuenta por omision a un producto.\n\nNO copia nada a ningun gasto. Lo que se compre de ese producto puede ir a otra\ncuenta, y heredarla seria decidir por la persona en que se imputa un gasto.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"tipo_gasto_id\": \"texto\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/productos/{{ producto_id }}/cuenta",
+      "metaSortKey": 113,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_114",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g7. Conteo de autorizaciones",
+      "description": "Cuantos gastos hay de cada estado. Para la cabecera de la pantalla.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/autorizacion",
+      "metaSortKey": 114,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_115",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g8. Cola de autorizacion (datos planos, sin raw_text)",
+      "description": "La cola: los gastos que todavia nadie ha decidido.\n\nDevuelve datos planos y NO los `TicketResponse` completos, a proposito: esta\npantalla necesita commerce, monto, fecha y cuenta, y nada mas. Mandar el\n`raw_text` de 20 000 caracteres por cada pendiente es lo que hace que una\npantalla con 200 filas se sienta lenta.",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [
+        {
+          "name": "limite",
+          "value": "200",
+          "disabled": false,
+          "description": ""
+        }
+      ],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/autorizacion/pendientes",
+      "metaSortKey": 115,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_116",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g9. Autorizar un gasto (firma del token; exige APROBAR)",
+      "description": "Aprueba un gasto.\n\n## POR QUE EL CUERPO ESTA VACIO Y SIN embargo SE ACEPTA\n\nPara que el cliente pueda mandar `{}` y no un 422, y para que quede\nexplicito en la firma que aqui no se acepta ninguna decision: ni quien\nautoriza (sale del token) ni el motivo (aprobar no lleva motivo). Un\nendpoint de \"haz esto\" con un cuerpo que no dice nada es raro, pero un\nendpoint donde el cuerpo PODRIA decir quien autorizo es peor.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/autorizar",
+      "metaSortKey": 116,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_117",
+      "parentId": "fld_17",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "g10. Rechazar con motivo (exige APROBAR)",
+      "description": "Rechaza un gasto. El motivo va en el cuerpo y es obligatorio.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"motivo\": \"El papel estaba borroso; subo la foto mejor\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/rechazar",
+      "metaSortKey": 117,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_18",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Sin /api/v1",
+      "environment": {},
+      "metaSortKey": -982,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_118",
+      "parentId": "fld_18",
+      "modified": 1759353600000,
+      "created": 1759353600000,
       "name": "Health",
       "description": "El chequeo de vida, y de qué la app depende para funcionar.\n\n## POR QUE CONSULTA LA BASE Y NO SOLO EL PROCESO\n\nMEDIDO en este repo antes de este cambio: con `expense_pgvector` parado,\neste endpoint respondía **200 `{\"status\": \"healthy\"}`**. El contenedor se\ndeclaraba `healthy` y `docker compose ps` decía que todo estaba en orden\nmientras **ninguna ruta que lea datos funcionaba**: cada una devolvía 500\npor conexión rechazada.\n\nEso es un healthcheck que no sabe nada, y el daño no es solo theoretical:\nes el que decide si `expense-front` puede levantarse\n(`depends_on: service_healthy`). Con esta mentira, el front levantaba\napuntando a una API que no podía contestar y el síntoma era \"el front está\narriba pero nada carga\".\n\n## POR QUE NO ES UNA DEFENSA CONTRA CUALQUIER FALLA\n\n`SELECT 1` prueba que hay una conexión y que Postgres responde. **No**\ncomprueba que el esquema esté cargado: una base a la que le falta `tickets`\npasa este chequeo y falla en cada endpoint. Para eso está el healthcheck del\ncontenedor de Postgres, que pregunta por `to_regclass('public.tickets')` y\nno por el socket — porque durante el init la conexión responde antes de que\nlas tablas existan. Son dos preguntas distintas y cada una la contesta su\nhealthcheck: esta dice \"hay base\", el otro dice \"la base tiene el esquema\".\n\n## POR SIGUE SIN PEDIR TOKEN\n\nUn monitor externo no tiene credenciales, y uno que las pide reporta caído un\nservicio que está arriba. Y la respuesta no dice nada del dominio: ni\ntickets, ni montos, ni cuentas. Solo el estado de la conexión.\n\nEl 503 lleva `Connection: close` porque, sin él, nginx y el navegador\npueden cachear el 503 y seguir mostrando \"caído\" después de que la base\nvolvía. El nombre del error de SQLAlchemy tampoco sale en la respuesta: en\nuna URL de Postgres el usuario y la contraseña viajan dentro, y un\nhealthcheck abierto a localhost no es el lugar donde se publican.",
       "method": "GET",
@@ -3805,7 +4122,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 107,
+      "metaSortKey": 118,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {
