@@ -33,7 +33,7 @@ class TestElTopeDeSubida:
             await leer_con_limite(f, TICKET_MAX_BYTES, "ticket.pdf")
         # La excepcion es un HTTPException 413; se comprueba en el endpoint,
         # aqui basta con que no devuelva bytes.
-        assert exc.value.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        assert exc.value.status_code == status.HTTP_413_CONTENT_TOO_LARGE
 
     async def test_un_csv_justo_dentro_del_tope_pasa(self):
         f = _file_de(CSV_MAX_BYTES, "extracto.csv")
@@ -44,7 +44,7 @@ class TestElTopeDeSubida:
         f = _file_de(CSV_MAX_BYTES + 1, "extracto.csv")
         with pytest.raises(Exception) as exc:
             await leer_con_limite(f, CSV_MAX_BYTES, "extracto.csv")
-        assert exc.value.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        assert exc.value.status_code == status.HTTP_413_CONTENT_TOO_LARGE
 
     async def test_el_mensaje_dice_cuanto_pesa_el_tope_en_mb(self):
         """El mensaje del error es legible, no un numero crudo."""
@@ -63,7 +63,7 @@ class TestElTopeDeSubida:
         files = {"file": ("gigante.pdf", gigante, "application/pdf")}
         data = {"file_type": "pdf"}
         r = await async_client.post("/api/v1/tickets/extract", files=files, data=data)
-        assert r.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, (
+        assert r.status_code == status.HTTP_413_CONTENT_TOO_LARGE, (
             f"se esperaba 413, llego {r.status_code}: {r.text}"
         )
 
@@ -89,7 +89,7 @@ class TestElTopeDeSubida:
             files=files,
             data=data,
         )
-        assert r.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, (
+        assert r.status_code == status.HTTP_413_CONTENT_TOO_LARGE, (
             f"se esperaba 413, llego {r.status_code}: {r.text}"
         )
 
@@ -106,7 +106,7 @@ class TestElTopeNoSePuedeSaltarse:
         f = _file_de(CSV_MAX_BYTES * 2, "dos_veces.csv")
         with pytest.raises(Exception) as exc:
             await leer_con_limite(f, CSV_MAX_BYTES, "dos_veces.csv")
-        assert exc.value.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        assert exc.value.status_code == status.HTTP_413_CONTENT_TOO_LARGE
 
     async def test_si_quito_el_tope_en_endpoint_tambien_falla(
         self, async_client: AsyncClient, test_company
@@ -119,7 +119,7 @@ class TestElTopeNoSePuedeSaltarse:
         files = {"file": ("gigante.pdf", gigante, "application/pdf")}
         data = {"file_type": "pdf"}
         r = await async_client.post("/api/v1/tickets/extract", files=files, data=data)
-        assert r.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, (
+        assert r.status_code == status.HTTP_413_CONTENT_TOO_LARGE, (
             "si el endpoint salta el lector, este pasa y el test falla"
         )
 

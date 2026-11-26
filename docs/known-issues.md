@@ -573,19 +573,49 @@ Lo que queda de esta entrada es la regla: **un módulo muerto no se arregla, se 
 dice que existe.** Un módulo que parece arreglado invita a montarlo, y montarlo abre la
 lectura arbitraria de directorios.
 
-### 4. Sin multi-tenancy: cualquier usuario autenticado toca cualquier empresa
-`get_current_user` no recibe `company_id` ni hay scoping por empresa. Con un token válido,
-`GET /tickets?company_id=<ajena>` lee y `PATCH`/`DELETE` escriben empresas ajenas.
-Es aceptable para "una máquina, un contador"; **no** lo es si esto se vuelve multiusuario.
-Decisión de producto pendiente, pero documéntala antes de que alguien la descubra tarde.
+### 4. Scoping por empresa — 🟡 PARCIALMENTE CERRADO (era BOLA/IDOR abierto)
 
-### 5. El export CONTPAQI inventa datos
-`export_service.py:310-327` manda literales fijos: `Serie=""`, `Folio=""`, `Moneda="MXN"`,
-`TipoCambio="1.0000"`, `MetodoPago="PUE"`, `TipoComprobante="I"`, `UsoCFDI="G03"`.
-Y **12 campos que sí se extraen se tiran** (`invoice_number`, `invoice_series`, `currency`,
-`exchange_rate`, `payment_method`, `items`, + `provider_address`, `receiver_*`, `due_date`,
-`tax_breakdown`, `payment_terms`). Un comprobante en USD sale con tipo de cambio 1.0000,
-**sin marca de error**. Para un contador, un tipo de cambio falso es peor que un campo vacío.
+`get_current_user` sigue sin recibir `company_id`: la pertenencia se comprueba en la BD
+en cada petición, no en el token. Antes, con un token válido,
+`GET /tickets?company_id=<ajena>` leía y `PATCH`/`DELETE` escribían empresas ajenas.
+Ya no:
+
+- **La guardia global** (`guardia_de_permisos` en `app/core/deps.py`) compara el
+  `company_id` declarado en query, JSON o form con la empresa activa. Decir otra
+  empresa da **409**, y una cabecera inválida da **400** antes de gastar scrypt.
+- **Los recursos se buscan dentro de la empresa** en `tickets` (`_ticket_en_empresa`),
+  `bank_transactions` (`_movimiento_en_empresa`) y `reconciliations`
+  (`_conciliacion_en_empresa`, `_mapeo_en_empresa`). Un id ajeno da **404**, no 403:
+  responder 403 confirmaría que el id existe. Las listas, colas y el reporte de
+  exactitud también filtran por la empresa activa; los conteos del tablero no
+  prestan evidencia de otro dueño.
+- Verificado con `tests/integration/test_alcance_por_empresa.py` (9 pruebas: 404
+  ajeno, 200 propio, listas separadas, lote mixto) y
+  `scripts/verify_alcance_por_empresa_mutations.py` (14 mutaciones, las 14 mueren).
+
+**Lo que queda, y no es cosmético:** las cuentas **sin membresías** devuelven
+`empresa_visible=None` y siguen sin filtrar, por compatibilidad con las bases
+anteriores a `0022` (es el backfill, no un permiso nuevo). Los routers que no
+piden `EmpresaVisible` —inventario, reportes, exportaciones— se apoyan en la
+guardia global en vez de en una búsqueda por recurso: el `company_id` declarado
+no puede ser ajeno, pero un id de producto o de periodo se resuelve fuera de esa
+comparación. Para un despliegue multiusuario real hace falta cerrar esos dos
+puntos, no relajar la guardia.
+
+### 5. El export CONTPAQI inventaba datos — ✅ CORREGIDO (ver §18)
+
+`export_service.py:355-383` ya no escribe literales en las ocho columnas que no
+tienen fuente: `Serie`, `Folio`, `Moneda`, `TipoCambio`, `MetodoPago`,
+`TipoComprobante`, `UsoCFDI` y `Cuenta` salen vacías. Antes un comprobante en USD
+llegaba con `TipoCambio=1.0000` sin marca de error, y el contador lo subía a
+CONTPAQI creyéndolo. La celda vacía dice «no lo sé»; el literal decía «lo sé» y
+mentía. Cuando el contador quiere esos valores, el camino es `AccountingMapping`,
+donde sí son una decisión suya.
+
+**Sigue abierta la otra mitad:** los campos que el modelo sí lee y se tiran
+(`invoice_number`, `invoice_series`, `currency`, `exchange_rate`,
+`payment_method`, `tax_breakdown`, `items`, etc.). Ya no se inventa un tipo de
+cambio para ocupar su lugar, pero el dato leído sigue sin llegar al archivo.
 
 ### 6. HEIC no soportado — ✅ CORREGIDO (el front sigue sin aceptarlo)
 `pillow-heif` ya está en `requirements.txt` y el opener registrado en
@@ -607,20 +637,34 @@ en vez de con un `Unknown Provider` de pantalla. Sigue faltando que el front ace
 "PDF ilegible y no renderizable", **sin decir que el problema es la contraseña**. El usuario
 no sabe qué hacer. `raw_text` y `validation_errors` tampoco lo mencionan.
 
-### 8. Un archivo por subida; sin carga masiva
-Los 3 endpoints de archivo declaran `file: UploadFile` **en singular** (`tickets.py:120,136,1031`).
-Los `SourceType.BULK` / `DIRECTORY` / `CAMERA` del enum no tienen endpoint. La idempotencia
-por hash ya está lista, pero nada la llama en lote.
+### 8. Un archivo por subida; sin carga masiva — ✅ CORREGIDO (ver §45)
+
+`POST /api/v1/expenses/upload-batch` acepta `files: list[UploadFile]` y
+`POST /api/v1/expenses/digitalizar-directorio` lee una carpeta del servidor
+(`app/routers/expenses.py:107` y `:176`). Los dos son adaptadores sobre
+`procesar_archivo`: no hay segundo lector. Ambos deduplican por SHA-256 y
+devuelven datos y veredicto juntos. `SourceType.BULK` distingue la carga
+explícita del escaneo de carpeta; `CAMERA` sigue sin endpoint propio, y no lo
+necesita: la cámara sube por `upload-batch`.
+
+La afirmación vieja («tres endpoints con `UploadFile` en singular») describía un
+router muerto; el vivo ya tiene las dos puertas, sus pruebas de integración y el
+verificador del front (`npm run verify:lote`).
 
 ### 9. `init.sql` y los modelos divergen (el test verde no lo ve) — 🟡 PARCIALMENTE CERRADO
 
-**La clase de fallo está cerrada; las dos divergencias historicas siguen.**
+**La clase de fallo —columna presente en un sitio y ausente en el otro— está
+cerrada.** Las divergencias de tipo que quedan son estas:
 
 - `bank_transactions.company_id`: nullable en `init.sql:126`, `NOT NULL` en
   `models/bank_transaction.py:24`. **✅ CERRADA.** Se añadió `NOT NULL` al DDL.
+- `accounting_mappings.company_id`: nullable en `init.sql:163`, `NOT NULL` en
+  `models/accounting_mapping.py:15`. **Sigue abierta.** El test de espejo solo
+  comprueba que la columna exista, no su nulabilidad; para cerrarla hace falta
+  una migración, no un cambio silencioso en el DDL de bases nuevas.
 - `users.email`: el modelo pide `unique+index` sobre la columna cruda
-  (`models/user.py:26`); prod usa índice **funcional** `lower(email)` (`init.sql:32`).
-  **Sigue abierta**, y es correcta: el índice funcional es el que vale, porque el
+  (`models/user.py:26`); prod usa índice **funcional** `lower(email)` (`init.sql:75`).
+  **Sigue abierta, y es correcta**: el índice funcional es el que vale, porque el
   login normaliza a minúsculas antes de buscar.
 
 **Lo que se encontró y se cerró:** `tickets.ieps_amount`, `compra_items.iva_linea`
@@ -1043,35 +1087,24 @@ es un motivo que hay que volver a aprender a mano cada vez que el gate crece.
 mejor ver `algo_nuevo_del_gate` que no ver nada y creer que no hubo error: un
 switch silencioso es un switch que miente cuando el backend crece.
 
-### 33. `npm run verify` falla en `verify_login` — 🟠 **ABIERTO, preexistente**
+### 33. `npm run verify` falla en `verify_login` — ✅ **CORREGIDO (opt-in)**
 
-`verify_login.ts` tiene una etapa `contraLaApiReal()` que hace un login real contra
-`http://localhost:8000`, y **falla siempre**:
+`verify_login.ts` tenía una etapa `contraLaApiReal()` que hacía un login real
+contra `http://localhost:8000` y fallaba siempre: no leía credenciales, y con
+`POST /auth/login` exigiendo scrypt y token, «un login real» solo puede ser con
+una cuenta de verdad. Como `npm run verify` encadenaba esa etapa, la señal roja
+era permanente y dejó de servir: nadie sabía si el front estaba bien o si solo
+faltaban credenciales.
 
-```
-El verificador revento:
-Error: Correo o contraseña incorrectos
-    at entrar (/tmp/verify-front/verify_login.js)
-```
-
-Comprobado con `git stash`: **revienta igual sin los cambios del feed**, o sea que
-no lo introdujo este trabajo. Dos cosas están mal y las dos son el mismo error de
-suposición:
-
-1. **El script necesita credenciales válidas** y no las pide ni las lee de
-   `VITE_*`. Con `POST /auth/login` exigiendo scrypt y token, "un login real" solo
-   puede ser con una cuenta de verdad.
-2. **No es un `npm test`.** Es un script que pegarle a una API local, y por eso
-   `npm run verify` no sirve como puerta en CI. Las etapas unitarias (las que no
-   tocan la red) sí valen y sí pasan.
-
-Mientras siga así, `npm run verify` no es una señal verde/roja fiable del front. Lo
-que sí lo es: `npm run build` (que corre `tsc`), `verificar_panel_progreso.tsx`
-aislado y los verificadores puntuales nuevos (`npm run verify:caja`,
-`npm run verify:fecha`, `npm run verify:cierre`). Arreglarlo es una pieza aparte: o el
-script recibe un email y una contraseña por variables de entorno y documenta que
-hace falta una cuenta de prueba, o la etapa de red se mueve a un test de integración
-con su propio token.
+Ahora la etapa de red es **opt-in**: corre solo si están definidos `LOGIN_EMAIL` y
+`LOGIN_PASSWORD`; si no, imprime
+`Contra la API real: OMITIDA (defina LOGIN_EMAIL y LOGIN_PASSWORD para correrla)`
+y sigue. Las etapas unitarias (las que no tocan la red) corren siempre.
+`npm run verify` es verde en local sin credenciales y las tres puertas siguen
+siendo `npm run build` (que corre `tsc`), `npm run lint` y los verificadores
+puntuales (`npm run verify:caja`, `npm run verify:fecha`, `npm run verify:cierre`).
+Con credenciales, la etapa de red vuelve a ejecutarse y puede volver a fallar por
+su cuenta: eso es una prueba de integración, no una puerta de compilación.
 
 ### 18. El escáner de carpeta: lo que todavía no está resuelto
 `feature/tickets-ocr-api` añadió el escáner y el registro por archivo. Estos cuatro puntos
@@ -1095,7 +1128,7 @@ son deuda real, no pendientes teoricos:
   con un contador y el campo `omitidos_por_tope` está en la respuesta, pero no hay
   un test que ponga 3 archivos, el tope en 2 y compruebe que queda 1.
 
-### 19. `easyocr` estaba soportado pero **nunca funcionó** — PARCIALMENTE CORREGIDO
+### 19. `easyocr` estaba soportado pero **nunca funcionó** — 🟡 PARCIALMENTE CORREGIDO
 
 La rama de easyocr **existía pero no podía ejecutarse.** `ocr.py:_leer_easyocr` pasaba una
 imagen de Pillow a `readtext`, y EasyOCR solo acepta ruta, bytes o array de numpy:
@@ -1115,10 +1148,10 @@ con entradas distintas y el resultado no habría dicho nada sobre el motor.
 
 **Lo que sigue pendiente, y es lo importante:**
 
-- **`easyocr` no está en `requirements.txt`.** Instalado a mano dentro del contenedor, no
-  persiste: `docker compose up --build` lo borra, y en otra máquina nunca estuvo. El
-  `pip` del volumen tampoco ayuda, porque el volumen es `.:/app` (código) y no
-  `site-packages`. El único hogar permanente de una dependencia es `requirements.txt`.
+- **`easyocr` ya está en `requirements.txt` — ✅ CORREGIDO.** La entrada explica
+  además por qué `torchvision` se instala en el `Dockerfile` y no desde PyPI: una
+  build con CUDA reinstallaría `torch` encima de la versión CPU. Lo que antes no
+  persistía tras `docker compose up --build` ahora queda declarado.
 - **No cabe en el contenedor con la memoria configurada.** Medido:
 
   | | RAM |
@@ -1126,12 +1159,14 @@ con entradas distintas y el resultado no habría dicho nada sobre el motor.
   | Cargar el lector de EasyOCR | **1235 MiB** |
   | Tras una lectura | **1615 MiB** |
   | El API ya usando | ~460 MiB |
-  | `mem_limit` de `expense-api` | **1709 MiB** |
+  | `mem_limit` de `expense-api` (medición original; hoy **1750m**) | **1709 MiB** |
 
   1615 + 460 > 1709: el proceso lo mata el OOM killer. **No es un problema de disco ni de
-  dinero, es `mem_limit` en `docker-compose.yml`.** El equipo tiene 18 GB y Docker tiene 8
-  asignados, de los que en reposo se usan ~520 MB. Hay aire de sobra: la solución es subir
-  el límite o dar más RAM a la VM de Docker, no comprar nada.
+  dinero, es `mem_limit` en `docker-compose.yml`.** El límite actual (1750m) sigue por
+  debajo de lo que el segundo motor necesita junto con la API; cambiarlo es una decisión
+  de despliegue, y no se hizo a ciegas. El equipo tiene 18 GB y Docker tiene 8
+  asignados, de los que en reposo se usan ~520 MB. Hay aire de sobra: la solución es
+  medir con el límite nuevo, no comprar nada.
 - **La confianza de EasyOCR no está normalizada.** EasyOCR devuelve la confianza por línea
   en `[0, 1]` pero hay versiones que la devuelven en `[0, 100]`, y el código la usa tal
   cual, así que `confianza_media` podría valer `87.0`. **No afecta al gate** (esa
@@ -1622,10 +1657,16 @@ salia a CONTPAQI indistinguible de una que el motor aprobo sola.
 `revisado_por` sale del token y `revisado_at` lo pone el router: aceptar el autor en
 el body seria firmarlo por otro.
 
-### 12. `VendorNormalizer` nunca se ejecuta
-Solo lo referencia el `pipeline.py` muerto. "Oxxo", "OXXO" y "OXXO EXPRESS" son **tres
-proveedores** distintos en el dashboard. El normalizador (`ai_client.py:246-350`) está escrito
-y listo; solo falta llamarlo desde la ruta viva.
+### 12. `VendorNormalizer` nunca se ejecutaba — ✅ CERRADO BORRÁNDOLO
+
+Solo lo referenciaba el `pipeline.py` muerto, y el módulo muerto se borró (§3).
+`VendorNormalizer` ya no está en `ai_client.py` y `rapidfuzz` salió de
+`requirements.txt` porque era su único consumidor. «Oxxo», «OXXO» y «OXXO
+EXPRESS» siguen siendo tres proveedores en el dashboard: la normalización no se
+implementó. Lo que se cerró es la deuda de tener código muerto que parecía una
+defensa; el problema de producto sigue abierto y, si se decide resolverlo, hay
+que hacerlo en la ruta viva (`capture.py`) con su test, no resucitando el módulo
+borrado.
 
 ### 13. ~~`analitica.py` / `hallazgos.py` no están expuestos~~ — ✅ La premisa estaba mal
 Son **servicios**, no routers. Que no aparezcan en `api_router.py` es lo correcto: se invocan
@@ -1633,8 +1674,8 @@ desde `app/api/dashboard.py:52` y `dashboard.py:368`, y ese router sí está mon
 landing del dashboard y el front los pinta (`Dashboard.tsx:585-604`).
 
 Lo que sí conviene verificar es lo contrario: que un módulo de `services/` tenga a alguien que lo
-llame. `VendorNormalizer` (§12) es el contraejemplo — instanciado en `ai_client.py:355` y con un
-único caller en el `pipeline.py` muerto.
+llame. `VendorNormalizer` (§12) era el contraejemplo: instanciado en `ai_client.py` y con un
+único caller en el `pipeline.py` muerto. Los dos se borraron; el patrón de revisión sigue.
 
 ### 14. Por la UI, ningún ticket pasa por el confidence gate — ✅ CORREGIDO
 **Este punto se cerró.** La UI ofrece los dos caminos, y se elige con un botón explícito:

@@ -38,7 +38,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 13 archivos de página (los nuevos son `CajaChica.tsx` y `Mantenimiento.tsx`) |
-| Tests | **1970**: **1969 passed, 1 skip**, 20 warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
+| Tests | **1984**: **1983 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
 Las rutas del front son hashes y las decide `renderPage` en `App.tsx`: `#/dashboard` ·
@@ -120,7 +120,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 1969 passed, 1 skip
+python3 -m pytest tests/ -q           # 1983 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 
@@ -132,8 +132,10 @@ cd front && npm run verify:mantenimiento # HTML de Mantenimiento y orden de head
 cd front && npm run verify:fecha      # la fecha no se corre un día
 ```
 
-> `npm run verify` **no** es puerta fiable mientras `verify_login` falle contra la
-> API real (`docs/known-issues.md` §33). Los verificadores puntuales sí lo son.
+> `npm run verify` **sí** es puerta fiable: la etapa contra la API real es opt-in
+> y solo corre con `LOGIN_EMAIL` y `LOGIN_PASSWORD` (`docs/known-issues.md` §33).
+> Sin credenciales imprime `Contra la API real: OMITIDA` y pasa. `npm run lint` y
+> `npm run build` siguen siendo las dos puertas de compilación.
 
 > **`--import-mode=importlib` en `pytest.ini`, y por qué está.** Hay dos archivos
 > llamados `test_reporte_cierre.py`, uno en `unit/` y otro en `integration/`: los
@@ -301,10 +303,12 @@ Cierre y Auditoría— sin botones de aprobar/ejecutar/descargar; `cajachica` se
 oculta por comodidad.
 
 Verificación: `tests/unit/test_permisos_por_accion.py` (38), `tests/integration/
-test_permisos_http.py` (7, con contraprueba de que `admin` sí entra), `npm run
+test_permisos_http.py` (12, con contraprueba de que `admin` sí entra), `npm run
 verify:menu`, `npm run verify:permisos` (HTML montado con contexto `viewer` real) y tres
 scripts de mutaciones: `verify_permisos_mutations.py` (12),
-`verify_permisos_http_mutations.py` (4) y `verify_permisos_front_mutations.py` (3).
+`verify_permisos_http_mutations.py` (5) y `verify_permisos_front_mutations.py` (3).
+El alcance por RECURSO se mide aparte: `tests/integration/test_alcance_por_empresa.py`
+(9) y `scripts/verify_alcance_por_empresa_mutations.py` (14).
 Si al desplegar aparece un 500 con `relation ... does not exist`, la base está sin migrar:
 `bash scripts/migrar.sh --estado` y `make migrar MIGRAR_SI=1`. No se arregla relajando la
 guardia, porque entonces una escritura se aceptaría sin saber qué rol la firma.
@@ -389,13 +393,14 @@ python3 scripts/verify_expenses_directorio_mutations.py # 10: ruta, allowlist, n
 python3 scripts/verify_ocr_mutations.py             # 16 mutaciones: binarización + modelo de línea
 python3 scripts/verify_fecha_mutations.py           # 8 mutaciones: las reglas de fecha del parser
 python3 scripts/verify_permisos_mutations.py        # 12: mapa y clasificacion por accion
-python3 scripts/verify_permisos_http_mutations.py   # 4: guardia HTTP, PDF, header, POST-consulta
+python3 scripts/verify_permisos_http_mutations.py   # 5: guardia HTTP, PDF, header, company_id declarado
 python3 scripts/verify_permisos_front_mutations.py  # 3: menu y botones del front
+python3 scripts/verify_alcance_por_empresa_mutations.py # 14: un id ajeno no cruza la empresa
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 ```
 
-Y los verificadores del front, que **no** corren con `npm run verify` porque ese
-tiene una etapa que falla siempre (ver §33):
+Y los verificadores del front, que sí corren con `npm run verify` (la etapa de red
+es opt-in desde §33):
 
 ```bash
 cd front
@@ -2217,16 +2222,23 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 - **`analitica.py` y `hallazgos.py` son servicios, no routers.** No aparecer en
   `api_router.py` es lo correcto: se invocan desde `app/api/dashboard.py:52` y
   `dashboard.py:368`, y ese router sí está montado. Lo que sí conviene verificar es lo
-  contrario — que un módulo de `services/` tenga a alguien que lo llame. `VendorNormalizer`
-  es el contraejemplo: está instanciado en `ai_client.py:355` y su único caller es el
-  `pipeline.py` muerto.
+  contrario — que un módulo de `services/` tenga a alguien que lo llame.
+  `VendorNormalizer` era el contraejemplo (instanciado en `ai_client.py`, con un
+  único caller en el `pipeline.py` muerto): los dos se borraron junto con
+  `rapidfuzz`. No lo resucites para "arreglar" el dashboard de proveedores.
 
-- **No hay multi-tenancy.** `get_current_user` no recibe `company_id` ni hay scoping por empresa:
-  cualquier usuario autenticado lee y escribe empresas ajenas pasando un `company_id` arbitrario.
-  Es correcto para "una máquina, un contador" y **no** lo es para multiusuario. Por eso
-  cada servicio que toca datos de empresa compara el `company_id` **dentro del servicio**
-  (`asignar_producto`, `registrar_movimiento`, y el `PATCH` de producto): es la última
-  línea antes de que un dato de una acabe en el kardex de otra.
+- **No hay multi-tenancy en `get_current_user`, pero sí hay scoping por empresa.**
+  El token no lleva `company_id`: la pertenencia se lee de `usuarios_empresas` en cada
+  petición. La guardia global rechaza el `company_id` declarado que no es el activo
+  (409), y tickets, movimientos bancarios y conciliaciones buscan el id **dentro**
+  de la empresa (`_ticket_en_empresa`, `_movimiento_en_empresa`,
+  `_conciliacion_en_empresa`, `_mapeo_en_empresa`); un id ajeno da 404. Las listas,
+  colas y el reporte de exactitud filtran por la misma empresa. Lo que queda abierto
+  es la compatibilidad: una cuenta **sin membresías** ve todo (es el backfill de
+  `0022`, no un permiso nuevo), y los routers que no piden `EmpresaVisible`
+  —inventario, reportes, exportaciones— se apoyan en la guardia global en vez de
+  en una búsqueda por recurso. Para multiusuario real hay que cerrar esos dos
+  puntos, no relajar la guardia. Ver `docs/known-issues.md` §4.
 
 - **`/usuarios` sigue teniendo endpoints antiguos que no miran el rol por empresa.**
   `PATCH /usuarios/{id}` y `POST /usuarios/{id}/contrasena` comprometen a otra cuenta y
@@ -2259,8 +2271,11 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 - **`text` no está en el enum `SourceType`.** `file_type=text` funciona en la cascada pero al
   persistir cae al fallback y se guarda como `source_type="image"`.
 
-- **`VendorNormalizer` no se ejecuta.** Solo lo referencia el `pipeline.py` muerto.
-  "Oxxo", "OXXO" y "OXXO EXPRESS" son tres proveedores distintos en el dashboard.
+- **La normalización de proveedor no existe.** `VendorNormalizer` se borró con el
+  `pipeline.py` muerto y `rapidfuzz` salió de `requirements.txt`. «Oxxo», «OXXO» y
+  «OXXO EXPRESS» siguen siendo tres proveedores en el dashboard: si se decide
+  agruparlos, es trabajo nuevo en la ruta viva con su test, no resucitar código
+  muerto. Ver `docs/known-issues.md` §12.
 
 - **Se extraen 12 campos que se tiran.** `invoice_number`, `invoice_series`, `currency`,
   `exchange_rate`, `payment_method`, `items` + 6 más se piden al modelo, se parsean a `Decimal`

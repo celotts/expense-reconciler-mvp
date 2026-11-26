@@ -58,6 +58,12 @@ MUTACIONES: list[tuple[str, str, str, str]] = [
         '_RUTAS_DE_SOLO_LECTURA = frozenset({"/api/v1/duplicados/buscar"})',
         "_RUTAS_DE_SOLO_LECTURA = frozenset()",
     ),
+    (
+        "el company_id declarado vuelve a creerse sin comprobar",
+        "app/core/deps.py",
+        '    if declarada is not None and not request.url.path.startswith("/api/v1/usuarios"):',
+        "    if False:",
+    ),
 ]
 
 

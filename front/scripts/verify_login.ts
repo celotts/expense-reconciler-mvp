@@ -37,9 +37,15 @@
  *         --define:import.meta='{"env":{"VITE_API_URL":"http://localhost:8000/api/v1"}}' \
  *         && node /tmp/login.cjs
  *
- * Habla con la API real, no con una falsa: el 401 y el 429 salen con su status
- * exacto y su cabecera `Retry-After`, y un mock que los devuelve bien verifica
- * el codigo de quien los handlea, no los codigos de verdad.
+ * La etapa final habla con la API real, no con una falsa: el 401 y el 429 salen
+ * con su status exacto y su cabecera `Retry-After`, y un mock que los devuelve
+ * bien verifica el codigo de quien los handlea, no los codigos de verdad.
+ *
+ * Esa etapa es OPT-IN: se corre solo si `LOGIN_EMAIL` y `LOGIN_PASSWORD` estan
+ * definidos. Con credenciales inventadas por defecto, `npm run verify` fallaba
+ * siempre en `contraLaApiReal` y la señal dejaba de servir: un verificador que
+ * siempre esta rojo entrena a ignorarlo, y entonces tampoco avisa cuando el
+ * codigo que si se puede verificar se rompe.
  */
 
 import { createElement } from 'react';
@@ -52,8 +58,10 @@ import {
 } from '../src/services/sesion';
 
 const API = process.env.API_URL || 'http://localhost:8000/api/v1';
-const CORREO = process.env.LOGIN_EMAIL || 'prueba@test.mx';
-const CLAVE = process.env.LOGIN_PASSWORD || 'Prueba1234!';
+// Sin credenciales explicitas no hay cuenta contra la que entrar: se omite la
+// etapa de red, no se inventa una. Las demas etapas no dependen de la API.
+const CORREO = process.env.LOGIN_EMAIL;
+const CLAVE = process.env.LOGIN_PASSWORD;
 
 let fallos = 0;
 function check(desc: string, cond: boolean, detalle = '') {
@@ -187,6 +195,11 @@ check('un Error normal NO es SesionVencida', !esSesionVencida(new Error('x')));
 // del todo. Cambiar el formato solo por esto haria que este archivo se ejecutara
 // distinto a los demas; el `await` dentro de la funcion no.
 async function contraLaApiReal(): Promise<void> {
+  if (!CORREO || !CLAVE) {
+    console.log('\nContra la API real: OMITIDA (defina LOGIN_EMAIL y LOGIN_PASSWORD para correrla)');
+    return;
+  }
+
   console.log('\nContra la API real:');
 
   salir();

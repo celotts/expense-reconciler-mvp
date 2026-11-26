@@ -2,12 +2,12 @@ from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import EmpresaVisible, UsuarioActual
 from app.core.time import utcnow
 from app.models.accounting_mapping import AccountingMappingModel
 from app.models.bank_transaction import BankTransactionModel
@@ -35,6 +35,63 @@ from app.services.reconciliation_service import run_reconciliation
 router = APIRouter(tags=["Reconciliations"])
 
 
+def _con_s_relaciones(consulta):
+    """Las dos relaciones que necesita `ReconciliationResponse` para serializar."""
+    return consulta.options(
+        selectinload(ReconciliationModel.ticket),
+        selectinload(ReconciliationModel.bank_transaction),
+    )
+
+
+async def _conciliacion_en_empresa(
+    db: AsyncSession, reconciliation_id: UUID, empresa: UUID | None
+) -> ReconciliationModel:
+    """Una conciliacion por id, solo si toca la empresa activa.
+
+    La empresa de la fila no es una columna: se deriva del ticket O del
+    movimiento bancario. Un `404` y no un `403` para no confirmar que el id
+    ajeno existe. Sin membresias (`empresa is None`) se conserva el contrato
+    anterior, igual que en tickets y banco.
+    """
+    consulta = _con_s_relaciones(
+        select(ReconciliationModel)
+        .outerjoin(ReconciliationModel.ticket)
+        .outerjoin(ReconciliationModel.bank_transaction)
+    ).where(ReconciliationModel.id == reconciliation_id)
+    if empresa is not None:
+        consulta = consulta.where(
+            or_(
+                TicketModel.company_id == empresa,
+                BankTransactionModel.company_id == empresa,
+            )
+        )
+    conciliacion = (await db.execute(consulta)).scalar_one_or_none()
+    if conciliacion is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La conciliación no existe",
+        )
+    return conciliacion
+
+
+async def _mapeo_en_empresa(
+    db: AsyncSession, mapping_id: UUID, empresa: UUID | None
+) -> AccountingMappingModel:
+    """Un mapeo contable por id, solo si es de la empresa activa."""
+    consulta = select(AccountingMappingModel).where(
+        AccountingMappingModel.id == mapping_id
+    )
+    if empresa is not None:
+        consulta = consulta.where(AccountingMappingModel.company_id == empresa)
+    mapeo = (await db.execute(consulta)).scalar_one_or_none()
+    if mapeo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No existe el mapeo contable",
+        )
+    return mapeo
+
+
 @router.post("/run", response_model=ReconciliationRunResponse)
 async def run_reconciliation_engine(
     request: ReconciliationRunRequest,
@@ -46,20 +103,37 @@ async def run_reconciliation_engine(
 
 @router.get("/", response_model=list[ReconciliationResponse])
 async def list_reconciliations(
+    empresa: EmpresaVisible,
     company_id: UUID | None = None,
     match_status: str | None = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ) -> list[ReconciliationModel]:
-    """List reconciliations with optional filters."""
+    """List reconciliations with optional filters.
+
+    Con membresia la empresa activa manda; sin ella se respeta el filtro antiguo.
+    """
+    company_id = empresa or company_id
     query = select(ReconciliationModel).options(
         selectinload(ReconciliationModel.ticket),
         selectinload(ReconciliationModel.bank_transaction)
     )
-    
+
     if company_id:
-        query = query.join(TicketModel).where(TicketModel.company_id == company_id)
+        # La empresa de una conciliacion se deriva del ticket O del movimiento:
+        # exigir el ticket la dejaria fuera de su propia lista cuando alguien
+        # emparejo solo un cargo bancario. `or_` con dos `outerjoin` la mantiene.
+        query = (
+            query.outerjoin(ReconciliationModel.ticket)
+            .outerjoin(ReconciliationModel.bank_transaction)
+            .where(
+                or_(
+                    TicketModel.company_id == company_id,
+                    BankTransactionModel.company_id == company_id,
+                )
+            )
+        )
     if match_status:
         query = query.where(ReconciliationModel.match_status == match_status)
     
@@ -72,14 +146,18 @@ async def list_reconciliations(
 
 @router.post("/", response_model=ReconciliationResponse, status_code=status.HTTP_201_CREATED)
 async def create_reconciliation(
+    empresa: EmpresaVisible,
     reconciliation_in: ReconciliationCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ReconciliationModel:
     """Create a manual reconciliation link."""
     if reconciliation_in.ticket_id:
-        ticket_result = await db.execute(
-            select(TicketModel).where(TicketModel.id == reconciliation_in.ticket_id)
+        consulta = select(TicketModel).where(
+            TicketModel.id == reconciliation_in.ticket_id
         )
+        if empresa is not None:
+            consulta = consulta.where(TicketModel.company_id == empresa)
+        ticket_result = await db.execute(consulta)
         if not ticket_result.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -87,9 +165,12 @@ async def create_reconciliation(
             )
     
     if reconciliation_in.bank_transaction_id:
-        bank_result = await db.execute(
-            select(BankTransactionModel).where(BankTransactionModel.id == reconciliation_in.bank_transaction_id)
+        consulta = select(BankTransactionModel).where(
+            BankTransactionModel.id == reconciliation_in.bank_transaction_id
         )
+        if empresa is not None:
+            consulta = consulta.where(BankTransactionModel.company_id == empresa)
+        bank_result = await db.execute(consulta)
         bank_tx = bank_result.scalar_one_or_none()
         if not bank_tx:
             raise HTTPException(
@@ -122,19 +203,14 @@ async def create_reconciliation(
 
 @router.delete("/{reconciliation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_reconciliation(
+    empresa: EmpresaVisible,
     reconciliation_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a reconciliation and mark bank transaction as unreconciled."""
-    result = await db.execute(
-        select(ReconciliationModel).where(ReconciliationModel.id == reconciliation_id)
+    reconciliation = await _conciliacion_en_empresa(
+        db, reconciliation_id, empresa
     )
-    reconciliation = result.scalar_one_or_none()
-    if not reconciliation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La conciliación no existe"
-        )
 
     # Check if bank_transaction_id exists and retrieve the associated transaction
     # Using isinstance() to avoid "Invalid conditional operand" warning from Pylance/SQLAlchemy
@@ -225,9 +301,12 @@ async def create_accounting_mapping(
 
 @router.get("/mappings", response_model=list[AccountingMappingResponse])
 async def list_accounting_mappings(
-    company_id: UUID | None = None, db: AsyncSession = Depends(get_db)
+    empresa: EmpresaVisible,
+    company_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
 ) -> list[AccountingMappingModel]:
     """List accounting mappings."""
+    company_id = empresa or company_id
     query = select(AccountingMappingModel)
     if company_id:
         query = query.where(AccountingMappingModel.company_id == company_id)
@@ -237,22 +316,17 @@ async def list_accounting_mappings(
 
 @router.get("/mappings/{mapping_id}", response_model=AccountingMappingResponse)
 async def get_accounting_mapping(
+    empresa: EmpresaVisible,
     mapping_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> AccountingMappingModel:
     """Get an accounting mapping by ID."""
-    result = await db.execute(select(AccountingMappingModel).where(AccountingMappingModel.id == mapping_id))
-    mapping = result.scalar_one_or_none()
-    if not mapping:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No existe el mapeo contable"
-        )
-    return mapping
+    return await _mapeo_en_empresa(db, mapping_id, empresa)
 
 
 @router.patch("/mappings/{mapping_id}", response_model=AccountingMappingResponse)
 async def update_accounting_mapping(
+    empresa: EmpresaVisible,
     mapping_id: UUID,
     mapping_in: AccountingMappingUpdate,
     db: AsyncSession = Depends(get_db)
@@ -263,18 +337,12 @@ async def update_accounting_mapping(
     `software_name` borraria `column_mappings`, que es el cuerpo del mapeo. El
     200 llegaria igual y el export CONTPAQI dejaria de encontrar las columnas.
     """
-    result = await db.execute(select(AccountingMappingModel).where(AccountingMappingModel.id == mapping_id))
-    mapping = result.scalar_one_or_none()
-    if not mapping:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No existe el mapeo contable"
-        )
+    mapping = await _mapeo_en_empresa(db, mapping_id, empresa)
 
     cambios = mapping_in.model_dump(exclude_unset=True)
     if not cambios:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="No mandaste ningún campo que se pueda cambiar",
         )
 
@@ -287,8 +355,9 @@ async def update_accounting_mapping(
 
 @router.delete("/mappings/{mapping_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_accounting_mapping(
+    empresa: EmpresaVisible,
     mapping_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Borra un mapeo.
 
@@ -303,13 +372,7 @@ async def delete_accounting_mapping(
     movimientos y las conciliaciones no lo referencian. Por eso esto no toca el
     historico contable y por eso es seguro.
     """
-    result = await db.execute(select(AccountingMappingModel).where(AccountingMappingModel.id == mapping_id))
-    mapping = result.scalar_one_or_none()
-    if not mapping:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No existe el mapeo contable"
-        )
+    mapping = await _mapeo_en_empresa(db, mapping_id, empresa)
     await db.delete(mapping)
     await db.commit()
 
@@ -320,6 +383,7 @@ async def delete_accounting_mapping(
     summary="Corrige a mano el veredicto que puso el motor",
 )
 async def update_reconciliation(
+    empresa: EmpresaVisible,
     reconciliation_id: UUID,
     reconciliacion_in: ReconciliationUpdate,
     usuario: UsuarioActual,
@@ -355,19 +419,9 @@ async def update_reconciliation(
     esta conciliado, que es la contradiccion que `delete_reconciliation` si
     resuelve.
     """
-    result = await db.execute(
-        select(ReconciliationModel)
-        .options(
-            selectinload(ReconciliationModel.ticket),
-            selectinload(ReconciliationModel.bank_transaction),
-        )
-        .where(ReconciliationModel.id == reconciliation_id)
+    conciliacion = await _conciliacion_en_empresa(
+        db, reconciliation_id, empresa
     )
-    conciliacion = result.scalar_one_or_none()
-    if not conciliacion:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="La conciliación no existe"
-        )
 
     # Idempotente a proposito: si el estado ya era ese, no se lanza un 409. Un
     # cliente que reintenta tras un timeout no debe recibir un error por algo que
@@ -417,22 +471,9 @@ async def update_reconciliation(
 # Al anadir una ruta literal nueva, declarala ANTES de esta.
 @router.get("/{reconciliation_id}", response_model=ReconciliationResponse)
 async def get_reconciliation(
+    empresa: EmpresaVisible,
     reconciliation_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> ReconciliationModel:
     """Get a reconciliation by ID."""
-    result = await db.execute(
-        select(ReconciliationModel)
-        .options(
-            selectinload(ReconciliationModel.ticket),
-            selectinload(ReconciliationModel.bank_transaction)
-        )
-        .where(ReconciliationModel.id == reconciliation_id)
-    )
-    reconciliation = result.scalar_one_or_none()
-    if not reconciliation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La conciliación no existe"
-        )
-    return reconciliation
+    return await _conciliacion_en_empresa(db, reconciliation_id, empresa)

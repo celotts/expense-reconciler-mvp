@@ -1,4 +1,10 @@
 fastapi>=0.110.0
+# RFC 9110: `status.HTTP_422_UNPROCESSABLE_CONTENT` y
+# `status.HTTP_413_CONTENT_TOO_LARGE` solo existen desde Starlette 0.48. FastAPI
+# re-exporta `status` sin garantizar esa version, asi que el suelo se declara
+# aqui. Sin el, un reinstall con Starlette 0.47 revive los alias deprecados y
+# sus 20 warnings en cada corrida de tests.
+starlette>=0.48.0
 uvicorn[standard]>=0.28.0
 sqlalchemy[asyncio]>=2.0.28
 asyncpg>=0.29.0

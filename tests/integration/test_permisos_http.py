@@ -179,3 +179,104 @@ async def test_buscar_duplicados_por_post_es_consulta(
         },
     )
     assert respuesta.status_code == 200, respuesta.text
+
+
+@pytest.mark.asyncio
+async def test_una_lectura_no_puede_nombrar_otra_empresa(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_company: CompanyModel,
+    usuario_de_prueba: UserModel,
+) -> None:
+    """El GET salia de la guardia sin mirar membersias: `?company_id=B` pasaba.
+
+    No hace falta que la empresa B exista: la decision es de autoridad y se toma
+    antes de que el endpoint consulte la base.
+    """
+    await _miembro(db_session, test_company, usuario_de_prueba, RolEmpresa.VIEWER)
+    respuesta = await async_client.get(
+        "/api/v1/tickets/",
+        headers={"X-Company-ID": str(test_company.id)},
+        params={"company_id": str(uuid4())},
+    )
+    assert respuesta.status_code == 409, respuesta.text
+
+
+@pytest.mark.asyncio
+async def test_la_misma_empresa_en_la_lectura_si_pasa(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_company: CompanyModel,
+    usuario_de_prueba: UserModel,
+) -> None:
+    """Contraprueba: el 409 anterior no puede venir de la guardia de rol."""
+    await _miembro(db_session, test_company, usuario_de_prueba, RolEmpresa.VIEWER)
+    respuesta = await async_client.get(
+        "/api/v1/tickets/",
+        headers={"X-Company-ID": str(test_company.id)},
+        params={"company_id": str(test_company.id)},
+    )
+    assert respuesta.status_code == 200, respuesta.text
+
+
+@pytest.mark.asyncio
+async def test_una_escritura_no_puede_nombrar_otra_empresa(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_company: CompanyModel,
+    usuario_de_prueba: UserModel,
+) -> None:
+    """Antes el guardia miraba el rol y el endpoint creia el `company_id`."""
+    await _miembro(db_session, test_company, usuario_de_prueba, RolEmpresa.ADMIN)
+    respuesta = await async_client.post(
+        "/api/v1/tickets/",
+        headers={"X-Company-ID": str(test_company.id)},
+        json={
+            "company_id": str(uuid4()),
+            "provider_name": "Proveedor de prueba",
+            "provider_tax_id": "ABC010101ABC",
+            "total_amount": "100.00",
+            "subtotal": "100.00",
+            "tax_amount": "0.00",
+            "expense_date": "2026-10-01",
+        },
+    )
+    assert respuesta.status_code == 409, respuesta.text
+
+
+@pytest.mark.asyncio
+async def test_un_formulario_no_puede_cambiar_la_empresa(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_company: CompanyModel,
+    usuario_de_prueba: UserModel,
+) -> None:
+    """La subida por lote trae `company_id` como campo de formulario, no JSON."""
+    await _miembro(db_session, test_company, usuario_de_prueba, RolEmpresa.ADMIN)
+    respuesta = await async_client.post(
+        "/api/v1/expenses/upload-batch",
+        headers={"X-Company-ID": str(test_company.id)},
+        data={"company_id": str(uuid4())},
+        files={"files": ("ticket.pdf", b"%PDF-1.4\n%EOF\n", "application/pdf")},
+    )
+    assert respuesta.status_code == 409, respuesta.text
+
+
+@pytest.mark.asyncio
+async def test_sin_header_y_varias_empresas_no_se_adivina(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    test_company: CompanyModel,
+    usuario_de_prueba: UserModel,
+) -> None:
+    """Con dos membresias, elegir por el `company_id` del cliente es adivinar."""
+    await _miembro(db_session, test_company, usuario_de_prueba, RolEmpresa.ADMIN)
+    otra = CompanyModel(name="Otra empresa", tax_id=f"OTRA{uuid4().hex[:7].upper()}")
+    db_session.add(otra)
+    await db_session.commit()
+    await _miembro(db_session, otra, usuario_de_prueba, RolEmpresa.ADMIN)
+
+    respuesta = await async_client.get(
+        "/api/v1/tickets/", params={"company_id": str(otra.id)}
+    )
+    assert respuesta.status_code == 409, respuesta.text

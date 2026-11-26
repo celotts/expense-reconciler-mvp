@@ -129,6 +129,27 @@ UsuarioActual = Annotated[UserModel, Depends(get_current_user)]
 # por el orden de las filas.
 
 
+async def _membresias_del_usuario(
+    usuario: UserModel, db: Sesion
+) -> list[tuple[str, UUID]]:
+    """Las filas activas de `usuarios_empresas`, en una sola consulta."""
+    return list(
+        (
+            await db.execute(
+                select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id).where(
+                    UsuarioEmpresaModel.user_id == usuario.id,
+                    UsuarioEmpresaModel.activo.is_(True),
+                )
+            )
+        ).all()
+    )
+
+
+async def _companies_del_usuario(usuario: UserModel, db: Sesion) -> set[UUID]:
+    """Las empresas con membresia activa, leidas en esta misma peticion."""
+    return {company_id for _rol, company_id in await _membresias_del_usuario(usuario, db)}
+
+
 async def empresa_activa(
     usuario: UsuarioActual,
     db: Sesion,
@@ -141,16 +162,7 @@ async def empresa_activa(
     distintas: la primera no tiene arreglo del lado del cliente, la segunda se
     arregla enviando la cabecera.
     """
-    company_ids = set(
-        (
-            await db.execute(
-                select(UsuarioEmpresaModel.company_id).where(
-                    UsuarioEmpresaModel.user_id == usuario.id,
-                    UsuarioEmpresaModel.activo.is_(True),
-                )
-            )
-        ).scalars().all()
-    )
+    company_ids = await _companies_del_usuario(usuario, db)
 
     if not company_ids:
         raise HTTPException(
@@ -185,6 +197,54 @@ async def empresa_activa(
 
 
 EmpresaActiva = Annotated[UUID, Depends(empresa_activa)]
+
+
+async def empresa_visible(
+    request: Request,
+    usuario: UsuarioActual,
+    db: Sesion,
+) -> UUID | None:
+    """La empresa a la que este token puede ver datos, o `None` si es legacy.
+
+    `empresa_activa` Exige 403 a las cuentas sin membresia porque los routers de
+    caja no saben trabajar sin empresa. Los routers antiguos (tickets, banco,
+    conciliaciones) SI saben: antes de `0022` no habia membresias y forzarla
+    aqui dejaria sin pantalla a esas cuentas. Por eso `None` significa "no
+    filtre por empresa", y no "no tiene acceso": es compatibilidad, no permiso.
+
+    Con varias membresias y sin cabecera NO se adivina: se pide la eleccion,
+    igual que en `empresa_activa`. Filtrar por la primera fila seria una decision
+    de seguridad tomada por el orden de la base de datos.
+    """
+    company_ids = await _companies_del_usuario(usuario, db)
+    if not company_ids:
+        return None
+
+    cabecera = request.headers.get("X-Company-ID")
+    if cabecera is None:
+        if len(company_ids) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Elija la empresa activa con la cabecera X-Company-ID",
+            )
+        return next(iter(company_ids))
+
+    try:
+        elegida = UUID(cabecera)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Company-ID no es un UUID valido",
+        ) from exc
+    if elegida not in company_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta no tiene acceso a esa empresa",
+        )
+    return elegida
+
+
+EmpresaVisible = Annotated[UUID | None, Depends(empresa_visible)]
 
 
 async def rol_actual(
@@ -316,33 +376,64 @@ def _permiso_de_la_peticion(request: Request) -> Permiso | None:
     return _PERMISO_POR_METODO.get(metodo)
 
 
+async def _company_id_declarada(request: Request) -> UUID | None:
+    """La empresa que el cliente NOMBRA en query, formulario o JSON.
+
+    `None` significa que no la nombra, no que nombró una invalida: un UUID
+    mal escrito lo rechaza el schema del endpoint con su 422 de siempre. Leerla
+    aqui y no en cada endpoint es lo que hace que una ruta nueva no pueda
+    olvidarse de comprobarla.
+    """
+    valor = request.query_params.get("company_id")
+    tipo = request.headers.get("content-type", "").lower()
+
+    if valor is None and "json" in tipo:
+        try:
+            cuerpo = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if isinstance(cuerpo, dict):
+            valor = cuerpo.get("company_id")
+
+    if valor is None and ("form" in tipo or "urlencoded" in tipo):
+        # `request.form()` usa el cuerpo ya cacheado por Starlette, asi que el
+        # endpoint puede volver a pedirlo sin perder los archivos.
+        try:
+            valor = (await request.form()).get("company_id")
+        except Exception:
+            return None
+
+    if valor is None:
+        return None
+    try:
+        return UUID(str(valor))
+    except ValueError:
+        return None
+
+
 async def guardia_de_permisos(
     request: Request,
     usuario: UsuarioActual,
     db: Sesion,
 ) -> None:
-    """403 si el rol en la empresa activa no permite escribir o exportar.
+    """403 si el rol no permite la accion, 409 si el `company_id` no es el activo.
 
     Se instala en `api_router` para todos los routers protegidos. Si no hay
     membresias, NO bloquea: son cuentas anteriores a `0022` y quitarles el
     acceso por una migracion seria romper lo que ya funcionaba, igual que el
     backfill de administrador. Un rol leido de `perfil` o del JWT no cuenta.
-    """
-    permiso = _permiso_de_la_peticion(request)
-    if permiso is None:
-        return
 
-    filas = (
-        await db.execute(
-            select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id).where(
-                UsuarioEmpresaModel.user_id == usuario.id,
-                UsuarioEmpresaModel.activo.is_(True),
-            )
-        )
-    ).all()
+    La empresa se comprueba TAMBIEN en lecturas. Antes un GET salia antes de
+    mirar las membresias, asi que un token con acceso a la empresa A podia pedir
+    `?company_id=B` y la guardia no veia nada. La propiedad del recurso por id
+    sigue siendo competencia del servicio: aqui solo se puede juzgar lo que el
+    cliente declara.
+    """
+    filas = await _membresias_del_usuario(usuario, db)
     if not filas:
         return
 
+    company_ids = {company_id for _rol, company_id in filas}
     cabecera = request.headers.get("X-Company-ID")
     if cabecera:
         try:
@@ -355,16 +446,36 @@ async def guardia_de_permisos(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="X-Company-ID no es un UUID valido",
             ) from exc
-        # Un rol que no entendemos se descarta, no se convierte en admin ni
-        # revienta con ValueError en medio de la peticion.
-        roles = roles_validos(rol for rol, company_id in filas if company_id == elegida)
-        if not roles:
+        if elegida not in company_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="La cuenta no tiene acceso a esa empresa",
             )
+        # Un rol que no entendemos se descarta, no se convierte en admin ni
+        # revienta con ValueError en medio de la peticion.
+        roles = roles_validos(rol for rol, company_id in filas if company_id == elegida)
     else:
+        elegida = next(iter(company_ids)) if len(company_ids) == 1 else None
         roles = roles_validos(rol for rol, _ in filas)
+
+    declarada = await _company_id_declarada(request)
+    if declarada is not None and not request.url.path.startswith("/api/v1/usuarios"):
+        # `/usuarios` prohíbe `company_id` en el cuerpo con `extra="forbid"` y su
+        # contrato es 422; cambiarlo aqui por un 409 sería romper ese contrato.
+        if elegida is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Elija la empresa activa con la cabecera X-Company-ID",
+            )
+        if declarada != elegida:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El company_id no coincide con la empresa activa (X-Company-ID)",
+            )
+
+    permiso = _permiso_de_la_peticion(request)
+    if permiso is None:
+        return
 
     if not any(tiene_permiso(rol, permiso) for rol in roles):
         raise HTTPException(

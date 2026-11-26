@@ -58,7 +58,7 @@ def _como_error(exc: svc.ErrorDeTipoGasto) -> HTTPException:
     y lo que no existe es la cuenta que se pidio. 404 seria "no hay ruta", que
     tampoco. Y 409 es para un conflicto de estado, que aqui no hay todavia.
     """
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
 
 async def _a_response(db: AsyncSession, tipo: TipoGastoModel) -> TipoGastoResponse:

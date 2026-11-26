@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.subida import leer_csv_bancario
 from app.core.database import get_db
+from app.core.deps import EmpresaVisible
 from app.models.bank_transaction import BankTransactionModel
 from app.models.company import CompanyModel
 from app.schemas.bank_transaction import (
@@ -16,6 +17,24 @@ from app.schemas.bank_transaction import (
 from app.services.parser_service import BankTransactionRow, parse_bank_csv
 
 router = APIRouter(tags=["Bank Transactions"])
+
+
+async def _movimiento_en_empresa(
+    db: AsyncSession, transaction_id: UUID, empresa: UUID | None
+) -> BankTransactionModel:
+    """Un movimiento bancario por id, solo si es de la empresa activa."""
+    consulta = select(BankTransactionModel).where(
+        BankTransactionModel.id == transaction_id
+    )
+    if empresa is not None:
+        consulta = consulta.where(BankTransactionModel.company_id == empresa)
+    movimiento = (await db.execute(consulta)).scalar_one_or_none()
+    if movimiento is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El movimiento bancario no existe",
+        )
+    return movimiento
 
 
 @router.post("/", response_model=BankTransactionResponse, status_code=status.HTTP_201_CREATED)
@@ -168,12 +187,18 @@ async def import_bank_csv_and_create(
 
 @router.get("/", response_model=list[BankTransactionResponse])
 async def list_bank_transactions(
+    empresa: EmpresaVisible,
     company_id: UUID | None = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ) -> list[BankTransactionModel]:
-    """List bank transactions with optional company filter."""
+    """List bank transactions with optional company filter.
+
+    Con membresia, la empresa del token gana: un `?company_id` suelto no puede
+    ampliar la lista a otra empresa. Sin membresias se respeta el filtro antiguo.
+    """
+    company_id = empresa or company_id
     query = select(BankTransactionModel)
     if company_id:
         query = query.where(BankTransactionModel.company_id == company_id)
@@ -184,35 +209,24 @@ async def list_bank_transactions(
 
 @router.get("/{transaction_id}", response_model=BankTransactionResponse)
 async def get_bank_transaction(
+    empresa: EmpresaVisible,
     transaction_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> BankTransactionModel:
     """Get a bank transaction by ID."""
-    result = await db.execute(select(BankTransactionModel).where(BankTransactionModel.id == transaction_id))
-    transaction = result.scalar_one_or_none()
-    if not transaction:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="El movimiento bancario no existe"
-        )
-    return transaction
+    return await _movimiento_en_empresa(db, transaction_id, empresa)
 
 
 @router.patch("/{transaction_id}", response_model=BankTransactionResponse)
 async def update_bank_transaction(
+    empresa: EmpresaVisible,
     transaction_id: UUID,
     transaction_in: BankTransactionUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> BankTransactionModel:
     """Update a bank transaction."""
-    result = await db.execute(select(BankTransactionModel).where(BankTransactionModel.id == transaction_id))
-    transaction = result.scalar_one_or_none()
-    if not transaction:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="El movimiento bancario no existe"
-        )
-    
+    transaction = await _movimiento_en_empresa(db, transaction_id, empresa)
+
     update_data = transaction_in.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(transaction, field, value)
@@ -224,17 +238,12 @@ async def update_bank_transaction(
 
 @router.delete("/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_bank_transaction(
+    empresa: EmpresaVisible,
     transaction_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a bank transaction."""
-    result = await db.execute(select(BankTransactionModel).where(BankTransactionModel.id == transaction_id))
-    transaction = result.scalar_one_or_none()
-    if not transaction:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="El movimiento bancario no existe"
-        )
-    
+    transaction = await _movimiento_en_empresa(db, transaction_id, empresa)
+
     await db.delete(transaction)
     await db.commit()

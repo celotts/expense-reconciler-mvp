@@ -314,7 +314,7 @@ async def limpiar_base_de_datos(
     # --- Cerrojo 3: la frase ---
     if cuerpo.confirmar != FRASE_CONFIRMACION:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"La confirmacion no es la correcta. Para borrar hay que escribir "
                 f"exactamente {FRASE_CONFIRMACION}. No se borro nada."
@@ -777,7 +777,7 @@ async def listar_registro(
             valido = ScanStatus(estado)
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     f"{estado!r} no es un estado de escaneo. Validos: "
                     + ", ".join(s.value for s in ScanStatus)

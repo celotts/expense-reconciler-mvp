@@ -585,19 +585,31 @@ python3 scripts/verify_postgres_documentos.py  # bytes intactos, CASCADE, UNIQUE
 
 ### Lo que sigue faltando en la captura
 
-Lo que está pendiente y **no** está resuelto por lo de arriba:
+Lo que está pendiente y **no** está resuelto por lo de arriba (el detalle medido
+vive en `docs/known-issues.md`):
 
-- **HEIC/TIFF de iPhone.** `subida.py` justifica los 10 MB con fotos de
-  iPhone, pero PIL sin `pillow-heif` no abre un HEIC, y el front solo acepta
-  `.pdf,.png,.jpg,.jpeg`.
 - **PDF cifrado con contraseña**: cae a visión y sale como "ilegible", sin decir
   que el problema es la contraseña.
-- **Varios archivos por subida**: `file: UploadFile` es uno solo.
-- **Carga masiva.** `SourceType.BULK`/`DIRECTORY` existen en el enum y no hay
-  endpoint. La idempotencia por hash ya está, pero nada la llama en lote.
+- **La foto sigue siendo el techo.** Sobre 7 fotos rotuladas el total acierta
+  71.4%, la fecha 33.3% y el proveedor/RFC 0%. El OCR no es determinista entre
+  corridas: mide con `scripts/medir_precision_ocr.py`, no con `raw_text` guardado.
+- **La fecha impresa en formato estadounidense es ambigua.** `10/01/26` puede ser
+  10 de enero o 1 de octubre; dos lectores distintos la leyeron mal de forma
+  distinta. Arreglar el regex no la desambigua: hace falta evidencia del papel.
+- **`easyocr` no se puede usar con el límite de memoria actual.** Ya está en
+  `requirements.txt` y la conversión a numpy está corregida, pero el segundo
+  motor más la API no caben en `mem_limit`. Su confianza además no está
+  normalizada a `[0, 1]`; no afecta al gate, solo a un campo informativo.
 - **Campos del CFDI que se extraen y se tiran** (`invoice_number`,
-  `invoice_series`, `currency`, `exchange_rate`, `payment_method`, `items`): el
-  modelo los lee y el export de CONTPAQI los manda vacíos con un tipo de cambio
-  inventado (`export_service.py:321-325`).
-- **`VendorNormalizer` sin usar**: "Oxxo", "OXXO" y "OXXO EXPRESS" son tres
-  proveedores en la tabla, y el dashboard los cuenta por separado.
+  `invoice_series`, `currency`, `exchange_rate`, `payment_method`, `items`,
+  `tax_breakdown`). El export de CONTPAQI ya **no inventa** un tipo de cambio:
+  esas columnas salen vacías. Falta que el dato leído llegue al archivo.
+- **La normalización de proveedor no existe.** `VendorNormalizer` se borró junto
+  con el módulo muerto que lo llamaba; tres formas de escribir el mismo comercio
+  siguen siendo tres proveedores en el dashboard. Si se decide agruparlos, hay
+  que hacerlo en la ruta viva con su test, no resucitar código muerto.
+
+Ya resueltos y que antes figuraban aquí: HEIC (decodificado por bytes, con aviso
+honesto cuando no se puede), carga por lote y directorio
+(`/expenses/upload-batch` y `/expenses/digitalizar-directorio`) y el tipo de
+cambio inventado en CONTPAQI.

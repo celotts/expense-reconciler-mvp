@@ -597,7 +597,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "7. Listar Tickets  <- fija {{ ticket_id }}",
-      "description": "List tickets with optional company filter and review-state filter.\n\n`sin_categoria` y `con_categoria` son las dos caras de la misma pregunta, que\nes la que hace el tablero con la barra gris. Se ponen los tres filtros\nexcluyentes de forma explicita en vez de confiar en el orden en que llegan:\n`categoria` manda sobre los otros dos (es el mas especifico), y si vienen\n`sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto\nque cumpla las dos, y devolver vacio seria un fallo silencioso.",
+      "description": "List tickets with optional company filter and review-state filter.\n\n`sin_categoria` y `con_categoria` son las dos caras de la misma pregunta, que\nes la que hace el tablero con la barra gris. Se ponen los tres filtros\nexcluyentes de forma explicita en vez de confiar en el orden en que llegan:\n`categoria` manda sobre los otros dos (es el mas especifico), y si vienen\n`sin_categoria` y `con_categoria` a la vez se anulan, porque no hay conjunto\nque cumpla las dos, y devolver vacio seria un fallo silencioso.\n\nLa empresa activa manda sobre el filtro del cliente: si el token tiene\nmembresias, `empresa` no es None y ningun `company_id` suelto puede ampliar\nla lista. Si no las tiene (cuentas anteriores a `0022`), se respeta el filtro\nde siempre por compatibilidad.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -677,7 +677,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "8. Cola de revision (lo que el sistema NO pudo leer)",
-      "description": "Cola agrupada de tickets pendientes de revision.\n\nSin esto, los documentos que no se pudieron leer son invisibles: el usuario\nno tiene forma de saber que existen. Un error silencioso es peor que un\nerror visible porque nadie lo va a corregir.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets`     viene filtrado por `status` si se paso\n  - `por_estado`  y `total_open` son SIEMPRE globales\n\nAsi el badge del encabezado no salta de 40 a 3 al filtrar, y el usuario ve\nde entrada quantos hay de cada tipo. El filtro es para trabajar, no para\nperder de vista el tamano de la cola.",
+      "description": "Cola agrupada de tickets pendientes de revision.\n\nSin esto, los documentos que no se pudieron leer son invisibles: el usuario\nno tiene forma de saber que existen. Un error silencioso es peor que un\nerror visible porque nadie lo va a corregir.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets`     viene filtrado por `status` si se paso\n  - `por_estado`  y `total_open` son SIEMPRE globales\n\nAsi el badge del encabezado no salta de 40 a 3 al filtrar, y el usuario ve\nde entrada quantos hay de cada tipo. El filtro es para trabajar, no para\nperder de vista el tamano de la cola.\n\nLos conteos son globales DENTRO de la empresa activa: antes un token podia\npedir `?company_id=B` y ver la cola ajena. Con membresia, la empresa del\ntoken gana sobre el parametro del cliente.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -772,7 +772,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "9c. Exactitud por origen (medida, no prometida)",
-      "description": "Lo que la muestra sostiene sobre el objetivo de exactitud.\n\nEl reporte no devuelve un porcentaje. Devuelve cuantos se revisaron, cuantos\nacertaron, y el intervalo que esos datos sostienen. Es menos vistoso y es la\nunica forma de que el numero signifique algo: con 25 revisiones, \"96%\" tiene\nun intervalo de [80%, 99%], y publicar el 96% sin el 80% seria afirmar una\ncerteza que nadie midio.\n\nY nunca promedia entre metodos de lectura. Un ticket leido con regex y uno\nleido con un modelo se reportan por separado, porque mezclarlos sube el\npromedio con el metodo que casi no falla y esconde al que falla.",
+      "description": "Lo que la muestra sostiene sobre el objetivo de exactitud.\n\nEl reporte no devuelve un porcentaje. Devuelve cuantos se revisaron, cuantos\nacertaron, y el intervalo que esos datos sostienen. Es menos vistoso y es la\nunica forma de que el numero signifique algo: con 25 revisiones, \"96%\" tiene\nun intervalo de [80%, 99%], y publicar el 96% sin el 80% seria afirmar una\ncerteza que nadie midio.\n\nY nunca promedia entre metodos de lectura. Un ticket leido con regex y uno\nleido con un modelo se reportan por separado, porque mezclarlos sube el\npromedio con el metodo que casi no falla y esconde al que falla.\n\nLa evidencia es SOLO la de la empresa activa: un `?company_id` suelto no\npuede prestar la exactitud medida en otra empresa.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -803,7 +803,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "9. Muestreo del 5% (cuenta la exactitud)",
-      "description": "La muestra a revisar, y el conteo de lo ya verificado.\n\nLa lista se filtra SIEMPRE por un estado de la muestra, y por defecto es el\nPENDIENTE. Ese unico filtro hace las dos cosas:\n\n- Saca los tickets que NO estan en la muestra. El 95% que no fue elegido\n  tiene `spot_check_status` en NULL, y NULL no es igual a ningun estado, asi\n  que no puede colarse. Sin esto el endpoint devolvia los 10 000 tickets de\n  una empresa para que el revisor descartara a mano los que no tocan.\n\n- Saca lo ya revisado. Una cola de trabajo es trabajo: con 500 muestreados y\n  400 ya hechos, mezclar los dos deja la primera pagina con 20 cosas que\n  hacer entre 100 filas. Es el mismo criterio que usa la cola de revision,\n  y por la misma razon.\n\nAntes habia dos filtros, `IS NOT NULL` y el de estado. El primero resulto\nser redundante: quitarlo no cambia ninguna consulta, porque\n`status = 'PENDIENTE'` ya excluye los NULL. Se quito porque un filtro que\nno hace nada, con un comentario que afirma que es imprescindible, es peor\nque no tenerlo: el que lo lea creera que la garantia depende de ahi, y\ncambiara el otro sin avisar. La mutacion que borra el filtro de estado\n(`scripts/verify_spot_check_mutations.py`) es la que protege la garantia.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets` viene filtrado por estado\n  - `total_pendientes`, `total_revisados`, `aciertos` e `incorrectos` son\n    SIEMPRE globales\n\nAsi el encabezado no salta de 200 a 3 al filtrar, y se ve de entrada\ncuantos hay de cada clase. El filtro es para trabajar, no para perder de\nvista el tamano de la cola.",
+      "description": "La muestra a revisar, y el conteo de lo ya verificado.\n\nLa lista se filtra SIEMPRE por un estado de la muestra, y por defecto es el\nPENDIENTE. Ese unico filtro hace las dos cosas:\n\n- Saca los tickets que NO estan en la muestra. El 95% que no fue elegido\n  tiene `spot_check_status` en NULL, y NULL no es igual a ningun estado, asi\n  que no puede colarse. Sin esto el endpoint devolvia los 10 000 tickets de\n  una empresa para que el revisor descartara a mano los que no tocan.\n\n- Saca lo ya revisado. Una cola de trabajo es trabajo: con 500 muestreados y\n  400 ya hechos, mezclar los dos deja la primera pagina con 20 cosas que\n  hacer entre 100 filas. Es el mismo criterio que usa la cola de revision,\n  y por la misma razon.\n\nAntes habia dos filtros, `IS NOT NULL` y el de estado. El primero resulto\nser redundante: quitarlo no cambia ninguna consulta, porque\n`status = 'PENDIENTE'` ya excluye los NULL. Se quito porque un filtro que\nno hace nada, con un comentario que afirma que es imprescindible, es peor\nque no tenerlo: el que lo lea creera que la garantia depende de ahi, y\ncambiara el otro sin avisar. La mutacion que borra el filtro de estado\n(`scripts/verify_spot_check_mutations.py`) es la que protege la garantia.\n\nContrato de los conteos, para que la pantalla no sea ambigua:\n  - `tickets` viene filtrado por estado\n  - `total_pendientes`, `total_revisados`, `aciertos` e `incorrectos` son\n    SIEMPRE globales\n\nAsi el encabezado no salta de 200 a 3 al filtrar, y se ve de entrada\ncuantos hay de cada clase. El filtro es para trabajar, no para perder de\nvista el tamano de la cola.\n\nComo en la cola de revision, los conteos globales son globales DENTRO de la\nempresa activa: la muestra ajena no la ve quien opera aqui.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -2386,7 +2386,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Movimientos bancarios",
-      "description": "List bank transactions with optional company filter.",
+      "description": "List bank transactions with optional company filter.\n\nCon membresia, la empresa del token gana: un `?company_id` suelto no puede\nampliar la lista a otra empresa. Sin membresias se respeta el filtro antiguo.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -2719,7 +2719,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r1. Conciliaciones  <- fija {{ reconciliation_id }}",
-      "description": "List reconciliations with optional filters.",
+      "description": "List reconciliations with optional filters.\n\nCon membresia la empresa activa manda; sin ella se respeta el filtro antiguo.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
