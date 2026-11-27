@@ -85,14 +85,33 @@ export async function comprobarSesion(): Promise<Usuario | null> {
   }
 }
 
-/** Salir.
+/** Salir de verdad: el servidor revoca el token, el navegador lo borra.
  *
- *  Borra el token y ya. No hay logout en el servidor: el token es un bearer
- *  firmado, sin lista de revocacion, asi que "salir" aqui significa "dejar de
- *  mandarlo". Un logout de verdad (invalidar el token) exigiria guardar el `exp`
- *  de cada token emitido y mirarlo en cada peticion, que para una herramienta
- *  interna no compensa: el token dura lo que dura y `ACCESS_TOKEN_EXPIRE_MINUTES`
- *  esta puesto a 8 horas, una jornada. */
-export function salir(): void {
-  borrarToken();
+ *  Borrar solo el localStorage era un aviso al navegador, no un cierre de
+ *  sesion. Un token copiado o robado seguia sirviendo hasta `exp` aunque la
+ *  persona hubiera pulsado "Salir". El servidor ya escribe el `jti` en
+ *  `tokens_revocados`; aqui solo falta decirle cual token se cierra.
+ *
+ *  El token se borra SIEMPRE, incluso si el API cae o la red se corta: una
+ *  pantalla que se queda en "saliendo" porque el servidor no respondio es peor
+ *  que un logout que no pudo revocar. Y no se avisa de caducidad: un 401 en esta
+ *  llamada significa que el token ya estaba muerto, que es exactamente el
+ *  resultado que se buscaba, no una transaccion a medias.
+ *
+ *  Los tokens anteriores al `jti` no se pueden revocar; siguen valiendo hasta
+ *  `exp`. No se promete lo que el servidor no puede hacer. */
+export async function salir(): Promise<void> {
+  const token = leerToken();
+  try {
+    if (token && !estaVencido(token)) {
+      await fetchApi<void>('/auth/logout', {
+        method: 'POST',
+        sinAviso401: true,
+      });
+    }
+  } catch {
+    // La red, el API o el token: ninguno puede impedir que la interfaz se cierre.
+  } finally {
+    borrarToken();
+  }
 }

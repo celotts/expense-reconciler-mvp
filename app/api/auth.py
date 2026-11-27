@@ -50,6 +50,7 @@ from app.services.auditoria import (
     registrar_login_auditoria,
     registrar_logout_auditoria,
 )
+from app.services.revocacion import revocar_token_actual
 
 router = APIRouter()
 
@@ -215,14 +216,18 @@ async def login(datos: LoginRequest, request: Request, db: Sesion) -> TokenRespo
     summary="Cerrar sesion",
 )
 async def logout(usuario: UsuarioActual, request: Request, db: Sesion) -> None:
-    """Cierra la sesion y deja el rastro en auditoria.
+    """Cierra la sesion en el SERVIDOR y deja el rastro en auditoria.
 
-    El token NO se revoca en el servidor: no hay lista de revocacion ni `jti`
-    (ver el docstring del modulo y `app/core/security.py`), asi que un token
-    emitido sigue siendo valido hasta que caduca. Lo que hace este endpoint es
-    registrar el cierre y decirle al cliente que descarte el token: es el
-    cliente quien lo borra de donde lo guarde.
+    El `jti` sale de la peticion autenticada, no del cuerpo: se escribe en
+    `tokens_revocados` (append-only) y se borra la fila de actividad. El token
+    deja de servir en la SIGUIENTE peticion aunque el cliente no haya borrado
+    nada, que es lo que distingue un logout de un aviso al navegador.
+
+    Los tokens anteriores al `jti` no se pueden revocar: no hay valor que
+    escribir. Siguen valiendo hasta su `exp`, y esto lo dice aqui en vez de
+    prometer un cierre que no ocurre.
     """
+    await revocar_token_actual(request, db, usuario.id, "logout")
     await registrar_logout_auditoria(
         usuario_id=str(usuario.id),
         rol=usuario.perfil,

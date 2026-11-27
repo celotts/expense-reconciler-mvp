@@ -202,7 +202,7 @@ async function contraLaApiReal(): Promise<void> {
 
   console.log('\nContra la API real:');
 
-  salir();
+  await salir();
   check('tras salir no hay token', leerToken() === null);
 
   // Contrasena mala: el mensaje del servidor, no un "vuelve a entrar".
@@ -225,7 +225,7 @@ async function contraLaApiReal(): Promise<void> {
   }
 
   // Sin sesion, comprobarSesion responde null y no lanza.
-  salir();
+  await salir();
   const sinSesion = await comprobarSesion();
   check('sin token, comprobarSesion devuelve null', sinSesion === null, `devolvio: ${JSON.stringify(sinSesion)}`);
 
@@ -264,7 +264,7 @@ async function contraLaApiReal(): Promise<void> {
   const rSin = await fetch(`${API}/auth/me`);
   check('sin token, el mismo endpoint responde 401', rSin.status === 401, `HTTP ${rSin.status}`);
 
-  salir();
+  await salir();
 }
 
 // ---------------------------------------------------------------------------

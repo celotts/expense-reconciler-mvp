@@ -16,6 +16,7 @@ import pytest
 RAIZ = Path(__file__).resolve().parents[2]
 MIGRACION_REVOCACION = RAIZ / "db" / "migrations" / "0025_tokens_revocados.sql"
 MIGRACION_AUDITORIA = RAIZ / "db" / "migrations" / "0026_auditoria_company_id.sql"
+MIGRACION_SESIONES = RAIZ / "db" / "migrations" / "0028_sesiones_activas.sql"
 INIT_SQL = RAIZ / "db" / "init.sql"
 
 
@@ -129,9 +130,13 @@ class TestElRegistroDeMigraciones:
         for nombre in (
             "0025_tokens_revocados.sql",
             "0026_auditoria_company_id.sql",
+            "0028_sesiones_activas.sql",
         ):
             assert f"('{nombre}')" in sql
 
     def test_cada_migracion_registra_su_propio_nombre(self, revocacion_sql, auditoria_sql):
         assert "VALUES ('0025_tokens_revocados.sql')" in revocacion_sql
         assert "VALUES ('0026_auditoria_company_id.sql')" in auditoria_sql
+        sesiones = MIGRACION_SESIONES.read_text(encoding="utf-8")
+        assert "VALUES ('0028_sesiones_activas.sql')" in sesiones
+        assert "CREATE TABLE IF NOT EXISTS sesiones_activas (" in sesiones

@@ -27,13 +27,95 @@ class AIResponse:
 
 
 class OllamaVisionClient:
+    # La ruta viva (`ai_extractor.AIExtractor`) decide que modelos pedir segun
+    # este atributo. Sin el, caia al default `openai` y pedia `gpt-4o` a Ollama.
+    _provider = AIProvider.OLLAMA
+
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
-        model_name: str = "qwen2.5-vl:7b",
+        base_url: Optional[str] = None,
+        model_name: Optional[str] = None,
     ):
-        self.base_url = base_url
-        self.model_name = model_name
+        # La URL y el modelo vienen de la configuracion, no de un literal: el
+        # cliente module-level se crea al importar, dentro del contenedor Ollama
+        # esta en `http://ollama:11434` y `localhost` no es el proveedor.
+        self.base_url = (
+            base_url
+            or getattr(settings, "OLLAMA_BASE_URL", None)
+            or "http://localhost:11434"
+        )
+        self.model_name = (
+            model_name
+            or getattr(settings, "OLLAMA_VISION_MODEL", None)
+            or "qwen2.5-vl:7b"
+        )
+
+    async def chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 512,
+        response_format: Any = None,
+    ) -> AIResponse:
+        """Complecion usada por la cascada viva de captura.
+
+        `AIExtractor` llama a este metodo tanto para texto como para vision y
+        espera un `AIResponse` (`.content`, `.model`, `.provider`), no el dict
+        crudo que devuelve `extract_receipt_data`. Antes el metodo no existia:
+        con `AI_ENABLED=true` cada lectura que llegaba al modelo moria con
+        `AttributeError` antes de hacer una sola peticion.
+
+        El timeout es el configurado, no los 60 s del metodo heredado: una foto
+        de ticket tarda mas que eso en una maquina de 16 GB y un timeout corto
+        convertia la lentitud en un fallo de red.
+        """
+        target_model = model or self.model_name
+        url = f"{self.base_url.rstrip('/')}/api/chat"
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "keep_alive": getattr(settings, "OLLAMA_KEEP_ALIVE", "5m"),
+            },
+            "stream": False,
+        }
+        if response_format == "json" or (
+            isinstance(response_format, dict)
+            and response_format.get("type") == "json_object"
+        ):
+            payload["format"] = "json"
+
+        async with httpx.AsyncClient(timeout=getattr(settings, "OLLAMA_TIMEOUT", 600.0)) as client:
+            response: Any = None
+            try:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json() if response.content else {}
+                message = data.get("message") if isinstance(data, dict) else None
+                content = message.get("content", "") if isinstance(message, dict) else ""
+                return AIResponse(
+                    content=str(content),
+                    tokens_used=int(data.get("eval_count") or 0) if isinstance(data, dict) else 0,
+                    model=str(data.get("model") or target_model) if isinstance(data, dict) else target_model,
+                    provider=AIProvider.OLLAMA,
+                )
+            except httpx.HTTPStatusError as exc:
+                cuerpo = ""
+                for fuente in (response, getattr(exc, "response", None)):
+                    if fuente is not None and getattr(fuente, "text", None):
+                        cuerpo = str(fuente.text)
+                        break
+                logger.error(
+                    "Error HTTP del proveedor Ollama (%s) en %s: %s - cuerpo: %s",
+                    target_model,
+                    url,
+                    exc,
+                    cuerpo,
+                )
+                raise
 
     async def extract_receipt_data(self, image_base64: str) -> Dict[str, Any]:
         """

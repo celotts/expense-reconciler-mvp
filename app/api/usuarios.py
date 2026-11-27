@@ -62,6 +62,10 @@ from app.services.auditoria import (
     registrar_auditoria,
     registrar_update_auditoria,
 )
+from app.services.revocacion import (
+    revocar_sesiones_de_usuario,
+    revocar_token_actual,
+)
 from app.schemas.auth import (
     CambioContrasenaRequest,
     UsuarioCreate,
@@ -365,6 +369,12 @@ async def actualizar_cuenta(
         setattr(cuenta, campo, valor)
     await db.commit()
     await db.refresh(cuenta)
+    # `is_active=False` ya cierra la puerta en la SIGUIENTE peticion, porque
+    # `get_current_user` lee la fila cada vez. Ademas se revocan las sesiones
+    # conocidas para que la baja quede escrita en tokens_revocados, que es
+    # append-only y responde "quien cerro esto" sin depender del perfil.
+    if cambios.get("is_active") is False:
+        await revocar_sesiones_de_usuario(db, cuenta.id, "baja_cuenta")
     # Cubre el cambio de perfil y la baja (`is_active=False`): los dos son
     # el mismo hecho para la auditoria, que campos cambiaron y quien lo hizo.
     # Solo los campos que venian en el cuerpo (`exclude_unset`).
@@ -408,18 +418,18 @@ async def cambiar_contrasena(
     atacante con un token robado podria cambiar la contrasena de cualquiera, que
     es el takeover permanente que `CambioContrasenaRequest` documenta.
 
-    Y POR QUE NO SE INVALIDAN LOS TOKENS
-    ------------------------------------
+    Y QUE PASA CON LOS TOKENS
+    -------------------------
 
-    Porque no hay forma de hacerlo. `crear_token` firma con `SECRET_KEY` y sin un
-    `jti` ni una lista de revocacion, un token emitido antes del cambio sigue
-    siendo criptograficamente valido hasta que caduca (8 horas). `AGENTS.md` ya lo
-    dice de `SECRET_KEY`: "lo que NO hay es revocacion de tokens: uno robado vive
-    8 horas". Rotar la contrasena acorta la ventana a partir del siguiente login,
-    no de golpe, y decirlo aqui es mejor que prometer lo que no hace.
+    Se revocan las sesiones CONOCIDAS de la cuenta (`tokens_revocados`,
+    append-only), incluida la propia si es la cuenta de quien llama. Quien
+    rotó su clave tiene que volver a entrar: es incómodo, pero es lo único que
+    hace que "cambiar la contrasena" signifique algo para un token robado.
 
-    Cuando la cuenta es la propia, esto no importa: la sesion del que la rotó
-    sigue viva, que es lo comodo. Cuando es otra, es lo que hay.
+    Un token emitido pero nunca usado no tiene fila de actividad y no se puede
+    nombrar: sigue vivo hasta `exp`. No se inventa un `jti` para el: la base
+    no puede revocar lo que no conoce, y decirlo aqui evita prometer una
+    revocacion total que no existe.
     """
     cuenta = await _cuenta(db, usuario_id)
 
@@ -439,6 +449,11 @@ async def cambiar_contrasena(
     # para el login.
     cuenta.password_hash = hashear_contrasena(cuerpo.contrasena_nueva)  # type: ignore
     await db.commit()
+    await revocar_sesiones_de_usuario(db, cuenta.id, "cambio_contrasena")
+    if cuenta.id == actor.id:
+        # Si el override de tests no puso jti en `request.state`, esto no hace
+        # nada; en produccion cierra tambien la sesion que hizo el cambio.
+        await revocar_token_actual(request, db, actor.id, "cambio_contrasena")
     # Se audita QUE se roto la contrasena y quien lo hizo, nunca el valor:
     # ni la nueva, ni la actual, ni el hash entran en el rastro.
     await registrar_auditoria(
@@ -473,12 +488,15 @@ async def reset_contrasena_admin(
     bastaria para tomar permanentemente la cuenta de otro.
 
     La clave nueva no se guarda en texto, no se devuelve y nunca entra en la
-    auditoria. Los tokens ya emitidos siguen vivos hasta caducar: no hay `jti`
-    ni revocacion. Es una ventana que hay que decir, no disimular.
+    auditoria. Las sesiones conocidas de la cuenta quedan revocadas, con el
+    motivo `reset_administrativo` en `tokens_revocados`. Un token emitido pero
+    nunca usado no tiene `jti` conocido por la base y vive hasta `exp`: es la
+    ventana que queda, y se dice aqui en vez de disimularla.
     """
     cuenta = await _cuenta(db, usuario_id)
     cuenta.password_hash = hashear_contrasena(cuerpo.contrasena_nueva)  # type: ignore
     await db.commit()
+    await revocar_sesiones_de_usuario(db, cuenta.id, "reset_administrativo")
     await registrar_auditoria(
         accion="reset_contrasena_admin",
         modulo="usuarios",

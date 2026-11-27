@@ -146,6 +146,11 @@ comprobar('el reset pide la clave nueva y explica quien firma',
   htmlReset.includes('Resetear clave de luis@example.com')
     && htmlReset.includes('Contrasena nueva')
     && htmlReset.includes('No se necesita la clave de la otra cuenta'));
+const mantenimiento = leer('src/pages/Mantenimiento.tsx');
+comprobar('el reset no promete revocar tokens que el servidor no puede nombrar',
+  mantenimiento.includes('sesiones conocidas')
+    && mantenimiento.includes('tokens anteriores')
+    && !mantenimiento.includes('Los tokens ya emitidos siguen vivos'));
 
 // Se mide dentro de `fetchApi`: fuera de esa funcion hay menciones en
 // comentarios y en el guardado de la empresa que no deciden ninguna cabecera.

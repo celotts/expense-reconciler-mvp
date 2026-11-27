@@ -86,6 +86,11 @@ interface OpcionesPeticion extends RequestInit {
    *  Un campo en el cuerpo habria que declararlo en cada schema y acabaria en
    *  un log; aqui sale del mismo sitio que el token. */
   contrasenaActual?: string;
+  /** Esta peticion ES el cierre de sesion, asi que un 401 no es una caducidad
+   *  que haya que avisar: significa que el token ya no servia, que es justo lo
+   *  que se queria. Sin esto, pulsar "Salir" con un token viejo mostraria el
+   *  aviso de "no se guardo nada" de una transaccion que nadie intento. */
+  sinAviso401?: boolean;
 }
 
 /** La cabecera de autorizacion, o `null` si no hay token que mandar.
@@ -107,7 +112,7 @@ function cabeceraDeAutorizacion(): Record<string, string> {
  *  leeria como credenciales malas, que es la unica mentira que este flujo no
  *  debe contar. */
 export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = {}): Promise<T> {
-  const { sinToken, contrasenaActual, ...resto } = options;
+  const { sinToken, contrasenaActual, sinAviso401, ...resto } = options;
 
   // Un `FormData` NO lleva `Content-Type`. El navegador tiene que ponerlo
   // porque es el unico que sabe donde va el boundary que separa las partes del
@@ -134,7 +139,7 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
   // la peticion. Cae en el mismo aviso de caducidad que un 401 del servidor,
   // sin gap de ir y volver, y sobre todo sin que la transaccion caiga en un
   // estado a medio guardar. Modo guardar datos.
-  if (!sinToken) {
+  if (!sinToken && !sinAviso401) {
     const token = leerToken();
     if (estaVencido(token)) {
       void import('./sesion').then(m => m.notificarCaducidad(resto.method !== undefined && resto.method !== 'GET'));
@@ -147,7 +152,7 @@ export async function fetchApi<T>(endpoint: string, options: OpcionesPeticion = 
     headers: cabeceras,
   });
 
-  if (response.status === 401 && !sinToken) {
+  if (response.status === 401 && !sinToken && !sinAviso401) {
     // Se avisa a la puerta de sesion y ADEMAS se lanza, porque hacen falta las
     // dos cosas y para cosas distintas: el aviso saca el login, y el error le
     // dice a la pantalla que esta fallando que no fue un fallo suyo y que su

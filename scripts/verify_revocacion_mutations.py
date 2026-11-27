@@ -11,8 +11,9 @@ Cada defensa del esquema nuevo tiene que doler si se quita:
 - sin el registro en `schema_migrations`, una base ya migrada se salta el cambio.
 
 Corre `tests/unit/test_revocacion_ddl.py` contra el archivo mutado y lo restaura
-siempre, incluso si pytest explota. Esta es la mitad del verificador; la mitad
-HTTP (token revocado da 401 en todos los routers) se anade con la guardia.
+siempre, incluso si pytest explota. La mitad HTTP la cubre
+`verify_sesion_y_revocacion_mutations.py` y la del navegador
+`verify_sesion_front_mutations.py`.
 
 Uso:  PYTHONPATH=. python3 scripts/verify_revocacion_mutations.py
 Salida: 0 si toda mutacion muere, 1 si alguna sobrevive o quedo obsoleta.

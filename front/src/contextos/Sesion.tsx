@@ -94,8 +94,8 @@ export function SesionProvider({ children }: { children: ReactNode }) {
     setGrupo(u.grupo || 'operaciones');
   }, []);
 
-  const cerrarSesion = useCallback(() => {
-    salir();
+  const cerrarSesion = useCallback(async () => {
+    await salir();
     setUsuario(null);
     setAviso(null);
     setPerfil(null);
@@ -118,6 +118,6 @@ export function SesionProvider({ children }: { children: ReactNode }) {
 function borrarSiCaduca(): void {
   const token = leerToken();
   if (!token || estaVencido(token)) {
-    salir();
+    void salir();
   }
 }

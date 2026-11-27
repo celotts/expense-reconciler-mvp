@@ -553,3 +553,31 @@ class TestLasMigracionesSeAplicanAlArrancar:
             "contra una comilla simple o un punto y coma en el nombre: se pega "
             "al INSERT y seria DDL arbitrario"
         )
+
+    def test_el_seed_registra_cada_archivo_con_su_nombre_exacto(self):
+        """La base nueva nace con el libro de migraciones bien llevado.
+
+        MEDIDO el 2026-11-26: el seed tenia `0020_auditoria_segura` sin el
+        sufijo `.sql` y no tenia `0027_costo_del_kardex.sql`. Las dos migraciones
+        son idempotentes, asi que el arranque no reventaba: el servicio volvia
+        a aplicar 0020 y 0027 y anadia una fila que no corresponde a ningun
+        archivo. No era un fallo visible, era un registro que mentia sobre que
+        se aplico. Aqui se compara el nombre EXACTO, no el numero: recortar el
+        sufijo es lo que hacia que el bucle no encontrara la fila.
+        """
+        ini = (RAIZ / "db/init.sql").read_text(encoding="utf-8")
+        inicio = ini.index("INSERT INTO schema_migrations (nombre) VALUES")
+        fin = ini.index("ON CONFLICT (nombre) DO NOTHING;", inicio)
+        registradas = set(re.findall(r"\('([^']+)'\)", ini[inicio:fin]))
+        archivos = {p.name for p in (RAIZ / "db/migrations").glob("*.sql")}
+
+        assert not (archivos - registradas), (
+            "migraciones sin registrar en el init: "
+            + ", ".join(sorted(archivos - registradas))
+            + ". El servicio las aplicara de nuevo en cada base nueva"
+        )
+        assert not (registradas - archivos), (
+            "nombres registrados que no son archivos: "
+            + ", ".join(sorted(registradas - archivos))
+            + ". El libro dice que se aplico algo que no existe"
+        )

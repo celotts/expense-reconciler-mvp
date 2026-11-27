@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     SECRET_KEY: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 horas, una jornada de trabajo
 
+    # Inactividad: tiempo DESLIZANTE desde la ultima peticion autenticada.
+    # No es un refresh: el `exp` de 8 horas no se mueve nunca. Caducidad
+    # absoluta y inactividad son dos preguntas distintas y las dos se miden
+    # en el servidor; un temporizador del navegador no defiende nada porque
+    # quien tiene el token puede llamar al API sin pasar por la pantalla.
+    #
+    # 30 minutos cubre una tanda de trabajo y cierra la pestana olvidada.
+    # Las operaciones largas (un escaneo de fotos tarda minutos) no se cortan
+    # a mitad: la guardia mira la actividad AL EMPEZAR cada peticion, y el
+    # frente mantiene la sesion viva mientras haya una corrida en marcha.
+    SESSION_IDLE_MINUTES: int = 30
+
     # AI Settings
     AI_ENABLED: bool = True
     OPENAI_API_KEY: str | None = None

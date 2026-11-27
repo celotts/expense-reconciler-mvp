@@ -12,6 +12,7 @@ pedir un token que todavia no existe.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -20,10 +21,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.enums import RolEmpresa
 from app.core.permisos import a_rol_de_empresa, Permiso, roles_validos, tiene_permiso
 from app.core.security import ErrorDeToken, TokenCaducado, leer_token
+from app.core.time import como_utc, utcnow
+from app.models.sesion_activa import SesionActiva
+from app.models.token_revocado import TokenRevocado
 from app.models.usuario_empresa import UsuarioEmpresaModel
 from app.models.user import UserModel
 
@@ -49,6 +54,7 @@ def _no_autorizado(detalle: str) -> HTTPException:
 
 
 async def _usuario_del_token(
+    request: Request,
     credenciales: Credenciales,
     db: Sesion,
 ) -> UserModel:
@@ -58,6 +64,17 @@ async def _usuario_del_token(
     de una cuenta dada de baja sigue siendo criptograficamente valido hasta
     que caduca: si el token fuera la unica fuente de verdad, desactivar a
     alguien no tendria efecto hasta las 8 horas siguientes.
+
+    Ademas, un token con `jti` puede dejar de valer ANTES de su `exp` por dos
+    razones distintas:
+
+    - alguien cerro la sesion (fila en `tokens_revocados`);
+    - nadie lo uso en `SESSION_IDLE_MINUTES` (fila vieja en `sesiones_activas`).
+
+    El `exp` nunca se extiende: son dos topes, no un refresh. La comprobacion
+    ocurre AL EMPEZAR la peticion. Una corrida de escaneo que ya arranco no se
+    corta a mitad por una caducidad que ocurrio mientras trabajaba: su estado
+    vive en `scan_registry`, no en este reloj.
     """
     if credenciales is None or not credenciales.credentials:
         raise _no_autorizado("Falta el token de acceso")
@@ -93,15 +110,77 @@ async def _usuario_del_token(
     if not usuario.is_active:
         raise _no_autorizado("La cuenta esta dada de baja")
 
+    # `request.state` es el sitio donde el logout lee el jti. No se lo pedimos
+    # al cliente en el cuerpo: quien firma el cierre es la peticion autenticada,
+    # no un campo que cualquier pantalla pueda rellenar.
+    request.state.jti = None
+    request.state.claims = claims
+
+    jti_crudo = claims.get("jti")
+    if jti_crudo:
+        # Un jti que no sea UUID no puede venir de `crear_token`, pero si la
+        # base recibiera un texto así tendriamos un 500 en vez de un 401.
+        try:
+            jti = UUID(str(jti_crudo))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise _no_autorizado("El token no es valido") from exc
+
+        revocada = (
+            await db.execute(
+                select(TokenRevocado).where(TokenRevocado.jti == jti)
+            )
+        ).scalar_one_or_none()
+        if revocada is not None:
+            raise _no_autorizado(
+                "La sesion fue cerrada. Vuelve a iniciar sesion."
+            )
+
+        sesion = (
+            await db.execute(
+                select(SesionActiva).where(SesionActiva.jti == jti)
+            )
+        ).scalar_one_or_none()
+        ahora = utcnow()
+        if sesion is None:
+            expira = claims.get("exp")
+            if not isinstance(expira, int):
+                raise _no_autorizado("El token no es valido")
+            db.add(
+                SesionActiva(
+                    jti=jti,
+                    user_id=usuario_id,
+                    emitida_at=ahora,
+                    expira_at=datetime.fromtimestamp(expira, tz=timezone.utc),
+                    ultima_actividad=ahora,
+                )
+            )
+        else:
+            inactiva = ahora - como_utc(sesion.ultima_actividad)
+            if (
+                settings.SESSION_IDLE_MINUTES > 0
+                and inactiva > timedelta(minutes=settings.SESSION_IDLE_MINUTES)
+            ):
+                # NO se actualiza ni se borra la fila: si se borrara, la
+                # peticion siguiente la crearia de nuevo y el token volveria
+                # a servir sin que nadie hubiera vuelto a entrar.
+                raise _no_autorizado(
+                    "La sesion termino por inactividad. Vuelve a iniciar sesion."
+                )
+            sesion.ultima_actividad = ahora
+
+        await db.commit()
+        request.state.jti = jti
+
     return usuario
 
 
 async def get_current_user(
+    request: Request,
     credenciales: Credenciales,
     db: Sesion,
 ) -> UserModel:
     """El usuario del token, o 401. Ver `_usuario_del_token`."""
-    return await _usuario_del_token(credenciales, db)
+    return await _usuario_del_token(request, credenciales, db)
 
 
 UsuarioActual = Annotated[UserModel, Depends(get_current_user)]

@@ -2566,8 +2566,9 @@ un 422 con el nombre del campo.
 la clave de otra persona y pedirla convertiria el reset en una adivinanza. Por eso existe
 `POST /usuarios/{id}/contrasena-admin`: exige la clave **del administrador** en el header y
 su rol en la empresa, nunca la clave objetivo, y no escribe la nueva en la auditoria. No
-hay `jti`, asi que un token emitido antes sigue vivo 8 horas; la pantalla lo dice en vez
-de prometer una revocacion inexistente.
+las sesiones conocidas de la cuenta quedan revocadas (`reset_administrativo`); un token
+emitido pero nunca usado no se puede nombrar y vive hasta `exp`. La pantalla lo dice en vez
+de prometer una revocacion total.
 
 **La firma se inyecta donde no la puede falsificar una pantalla.**
 `fetchApi` pone `X-Contrasena-Actual` **después** de `...(resto.headers)` y antes de
@@ -2685,50 +2686,69 @@ oculto. `bash scripts/migrar.sh --estado` lo dijo y `make migrar MIGRAR_SI=1` ap
 Si vuelve a aparecer un 500 con `relation ... does not exist`, **no** se arregla relajando la
 guardia: se arregla migrando. Relajarla daría 200 a una escritura sin saber qué rol la firma.
 
-### 51. El esquema para revocar tokens ya está; la guardia todavía no — 🟡 EN CURSO (Fase 1)
+**El libro de migraciones de una base nueva también mentía (medido el 2026-11-26).** El seed de `db/init.sql` registraba `0020_auditoria_segura` sin el sufijo `.sql` y no registraba `0027_costo_del_kardex.sql`. Ninguna de las dos cosas rompía el arranque —ambas son idempotentes—, así que el servicio volvía a aplicarlas y `schema_migrations` quedaba con una fila que no corresponde a ningún archivo y sin la fila de un archivo que sí existe. Es el mismo género de defecto que el párrafo anterior: una base que dice estar al día cuando no lo está, solo que aquí la víctima es la base nueva. `test_el_seed_registra_cada_archivo_con_su_nombre_exacto` compara nombres exactos (no números) y `scripts/verify_registro_de_migraciones_mutations.py` (3 mutaciones, las 3 mueren) impide que el seed vuelva a recortar o omitir un nombre.
+
+### 51. El logout era solo un aviso al navegador — ✅ CORREGIDO
 
 **El defecto.** Un JWT HS256 firmado no se puede deshacer: `auth.py` lo decía en el
 docstring y `Mantenimiento.tsx` lo decía en pantalla —"un token emitido antes del
 reset sigue vivo 8 horas"—. Eso no era una advertencia callada: era la declaración
 de que logout, cambio de clave y reset administrativo no revocaban nada. Faltaban
-el `jti`, el sitio donde guardarlo y la comprobación en la puerta común.
+el `jti`, el sitio donde guardarlo y la comprobación en la puerta común. Además la
+sesión nunca caducaba por inactividad: el único reloj era `exp`.
 
-**Lo que se hizo en este paso (solo el esquema):**
+**La mitad de la base ya existía y sigue igual:**
 
 | archivo | decisión |
 |---|---|
 | `db/migrations/0025_tokens_revocados.sql` | `jti` como PK, `user_id`, `motivo`, `revoked_at`, `expires_at`. `ON DELETE RESTRICT`: borrar la cuenta no borra la revocación. Append-only por trigger: borrar una fila reviviría un token robado. CHECK de cuatro motivos, repetido en `MOTIVOS_REVOCACION`. |
-| `db/migrations/0026_auditoria_company_id.sql` | `auditoria.company_id` nullable con FK a `companies` e índice `(company_id, fecha DESC)`, para poder exportar por empresa sin adivinar desde `registro_afectado`. |
-| `db/init.sql` | Espejo de las dos: DDL, índices, triggers, `COMMENT` y registro en `schema_migrations`. Una base nueva no nace rota. |
-| `app/models/token_revocado.py`, `app/models/auditoria.py` | Los modelos declaran lo mismo. `tests/conftest.py` construye desde los modelos, así que sin esto la suite no vería el DDL nuevo. |
+| `db/migrations/0026_auditoria_company_id.sql` | `auditoria.company_id` nullable con FK a `companies` e índice `(company_id, fecha DESC)`. Sin backfill: la tabla es append-only desde `0020` y un `UPDATE` revienta. `NULL` significa **"no se registró"**, no "todas las empresas". |
+| `db/migrations/0028_sesiones_activas.sql` | `jti`, `user_id`, `emitida_at`, `expira_at`, `ultima_actividad`. Es estado operativo, no evidencia: se crea en la primera petición y se renueva en cada una. |
+| `db/init.sql` | Espejo de las tres: DDL, índices, triggers y registro en `schema_migrations`. Una base nueva no nace rota. |
 
-**La trampa del backfill (por qué el histórico queda en NULL).** `auditoria` es
-append-only por trigger desde `0020`. Rellenar `company_id` en filas viejas con
-`UPDATE` revienta en Postgres; apagar el trigger para hacerlo es saltarse la regla
-que hace que la auditoría sirva de algo. `NULL` significa **"no se registró"**,
-no "todas las empresas". Cuando se escriba la exportación, el filtro por empresa
-tiene que informar de las filas omitidas en vez de dejarlas calladas. Lo contrario
-sería un informe que parece completo y no lo es.
+**La guardia.** `crear_token` emite `jti`; `get_current_user` consulta
+`tokens_revocados` y `sesiones_activas` en cada petición y guarda el `jti` en
+`request.state.jti` para que el logout sepa qué token cerrar. No se fía del
+`company_id` ni del rol del cuerpo: siguen viniendo de la base y de la cabecera,
+como antes. La caducidad por inactividad se mide desde `ultima_actividad` y no
+desde `emitida_at`: con `SESSION_IDLE_MINUTES=30` una petición reciente renueva la
+ventana; con `0` se desactiva. Al vencer, la fila **no se borra**: borrarla haría
+que la petición siguiente la creara de nuevo y el token volviera a servir.
 
-**Lo que NO se hizo todavía, y por qué no se puede decir que esté arreglado:**
-`crear_token` no emite `jti`; `leer_token` no lo exige; `_usuario_del_token` no
-consulta `tokens_revocados`; logout, cambio de clave y reset no insertan filas;
-`auth.py` y `Mantenimiento.tsx` siguen diciendo que el token vive hasta que caduca.
-La guardia global es el único sitio donde una revocación vale en **todos** los
-routers protegidos a la vez, y todavía no está. SSO/MFA y la exportación de
-auditoría tampoco: son los siguientes pasos de la fase, con su propio turno.
+**Las tres trampas que se pagaron al cerrar el hueco:**
 
-**Verificación del paso:**
+1. **No dejar al usuario sin token al desplegar.** Los tokens emitidos antes del
+   `jti` siguen valiendo hasta `exp`. No se pueden revocar ni medir su inactividad
+   porque no hay valor que nombrar; forzar su caducidad habría cerrado la sesión
+   de quien estaba trabajando durante el despliegue. `Mantenimiento.tsx` lo dice
+   en vez de prometer una revocación total.
+2. **Las operaciones largas se autentican al empezar y se dejan terminar.** El
+   escaneo con fotos tarda minutos; la guardia no vuelve a mirar el token a mitad
+   de la respuesta, y el `catch` del front no apaga el canal de progreso. Un 401
+   del propio logout tampoco se cuenta como "no se guardó nada": es el resultado
+   buscado, por eso `fetchApi` acepta `sinAviso401`.
+3. **«Revocar las sesiones» no significa «revocar todos los tokens».** Un token
+   emitido pero nunca usado no tiene fila de actividad y no se puede nombrar.
+   Cambio de clave, reset y baja revocan las sesiones **conocidas**; la baja además
+   surte efecto inmediato porque `is_active` se lee en cada petición.
+
+**El front。** `salir()` ya no se limita a borrar el `localStorage`: llama a
+`POST /auth/logout` con el token todavía guardado y borra después, incluso si la
+red falla. Un token copiado deja de servir en la siguiente petición aunque el
+navegador que lo copió no se entere.
+
+**Verificación:**
 
 | puerta | resultado |
 |---|---|
-| `tests/unit/test_revocacion_ddl.py` (10) | 10 passed |
-| `tests/unit/test_init_sql_espeja_los_modelos.py` (25) | 25 passed |
-| `scripts/verify_revocacion_mutations.py` (10) | 10 mueren; una mutación sobrevivió en la primera corrida (quitar la FK dejaba el mismo prefijo de columna) y se cazó añadiendo `test_la_columna_apunta_a_una_empresa_existente` |
+| `tests/integration/test_sesion_y_revocacion.py` | recorrido HTTP con la guardia real, incluido el token anterior al `jti` y el reloj deslizante |
+| `tests/unit/test_revocacion_ddl.py`, `tests/unit/test_init_sql_espeja_los_modelos.py` | DDL, modelos y registro de migraciones |
+| `scripts/verify_revocacion_mutations.py` (10) | esquema append-only, CHECK, FK y backfill prohibido |
+| `scripts/verify_sesion_y_revocacion_mutations.py` (9) | quitar `jti`, relajar la revocación, borrar la fila vencida, medir desde `emitida_at`, logout mudo, apagar la inactividad o romper el espejo DDL |
+| `npm run verify:sesion` y `scripts/verify_sesion_front_mutations.py` (4) | la petición que sale, el borrado posterior, el 401 propio y el token vencido |
 
-El verificador de mutaciones se ampliará con la mitad HTTP cuando la guardia lea
-la tabla: criterio de hecho de la fase es que un token revocado dé 401 en todos
-los routers protegidos, y que el verificador nuevo muera si se relaja la guardia.
+SSO/MFA y la exportación de auditoría siguen sin existir: son los siguientes pasos
+de la fase, con su propio turno.
 
 ---
 
@@ -2812,6 +2832,59 @@ en secuencial (cada uno escribe el archivo original y lo restaura) y falla tanto
 por código de salida como por marcas de "no se aplicó". `make verificar-defensas`
 y `.github/workflows/defensas.yml` son la misma puerta. Añadir un mutador nuevo
 entra en la corrida sin tocar la lista.
+
+---
+
+## El cliente de IA vivo no tenia `chat_completion` (MEDIDO 2026-11-27)
+
+Con `AI_ENABLED=true` en esta maquina, `AIExtractor._extract_from_text` y
+`_extract_from_vision` llamaban a `ai_client.chat_completion(...)`, pero el
+cliente module-level era un `OllamaVisionClient` que solo exponia
+`extract_receipt_data`. Resultado: `AttributeError` **antes** de cualquier
+peticion a Ollama. Ninguna lectura que escalara al modelo llegaba a contestar;
+la cascada degradaba a OCR y el sistema parecia "que el modelo no lee".
+
+Habia una segunda mitad que el primer sintoma tapaba: `AIExtractor` decide
+que modelos pedir con `getattr(ai_client, "_provider", "openai")`. Sin el
+atributo, pedia `gpt-4o-mini` / `gpt-4o` a un servidor Ollama aunque la
+configuracion dijera `qwen2.5:3b` y `qwen2.5vl:3b`. Arreglar solo el metodo
+habria dejado al modelo equivocado en la llamada.
+
+Tercera mitad: el cliente se construia con `http://localhost:11434` escrito a
+mano. Dentro del contenedor Ollama esta en `http://ollama:11434`, asi que
+incluso con el metodo presente la peticion habia ido a un puerto que no es el
+proveedor. `disponibilidad()` ya usaba la configuracion; el cliente que
+realmente llama, no.
+
+Lo que quedo:
+
+- `OllamaVisionClient._provider = AIProvider.OLLAMA` y base_url/modelo leidos
+  de `settings` al construirlo (con los literales anteriores como fallback).
+- `chat_completion(...)` devuelve `AIResponse` (`.content`, `.model`,
+  `.provider`), que es lo que `_parse_ai_response` ya esperaba. Traduce
+  `response_format={"type":"json_object"}` a `format: "json"` de Ollama.
+- `num_predict`, `temperature` y `keep_alive` salen de la llamada y de la
+  configuracion; el timeout es `settings.OLLAMA_TIMEOUT`, no los 60 s del
+  metodo heredado (una foto tarda mas que eso en 16 GB).
+- El cuerpo de un 500 se registra con el mismo formato que en
+  `AIClient._ollama_chat_completion`, para que "contexto agotado" no se
+  confunda con "sin memoria".
+
+`tests/unit/test_chat_completion_vivo.py` comprueba las tres mitades y el
+payload real; sin el metodo, sin `_provider` o con la URL escrita a mano,
+muere. El metodo antiguo `extract_receipt_data` sigue igual y sigue sin
+llamadores: no es la ruta de la cascada.
+
+**Lo que el arreglo destapo:** los tests de `file_type` pasaban porque la
+llamada al modelo moria con `AttributeError` y `_cascada_texto` devolvia las
+reglas. Con el cliente arreglado, `ESCALAR_A_IA_SIN_LINEAS` quedo en su default
+de `config.py` (`true`, la politica de "pagar un modelo por las lineas") y los
+PDF con texto salieron como `llm`: la regla 3 ("un PDF con texto no toca el
+modelo") la estaba sosteniendo un bug, no una decision. La app corre con
+`ESCALAR_A_IA_SIN_LINEAS=false`, y ahora esa decision esta escrita en `.env`
+y en `.env.example`. Los tests unitarios la fijan con `monkeypatch`; los de
+integracion dependen del entorno, y por eso el valor tiene que vivir en la
+plantilla ademas de en la maquina.
 
 ---
 

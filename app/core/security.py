@@ -26,6 +26,7 @@ import json
 import secrets
 import time
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import settings
 
@@ -224,6 +225,15 @@ def crear_token(usuario_id: str, email: str, perfil: str = "digitalizador", grup
 
     El `exp` va DENTRO del token firmado, no en un header. Un header se puede
     cambiar sin invalidar la firma; un claim no.
+
+    El `jti` identifica una SESION, no una peticion. Sin el, logout no puede
+    revocar nada: el token queda vivo hasta `exp` aunque la persona haya salido.
+    Se genera aqui y no en el login por la misma razon que el `exp`: tiene que
+    viajar firmado, y un router que emitiera tokens a mano se lo podria olvidar.
+    Los tokens emitidos antes de este cambio no traen `jti` y siguen valiendo
+    hasta su `exp` (compatibilidad), pero no se pueden revocar ni tienen
+    caducidad por inactividad. Es una decision, no un descuido: forzar el `jti`
+    cerraria la sesion de quien estaba trabajando al desplegar.
     """
     minutos = (
         expira_en_minutos
@@ -241,6 +251,7 @@ def crear_token(usuario_id: str, email: str, perfil: str = "digitalizador", grup
         "grupo": grupo,
         "iat": ahora,
         "exp": expira,
+        "jti": str(uuid4()),
         # Marca el tipo de token. Un dia que haya refresh tokens, un access
         # token no puede pasar por el endpoint de refresh: sin esto, serviria
         # un token de vida corta como si fuera de vida larga.

@@ -38,7 +38,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 13 archivos de página (los nuevos son `CajaChica.tsx` y `Mantenimiento.tsx`) |
-| Tests | **1984**: **1983 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
+| Tests | **2027**: **2026 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
 Las rutas del front son hashes y las decide `renderPage` en `App.tsx`: `#/dashboard` ·
@@ -120,7 +120,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 1983 passed, 1 skip
+python3 -m pytest tests/ -q           # 2026 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 
@@ -259,15 +259,16 @@ exige solo la clave del administrador (`X-Contrasena-Actual`) más su rol, y no 
 audita la clave nueva. En el front, `api.ts` inyecta ese header **después** de los headers
 sueltos y antes de la empresa, por el mismo motivo que `X-Company-ID`: una pantalla no puede
 decir por su cuenta que ya está verificada. La firma se pide en cada operación y no se guarda
-en `localStorage`. Como no hay `jti`, un token emitido antes del reset sigue vivo 8 horas: el
-mensaje de la pantalla lo dice en vez de prometer una revocación que no existe.
+en `localStorage`. El reset revoca las sesiones **conocidas** (las que ya hicieron una petición y
+tienen fila en `sesiones_activas`); un token emitido antes del `jti` no se puede nombrar y sigue
+vivo hasta `exp`. El mensaje de la pantalla lo dice en vez de prometer una revocación total.
 
 Los endpoints antiguos de `/usuarios` se conservaron como estaban: ponerles `requiere_rol`
 rompía su contrato y sus pruebas. La autoridad nueva está en las rutas de Mantenimiento.
 `tests/integration/test_mantenimiento_roles.py` (16 pruebas) cubre el recorrido HTTP;
 `npm run verify:menu` y `npm run verify:mantenimiento` miran el HTML montado y el orden de
 cabeceras, no el retorno de una función. La colección de Insomnia se regeneró con las cuatro
-rutas (107 peticiones, 18 carpetas) y `RUTAS_CON_CONTRASENA` se amplió a mano: es una
+rutas (118 peticiones, 19 carpetas) y `RUTAS_CON_CONTRASENA` se amplió a mano: es una
 dependencia, y FastAPI no la declara en el OpenAPI.
 
 ### Permisos por acción: `viewer` es de solo lectura también por curl
@@ -397,6 +398,9 @@ python3 scripts/verify_permisos_http_mutations.py   # 5: guardia HTTP, PDF, head
 python3 scripts/verify_permisos_front_mutations.py  # 3: menu y botones del front
 python3 scripts/verify_alcance_por_empresa_mutations.py # 14: un id ajeno no cruza la empresa
 python3 scripts/verify_revocacion_mutations.py      # 10: esquema de revocacion y auditoria por empresa
+python3 scripts/verify_sesion_y_revocacion_mutations.py # 9: jti, revocacion HTTP, reloj deslizante
+python3 scripts/verify_sesion_front_mutations.py    # 4: logout real, borrado, 401 propio, token muerto
+python3 scripts/verify_registro_de_migraciones_mutations.py # 3: el seed nombra cada .sql
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 ```
 
@@ -408,6 +412,7 @@ cd front
 npm run build                      # corre `tsc`: es la puerta que sí sirve
 npm run verify:aviso               # el aviso de formato, que salía en 8 de 8
 npm run verify:fecha               # la fecha corrida un día, en 3 pantallas
+npm run verify:sesion              # el logout llama al servidor con el token antes de borrarlo
 ```
 
 > Las 3 del signo se pueden romper a proposito: revirtiendo `IF NEW.tipo = 'SALIDA'`
@@ -907,7 +912,7 @@ atribuido a otra empresa **no se mueve**.
 **de la API viva**. No lo edites a mano: se pierde en la siguiente regeneración.
 
 ```bash
-make insomnia         # regenerar (107 peticiones, 18 carpetas)
+make insomnia         # regenerar (118 peticiones, 19 carpetas)
 make insomnia-check   # sale 1 si está desfasado — para cuando añades una ruta
 ```
 
@@ -1493,34 +1498,54 @@ La defensa es el servicio `migraciones` en `docker-compose.yml`: corre `scripts/
 
 > La validación del nombre de migración permite acentos a propósito: el archivo real se llama `0019_extraccion_multipaís_y_controles.sql`. Una validación ASCII la rechazó en la primera corrida, el servicio salió con 1 y `make up` no levantó. Sí se prohíben comillas y punto y coma, porque el nombre se pega al `INSERT`. Ver `tests/unit/test_arranque_por_healthcheck.py::TestLasMigracionesSeAplicanAlArrancar`.
 
-### Revocación de tokens: el esquema ya existe, la guardia todavía no (Fase 1)
+**El seed de `init.sql` nombra los archivos exactos, con `.sql`.** Medido el 2026-11-26: registraba `0020_auditoria_segura` sin sufijo y no registraba `0027_costo_del_kardex.sql`. Como las dos son idempotentes, el arranque seguía bien y el servicio las volvía a aplicar: el libro decía que se aplicó algo que no existe y callaba un archivo que sí existe. `test_el_seed_registra_cada_archivo_con_su_nombre_exacto` compara nombres, no números, y `scripts/verify_registro_de_migraciones_mutations.py` (3 mutaciones) comprueba que recortar o quitar un nombre muere.
 
-`0025_tokens_revocados.sql` y `0026_auditoria_company_id.sql` son la primera
-mitad de la Fase 1. `crear_token` **todavía no emite `jti`** y
-`_usuario_del_token` **todavía no consulta la tabla**: hoy el logout sigue siendo
-solo un aviso al cliente, y un token robado sigue vivo hasta `exp`. No digas lo
-contrario en una pantalla hasta que la guardia esté puesta.
+### Revocación y caducidad por inactividad: la sesión se cierra en el servidor
 
-`tokens_revocados` es **append-only por trigger**, igual que `auditoria`: borrar
-una fila reviviría un token robado. La FK es `ON DELETE RESTRICT`, no `CASCADE`:
-una revocación no se lleva por delante aunque la cuenta se dé de baja. Los
-motivos son `logout`, `cambio_contrasena`, `reset_administrativo` y
-`baja_cuenta`, y están repetidos en `MOTIVOS_REVOCACION` y en un `CHECK` de la
-base: si aparece uno nuevo, se nombra en los dos sitios.
+`crear_token` emite `jti` y `get_current_user` lo comprueba **en cada petición**:
+consulta `tokens_revocados`, consulta o crea la fila de `sesiones_activas`, guarda
+el `jti` en `request.state.jti` para que el logout sepa qué token cerrar y hace
+`commit` de la actividad. Un token revocado da 401 en todos los routers
+protegidos, no solo en el que cerró la sesión. `logout` ya no es un aviso al
+navegador: `app/api/auth.py` revoca el token actual y el front `salir()` llama a
+`POST /auth/logout` **antes** de borrar el local storage. Un fallo de red no
+impide que la interfaz se cierre, pero tampoco puede fingir que el servidor revocó.
 
-`auditoria.company_id` es nullable y **no tiene backfill**. La tabla es
-append-only desde `0020`, así que rellenar el histórico con `UPDATE` revienta;
-apagar el trigger para hacerlo sería saltarse la regla que hace que la auditoría
-sirva. `NULL` en una fila antigua significa **"no se registró"**, no "todas las
-empresas". La exportación futura tiene que decir cuántas filas sin empresa se
-omitieron, en vez de callarlas.
+La caducidad es **deslizante** y la mide el servidor desde `ultima_actividad`, no
+desde `emitida_at`: con `SESSION_IDLE_MINUTES=30` (0 la desactiva), una petición
+reciente renueva la ventana. Al vencer, la fila **no se borra ni se actualiza**:
+borrarla permitiría que la petición siguiente la creara de nuevo y el token
+volvería a servir sin que nadie hubiera entrado. Un token que ya caducó
+localmente ni se manda. Las operaciones largas no se cortan a mitad: la guardia
+autentica la petición al empezar y la deja terminar; el `catch` del front no
+apaga el canal de progreso. Un 401 del propio logout no dispara el aviso de
+"no se guardó nada": es el resultado que se buscaba.
 
-`init.sql` espeja las dos migraciones (DDL, índices, triggers y registro en
-`schema_migrations`) y `tests/unit/test_init_sql_espeja_los_modelos.py` vigila las
-columnas de los modelos nuevos. `scripts/verify_revocacion_mutations.py` (10
-mutaciones) comprueba que quitar cualquier trigger, el `CHECK`, la FK, la columna
-de empresa, el índice o el registro de migración hace fallar la suite. Ver
-`docs/known-issues.md` §51.
+Los tokens firmados **antes del `jti` siguen valiendo hasta `exp`**. No se
+revocan ni tienen ventana deslizante porque no hay valor que nombrar; forzar su
+caducidad habría dejado sin token a quien estaba trabajando durante el despliegue.
+Es compatibilidad consciente, no descuido, y la pantalla de reset lo dice.
+
+`0025_tokens_revocados.sql` es **append-only por trigger**, igual que `auditoria`:
+borrar una fila reviviría un token robado. La FK es `ON DELETE RESTRICT`, no
+`CASCADE`: una revocación no se lleva por delante aunque la cuenta se dé de baja.
+Los motivos son `logout`, `cambio_contrasena`, `reset_administrativo` y
+`baja_cuenta`, repetidos en `MOTIVOS_REVOCACION` y en un `CHECK` de la base.
+`revocar_sesiones_de_usuario` cubre solo las sesiones **conocidas**: un token
+emitido pero nunca usado no tiene fila y no se puede nombrar.
+
+`0026_auditoria_company_id.sql` deja `company_id` nullable y **sin backfill**: la
+tabla es append-only desde `0020`, y rellenar el histórico con `UPDATE` revienta.
+`NULL` en una fila antigua significa **"no se registró"**, no "todas las
+empresas". La exportación futura tiene que decir cuántas filas se omitieron.
+
+`0028_sesiones_activas.sql` guarda `jti`, `user_id`, `emitida_at`, `expira_at` y
+`ultima_actividad`. `init.sql` espeja las tres migraciones (DDL, índices,
+triggers y registro en `schema_migrations`). Verificación:
+`tests/integration/test_sesion_y_revocacion.py`,
+`scripts/verify_sesion_y_revocacion_mutations.py` (9),
+`scripts/verify_sesion_front_mutations.py` (4), `npm run verify:sesion` y
+`scripts/verify_revocacion_mutations.py` (10). Ver `docs/known-issues.md` §51.
 
 ### La foto que se contradice a sí misma se relee (MEDIDO 2026-10-15)
 `IMAGENES_VISION_PRIMERO=false` y `ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`
@@ -1782,12 +1807,14 @@ omisión y el mensaje de error lo dice.
 
 ## Las defensas son una puerta de CI, y el Escáner cuenta duplicados
 
-`scripts/verificar_todas_las_mutaciones.py` descubre por glob los 22
+`scripts/verificar_todas_las_mutaciones.py` descubre por glob los 25
 `scripts/verify_*_mutations.py` y los corre **en secuencial**: cada verificador
-escribe el archivo original, corre los tests y lo restaura. Falla por código de
-salida o por marcas de mutación no aplicada (`NO PROBADA`, `OBSOLETA`). Añadir un
-verificador nuevo entra en la corrida sin tocar listas. La misma puerta se llama
-con `make verificar-defensas` y en `.github/workflows/defensas.yml` (push/PR).
+escribe el archivo original, corre los tests y lo restaura. Los tres nuevos de
+esta ronda incluyen uno de front, que muta `auth.ts` y corre
+`npm run verify:sesion`; no por eso deja de ser la misma puerta. Falla por código
+de salida o por marcas de mutación no aplicada (`NO PROBADA`, `OBSOLETA`). Añadir un verificador nuevo
+entra en la corrida sin tocar listas. La misma puerta se llama con
+`make verificar-defensas` y en `.github/workflows/defensas.yml` (push/PR).
 
 Un verificador desactualizado es deuda, no verde: en la línea base de 22, tres
 estaban en rojo por patrones movidos, no por defensas rotas. Dos mutaciones que
@@ -2306,9 +2333,9 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   `X-Contrasena-Actual` es la de *quien llama* (prueba que no hay un token robado); el
   `contrasena_actual` del cuerpo es la de *la cuenta que se cambia* (prueba que sabes la
   de esa cuenta). Con una sola, un atacante con un token robado rotaría la clave de
-  cualquiera y el dueño ya no podría recuperarla. Y cambiar la contraseña **no invalida los
-  tokens**: no hay `jti` ni lista de revocación, así que un token emitido antes sigue
-  vivo 8 horas (`SECRET_KEY`, regla 16).
+  cualquiera y el dueño ya no podría recuperarla. Cambiar la contraseña revoca las
+  **sesiones conocidas**, pero un token emitido y nunca usado no se puede nombrar:
+  sigue vivo hasta `exp` (`SECRET_KEY`, regla 16).
 
 - **`get_current_user_verificado` se declara con `Depends(get_current_user)`, no llamando
   a `_usuario_del_token`.** Los overrides de dependencia reemplazan por *dependencia*, no
@@ -2401,6 +2428,25 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
 
 - **Los puertos van en `127.0.0.1:`.** Sin el prefijo, Docker publica en `0.0.0.0` y la base
   de datos con su contraseña queda al alcance de la red local.
+
+---
+
+## La ruta viva de IA usa `OllamaVisionClient.chat_completion`
+
+`ai_client` es un `OllamaVisionClient`, no un `AIClient`. `AIExtractor` llama a
+`chat_completion` y espera un `AIResponse`; antes ese metodo no existia y con
+`AI_ENABLED=true` la cascada moria con `AttributeError` sin llegar a Ollama. El
+mismo cliente lleva `_provider = AIProvider.OLLAMA` (si no, el extractor pide
+`gpt-4o` a Ollama) y lee base_url/modelo de `settings` al construirse
+(`localhost:11434` no es el proveedor dentro del contenedor). Ver
+`docs/known-issues.md` sobre el defecto medido el 2026-11-27. No resucites
+`extract_receipt_data` como ruta de captura: no tiene llamadores y devuelve un
+dict, no el `AIResponse` que consume `_parse_ai_response`.
+
+Y ojo con la relacion escondida: mientras el cliente estuvo roto, la regla 3
+("un PDF con texto no toca el modelo") la cumplia el `AttributeError`. Al
+arreglarlo, `ESCALAR_A_IA_SIN_LINEAS=false` tiene que estar en `.env` y en
+`.env.example`, o los PDF con texto salen como `llm` y falsean la medicion.
 
 ---
 

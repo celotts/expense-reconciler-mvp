@@ -95,6 +95,22 @@ ALTER TABLE tokens_revocados ADD CONSTRAINT ck_tokens_revocados_motivo
 COMMENT ON COLUMN tokens_revocados.jti IS
     'El claim jti del token firmado. Su existencia en esta tabla invalida el token antes de exp.';
 
+-- Sesiones activas (migracion 0028). Estado operativo: caducidad por inactividad
+-- en el servidor. La revocacion sigue viviendo en tokens_revocados, append-only.
+-- Si vence la inactividad la fila NO se borra: la peticion siguiente volveria a
+-- crearla y el token volveria a servir sin que nadie hubiera vuelto a entrar.
+CREATE TABLE IF NOT EXISTS sesiones_activas (
+    jti UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    emitida_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expira_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ultima_actividad TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ix_sesiones_activas_usuario ON sesiones_activas (user_id);
+CREATE INDEX IF NOT EXISTS ix_sesiones_activas_actividad ON sesiones_activas (ultima_actividad);
+COMMENT ON COLUMN sesiones_activas.jti IS
+    'El claim jti del token firmado. Ultima actividad del servidor por sesion.';
+
 CREATE OR REPLACE FUNCTION tokens_revocados_no_actualizar() RETURNS trigger AS $$
 BEGIN
     RAISE EXCEPTION
@@ -834,13 +850,15 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0017_auditoria.sql'),
     ('0018_tipos_gasto.sql'),
     ('0019_extraccion_multipaís_y_controles.sql'),
-    ('0020_auditoria_segura'),
+    ('0020_auditoria_segura.sql'),
     ('0021_caja_chica_y_huella_fiscal.sql'),
     ('0022_roles_y_empresa_activa.sql'),
     ('0023_caja_conteo_y_conciliacion.sql'),
     ('0024_rol_viewer_y_permisos.sql'),
     ('0025_tokens_revocados.sql'),
-    ('0026_auditoria_company_id.sql')
+    ('0026_auditoria_company_id.sql'),
+    ('0027_costo_del_kardex.sql'),
+    ('0028_sesiones_activas.sql')
 ON CONFLICT (nombre) DO NOTHING;
 
 CREATE TABLE ticket_persistence (

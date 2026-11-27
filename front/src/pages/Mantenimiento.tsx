@@ -328,7 +328,7 @@ export function Mantenimiento({
             onChange={(e) => setClaveNueva(e.target.value)} />
           <Button variant="danger" onClick={() => ejecutar(
             () => usuariosApi.resetearContrasena(seleccionado!.id, claveNueva, firma),
-            'Clave actualizada. Los tokens ya emitidos siguen vivos hasta caducar.',
+            'Clave actualizada. Se cerraron las sesiones conocidas; los tokens anteriores al registro siguen vivos hasta caducar.',
           )}>Fijar contrasena</Button>
           <p className="text-xs text-gray-500">
             No se necesita la clave de la otra cuenta. Se necesita la tuya, arriba.

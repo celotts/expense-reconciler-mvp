@@ -18,6 +18,7 @@ from app.models.tipo_gasto import TipoGastoModel
 from app.models.caja_chica import CajaChicaModel, MovimientoCajaModel
 from app.models.usuario_empresa import UsuarioEmpresaModel
 from app.models.token_revocado import MOTIVOS_REVOCACION, TokenRevocado
+from app.models.sesion_activa import SesionActiva
 
 __all__ = [
     "CompanyModel",
@@ -41,4 +42,5 @@ __all__ = [
     "UsuarioEmpresaModel",
     "TokenRevocado",
     "MOTIVOS_REVOCACION",
+    "SesionActiva",
 ]

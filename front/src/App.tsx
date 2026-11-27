@@ -332,7 +332,7 @@ function AppInner() {
               )}
             </div>
             <button
-              onClick={cerrarSesion}
+              onClick={() => { void cerrarSesion(); }}
               className="w-full text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg py-3 sm:py-1.5 transition-colors"
             >
               Salir

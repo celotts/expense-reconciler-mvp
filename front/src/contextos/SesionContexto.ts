@@ -25,7 +25,8 @@ export interface SesionContextValue {
   /** Grupo asociado al perfil, controla el acceso CRUD y a informacion sensible. */
   grupo: string | null;
   entro: (u: Usuario) => void;
-  cerrarSesion: () => void;
+  /** Cierra la sesion en el servidor y luego borra el token local. */
+  cerrarSesion: () => Promise<void>;
 }
 
 export const SesionContext = createContext<SesionContextValue | null>(null);
