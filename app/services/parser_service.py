@@ -39,7 +39,7 @@ RFC_LABEL_RE = re.compile(
 # names ("TIENDA GENERICA", "LA CASA DE LAS CAJAS") and must not be excluded.
 FIELD_LABEL_RE = re.compile(
     r"^(?:rfc|nit|tax\s*id|fecha|hora|folio|serie|no\.?|factura|subtotal|total"
-    r"|iva|impuesto|importe|monto|art[ií]culos?|concepto|cantidad|descripci[oó]n"
+    r"|iva|impuesto|importe|monto|art[ií]culos?|conceptos?|cantidad|descripci[oó]n"
     r"|tel[eé]fono|tel\.?|direcci[oó]n|domicilio|referencia|metodo\s*de\s*pago)\b",
     re.IGNORECASE,
 )
@@ -76,6 +76,17 @@ BOILERPLATE_SUFIJO_RE = re.compile(
 CONCEPTOS_ENCABEZADO_RE = re.compile(
     r"^\s*clave\s*prod(?:ucto)?\b.*\b(?:cant|unidad|descripci[oó]n|importe|p\.?\s*unitario)\b",
     re.IGNORECASE,
+)
+
+# Un logo se lee mal, pero no desaparece. MEDIDO en el ticket de Bodega Aurrera
+# de esta maquina: el OCR devolvio `“odegaAurrera AN` (sin la B y sin espacio)
+# y despues una linea de articulo `PANA C`. La heuristica general aceptaba
+# `PANA C` por tener tres mayusculas y guardaba un producto como comercio.
+# La marca se reconoce por lo que el papel imprime, no por posicion: si aparece
+# en las primeras lineas, gana aunque antes haya ruido. No se inventa la sucursal
+# ni se corrige el texto leido; solo se nombra la cadena que el papel sostiene.
+_MARCAS_PROVEEDOR = (
+    (re.compile(r"\bb?odega\s*aurrera\b", re.IGNORECASE), "BODEGA AURRERA"),
 )
 
 
@@ -1462,6 +1473,14 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         """Solo quita el tipo de documento impreso DESPUES del nombre."""
         return BOILERPLATE_SUFIJO_RE.sub("", line).strip()
 
+    def proveedor_por_marca(line: str) -> str | None:
+        """Nombre canonico si la linea trae una marca impresa, aunque el OCR la rompa."""
+        legible = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", " ", line)
+        for patron, canonico in _MARCAS_PROVEEDOR:
+            if patron.search(legible):
+                return canonico
+        return None
+
     def is_provider_candidate(line: str) -> bool:
         """True if a line plausibly names the business that issued the receipt."""
         # El nombre y "FACTURA ELECTRONICA (CFDI 4.0)" comparten linea en los
@@ -1479,6 +1498,13 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             return False
         # Encabezado de la tabla de conceptos: es texto del papel, no un RFC.
         if CONCEPTOS_ENCABEZADO_RE.match(line):
+            return False
+        # `PANA C` tiene tres mayusculas y pasaba la regla (A) de abajo. Una
+        # palabra larga seguida de una sola letra es un articulo partido, no una
+        # razon social: no hay comercio mexicano que se llame asi.
+        if re.fullmatch(
+            r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{4,}\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", line
+        ):
             return False
         # Too short to be a business name. Cuatro, no cinco: "OXXO" es un
         # minorista real y de los mas frecuentes del pais, y con corte en cinco
@@ -1525,6 +1551,17 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             if len(p) >= 3 and p[0].isupper()
         ]
         return len(palabras) >= 2
+
+    # Las marcas impresas se buscan ANTES que el candidato generico. El logo
+    # puede venir con la B comida (`“odegaAurrera`) y no calificar como nombre,
+    # mientras que un articulo (`PANA C`) si califica por sus mayusculas. Si la
+    # marca gana, el RFC de abajo se sigue leyendo: las dos pasadas no se
+    # confunden.
+    for line in lines[:15]:
+        nombre_de_marca = proveedor_por_marca(line)
+        if nombre_de_marca:
+            provider_name = nombre_de_marca
+            break
 
     # First pass: identify emitter (provider). It is usually the first non-empty
     # line, so the scan starts at i == 0 and stops at the first plausible name.

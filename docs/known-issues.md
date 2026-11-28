@@ -3191,6 +3191,137 @@ descripcion la deja desfasada aunque no haya una ruta nueva.
 
 ---
 
+## IA asistida de solo lectura: una explicacion que no afirma mas de lo que ve
+
+La primera superficie de IA asistida es `GET
+/api/v1/ia-asistida/tickets/{ticket_id}/explicacion`. No hay agente, no hay
+escritura en la base, no hay migracion y no hay cambio en el gate: el servicio
+toma una fila existente y propone un texto. La persona decide que hacer con el.
+
+**El flag `IA_ASISTIDA_HABILITADA` nace en `false`.** Con el flag apagado no se
+construye el cliente (se importa dentro de `explicar`, no al arrancar) y la
+respuesta dice `no_disponible`. Es la unica forma de añadir IA sin que empiece a
+gastar inferencia en una maquina de 16 GB que ya ejecuta OCR y vision.
+
+**No se le pasa `raw_text`.** El campo contiene hasta 20 000 caracteres, folios
+y numeros sueltos que no son importes. Si estuviera en el prompt, el modelo
+podria citar un folio como total y la comprobacion de numeros lo daria por
+bueno: la defensa se comprobaria contra el mismo ruido que se le entrego.
+`datos_verificables()` manda solo los campos que el ticket ya afirma.
+
+**La comprobacion es de numeros literales, no de intencion.** Se normalizan
+separadores (`1,234.50` == `1234.50`) y se comparan todos los numeros citados
+contra los de la entrada. Uno solo que no este —`193.66` donde el papel dice
+`193.65`— cambia el estado a `descartada` y deja la explicacion vacia. Se
+descarto pedirle al modelo que "no invente" como defensa: eso es una
+instruccion, no una comprobacion, y no tiene test que muera.
+
+**Un error del proveedor no se devuelve al cliente.** `chat_completion` ya
+registra el cuerpo del 500 en el log; aqui solo se reporta `no_disponible` con
+un mensaje generico. La excepcion puede contener rutas internas, y exponerla no
+ayuda a quien solo quiere saber si la lectura del ticket cambio (no cambio).
+
+**El id ajeno da 404 y el GET es lectura.** El endpoint busca el ticket con
+`company_id == EmpresaVisible`, igual que `tickets.py`. La guardia global
+clasifica el GET como `leer`, asi que un `viewer` puede pedir la explicacion de
+un ticket que puede consultar; no puede escribirla aunque quiera. No hay
+boton que firme nada: la respuesta no tiene accion, solo texto + veredicto.
+
+Medido con `tests/unit/test_ia_asistida.py` (9),
+`tests/integration/test_ia_asistida_api.py` (4) y
+`scripts/verify_ia_asistida_mutations.py` (6 mutaciones, 6 mueren). La coleccion
+de Insomnia paso a 122 peticiones en 20 carpetas: la ruta nueva entra en
+`CARPETAS` y en `NOMBRES`, o el test de rutas huerfanas la deja en "Sin /api/v1"
+sin avisar.
+
+---
+
+## Sin empresa no se digitaliza: el 200 que no habia guardado nada
+
+MEDIDO: con `companies` vacia, `POST /api/v1/scan/` recorria la carpeta y
+devolvia **200** con `archivos_vistos: 0`. No habia ningun ticket, pero la
+respuesta decia "todo bien": el operador daba la corrida por hecha y el papel
+se quedaba sin dueño. Un 403 con motivo es mejor que un exito que no guardo.
+
+El cerrojo vive en `guardia_de_permisos` (`app/core/deps.py`), no en cada
+endpoint. Cubre cinco puertas: `POST /scan/`, `POST /expenses/upload-batch`,
+`POST /expenses/digitalizar-directorio`, `POST /scan/files/{id}/reprocess` y
+`POST /tickets/extract-and-create`. Fuera quedan `GET /scan/config`, `/ocr`,
+`/ia` y `/stats` —necesarios para saber que falta— y `POST /tickets/extract`,
+que es vista previa y no escribe.
+
+Se pregunta por la **tabla** `companies`, no por `usuarios_empresas`. Una
+cuenta anterior a `0022` no tiene membresias y, por compatibilidad, la guardia
+la deja consultar y escribir cuando hay empresa; eso no puede convertirse en
+permiso para escanear en una base sin ninguna empresa. Con todas las empresas
+anuladas tambien para, con el mismo mensaje de `SIN_EMPRESA_ACTIVA`.
+
+Medido con `tests/integration/test_digitalizacion_sin_empresa.py` (7 pruebas,
+incluida la contraprueba con empresa activa) y
+`scripts/verify_digitalizacion_sin_empresa_mutations.py` (3 mutaciones, 3
+mueren). Las tres mutaciones probaron cosas distintas: quitar el cerrojo,
+dejar fuera `reprocess` y dejar fuera `extract-and-create`.
+
+---
+
+## Dos peticiones con el mismo token reventaban la sesion
+
+MEDIDO en el navegador: al entrar, el front pide `/auth/empresas`, `/dashboard`
+y registra un evento de auditoria con el MISMO token. Los tres llegaban juntos,
+los tres veian `sesiones_activas` sin fila y los tres hacian `INSERT`. Postgres
+rechazaba el segundo con `UniqueViolationError: sesiones_activas_pkey` y uno de
+esos GET devolvia **500**. En pantalla: "Sin empresas asignadas" aunque la
+empresa existia.
+
+`_usuario_del_token` no puede decidir "crear" con un `SELECT` previo: entre el
+SELECT y el INSERT otra peticion puede ganar. Ahora la fila se crea o se renueva
+con `INSERT ... ON CONFLICT (jti) DO UPDATE SET ultima_actividad`, con variante
+PostgreSQL y SQLite. El SELECT de arriba sigue midiendo inactividad sobre la
+marca que existia **antes** de esta peticion: si se leyera despues del upsert,
+toda peticion nueva renovaria el reloj y la caducidad por inactividad seria
+incapaz de dispararse. Se sincroniza ademas el objeto del identity map para que
+quien ya tenia la fila en memoria vea la marca nueva.
+
+`tests/integration/test_sesion_y_revocacion.py` fuerza la ventana de carrera
+haciendo que el SELECT siga devolviendo "no hay fila" tras el primer INSERT;
+sin el upsert, la segunda peticion da 500. `scripts/verify_sesion_y_revocacion_mutations.py`
+sigue con 9 de 9.
+
+---
+
+## `PANA C` no es Bodega Aurrera
+
+MEDIDO en el OCR real de un comprobante de esta máquina:
+
+```
+“odegaAurrera AN     <- el logo, sin la B y sin espacio
+had
+ARTICULO
+PANA C               <- una línea de artículo
+...
+```
+
+El logo no calificaba como nombre: no tiene tres mayúsculas seguidas y sus
+palabras empiezan en minúscula. `PANA C` sí calificaba por `[A-Z]{3,}` y se
+guardaba como proveedor, con total y aritmética correctos. El tablero mostraba
+un producto como comercio y ningún check lo cuestionaba.
+
+`parser_service.py` busca ahora las marcas impresas en las primeras 15 líneas
+**antes** que el candidato genérico, con un patrón que tolera la B comida
+(`b?odega\s*aurrera`). Si la marca gana, se guarda el nombre canónico
+`BODEGA AURRERA`: no se inventa la sucursal ni se reescribe lo que el OCR leyó.
+Además se rechazan los fragmentos «palabra larga + una sola letra» y el plural
+`CONCEPTOS`, que antes entraba como proveedor.
+
+No es una lista de nombres inventados ni una decisión por posición: el texto
+impreso en el papel decide. Verificación:
+`tests/unit/test_parser_service.py::TestLaMarcaImpresaGanaSobreElArticulo` (4
+pruebas) y `scripts/verify_proveedor_marca_mutations.py` (4 mutaciones, 4
+mueren: quitar la pasada de marca, exigir la B, aceptar `PANA C` y aceptar
+`CONCEPTOS`).
+
+---
+
 ## Arreglados en el pasado (no reabrir)
 - **El trigger de stock negativo contaba con el signo equivocado**, y la defensa no
   bloqueaba la salida que dejaba el inventario en negativo — punto 26.

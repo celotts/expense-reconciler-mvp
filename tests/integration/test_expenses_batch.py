@@ -105,7 +105,7 @@ class TestLaPuerta:
         assert r.status_code == 401
 
     async def test_company_inexistente_es_404(
-        self, async_client, sin_modelo, pdf_de_prueba
+        self, async_client, test_company, sin_modelo, pdf_de_prueba
     ):
         """Un `company_id` inventado no deja tickets huerfanos."""
         r = await _subir(async_client, uuid4())

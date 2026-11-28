@@ -94,7 +94,7 @@ MUTACIONES: list[tuple[str, str, str, str]] = [
     (
         "el init.sql deja de registrar la migracion de sesiones",
         "db/init.sql",
-        "    ('0028_sesiones_activas.sql')\n",
+        "    ('0028_sesiones_activas.sql'),\n",
         "",
     ),
     (

@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # frente mantiene la sesion viva mientras haya una corrida en marcha.
     SESSION_IDLE_MINUTES: int = 30
 
+    # IA asistida de SOLO LECTURA: propone explicaciones, nunca escribe ni decide.
+    # Apagada por omision: un modelo que alucina un numero en un ticket es peor
+    # que no tener explicacion, y la funcion nueva no debe cambiar el escaneo.
+    IA_ASISTIDA_HABILITADA: bool = False
+
     # AI Settings
     AI_ENABLED: bool = True
     OPENAI_API_KEY: str | None = None

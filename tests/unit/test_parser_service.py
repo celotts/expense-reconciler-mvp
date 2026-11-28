@@ -887,6 +887,50 @@ class TestProveedorEnCfdiconTipoDeDocumentoPegado:
         )
 
 
+class TestLaMarcaImpresaGanaSobreElArticulo:
+    """MEDIDO: un ticket de Bodega Aurrera se guardaba como `PANA C`.
+
+    El OCR del comprobante real devolvia el logo partido (`“odegaAurrera AN`,
+    sin la B) y mas abajo una linea de articulo (`PANA C`). El logo no pasaba
+    los filtros generales de nombre; el articulo si, porque tenia tres
+    mayusculas. El gasto quedaba atribuido a un producto.
+
+    La defensa no es una lista de nombres que el sistema inventa: es la marca
+    IMPRESA en el papel. Se acepta aunque el OCR se coma una letra, y se busca
+    antes que el candidato generico para que un articulo que aparezca antes no
+    gane por posicion.
+    """
+
+    # Texto tal como salio del OCR, con el ruido delante de la marca.
+    TEXTO_REAL = (
+        "PANA C\n"
+        "ARTICULO\n"
+        "“odegaAurrera AN\n"
+        "7503049558042 Dona Croce\n"
+        "ABARROTES PROCESADOS. 24004\n"
+        "yh eae On 217.27\n"
+        "A ARE 234,00\n"
+    )
+
+    def test_el_logo_roto_se_reconoce_y_el_articulo_no_gana(self):
+        resultado = _parse_receipt_text(self.TEXTO_REAL)
+        assert resultado.provider_name == "BODEGA AURRERA"
+
+    def test_la_marca_con_la_b_tambien_se_reconoce(self):
+        texto = "BODEGA AURRERA (CUAUHTEMOC)\nTOTAL: 234.00\n"
+        assert _parse_receipt_text(texto).provider_name == "BODEGA AURRERA"
+
+    def test_un_articulo_con_tres_mayusculas_no_es_comercio(self):
+        """Contraprueba: sin la marca, `PANA C` no puede volver a ganar."""
+        texto = "PANA C\nARTICULO\nTOTAL: 234.00\n"
+        assert _parse_receipt_text(texto).provider_name == "Unknown Provider"
+
+    def test_un_encabezado_suelto_no_es_comercio(self):
+        """`CONCEPTOS` no estaba en FIELD_LABEL_RE: el plural si pasaba."""
+        texto = "CONCEPTOS\nPANA C\nTOTAL: 234.00\n"
+        assert _parse_receipt_text(texto).provider_name == "Unknown Provider"
+
+
 class TestExtraccionDeSubtotal:
     """El subtotal nunca se extracia, y el campo estaba declarado y documentado.
 

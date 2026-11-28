@@ -19,6 +19,8 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as insert_postgres
+from sqlalchemy.dialects.sqlite import insert as insert_sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -143,20 +145,7 @@ async def _usuario_del_token(
             )
         ).scalar_one_or_none()
         ahora = utcnow()
-        if sesion is None:
-            expira = claims.get("exp")
-            if not isinstance(expira, int):
-                raise _no_autorizado("El token no es valido")
-            db.add(
-                SesionActiva(
-                    jti=jti,
-                    user_id=usuario_id,
-                    emitida_at=ahora,
-                    expira_at=datetime.fromtimestamp(expira, tz=timezone.utc),
-                    ultima_actividad=ahora,
-                )
-            )
-        else:
+        if sesion is not None:
             inactiva = ahora - como_utc(sesion.ultima_actividad)
             if (
                 settings.SESSION_IDLE_MINUTES > 0
@@ -168,8 +157,41 @@ async def _usuario_del_token(
                 raise _no_autorizado(
                     "La sesion termino por inactividad. Vuelve a iniciar sesion."
                 )
-            sesion.ultima_actividad = ahora
 
+        # Dos peticiones que llegan juntas con el MISMO token hacian las dos un
+        # SELECT sin fila y luego dos INSERT: la segunda reventaba con
+        # UniqueViolation en `sesiones_activas_pkey` y devolvia 500. La fila se
+        # crea o se renueva en UNA sentencia, con el jti como arbitro; el SELECT
+        # de arriba sigue sirviendo solo para medir inactividad sobre la fila
+        # que ya existia ANTES de esta peticion.
+        expira = claims.get("exp")
+        if not isinstance(expira, int):
+            raise _no_autorizado("El token no es valido")
+        valores_sesion = {
+            "jti": jti,
+            "user_id": usuario_id,
+            "emitida_at": ahora,
+            "expira_at": datetime.fromtimestamp(expira, tz=timezone.utc),
+            "ultima_actividad": ahora,
+        }
+        insertar = (
+            insert_postgres
+            if db.bind.dialect.name == "postgresql"
+            else insert_sqlite
+        )
+        await db.execute(
+            insertar(SesionActiva)
+            .values(**valores_sesion)
+            .on_conflict_do_update(
+                index_elements=["jti"],
+                set_={"ultima_actividad": ahora},
+            )
+        )
+        # El upsert actualiza la fila, pero no sincroniza el objeto que ya
+        # estuviera en el identity map de esta sesion. Sin esto, un test (o un
+        # mismo request que reutilice la sesion) sigue leyendo la marca vieja.
+        if sesion is not None:
+            sesion.ultima_actividad = ahora
         await db.commit()
         request.state.jti = jti
 
@@ -593,6 +615,31 @@ def requiere_rol(*roles: RolEmpresa):
 # ruta sigue pidiendo token y, si corresponde, empresa activa.
 _RUTAS_DE_SOLO_LECTURA = frozenset({"/api/v1/duplicados/buscar"})
 
+# Las puertas que LEEN papel y escriben resultado. No son todas las rutas de
+# `/scan`: `GET /scan/config` y `GET /scan/ocr` tienen que seguir contestando en
+# una instalacion nueva para poder decir que falta una empresa. Tampoco entra
+# `POST /tickets/extract`: es una vista previa que no guarda nada.
+_RUTAS_DE_DIGITALIZACION = frozenset({
+    "/api/v1/scan",
+    "/api/v1/expenses/upload-batch",
+    "/api/v1/expenses/digitalizar-directorio",
+    "/api/v1/tickets/extract-and-create",
+})
+
+
+def _es_digitalizacion(request: Request) -> bool:
+    """¿Esta peticion lee comprobantes y puede dejar datos escritos?"""
+    if request.method.upper() != "POST":
+        return False
+    ruta = request.url.path.rstrip("/")
+    if ruta in _RUTAS_DE_DIGITALIZACION:
+        return True
+    return (
+        ruta.startswith("/api/v1/scan/files/")
+        and ruta.endswith("/reprocess")
+    )
+
+
 _PERMISO_POR_METODO: dict[str, Permiso] = {
     "POST": Permiso.CREAR,
     "PUT": Permiso.EDITAR,
@@ -750,6 +797,23 @@ async def guardia_de_permisos(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=await _detalle_sin_empresa_activa(request, usuario, db),
             )
+        # Cuenta anterior a `0022`: no tiene membresias y por compatibilidad
+        # puede trabajar. Pero una instalacion SIN NINGUNA empresa activa no
+        # tiene donde atribuir un gasto. Antes `POST /scan/` corria, devolvia
+        # 200 y no guardaba nada; el operador creia que habia digitalizado.
+        # Se mira la TABLA, no las membresias, y se hace aqui para que el
+        # motivo especifico de una empresa anulada gane sobre el generico.
+        if _es_digitalizacion(request):
+            hay_empresa = await db.scalar(
+                select(CompanyModel.id)
+                .where(CompanyModel.estado == EstadoEmpresa.ACTIVO.value)
+                .limit(1)
+            )
+            if hay_empresa is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=SIN_EMPRESA_ACTIVA,
+                )
         return
 
     cabecera = request.headers.get("X-Company-ID")

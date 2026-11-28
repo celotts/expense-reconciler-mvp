@@ -171,6 +171,9 @@ CARPETAS: list[tuple[str, str]] = [
     ("/categorias", "Categorias"),
     ("/companies", "Companies"),
     ("/tickets", "Tickets"),
+    # Solo lectura, pero es una superficie nueva: si cae en "Sin /api/v1" el
+    # test de rutas huerfanas lo delata y la coleccion no la ofrece.
+    ("/ia-asistida", "IA asistida"),
     ("/expenses", "Expenses"),
     ("/scan", "Scan"),
     ("/usuarios", "Usuarios"),
@@ -303,6 +306,9 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/tickets/extract"): "t6. Leer SIN gate ni persistencia (solo el resultado)",
     ("PATCH", "/tickets/categoria"): "t7. Clasificar varios de una vez",
     ("DELETE", "/tickets/{ticket_id}"): "t8. Borrar un ticket",
+    ("GET", "/ia-asistida/tickets/{ticket_id}/explicacion"): (
+        "ia1. Explicar un ticket (solo lectura; puede descartarse por numeros inventados)"
+    ),
     ("GET", "/scan/config"): "s1. Configuracion del escaner",
     ("GET", "/scan/ocr"): "s2. Estado del OCR (hay Tesseract?)",
     # El nombre dice LAS DOS preguntas que contesta: configurado e instalado. Un

@@ -20,8 +20,9 @@ from datetime import timedelta
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import false, select
 
+import app.core.deps as deps
 from app.core.security import crear_token, leer_token
 from app.core.time import como_utc, utcnow
 from app.models.sesion_activa import SesionActiva
@@ -145,6 +146,41 @@ class TestLaSesionSeCierraEnElServidor:
             await db_session.execute(select(SesionActiva).where(SesionActiva.jti == jti))
         ).scalar_one()
         assert como_utc(sesion.ultima_actividad) > marca
+
+    async def test_dos_peticiones_con_el_mismo_token_no_reventan_por_la_sesion(
+        self, async_client_sin_autenticar, db_session, usuario_de_prueba, monkeypatch
+    ):
+        """MEDIDO: dos GET que llegan juntos con el mismo token daban 500.
+
+        El front pide `/auth/empresas`, `/dashboard` y registra un evento de
+        auditoria al entrar. Las tres comparten token. El SELECT de
+        `sesiones_activas` no veia fila en ninguna, las tres hacian INSERT y
+        Postgres rechazaba el segundo con `sesiones_activas_pkey`.
+
+        Se fuerza que el SELECT siga devolviendo "no hay fila" incluso despues
+        de creada, para reproducir la ventana de carrera sin depender del
+        momento en que el servidor acepte las peticiones. Con el upsert por jti
+        las dos devuelven 200 y queda UNA fila.
+        """
+        token, _ = crear_token(str(usuario_de_prueba.id), usuario_de_prueba.email)
+        jti = UUID(leer_token(token)["jti"])
+        select_real = deps.select
+
+        def select_sin_sesion(*entidades, **kwargs):
+            sentencia = select_real(*entidades, **kwargs)
+            if SesionActiva in entidades:
+                return select_real(SesionActiva).where(false())
+            return sentencia
+
+        monkeypatch.setattr(deps, "select", select_sin_sesion)
+
+        assert (await async_client_sin_autenticar.get(RUTA, headers=_cabecera(token))).status_code == 200
+        assert (await async_client_sin_autenticar.get(RUTA, headers=_cabecera(token))).status_code == 200
+
+        filas = (
+            await db_session.execute(select(SesionActiva).where(SesionActiva.jti == jti))
+        ).scalars().all()
+        assert len(filas) == 1
 
     async def test_la_actividad_no_extiende_el_exp(
         self, async_client_sin_autenticar, db_session, usuario_de_prueba, monkeypatch

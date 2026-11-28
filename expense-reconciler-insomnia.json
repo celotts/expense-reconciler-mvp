@@ -1205,7 +1205,7 @@
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
-      "name": "Expenses",
+      "name": "IA asistida",
       "environment": {},
       "metaSortKey": -994,
       "collectionId": "col_api",
@@ -1218,6 +1218,45 @@
     {
       "_id": "req_34",
       "parentId": "fld_06",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "ia1. Explicar un ticket (solo lectura; puede descartarse por numeros inventados)",
+      "description": "",
+      "method": "GET",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/ia-asistida/tickets/{{ ticket_id }}/explicacion",
+      "metaSortKey": 34,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_07",
+      "parentId": "col_api",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "Expenses",
+      "environment": {},
+      "metaSortKey": -993,
+      "collectionId": "col_api",
+      "auth": {
+        "type": "bearer",
+        "token": "{{ token }}"
+      },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_35",
+      "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "6c. Digitalizar DIRECTORIO (ruta permitida; reporta extensiones no permitidas)",
@@ -1235,13 +1274,13 @@
         }
       ],
       "url": "{{ base_url }}/expenses/digitalizar-directorio",
-      "metaSortKey": 34,
+      "metaSortKey": 35,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_35",
-      "parentId": "fld_06",
+      "_id": "req_36",
+      "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "6b. Subir un LOTE (misma captura; respeta periodo cerrado)",
@@ -1284,18 +1323,18 @@
         }
       ],
       "url": "{{ base_url }}/expenses/upload-batch",
-      "metaSortKey": 35,
+      "metaSortKey": 36,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_07",
+      "_id": "fld_08",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Scan",
       "environment": {},
-      "metaSortKey": -993,
+      "metaSortKey": -992,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -1304,8 +1343,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_36",
-      "parentId": "fld_07",
+      "_id": "req_37",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "4b. Archivos vistos  <- fija {{ file_id }}",
@@ -1348,7 +1387,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/files",
-      "metaSortKey": 36,
+      "metaSortKey": 37,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -1360,8 +1399,8 @@
       ]
     },
     {
-      "_id": "req_37",
-      "parentId": "fld_07",
+      "_id": "req_38",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "4c. DIAGNOSTICO de un archivo ya escaneado, NO guarda",
@@ -1379,7 +1418,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/diagnostico",
-      "metaSortKey": 37,
+      "metaSortKey": 38,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -1391,8 +1430,8 @@
       ]
     },
     {
-      "_id": "req_38",
-      "parentId": "fld_07",
+      "_id": "req_39",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "5. Escanear carpeta (SI guarda)",
@@ -1414,13 +1453,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/",
-      "metaSortKey": 38,
+      "metaSortKey": 39,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_39",
-      "parentId": "fld_07",
+      "_id": "req_40",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s1. Configuracion del escaner",
@@ -1438,13 +1477,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/config",
-      "metaSortKey": 39,
+      "metaSortKey": 40,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_40",
-      "parentId": "fld_07",
+      "_id": "req_41",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s2b. Que modelo esta configurado y si esta instalado",
@@ -1462,13 +1501,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/ia",
-      "metaSortKey": 40,
+      "metaSortKey": 41,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_41",
-      "parentId": "fld_07",
+      "_id": "req_42",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s2. Estado del OCR (hay Tesseract?)",
@@ -1486,13 +1525,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/ocr",
-      "metaSortKey": 41,
+      "metaSortKey": 42,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_42",
-      "parentId": "fld_07",
+      "_id": "req_43",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s3. Resumen del escaneo",
@@ -1510,13 +1549,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/stats",
-      "metaSortKey": 42,
+      "metaSortKey": 43,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_43",
-      "parentId": "fld_07",
+      "_id": "req_44",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s4. Corridas del escaner",
@@ -1541,13 +1580,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/runs",
-      "metaSortKey": 43,
+      "metaSortKey": 44,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_44",
-      "parentId": "fld_07",
+      "_id": "req_45",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s5. Detalle de una corrida",
@@ -1565,13 +1604,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/runs/{{ corrida_id }}",
-      "metaSortKey": 44,
+      "metaSortKey": 45,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_45",
-      "parentId": "fld_07",
+      "_id": "req_46",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s6. Releer UN archivo (SI sobrescribe)",
@@ -1596,13 +1635,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/reprocess",
-      "metaSortKey": 45,
+      "metaSortKey": 46,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_46",
-      "parentId": "fld_07",
+      "_id": "req_47",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s7. Detalle de un archivo",
@@ -1620,13 +1659,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}",
-      "metaSortKey": 46,
+      "metaSortKey": 47,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_47",
-      "parentId": "fld_07",
+      "_id": "req_48",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s7b. Descargar el comprobante original",
@@ -1644,13 +1683,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/documento",
-      "metaSortKey": 47,
+      "metaSortKey": 48,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_48",
-      "parentId": "fld_07",
+      "_id": "req_49",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s7c. Vista previa del comprobante",
@@ -1668,13 +1707,13 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/documento/vista-previa",
-      "metaSortKey": 48,
+      "metaSortKey": 49,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_49",
-      "parentId": "fld_07",
+      "_id": "req_50",
+      "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s8. DEJAR LA BASE LIMPIA (destructivo, 4 cerrojos)",
@@ -1696,18 +1735,18 @@
         }
       ],
       "url": "{{ base_url }}/scan/reset",
-      "metaSortKey": 49,
+      "metaSortKey": 50,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_08",
+      "_id": "fld_09",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Usuarios",
       "environment": {},
-      "metaSortKey": -992,
+      "metaSortKey": -991,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -1716,8 +1755,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_50",
-      "parentId": "fld_08",
+      "_id": "req_51",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u0. Alta de cuenta",
@@ -1739,13 +1778,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios",
-      "metaSortKey": 50,
+      "metaSortKey": 51,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_51",
-      "parentId": "fld_08",
+      "_id": "req_52",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u1. Cuentas del sistema",
@@ -1782,13 +1821,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios",
-      "metaSortKey": 51,
+      "metaSortKey": 52,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_52",
-      "parentId": "fld_08",
+      "_id": "req_53",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u2. Ver una cuenta",
@@ -1806,13 +1845,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 52,
+      "metaSortKey": 53,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_53",
-      "parentId": "fld_08",
+      "_id": "req_54",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u3. Renombrar / dar de baja  (pide X-Contrasena-Actual)",
@@ -1838,13 +1877,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 53,
+      "metaSortKey": 54,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_54",
-      "parentId": "fld_08",
+      "_id": "req_55",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u4. Cambiar contrasena  (pide X-Contrasena-Actual)",
@@ -1870,13 +1909,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena",
-      "metaSortKey": 54,
+      "metaSortKey": 55,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_55",
-      "parentId": "fld_08",
+      "_id": "req_56",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u5. Roles en la empresa activa  <- solo owner/admin",
@@ -1894,13 +1933,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/membresias",
-      "metaSortKey": 55,
+      "metaSortKey": 56,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_56",
-      "parentId": "fld_08",
+      "_id": "req_57",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u6. Dar acceso con un rol (pide X-Contrasena-Actual)",
@@ -1926,13 +1965,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/membresias",
-      "metaSortKey": 56,
+      "metaSortKey": 57,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_57",
-      "parentId": "fld_08",
+      "_id": "req_58",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u7. Cambiar rol o quitar acceso (pide X-Contrasena-Actual)",
@@ -1958,13 +1997,13 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/membresias/{{ usuario_id }}",
-      "metaSortKey": 57,
+      "metaSortKey": 58,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_58",
-      "parentId": "fld_08",
+      "_id": "req_59",
+      "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "u8. Reset administrativo de clave (pide X-Contrasena-Actual)",
@@ -1990,18 +2029,18 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena-admin",
-      "metaSortKey": 58,
+      "metaSortKey": 59,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_09",
+      "_id": "fld_10",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Inventario",
       "environment": {},
-      "metaSortKey": -991,
+      "metaSortKey": -990,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -2010,8 +2049,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_59",
-      "parentId": "fld_09",
+      "_id": "req_60",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i1. Lineas sin producto (la cola de trabajo)",
@@ -2036,13 +2075,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/cola",
-      "metaSortKey": 59,
+      "metaSortKey": 60,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_60",
-      "parentId": "fld_09",
+      "_id": "req_61",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i2. Compras  <- fija {{ compra_id }}",
@@ -2085,13 +2124,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras",
-      "metaSortKey": 60,
+      "metaSortKey": 61,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_61",
-      "parentId": "fld_09",
+      "_id": "req_62",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i3. Ver una compra",
@@ -2109,13 +2148,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
-      "metaSortKey": 61,
+      "metaSortKey": 62,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_62",
-      "parentId": "fld_09",
+      "_id": "req_63",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i4. Asignar producto a una linea",
@@ -2137,13 +2176,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
-      "metaSortKey": 62,
+      "metaSortKey": 63,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_63",
-      "parentId": "fld_09",
+      "_id": "req_64",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i5. Autorizar  << SUMA STOCK, no se deshace",
@@ -2165,13 +2204,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
-      "metaSortKey": 63,
+      "metaSortKey": 64,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_64",
-      "parentId": "fld_09",
+      "_id": "req_65",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i6. Rechazar: no es una compra",
@@ -2193,13 +2232,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/rechazar",
-      "metaSortKey": 64,
+      "metaSortKey": 65,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_65",
-      "parentId": "fld_09",
+      "_id": "req_66",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i7. Deshacer el rechazo",
@@ -2217,13 +2256,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/reabrir",
-      "metaSortKey": 65,
+      "metaSortKey": 66,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_66",
-      "parentId": "fld_09",
+      "_id": "req_67",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i8. El kardex",
@@ -2260,13 +2299,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 66,
+      "metaSortKey": 67,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_67",
-      "parentId": "fld_09",
+      "_id": "req_68",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i9. Venta o ajuste  << SUMA/RESTA STOCK, no se deshace",
@@ -2295,13 +2334,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 67,
+      "metaSortKey": 68,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_68",
-      "parentId": "fld_09",
+      "_id": "req_69",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i10. Catalogo de productos (con stock)",
@@ -2338,13 +2377,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 68,
+      "metaSortKey": 69,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_69",
-      "parentId": "fld_09",
+      "_id": "req_70",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i11. Alta manual de producto",
@@ -2373,13 +2412,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 69,
+      "metaSortKey": 70,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_70",
-      "parentId": "fld_09",
+      "_id": "req_71",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i12. Ver un producto",
@@ -2404,13 +2443,13 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 70,
+      "metaSortKey": 71,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_71",
-      "parentId": "fld_09",
+      "_id": "req_72",
+      "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "i13. Renombrar / verificar / dar de baja",
@@ -2439,18 +2478,18 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 71,
+      "metaSortKey": 72,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_10",
+      "_id": "fld_11",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Bank Transactions",
       "environment": {},
-      "metaSortKey": -990,
+      "metaSortKey": -989,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -2459,8 +2498,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_72",
-      "parentId": "fld_10",
+      "_id": "req_73",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Movimientos bancarios",
@@ -2497,7 +2536,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 72,
+      "metaSortKey": 73,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2509,8 +2548,8 @@
       ]
     },
     {
-      "_id": "req_73",
-      "parentId": "fld_10",
+      "_id": "req_74",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5b. Alta manual de un movimiento",
@@ -2532,13 +2571,13 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 73,
+      "metaSortKey": 74,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_74",
-      "parentId": "fld_10",
+      "_id": "req_75",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5c. Subir CSV (SOLO previsualiza, no guarda)",
@@ -2611,13 +2650,13 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv",
-      "metaSortKey": 74,
+      "metaSortKey": 75,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_75",
-      "parentId": "fld_10",
+      "_id": "req_76",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5d. Subir CSV y guardar",
@@ -2696,13 +2735,13 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
-      "metaSortKey": 75,
+      "metaSortKey": 76,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_76",
-      "parentId": "fld_10",
+      "_id": "req_77",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5e. Ver un movimiento",
@@ -2720,13 +2759,13 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 76,
+      "metaSortKey": 77,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_77",
-      "parentId": "fld_10",
+      "_id": "req_78",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5f. Corregir un movimiento",
@@ -2748,13 +2787,13 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 77,
+      "metaSortKey": 78,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_78",
-      "parentId": "fld_10",
+      "_id": "req_79",
+      "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r5g. Borrar un movimiento",
@@ -2772,18 +2811,18 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 78,
+      "metaSortKey": 79,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_11",
+      "_id": "fld_12",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Reconciliations",
       "environment": {},
-      "metaSortKey": -989,
+      "metaSortKey": -988,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -2792,8 +2831,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_79",
-      "parentId": "fld_11",
+      "_id": "req_80",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r1. Conciliaciones  <- fija {{ reconciliation_id }}",
@@ -2836,7 +2875,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 79,
+      "metaSortKey": 80,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2848,8 +2887,8 @@
       ]
     },
     {
-      "_id": "req_80",
-      "parentId": "fld_11",
+      "_id": "req_81",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r1b. Crear una conciliacion a mano",
@@ -2871,13 +2910,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 80,
+      "metaSortKey": 81,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_81",
-      "parentId": "fld_11",
+      "_id": "req_82",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r2. Correr el motor de conciliacion",
@@ -2899,13 +2938,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/run",
-      "metaSortKey": 81,
+      "metaSortKey": 82,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_82",
-      "parentId": "fld_11",
+      "_id": "req_83",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r2b. Ver una conciliacion",
@@ -2923,13 +2962,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 82,
+      "metaSortKey": 83,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_83",
-      "parentId": "fld_11",
+      "_id": "req_84",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r3. Corregir un veredicto a mano",
@@ -2951,13 +2990,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 83,
+      "metaSortKey": 84,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_84",
-      "parentId": "fld_11",
+      "_id": "req_85",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r4. Borrar una conciliacion",
@@ -2975,13 +3014,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 84,
+      "metaSortKey": 85,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_85",
-      "parentId": "fld_11",
+      "_id": "req_86",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r6. Exportar Excel",
@@ -3024,13 +3063,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/excel",
-      "metaSortKey": 85,
+      "metaSortKey": 86,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_86",
-      "parentId": "fld_11",
+      "_id": "req_87",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r7. Exportar CONTPAQI",
@@ -3079,13 +3118,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/contpaqi",
-      "metaSortKey": 86,
+      "metaSortKey": 87,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_87",
-      "parentId": "fld_11",
+      "_id": "req_88",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r8. Exportar generico",
@@ -3134,13 +3173,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/generic",
-      "metaSortKey": 87,
+      "metaSortKey": 88,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_88",
-      "parentId": "fld_11",
+      "_id": "req_89",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r9. Mapeos contables  <- fija {{ mapping_id }}",
@@ -3165,13 +3204,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 88,
+      "metaSortKey": 89,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_89",
-      "parentId": "fld_11",
+      "_id": "req_90",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r10. Crear mapeo contable",
@@ -3193,13 +3232,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 89,
+      "metaSortKey": 90,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_90",
-      "parentId": "fld_11",
+      "_id": "req_91",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r11. Ver un mapeo",
@@ -3217,13 +3256,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 90,
+      "metaSortKey": 91,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_91",
-      "parentId": "fld_11",
+      "_id": "req_92",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r12. Corregir un mapeo",
@@ -3245,13 +3284,13 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 91,
+      "metaSortKey": 92,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_92",
-      "parentId": "fld_11",
+      "_id": "req_93",
+      "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r13. Borrar un mapeo",
@@ -3269,18 +3308,18 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 92,
+      "metaSortKey": 93,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_12",
+      "_id": "fld_13",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Reports",
       "environment": {},
-      "metaSortKey": -988,
+      "metaSortKey": -987,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -3289,8 +3328,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_93",
-      "parentId": "fld_12",
+      "_id": "req_94",
+      "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r1. Informe de cierre (JSON, para revisar antes de firmar)",
@@ -3321,13 +3360,13 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual",
-      "metaSortKey": 93,
+      "metaSortKey": 94,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_94",
-      "parentId": "fld_12",
+      "_id": "req_95",
+      "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "r2. Descargar el PDF  <- lo que se entrega al cliente",
@@ -3358,18 +3397,18 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual.pdf",
-      "metaSortKey": 94,
+      "metaSortKey": 95,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_13",
+      "_id": "fld_14",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Auditoria",
       "environment": {},
-      "metaSortKey": -987,
+      "metaSortKey": -986,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -3378,8 +3417,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_95",
-      "parentId": "fld_13",
+      "_id": "req_96",
+      "parentId": "fld_14",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "a1. Evento de auditoria  <- navegacion/pantalla",
@@ -3401,13 +3440,13 @@
         }
       ],
       "url": "{{ base_url }}/auditoria/evento",
-      "metaSortKey": 95,
+      "metaSortKey": 96,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_96",
-      "parentId": "fld_13",
+      "_id": "req_97",
+      "parentId": "fld_14",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "a2. Rastro de auditoria  (SOLO perfiles privilegiados; los demas, 403)",
@@ -3462,18 +3501,18 @@
         }
       ],
       "url": "{{ base_url }}/auditoria",
-      "metaSortKey": 96,
+      "metaSortKey": 97,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_14",
+      "_id": "fld_15",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Sistema",
       "environment": {},
-      "metaSortKey": -986,
+      "metaSortKey": -985,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -3482,8 +3521,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_97",
-      "parentId": "fld_14",
+      "_id": "req_98",
+      "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "s1. Respaldo de la base de datos  (descarga SQL, solo admin)",
@@ -3501,18 +3540,18 @@
         }
       ],
       "url": "{{ base_url }}/sistema/backup",
-      "metaSortKey": 97,
+      "metaSortKey": 98,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_15",
+      "_id": "fld_16",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Caja chica",
       "environment": {},
-      "metaSortKey": -985,
+      "metaSortKey": -984,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -3521,8 +3560,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_98",
-      "parentId": "fld_15",
+      "_id": "req_99",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc2. Listar cajas",
@@ -3547,13 +3586,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/",
-      "metaSortKey": 98,
+      "metaSortKey": 99,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_99",
-      "parentId": "fld_15",
+      "_id": "req_100",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc1. Abrir caja chica  <- fija {{ caja_id }}",
@@ -3575,13 +3614,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/",
-      "metaSortKey": 99,
+      "metaSortKey": 100,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_100",
-      "parentId": "fld_15",
+      "_id": "req_101",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc3. Ver caja y su kardex",
@@ -3599,13 +3638,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}",
-      "metaSortKey": 100,
+      "metaSortKey": 101,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_101",
-      "parentId": "fld_15",
+      "_id": "req_102",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc4. Corregir nombre / responsable / umbral",
@@ -3627,13 +3666,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}",
-      "metaSortKey": 101,
+      "metaSortKey": 102,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_102",
-      "parentId": "fld_15",
+      "_id": "req_103",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc9. Cerrar caja (solo desde en_revision)",
@@ -3651,13 +3690,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/cerrar",
-      "metaSortKey": 102,
+      "metaSortKey": 103,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_103",
-      "parentId": "fld_15",
+      "_id": "req_104",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc10. Conciliar caja contra el banco (solo lectura)",
@@ -3675,13 +3714,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/conciliacion-bancaria",
-      "metaSortKey": 103,
+      "metaSortKey": 104,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_104",
-      "parentId": "fld_15",
+      "_id": "req_105",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc7. Enviar a revision (congela movimientos)",
@@ -3699,13 +3738,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/en-revision",
-      "metaSortKey": 104,
+      "metaSortKey": 105,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_105",
-      "parentId": "fld_15",
+      "_id": "req_106",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc6. Kardex de la caja",
@@ -3723,13 +3762,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/movimientos",
-      "metaSortKey": 105,
+      "metaSortKey": 106,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_106",
-      "parentId": "fld_15",
+      "_id": "req_107",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc5. Registrar movimiento  (banco solo si origen_fondo=banco)",
@@ -3751,13 +3790,13 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/movimientos",
-      "metaSortKey": 106,
+      "metaSortKey": 107,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_107",
-      "parentId": "fld_15",
+      "_id": "req_108",
+      "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "cc8. Reabrir una caja en revision",
@@ -3775,18 +3814,18 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/reabrir",
-      "metaSortKey": 107,
+      "metaSortKey": 108,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_16",
+      "_id": "fld_17",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Duplicados",
       "environment": {},
-      "metaSortKey": -984,
+      "metaSortKey": -983,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -3795,8 +3834,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_108",
-      "parentId": "fld_16",
+      "_id": "req_109",
+      "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "d1. Buscar duplicado por huella fiscal ANTES de contar el gasto",
@@ -3818,13 +3857,13 @@
         }
       ],
       "url": "{{ base_url }}/duplicados/buscar",
-      "metaSortKey": 108,
+      "metaSortKey": 109,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_109",
-      "parentId": "fld_16",
+      "_id": "req_110",
+      "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "d2. Resumen de duplicados (total sin contar dos veces)",
@@ -3849,18 +3888,18 @@
         }
       ],
       "url": "{{ base_url }}/duplicados/resumen",
-      "metaSortKey": 109,
+      "metaSortKey": 110,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_17",
+      "_id": "fld_18",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Tipos de gasto",
       "environment": {},
-      "metaSortKey": -983,
+      "metaSortKey": -982,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -3869,8 +3908,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_110",
-      "parentId": "fld_17",
+      "_id": "req_111",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g1. Sembrar cuentas basicas (POST: es una escritura idempotente)",
@@ -3888,13 +3927,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/sembrar",
-      "metaSortKey": 110,
+      "metaSortKey": 111,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_111",
-      "parentId": "fld_17",
+      "_id": "req_112",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g2. Listar cuentas de la empresa activa",
@@ -3919,13 +3958,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto",
-      "metaSortKey": 111,
+      "metaSortKey": 112,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_112",
-      "parentId": "fld_17",
+      "_id": "req_113",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g3. Crear una cuenta",
@@ -3947,13 +3986,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto",
-      "metaSortKey": 112,
+      "metaSortKey": 113,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_113",
-      "parentId": "fld_17",
+      "_id": "req_114",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g4. Corregir o dar de baja una cuenta (activo=false)",
@@ -3975,13 +4014,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/{{ tipo_id }}",
-      "metaSortKey": 113,
+      "metaSortKey": 114,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_114",
-      "parentId": "fld_17",
+      "_id": "req_115",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g5. Clasificar la seleccion de una vez (avisa si no clasifico todo)",
@@ -4003,13 +4042,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/cuenta",
-      "metaSortKey": 114,
+      "metaSortKey": 115,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_115",
-      "parentId": "fld_17",
+      "_id": "req_116",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g5b. Asignar cuenta a un ticket (escribe id y texto juntos)",
@@ -4031,13 +4070,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/cuenta",
-      "metaSortKey": 115,
+      "metaSortKey": 116,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_116",
-      "parentId": "fld_17",
+      "_id": "req_117",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g6. Cuenta por omision de un producto (NO se hereda al gasto)",
@@ -4059,13 +4098,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/productos/{{ producto_id }}/cuenta",
-      "metaSortKey": 116,
+      "metaSortKey": 117,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_117",
-      "parentId": "fld_17",
+      "_id": "req_118",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g7. Conteo de autorizaciones",
@@ -4083,13 +4122,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/autorizacion",
-      "metaSortKey": 117,
+      "metaSortKey": 118,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_118",
-      "parentId": "fld_17",
+      "_id": "req_119",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g8. Cola de autorizacion (datos planos, sin raw_text)",
@@ -4114,13 +4153,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/autorizacion/pendientes",
-      "metaSortKey": 118,
+      "metaSortKey": 119,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_119",
-      "parentId": "fld_17",
+      "_id": "req_120",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g9. Autorizar un gasto (firma del token; exige APROBAR)",
@@ -4138,13 +4177,13 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/autorizar",
-      "metaSortKey": 119,
+      "metaSortKey": 120,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_120",
-      "parentId": "fld_17",
+      "_id": "req_121",
+      "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "g10. Rechazar con motivo (exige APROBAR)",
@@ -4166,18 +4205,18 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/rechazar",
-      "metaSortKey": 120,
+      "metaSortKey": 121,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "fld_18",
+      "_id": "fld_19",
       "parentId": "col_api",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Sin /api/v1",
       "environment": {},
-      "metaSortKey": -982,
+      "metaSortKey": -981,
       "collectionId": "col_api",
       "auth": {
         "type": "bearer",
@@ -4186,8 +4225,8 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_121",
-      "parentId": "fld_18",
+      "_id": "req_122",
+      "parentId": "fld_19",
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "Health",
@@ -4200,7 +4239,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 121,
+      "metaSortKey": 122,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {

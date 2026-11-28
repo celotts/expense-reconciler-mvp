@@ -347,7 +347,7 @@ class TestElPeriodoCerradoEnElDirectorio:
         )
 
     async def test_company_inexistente_es_404(
-        self, async_client, carpetas, sin_modelo, lector_de_pdf
+        self, async_client, test_company, carpetas, sin_modelo, lector_de_pdf
     ):
         r = await _digitalizar(async_client, uuid4())
         assert r.status_code == 404

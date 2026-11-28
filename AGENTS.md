@@ -31,7 +31,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Escáner | `app/services/scan_service.py` → recorre `TICKETS_INPUT_DIR` |
 | Veredicto | `app/services/confidence_gate.py` → checks + umbrales |
 | Persistencia | `app/services/ticket_persistence.py` (la llama `app/api/tickets.py:_persist_extracted`) + `document_service.py` |
-| IA | `app/services/ai_client.py` (Ollama / OpenAI / Azure / local) |
+| IA | `app/services/ai_client.py` (Ollama / OpenAI / Azure / local) + `app/services/ia_asistida.py` (explicador de solo lectura) |
 | Auth | `app/core/security.py` (scrypt N=2\*\*17 + JWT HS256 escritos a mano, **sin PyJWT**) |
 | Esquema | `db/init.sql` + migraciones numeradas en `db/migrations/` |
 | Inventario | `app/services/inventario_service.py` → compras, kardex y stock |
@@ -83,6 +83,19 @@ del gate, no separados. `app/routers/expenses.py` era un router muerto con
   Lo rechazado vuelve en `archivos_no_permitidos` con **nombre**, extensión y motivo.
 - Pantalla: `CargaPorLote` en `Scan.tsx`, una sola acción para archivos o directorio.
   Front: `npm run build` y `npm run verify:lote` (18 comprobaciones sobre el HTML).
+
+**Sin empresa activa no se digitaliza, ni por curl.** El cerrojo vive en
+`guardia_de_permisos` (`app/core/deps.py`) y cubre `POST /scan/`,
+`POST /expenses/upload-batch`, `POST /expenses/digitalizar-directorio`,
+`POST /scan/files/{id}/reprocess` y `POST /tickets/extract-and-create`. Mira la
+**tabla** `companies`: una cuenta anterior a `0022` no tiene membresías y aun así
+no puede leer papel si no existe ninguna empresa activa. Medido: antes `POST
+/scan/` devolvía 200 con la carpeta vacía y sin crear tickets, que es peor que un
+error —el operador cree que digitalizó y el comprobante queda sin dueño. `GET
+/scan/config`, `/ocr`, `/ia` y `/stats` siguen contestando para poder decir qué
+falta. `POST /tickets/extract` es vista previa sin escritura y no se bloquea.
+Verificación: `tests/integration/test_digitalizacion_sin_empresa.py` (7) y
+`scripts/verify_digitalizacion_sin_empresa_mutations.py` (3 mutaciones, 3 mueren).
 
 
 
@@ -520,8 +533,10 @@ python3 scripts/verify_reporte_mutations.py          # 17 mutaciones: informe de
 python3 scripts/verify_vscode_mutations.py          # 18 mutaciones: superficie de confianza
 python3 scripts/verify_expenses_batch_mutations.py     # 7: lote autenticado + periodo + dedup
 python3 scripts/verify_expenses_directorio_mutations.py # 10: ruta, allowlist, nombres, formatos
+python3 scripts/verify_digitalizacion_sin_empresa_mutations.py # 3: cinco puertas cerradas sin empresa
 python3 scripts/verify_ocr_mutations.py             # 16 mutaciones: binarización + modelo de línea
 python3 scripts/verify_fecha_mutations.py           # 8 mutaciones: las reglas de fecha del parser
+python3 scripts/verify_proveedor_marca_mutations.py # 4: logo roto, articulo y encabezado como proveedor
 python3 scripts/verify_permisos_mutations.py        # 12: mapa y clasificacion por accion
 python3 scripts/verify_permisos_http_mutations.py   # 5: guardia HTTP, PDF, header, company_id declarado
 python3 scripts/verify_permisos_front_mutations.py  # 3: menu y botones del front
@@ -531,6 +546,7 @@ python3 scripts/verify_sesion_y_revocacion_mutations.py # 9: jti, revocacion HTT
 python3 scripts/verify_sesion_front_mutations.py    # 4: logout real, borrado, 401 propio, token muerto
 python3 scripts/verify_modal_salida_mutations.py   # 4: confirmar, corrida viva, error de red, barra
 python3 scripts/verify_dashboard_empresa_mutations.py # 5: cabecera, dependencia, cliente, recarga y ID
+python3 scripts/verify_ia_asistida_mutations.py       # 6: numeros, flag, evidence, error, empresa y ruta
 python3 scripts/verify_registro_de_migraciones_mutations.py # 3: el seed nombra cada .sql
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 ```
@@ -2220,6 +2236,16 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   lee `provider_name`: un proveedor mal leído se ve en Inicio, no en la cola.
   Ver `docs/known-issues.md` §58.
 
+- **El logo roto gana sobre el artículo leído.** En un ticket de Bodega Aurrera
+  el OCR devolvió `“odegaAurrera AN` (sin la B) y más abajo `PANA C`. El logo no
+  pasaba los filtros de nombre y el artículo sí, por tener tres mayúsculas: el
+  gasto se atribuía a un producto. `parser_service.py` busca las marcas impresas
+  **antes** que el candidato genérico, y rechaza los fragmentos de una palabra
+  larga seguida de una sola letra. No se inventa la sucursal ni se corrige el
+  texto: solo se nombra la cadena que el papel sostiene. Verificación:
+  `tests/unit/test_parser_service.py::TestLaMarcaImpresaGanaSobreElArticulo` y
+  `scripts/verify_proveedor_marca_mutations.py` (4 mutaciones, 4 mueren).
+
 - **El piso de caracteres del OCR es 60, no 120.** Un comprobante mínimo real
   (proveedor, RFC, fecha, subtotal, IVA, total) son 112 caracteres; con 120 se
   rechazaban tickets válidos y cada foto iba a vision a pagar un modelo.
@@ -2608,6 +2634,40 @@ Y ojo con la relacion escondida: mientras el cliente estuvo roto, la regla 3
 ("un PDF con texto no toca el modelo") la cumplia el `AttributeError`. Al
 arreglarlo, `ESCALAR_A_IA_SIN_LINEAS=false` tiene que estar en `.env` y en
 `.env.example`, o los PDF con texto salen como `llm` y falsean la medicion.
+
+## IA asistida: la IA propone, el codigo verifica, la persona decide
+
+`GET /api/v1/ia-asistida/tickets/{ticket_id}/explicacion` (router nuevo en
+`app/api/ia_asistida.py`, servicio en `app/services/ia_asistida.py`). Es la
+primera superficie de IA asistida y es **de solo lectura**: no escribe en la
+base, no aprueba tickets, no corrige campos y no cambia el gate. La bandera
+`IA_ASISTIDA_HABILITADA` nace en `false` en `.env` y `.env.example`; con ella
+apagada no se construye ni se llama al cliente.
+
+**Al modelo solo se le pasan los datos del ticket, nunca `raw_text` ni el id.**
+`datos_verificables()` arma una lista corta: comercio, RFC, folio, fecha,
+subtotal, IVA, IEPS, total, estado de la lectura y sus motivos. La evidencia
+cruda contiene folios y numeros sueltos que el modelo podria citar como si
+fueran importes, y el id es un UUID que nadie le pidió que repitiera.
+
+**La unica comprobacion que el codigo puede hacer sin volver a preguntar es que
+los numeros citados esten en la entrada.** `_numeros_de()` normaliza decimal y
+miles antes de comparar (`1,234.50` y `1234.50` son el mismo numero). Si el
+texto cita algo que no estaba —incluso un centavo distinto— el estado es
+`descartada`, la explicacion viaja **vacia** y el motivo nombra el numero. Un
+explicador que inventa un total es peor que un explicador que no responde.
+
+Los tres estados son `disponible` · `descartada` · `no_disponible`. Los dos
+ultimos nunca traen texto. Un fallo del proveedor se reporta como
+`no_disponible` con un mensaje generico: el cuerpo puede tener rutas internas y
+no se filtra al cliente. La ruta hereda `PROTEGIDOS` a nivel de router (un GET
+cuenta como lectura, asi que `viewer` puede usarla) y busca el ticket **dentro**
+de la empresa resuelta por `EmpresaVisible`: un id ajeno da 404, no 403.
+
+Verificacion: `tests/unit/test_ia_asistida.py` (9),
+`tests/integration/test_ia_asistida_api.py` (4) y
+`scripts/verify_ia_asistida_mutations.py` (6 mutaciones, 6 mueren). La coleccion
+de Insomnia se regenero con la ruta nueva (122 peticiones, 20 carpetas).
 
 ---
 

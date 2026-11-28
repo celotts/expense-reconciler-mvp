@@ -9,6 +9,7 @@ from app.api.duplicados import router as duplicados_router
 from app.api.companies import router as companies_router
 from app.api.dashboard import router as dashboard_router
 from app.api.inventario import router as inventario_router
+from app.api.ia_asistida import router as ia_asistida_router
 from app.api.reconciliations import router as reconciliations_router
 from app.api.reports import router as reports_router
 from app.api.scans import router as scan_router
@@ -76,6 +77,15 @@ api_router.include_router(
     tickets_router,
     prefix="/tickets",
     tags=["Tickets"],
+    dependencies=PROTEGIDOS,
+)
+# IA asistida de SOLO LECTURA: hereda la guardia de permisos como cualquier
+# otro router protegido, y ademas resuelve la empresa dentro del endpoint para
+# que un ticket ajeno no existe. No anade escrituras ni cambia el gate.
+api_router.include_router(
+    ia_asistida_router,
+    prefix="/ia-asistida",
+    tags=["IA asistida"],
     dependencies=PROTEGIDOS,
 )
 # Carga explicita por lote. Es la misma captura que `/tickets` y que `/scan`:

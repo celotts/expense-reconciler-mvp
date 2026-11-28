@@ -163,7 +163,7 @@ class TestEscanearPorHttp:
         assert tickets[0].total_amount == 1100.0
 
     async def test_el_resumen_dice_de_que_carpeta_leyo(
-        self, async_client, carpeta, sin_modelo, con_token
+        self, async_client, test_company, carpeta, sin_modelo, con_token
     ):
         """La ruta sale en la respuesta a proposito.
 
@@ -183,7 +183,7 @@ class TestEscanearPorHttp:
         assert respuesta.json()["carpeta"].endswith("tickets")
 
     async def test_una_empresa_que_no_existe_es_404(
-        self, async_client, carpeta, sin_modelo, con_token
+        self, async_client, test_company, carpeta, sin_modelo, con_token
     ):
         """Atribuir a una empresa inventada es un error del cliente, no un 500.
 
@@ -204,7 +204,7 @@ class TestEscanearPorHttp:
         assert "empresa" in respuesta.json()["detail"]
 
     async def test_una_carpeta_vacia_no_es_un_error(
-        self, async_client, carpeta, sin_modelo, con_token
+        self, async_client, test_company, carpeta, sin_modelo, con_token
     ):
         """Cero archivos es un escaneo que no encontro nada, no una falla.
 
@@ -482,7 +482,7 @@ class TestReproceso:
         assert "ya no esta" in respuesta.json()["detail"]
 
     async def test_reprocesar_un_id_inexistente_es_404(
-        self, async_client, con_token
+        self, async_client, test_company, con_token
     ):
         _, token = con_token
 
