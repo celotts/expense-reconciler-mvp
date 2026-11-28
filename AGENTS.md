@@ -236,12 +236,14 @@ de carpeta y `CargaPorLote`) con «Digitalizando en: X» y el RFC. Con más de u
 empresa activa ofrece un `<select>` que llama al **mismo** `elegirEmpresa` del
 contexto: no es un segundo sitio que decide, así que no puede pelearse con
 `X-Company-ID`. Sin empresa, o con la elegida anulada, no se pinta: el
-`AvisoSinEmpresa` ya dice el motivo. **Una sucursal no es una empresa**: la empresa
+`AvisoSinEmpresa` ya dice el motivo y los botones de carga quedan deshabilitados,
+incluso si una lista de permisos vieja dijera que se puede crear. **Una sucursal no es una empresa**: la empresa
 es el RFC y sus sucursales comparten cierres, dedup e inventario. Si algún día hay
 que distinguirlas, se agrega un campo `sucursal` al ticket y se filtra en reportes;
 crear un `company_id` por sucursal partiría el kardex y dejaría contar dos veces el
-mismo comprobante. `npm run verify:empresa` monta el formulario con dos empresas,
-mira el HTML y comprueba que el cartel sigue a la elección.
+mismo comprobante. `npm run verify:empresa` monta el formulario con dos empresas
+y con una anulada, mira el HTML y comprueba que el cartel sigue a la elección y
+que la anulada no ofrece carga.
 
 ### Bajar una empresa no es borrarla, y cerrar la última no es truco de interfaz
 

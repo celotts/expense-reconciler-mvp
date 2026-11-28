@@ -243,11 +243,15 @@ const DOS = [
   { company_id: 'c2', name: 'Persona moral', tax_id: 'RFC2', estado: 'activo' as const, motivo_baja: null, rol: 'admin', permisos: ['leer', 'crear'] },
 ];
 
-function pintarCarga(empresaActiva: EmpresaContextValue['empresaActiva']): string {
+function pintarCarga(
+  empresaActiva: EmpresaContextValue['empresaActiva'],
+  permisos: string[] = ['leer', 'crear'],
+  empresas = DOS,
+): string {
   return renderToStaticMarkup(
     React.createElement(
       EmpresaContext.Provider,
-      { value: { ...VACIO, empresas: DOS, empresaActiva, rol: 'admin', permisos: ['leer', 'crear'] } },
+      { value: { ...VACIO, empresas, empresaActiva, rol: 'admin', permisos } },
       React.createElement(CargaPorLote),
     ),
   );
@@ -290,6 +294,32 @@ const cartelSuelto = renderToStaticMarkup(
 comprobar(
   'el cartel suelto muestra la entidad fiscal, no una sucursal',
   cartelSuelto.includes('Digitalizando en: Persona fisica') && cartelSuelto.includes('RFC1'),
+);
+
+// Con datos, la empresa se ANULA, no se elimina. Anulada solo consulta: ni se
+// ofrece en el selector ni quedan botones que inviten a cargar facturas, aunque
+// el front traiga una lista de permisos vieja (el servidor tambien daria 403).
+const ANULADA = {
+  company_id: 'c9', name: 'Anulada', tax_id: 'RFC9', estado: 'inactivo' as const,
+  motivo_baja: 'Cierre del ejercicio', rol: 'admin', permisos: ['leer'],
+};
+const conAnulada = pintarCarga(ANULADA);
+comprobar(
+  'una empresa anulada no se ofrece en el cartel de digitalizacion',
+  !conAnulada.includes('Digitalizando en:'),
+);
+comprobar(
+  'con empresa anulada el boton de digitalizar no invita a cargar facturas',
+  conAnulada.includes('La empresa elegida no esta activa: solo se pueden consultar sus datos'),
+);
+comprobar(
+  'con empresa anulada tampoco se ofrece la ruta del servidor',
+  conAnulada.includes('no se pueden cargar facturas'),
+);
+const conAnuladaEnLista = pintarCarga(DOS[0], ['leer', 'crear'], [...DOS, ANULADA]);
+comprobar(
+  'la empresa anulada no es opcion del selector',
+  !conAnuladaEnLista.includes('>Anulada</option>') && conAnuladaEnLista.includes('>Persona moral</option>'),
 );
 
 if (fallos) {

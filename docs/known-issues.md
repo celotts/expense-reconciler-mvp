@@ -2936,7 +2936,11 @@ es el unico que escribe `X-Company-ID` mediante `fijarEmpresaActiva`. No es un
 segundo sitio de decision: un `company_id` suelto en el cuerpo seria otra verdad y
 el servidor lo rechazaria con 409 sin que el operador supiera cual gana. Sin empresa
 o con la elegida anulada el cartel no se pinta, porque `AvisoSinEmpresa` ya dice el
-motivo declarado.
+motivo declarado. Los cuatro botones que escriben —dos de escaneo de carpeta, carga
+de archivos y carga de ruta— se deshabilitan cuando `estado !== 'activo'`, aunque
+los permisos traidos digan `crear`. El servidor sigue siendo la autoridad (403
+`SIN_EMPRESA_ANULADA`), pero un boton que invita a pulsar y luego falla tambien es
+un defecto de interfaz: con empresa anulada no se cargan facturas.
 
 **Las sucursales se contemplan, pero no como empresas.** Empresa es la entidad
 fiscal (RFC); una sucursal comparte cierres, dedup, roles e inventario. Un
@@ -2946,9 +2950,11 @@ un campo `sucursal` al ticket y se filtra en reportes, sin tocar la autoridad de
 `X-Company-ID`. Lo dice el propio cartel en pantalla.
 
 Verificacion: `npm run verify:empresa` monta `CargaPorLote` con dos empresas y mira
-el HTML (49 comprobaciones): el cartel nombra la elegida, cambia con ella, ofrece
-las dos activas, va antes del boton y nombra la sucursal como parte de la misma
-empresa. Al quitar el cartel de `Scan.tsx` mueren 6 comprobaciones; comprobado.
+el HTML (53 comprobaciones): el cartel nombra la elegida, cambia con ella, ofrece
+solo las activas, va antes del boton y nombra la sucursal como parte de la misma
+empresa. Tambien monta el formulario con la empresa anulada y permisos viejos de
+escritura: los botones quedan deshabilitados y la anulada no sale en el selector.
+Al quitar el cartel de `Scan.tsx` mueren 6 comprobaciones; comprobado.
 
 ---
 

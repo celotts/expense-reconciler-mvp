@@ -47,6 +47,10 @@ export function Scan() {
   const { puede } = usePermisos();
   const { irA } = useNavegacion();
   const companyId = empresaActiva?.company_id ?? '';
+  // El servidor es la autoridad (403 SIN_EMPRESA_ANULADA), pero un boton que
+  // invita a pulsar y luego falla tambien es un defecto de interfaz. Si la
+  // empresa elegida dejo de estar activa, no se escribe nada desde aqui.
+  const puedeProcesar = empresaActiva?.estado === 'activo';
   const [cajasAbiertas, setCajasAbiertas] = useState<CajaChica[]>([]);
   const [config, setConfig] = useState<ScanConfig | null>(null);
   const [ocr, setOcr] = useState<ScanOcrEstado | null>(null);
@@ -331,15 +335,15 @@ export function Scan() {
           elegida y se apaga sin ella. Un solo boton con un parametro opcional
           deja la decision de crear tickets escondida en un estado que nadie ve.
         */}
-        <Button onClick={() => escanear(false)} disabled={escaneando || !companyId} title={companyId ? undefined : 'Elige una empresa para escanear'} className={preparando ? 'opacity-80 cursor-wait' : ''}>
+        <Button onClick={() => escanear(false)} disabled={escaneando || !puedeProcesar} title={puedeProcesar ? undefined : 'La empresa elegida no esta activa: no se puede escanear'} className={preparando ? 'opacity-80 cursor-wait' : ''}>
           {preparando ? (
             <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
           ) : escaneando ? 'Escaneando...' : 'Escanear (solo inventariar)'}
         </Button>
         <Button
           onClick={() => escanear(true)}
-          disabled={escaneando || !companyId}
-          title={companyId ? undefined : 'Elige una empresa: sin ella no se puede atribuir ningún gasto'}
+          disabled={escaneando || !puedeProcesar}
+          title={puedeProcesar ? undefined : 'La empresa elegida no esta activa: solo se pueden consultar sus datos'}
         >
           {preparando ? (
             <span className="flex items-center gap-2"><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Iniciando…</span>
@@ -479,6 +483,9 @@ export function CargaPorLote({
   const { empresaActiva } = useEmpresa();
   const { puede } = usePermisos();
   const companyId = empresaActiva?.company_id ?? '';
+  // Igual que en el escaner de carpeta: con empresa anulada no se ofrece la
+  // accion, aunque una lista de permisos vieja diga que puede crear.
+  const puedeProcesar = empresaActiva?.estado === 'activo';
   const [archivos, setArchivos] = useState<File[]>([]);
   const [procesando, setProcesando] = useState(false);
   const [resultado, setResultado] = useState<ScanItem[] | null>(null);
@@ -608,8 +615,8 @@ export function CargaPorLote({
         </Button>
         <Button
           onClick={enviar}
-          disabled={archivos.length === 0 || procesando || !companyId}
-          title={!companyId ? 'Elige una empresa: sin ella no se puede atribuir ningún gasto' : undefined}
+          disabled={archivos.length === 0 || procesando || !puedeProcesar}
+          title={puedeProcesar ? undefined : 'La empresa elegida no esta activa: solo se pueden consultar sus datos'}
         >
           {procesando
             ? 'Digitalizando…'
@@ -651,8 +658,8 @@ export function CargaPorLote({
           </datalist>
           <Button
             onClick={enviarDirectorio}
-            disabled={procesandoRuta || !companyId}
-            title={!companyId ? 'Elige una empresa antes de digitalizar' : undefined}
+            disabled={procesandoRuta || !puedeProcesar}
+            title={puedeProcesar ? undefined : 'La empresa elegida no esta activa: no se pueden cargar facturas'}
           >
             {procesandoRuta ? 'Digitalizando ruta…' : 'Digitalizar esta ruta'}
           </Button>
