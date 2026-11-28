@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  ticketsApi, companiesApi, type Company, type SpotCheckItem, type SpotCheckField,
+  ticketsApi, type SpotCheckItem, type SpotCheckField,
   type ReporteExactitud, type ExactitudPorOrigen,
 } from '../services/api';
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import { confidenceLabel, sourceLabel, nombreProvisorLegible } from '../utils/extraction';
 import { VerDocumento } from '../components/TicketDocumento';
-import { usePermisos } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
 import {
   veredictoMeta, accionSegunVeredicto, exactitudConIntervalo, porcentaje,
   etiquetaCampo, CAMPOS_MUESTRABLES, SPOT_CHECK_META, VEREDICTO_META,
@@ -34,8 +35,10 @@ import {
  * se dice en la pantalla, para que nadie lo busque.
  */
 export function SpotCheck() {
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [companyId, setCompanyId] = useState<string>('');
+  // Igual que el tablero y la cola: el selector es el del contexto, no un
+  // listado viejo de empresas con su propio `?company_id=`.
+  const { empresas, empresaActiva, elegirEmpresa, cargando: cargandoEmpresas } = useEmpresa();
+  const companyId = empresaActiva?.company_id ?? null;
   const [cola, setCola] = useState<Awaited<ReturnType<typeof ticketsApi.spotCheckQueue>> | null>(null);
   const [reporte, setReporte] = useState<ReporteExactitud | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,6 +46,12 @@ export function SpotCheck() {
   const [errorReporte, setErrorReporte] = useState<string | null>(null);
 
   const cargar = useCallback(async () => {
+    if (!companyId) {
+      setCola(null);
+      setReporte(null);
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -52,8 +61,8 @@ export function SpotCheck() {
       // cero con 200 tickets esperando parece que no hay nada que revisar. Son
       // dos hechos y se reportan por separado.
       const [c, r] = await Promise.allSettled([
-        ticketsApi.spotCheckQueue(companyId || undefined),
-        ticketsApi.reporteExactitud(companyId || undefined),
+        ticketsApi.spotCheckQueue(),
+        ticketsApi.reporteExactitud(),
       ]);
       if (c.status === 'fulfilled') setCola(c.value);
       else setCola(null);
@@ -75,11 +84,10 @@ export function SpotCheck() {
     }
   }, [companyId]);
 
-  useEffect(() => { cargar(); }, [cargar]);
-
   useEffect(() => {
-    companiesApi.list().then(setCompanies).catch(() => setCompanies([]));
-  }, []);
+    if (cargandoEmpresas) return;
+    cargar();
+  }, [cargar, cargandoEmpresas]);
 
   return (
     <div className="p-4 lg:p-8 max-w-7xl mx-auto">
@@ -93,15 +101,16 @@ export function SpotCheck() {
         </div>
         <div className="w-56">
           <Select
-            value={companyId}
-            onChange={(e) => setCompanyId(e.target.value)}
-            options={[
-              { value: '', label: 'Todas las empresas' },
-              ...companies.map(c => ({ value: c.id, label: c.name })),
-            ]}
+            value={companyId ?? ''}
+            onChange={(e) => elegirEmpresa(e.target.value)}
+            options={empresas
+              .filter(m => m.estado === 'activo')
+              .map(m => ({ value: m.company_id, label: m.name }))}
           />
         </div>
       </div>
+
+      <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral para medir la exactitud." />
 
       {errorReporte && (
         <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-900 text-sm flex items-start gap-2">

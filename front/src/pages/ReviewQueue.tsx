@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ticketsApi, companiesApi, type Company, type Ticket, type ExtractionStatus, type LineaTicketUpdate } from '../services/api';
-import { usePermisos } from '../contextos/EmpresaContexto';
+import { ticketsApi, type Ticket, type ExtractionStatus, type LineaTicketUpdate } from '../services/api';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
 import { Button, Card, Badge, Loading, EmptyState, Select, Input } from '../components/ui';
 import {
   STATUS_ORDEN, explainValidationErrors, confidenceLabel, sourceLabel,
@@ -23,8 +24,12 @@ import { ComprobanteAlLado, TextoLeido } from '../components/ComprobanteAlLado';
  * porque un motivo escondido no se puede corregir.
  */
 export function ReviewQueue() {
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [companyId, setCompanyId] = useState<string>('');
+  // La empresa sale del contexto, igual que la cabecera X-Company-ID. Antes
+  // esta pantalla tenia su propio selector con la lista vieja de empresas y mandaba
+  // `?company_id=` aparte: al elegir otra empresa el servidor veia dos verdades
+  // distintas y respondia 409 "El company_id no coincide...".
+  const { empresas, empresaActiva, elegirEmpresa, cargando: cargandoEmpresas } = useEmpresa();
+  const companyId = empresaActiva?.company_id ?? null;
   const [filtro, setFiltro] = useState<ExtractionStatus | ''>('');
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [porEstado, setPorEstado] = useState<Partial<Record<ExtractionStatus, number>>>({});
@@ -36,9 +41,17 @@ export function ReviewQueue() {
   const [descartando, setDescartando] = useState<string | null>(null);
 
   const cargar = useCallback(async () => {
+    if (!companyId) {
+      setTickets([]);
+      setPorEstado({});
+      setTotalAbiertos(0);
+      setAntiguedad(null);
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
-      const cola = await ticketsApi.reviewQueue(companyId || undefined, filtro || undefined);
+      const cola = await ticketsApi.reviewQueue(undefined, filtro || undefined);
       setTickets(cola.tickets);
       setPorEstado(cola.por_estado);
       setTotalAbiertos(cola.total_open);
@@ -54,11 +67,10 @@ export function ReviewQueue() {
     }
   }, [companyId, filtro]);
 
-  useEffect(() => { cargar(); }, [cargar]);
-
   useEffect(() => {
-    companiesApi.list().then(setCompanies).catch(() => setCompanies([]));
-  }, []);
+    if (cargandoEmpresas) return;
+    cargar();
+  }, [cargar, cargandoEmpresas]);
 
   return (
     <div className="p-4 lg:p-8 max-w-7xl mx-auto">
@@ -83,12 +95,11 @@ export function ReviewQueue() {
         <div className="flex flex-wrap gap-2">
           <div className="w-full sm:w-56">
             <Select
-              value={companyId}
-              onChange={(e) => setCompanyId(e.target.value)}
-              options={[
-                { value: '', label: 'Todas las empresas' },
-                ...companies.map(c => ({ value: c.id, label: c.name })),
-              ]}
+              value={companyId ?? ''}
+              onChange={(e) => elegirEmpresa(e.target.value)}
+              options={empresas
+                .filter(m => m.estado === 'activo')
+                .map(m => ({ value: m.company_id, label: m.name }))}
             />
           </div>
           <div className="w-full sm:w-48">
@@ -103,6 +114,8 @@ export function ReviewQueue() {
           </div>
         </div>
       </div>
+
+      <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral para ver la cola de revisión." />
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm flex items-start gap-2">

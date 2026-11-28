@@ -799,9 +799,13 @@ export const reconciliationsApi = {
 
 // Dashboard API
 export const dashboardApi = {
-  get: (companyId?: string, meses = 12) => {
+  /** La empresa la elige `X-Company-ID`, no un parametro suelto.
+   *
+   *  `companyId` sigue en la firma solo para no romper llamadores viejos, pero
+   *  NO se manda: dos sitios decidiendo la empresa producen un 409, y el
+   *  tablero es justo la pantalla donde se nota al cambiar de empresa. */
+  get: (_companyId?: string, meses = 12) => {
     const params = new URLSearchParams({ meses: String(meses) });
-    if (companyId) params.append('company_id', companyId);
     return fetchApi<DashboardResponse>(`/dashboard/?${params.toString()}`);
   },
 };

@@ -213,6 +213,14 @@ activas con su rol, leídas de la BD en cada petición; cambiar un rol surte efe
 sin nuevo token, igual que `is_active` (regla 9). `GET /companies` sigue listando
 **todas** las empresas y por eso el front dejó de usarlo para decidir acceso.
 
+**El acceso se da en Mantenimiento → Roles por empresa**, no en la pantalla de
+empresas: `POST /usuarios/membresias` crea la fila en `usuarios_empresas` dentro de
+la empresa activa y `PATCH .../membresias/{id}` cambia el rol. Una cuenta puede
+tener membresías en **varias** empresas y `/auth/empresas` devuelve todas las
+suyas. Quien **crea** una empresa recibe membresía `owner` automáticamente en
+`create_company`: sin eso la empresa nueva no aparece en el selector de nadie,
+porque el front decide acceso con las membresías, no con `/companies`.
+
 **`X-Company-ID` es la empresa activa, y la valida el servidor.**
 `app/core/deps.py:empresa_activa` la comprueba contra las membresías: UUID inválido
 → 400, sin membresía o empresa ajena → 403, sin header con varias empresas → 409,
@@ -229,6 +237,41 @@ cuando no hay elección. `App.tsx` usa el rol por empresa para no ofrecer Caja C
 a quien no puede entrar, pero esa es una comodidad: la autoridad sigue siendo el
 servicio. `npm run verify:empresa` monta el aviso en HTML y comprueba el orden de
 inyección y que ninguna pantalla vuelva a decidir `companyId` por su cuenta.
+
+**El tablero, la cola y el muestreo tampoco pueden elegir empresa por su cuenta.**
+Tres pantallas tenían su propio `useState('')` con el listado viejo de empresas y
+mandaban `?company_id=` aparte de la cabecera: al elegir la segunda empresa el
+servidor veía dos verdades y respondía 409 `El company_id no coincide con la
+empresa activa (X-Company-ID)`. Ahora las tres leen `empresaActiva` del contexto,
+llaman a `elegirEmpresa` y piden los datos sin `company_id` en la query; si no hay
+empresa, muestran `AvisoSinEmpresa` con cero datos en vez de un error. El
+verificador incluye las tres en la misma comprobación que Escáner, Tickets y
+Caja Chica. `bank_transactions` sigue la misma regla: solo se suben movimientos
+(fecha/concepto/importe); el banco **no** produce tickets ni datos de comprobantes,
+y la conciliación cruza los tickets contra esos movimientos por monto y fecha.
+
+**El tablero también necesitaba la empresa en el servidor (MEDIDO 2026-11-27).**
+Quitar el `?company_id=` del front dejó al `GET /dashboard/` leyendo solo la
+query: con `company_id=None` sumaba **las dos empresas**, y al cambiar de empresa
+en Inicio las cifras y el nombre no se movían. El front ya mandaba `X-Company-ID`;
+ahora el endpoint pide `EmpresaVisible` y hace `company_id = empresa or company_id`
+(compatibilidad con clientes viejos, sin ampliar el alcance). La respuesta lleva
+`company_id` y `company_name` **de la fila que mandó la cabecera**, y el tablero
+muestra el UUID con `title="Empresa dueña de estas cifras"`: el dato registrado
+dice a qué empresa pertenecen esos números, no solo el nombre elegido. El ID no
+se suplanta con la query: distinto da 409 en la guardia.
+
+**Y al recargar no se pierde la elección (MEDIDO 2026-11-27).** El efecto que
+sincroniza `fijarEmpresaActiva` corría en el primer render, cuando `empresas`
+todavía era `[]`: llamaba con `null` y **borraba el `localStorage`** donde estaba
+la empresa elegida. Después llegaba `/auth/empresas`, el tablero veía una empresa
+derived y pedía los datos, pero `fetchApi` ya no tenía cabecera: 409
+`Elija la empresa activa con la cabecera X-Company-ID` al refrescar. El proveedor
+arranca ahora con `cargando = Boolean(userId)` y no sincroniza hasta que la lista
+cargó; el `localStorage` sobrevive al recorrido. Cinco mutaciones, cinco mueren.
+Verificación: `tests/integration/test_dashboard_por_empresa.py` (2),
+`npm run verify:empresa` y `scripts/verify_dashboard_empresa_mutations.py` (5
+mutaciones; entra en `verificar_todas_las_mutaciones.py` por glob).
 
 **La corrida se atribuye a una entidad fiscal, y se dice antes de pulsar.**
 `CartelEmpresaEnDigitalizacion` aparece en las dos puertas de `Scan.tsx` (escáner
@@ -486,6 +529,8 @@ python3 scripts/verify_alcance_por_empresa_mutations.py # 14: un id ajeno no cru
 python3 scripts/verify_revocacion_mutations.py      # 10: esquema de revocacion y auditoria por empresa
 python3 scripts/verify_sesion_y_revocacion_mutations.py # 9: jti, revocacion HTTP, reloj deslizante
 python3 scripts/verify_sesion_front_mutations.py    # 4: logout real, borrado, 401 propio, token muerto
+python3 scripts/verify_modal_salida_mutations.py   # 4: confirmar, corrida viva, error de red, barra
+python3 scripts/verify_dashboard_empresa_mutations.py # 5: cabecera, dependencia, cliente, recarga y ID
 python3 scripts/verify_registro_de_migraciones_mutations.py # 3: el seed nombra cada .sql
 python3 scripts/verify_postgres_inventario.py       # 17 defensas: kardex, firma, índices, signo
 ```
@@ -499,6 +544,7 @@ npm run build                      # corre `tsc`: es la puerta que sí sirve
 npm run verify:aviso               # el aviso de formato, que salía en 8 de 8
 npm run verify:fecha               # la fecha corrida un día, en 3 pantallas
 npm run verify:sesion              # el logout llama al servidor con el token antes de borrarlo
+npm run verify:salida              # el boton Salir pregunta y no cierra con digitalizacion en curso
 ```
 
 > Las 3 del signo se pueden romper a proposito: revirtiendo `IF NEW.tipo = 'SALIDA'`
@@ -1633,6 +1679,17 @@ triggers y registro en `schema_migrations`). Verificación:
 `scripts/verify_sesion_front_mutations.py` (4), `npm run verify:sesion` y
 `scripts/verify_revocacion_mutations.py` (10). Ver `docs/known-issues.md` §51.
 
+**Salir pregunta, y no se puede salir durante una digitalización.** El botón de
+la barra abre `ModalSalir`: `cerrarSesion()` no se llama hasta que la persona
+confirma. Antes de habilitar el botón se pregunta `GET /scan/runs`, porque el
+trabajo sigue en el servidor aunque el navegador se cierre (el caso del 504 de
+nginx). `en_curso` no se adivina de un spinner local: otra pestaña puede estar
+escaneando. Si hay corrida viva, si la comprobación falla o si aún está en curso
+la petición, **Salir queda deshabilitado** y se ofrece «Volver a comprobar»;
+«Cancelar» sigue funcionando siempre. `salir()` no se tocó: al confirmar revoca
+el token en el servidor y borra el local en `finally`. Ver
+`docs/known-issues.md` §59.
+
 ### La foto que se contradice a sí misma se relee (MEDIDO 2026-10-15)
 `IMAGENES_VISION_PRIMERO=false` y `ESCALAR_A_IA_SIN_LINEAS=false` en el `.env`
 —los dos por omisión son `True`—, así que una foto la lee **solo Tesseract** si
@@ -2153,6 +2210,15 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   de línea, el parser no encuentra nada (los regex están anclados a `label: valor` en
   una línea) y el ticket sale **vacío con la confianza más alta de la cascada**. Es
   el fallo más caro de este trabajo y no se manifiesta como error.
+
+- **El encabezado de conceptos no es el proveedor.** En tres CFDI reales el
+  tablero mostraba `ClaveProd Cant Unidad Descripción P. Unitario Importe` como
+  proveedor principal: la primera línea traía la razón social seguida de
+  "FACTURA ELECTRÓNICA (CFDI 4.0)" y se descartaba entera por el boilerplate.
+  `parser_service.py` poda el sufijo del tipo de documento antes de decidir y
+  descarta la fila de encabezados por su forma completa. `top_proveedores` solo
+  lee `provider_name`: un proveedor mal leído se ve en Inicio, no en la cola.
+  Ver `docs/known-issues.md` §58.
 
 - **El piso de caracteres del OCR es 60, no 120.** Un comprobante mínimo real
   (proveedor, RFC, fecha, subtotal, IVA, total) son 112 caracteres; con 120 se

@@ -38,11 +38,13 @@
  *    variable contra gasto fijo, y el gasto que nadie ha clasificado.
  */
 import { useEffect, useState } from 'react';
-import { companiesApi, dashboardApi, type Company } from '../services/api';
+import { dashboardApi } from '../services/api';
 import type {
   CategoriaGasto, DashboardResponse, Hallazgo, MesConCategorias, MesGasto, ResumenPeriodo,
 } from '../types/dashboard';
 import { useNavegacion, type FiltroTickets, type Page } from '../contextos/NavegacionContexto';
+import { useEmpresa } from '../contextos/EmpresaContexto';
+import { AvisoSinEmpresa } from '../contextos/Empresa';
 import { Card, Loading, EmptyState, Badge, Select, Button } from '../components/ui';
 import { FlujoGuiado } from '../components/FlujoGuiado';
 import { dinero, monto, numero, variacion } from '../utils/format';
@@ -901,21 +903,28 @@ export function Dashboard() {
   const [datos, setDatos] = useState<DashboardResponse | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [empresas, setEmpresas] = useState<Company[]>([]);
-  const [empresa, setEmpresa] = useState('');
+  // Antes aqui habia un `useState('')` con la lista vieja de empresas. Eso ponia un
+  // `?company_id=` propio mientras la cabecera X-Company-ID seguia trayendo la
+  // empresa del contexto: al elegir la segunda, el servidor respondia 409
+  // "El company_id no coincide con la empresa activa". El tablero no decide
+  // empresa: la lee del mismo sitio que el resto de la aplicacion.
+  const { empresas, empresaActiva, elegirEmpresa, cargando: cargandoEmpresas } = useEmpresa();
+  const companyId = empresaActiva?.company_id ?? null;
 
   useEffect(() => {
+    if (cargandoEmpresas) return;
+    if (!companyId) {
+      setDatos(null);
+      setCargando(false);
+      return;
+    }
     let vivo = true;
     (async () => {
       setCargando(true);
       setError(null);
       try {
-        const [lista, tablero] = await Promise.all([
-          companiesApi.list(),
-          dashboardApi.get(empresa || undefined),
-        ]);
+        const tablero = await dashboardApi.get();
         if (!vivo) return;
-        setEmpresas(lista);
         setDatos(tablero);
       } catch (e) {
         if (!vivo) return;
@@ -927,7 +936,7 @@ export function Dashboard() {
     return () => {
       vivo = false;
     };
-  }, [empresa]);
+  }, [companyId, cargandoEmpresas]);
 
   if (cargando) return <Loading message="Cargando tablero..." />;
 
@@ -941,6 +950,15 @@ export function Dashboard() {
     );
   }
 
+  if (!empresaActiva) {
+    return (
+      <div className="p-6">
+        <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral para ver el tablero." />
+        <EmptyState message="No hay empresa activa" />
+      </div>
+    );
+  }
+
   if (!datos) return <EmptyState message="No hay datos" />;
 
   return (
@@ -948,19 +966,21 @@ export function Dashboard() {
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Inicio</h1>
-          <p className="text-sm text-gray-500">
-            {datos.company_name || 'Todas las empresas'}
-          </p>
+          <p className="text-sm text-gray-500">{datos.company_name || 'Sin empresa'}</p>
+          {datos.company_id && (
+            <p className="text-xs text-gray-400" title="Empresa dueña de estas cifras">
+              {`ID de empresa: ${datos.company_id}`}
+            </p>
+          )}
         </div>
         <div className="w-full sm:w-64">
           <Select
             label="Empresa"
-            value={empresa}
-            onChange={e => setEmpresa(e.target.value)}
-            options={[
-              { value: '', label: 'Todas las empresas' },
-              ...empresas.map((c) => ({ value: c.id, label: c.name })),
-            ]}
+            value={companyId ?? ''}
+            onChange={e => elegirEmpresa(e.target.value)}
+            options={empresas
+              .filter((m) => m.estado === 'activo')
+              .map((m) => ({ value: m.company_id, label: m.name }))}
           />
         </div>
       </div>
@@ -976,7 +996,7 @@ export function Dashboard() {
        *  Los numeros salen del mismo `datos` que el resto de la pantalla, no de una
        *  llamada aparte: dos consultas que cuentan lo mismo son dos verdades, y
        *  este proyecto no sostiene eso. */}
-      <FlujoGuiado dashboard={datos} irA={irA} companyId={empresa || null} />
+      <FlujoGuiado dashboard={datos} irA={irA} companyId={companyId} />
 
       <CifraDelMes d={datos} irA={irA} />
 

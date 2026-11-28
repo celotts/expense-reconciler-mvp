@@ -51,6 +51,33 @@ ISSUER_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# MEDIDO el 2026-11-27 sobre tres CFDI reales de esta maquina. La primera linea
+# del PDF era, por ejemplo:
+#
+#   OPERADORA GASTRONOMICA DEL BAJIO SA DE CV FACTURA ELECTRONICA (CFDI 4.0)
+#
+# El nombre del emisor estaba ahi, pero la linea se descartaba entera por traer
+# "factura electronica", y el parser terminaba eligiendo el encabezado de la
+# tabla de conceptos como proveedor:
+#
+#   ClaveProd Cant Unidad Descripción P. Unitario Importe
+#
+# Como `top_proveedores` del tablero lee `provider_name`, ese encabezado aparecia
+# como "principal proveedor" con $1,148.40. Quitar el SUFIJO no inventa nada:
+# lo que se guarda es el texto impreso antes del tipo de documento.
+BOILERPLATE_SUFIJO_RE = re.compile(
+    r"\s+(?:factura\s+electr[oó]nica|comprobante\s+fiscal(?:\s+digitale?)?|recibo)\b.*$",
+    re.IGNORECASE,
+)
+
+# La fila de encabezados de conceptos es texto del papel, no un comercio. Se
+# descarta por su forma completa, no por una palabra suelta: "IMPORTADORA
+# UNITARIO" si podria ser un nombre real.
+CONCEPTOS_ENCABEZADO_RE = re.compile(
+    r"^\s*clave\s*prod(?:ucto)?\b.*\b(?:cant|unidad|descripci[oó]n|importe|p\.?\s*unitario)\b",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Fecha sin etiqueta
@@ -1431,14 +1458,27 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
             cleaned = cleaned.replace(",", "")
         return Decimal(cleaned)
 
+    def sin_boilerplate(line: str) -> str:
+        """Solo quita el tipo de documento impreso DESPUES del nombre."""
+        return BOILERPLATE_SUFIJO_RE.sub("", line).strip()
+
     def is_provider_candidate(line: str) -> bool:
         """True if a line plausibly names the business that issued the receipt."""
+        # El nombre y "FACTURA ELECTRONICA (CFDI 4.0)" comparten linea en los
+        # CFDI. Se poda el sufijo ANTES de decidir; si la linea entera era
+        # boilerplate, no queda nombre y se descarta igual que antes.
+        line = sin_boilerplate(line)
+        if not line:
+            return False
         # Metadata line ("FECHA: 20/02/2025", "RFC: WAL...", "IVA (16%): ...")
         if FIELD_LABEL_RE.match(line):
             return False
         # Boilerplate document headers, anywhere in the line
         skip_patterns = ["factura electrónica", "factura electronica", "cfdi", "comprobante", "recibo"]
         if any(p in line.lower() for p in skip_patterns):
+            return False
+        # Encabezado de la tabla de conceptos: es texto del papel, no un RFC.
+        if CONCEPTOS_ENCABEZADO_RE.match(line):
             return False
         # Too short to be a business name. Cuatro, no cinco: "OXXO" es un
         # minorista real y de los mas frecuentes del pais, y con corte en cinco
@@ -1503,11 +1543,11 @@ def _parse_receipt_text(text: str) -> TicketExtractionResult:
         # CFDI layouts label the emitter explicitly: "EMISOR: FARMACIAS DEL SUR"
         issuer_match = ISSUER_LABEL_RE.match(line)
         if issuer_match and is_provider_candidate(issuer_match.group(1)):
-            provider_name = issuer_match.group(1).strip()
+            provider_name = sin_boilerplate(issuer_match.group(1)).strip()
             continue
 
         if is_provider_candidate(line):
-            provider_name = line
+            provider_name = sin_boilerplate(line)
 
     # Second pass: extract amounts and dates
     #

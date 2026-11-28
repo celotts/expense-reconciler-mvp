@@ -22,6 +22,7 @@ import { EmpresaProvider } from './contextos/Empresa';
 import { useEmpresa } from './contextos/EmpresaContexto';
 import { paginasPermitidas, puedeVerPagina } from './permisos';
 import { Loading } from './components/ui';
+import { ModalSalir } from './components/ModalSalir';
 import './App.css';
 
 // El tipo `Page` se importa del contexto y NO se redeclara aqui.
@@ -204,6 +205,10 @@ function AppInner() {
   const perfilLabel = perfil ? perfilLabels[perfil] || 'Sin perfil' : 'Sin perfil';
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // El boton de la barra solo abre la confirmacion. Cerrar la sesion sigue
+  // siendo una decision explicita del modal, que antes pregunta al servidor si
+  // hay una digitalizacion en curso.
+  const [confirmarSalida, setConfirmarSalida] = useState(false);
 
   const renderPage = () => {
     switch (paginaActual) {
@@ -332,7 +337,7 @@ function AppInner() {
               )}
             </div>
             <button
-              onClick={() => { void cerrarSesion(); }}
+              onClick={() => setConfirmarSalida(true)}
               className="w-full text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg py-3 sm:py-1.5 transition-colors"
             >
               Salir
@@ -363,6 +368,16 @@ function AppInner() {
           {renderPage()}
         </main>
       </div>
+
+      {confirmarSalida && (
+        <ModalSalir
+          onCancelar={() => setConfirmarSalida(false)}
+          onConfirmar={() => {
+            setConfirmarSalida(false);
+            void cerrarSesion();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -19,6 +19,36 @@ class TestCompaniesAPI:
         assert "created_at" in data
 
     @pytest.mark.asyncio
+    async def test_la_empresa_creada_se_puede_seleccionar(
+        self, async_client: AsyncClient
+    ):
+        """Crear una empresa da acceso a ella; si no, no se puede seleccionar.
+
+        `/auth/empresas` es la unica fuente del selector y solo lista empresas
+        con membresia. Mantenimiento no puede arreglarlo: asigna roles dentro
+        de la empresa activa, que se valida contra esa misma lista. Sin esta
+        prueba, una empresa recien creada es invisible e inusable y el front
+        parece estar omitiendo la segunda empresa.
+        """
+        creada = await async_client.post(
+            "/api/v1/companies/",
+            json={"name": "Segunda empresa", "tax_id": "SEG123456789"},
+        )
+        assert creada.status_code == 201
+        mia = (await async_client.get("/api/v1/auth/empresas")).json()
+        empresa = next(m for m in mia if m["company_id"] == creada.json()["id"])
+        assert empresa["rol"] == "owner"
+        assert empresa["estado"] == "activo"
+
+        # Y se puede trabajar en ella desde el primer momento: la cabecera que
+        # manda el front con la eleccion pasa la validacion del servidor.
+        respuesta = await async_client.get(
+            "/api/v1/dashboard/",
+            headers={"X-Company-ID": creada.json()["id"]},
+        )
+        assert respuesta.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_create_company_duplicate_tax_id_fails(self, async_client: AsyncClient):
         # Crear primera
         await async_client.post("/api/v1/companies/", json={"name": "Empresa 1", "tax_id": "DUP123"})

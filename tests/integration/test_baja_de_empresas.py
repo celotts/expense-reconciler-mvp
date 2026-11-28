@@ -43,11 +43,19 @@ async def _crear_empresa(async_client: AsyncClient, nombre: str, rfc: str) -> st
 
 
 async def _membresia(db_session, usuario, company_id: str, rol: str = "admin") -> None:
-    db_session.add(
-        UsuarioEmpresaModel(
-            user_id=usuario.id, company_id=UUID(company_id), rol=rol, activo=True
-        )
+    # `POST /companies/` ya da membresia al creador, asi que la fila suele
+    # existir. Reutilizarla es el mismo criterio que `asignar_membresia`: la PK
+    # compuesta es la identidad de la relacion, no un INSERT nuevo.
+    fila = await db_session.get(
+        UsuarioEmpresaModel, (usuario.id, UUID(company_id))
     )
+    if fila is None:
+        fila = UsuarioEmpresaModel(
+            user_id=usuario.id, company_id=UUID(company_id)
+        )
+        db_session.add(fila)
+    fila.rol = rol
+    fila.activo = True
     await db_session.commit()
 
 

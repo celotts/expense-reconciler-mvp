@@ -219,7 +219,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "z3. Dashboard",
-      "description": "El tablero.\n\n`usuario` se declara y no se usa: la proteccion la pone el router entero en\n`api_router.py`, no este endpoint. Se deja para que quede a la vista que\naqui no hay puerta, y no porque sirva de algo.",
+      "description": "El tablero de UNA empresa.\n\nAntes este endpoint fiaba todo al `?company_id=` de la query. El front dejo\nde mandarlo para no pelear con `X-Company-ID`, y entonces el tablero pedia\n`company_id=None`: sumaba las dos empresas y al cambiar de empresa en la\nbarra la cifra no se movia. La cabecera manda, igual que en tickets: el\nparametro se conserva por compatibilidad con clientes viejos, pero nunca\npuede ampliar el alcance.\n\n`empresa` puede ser `None` solo para cuentas heredadas sin membresias\n(compatibilidad anterior a `0022`): en ese caso no hay filtro, como siempre.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",

@@ -23,7 +23,13 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
   const userId = usuario?.id;
   const [empresas, setEmpresas] = useState<MembresiaEmpresa[]>([]);
   const [elegida, setElegida] = useState<string | null>(() => empresaActivaGuardada());
-  const [cargando, setCargando] = useState(false);
+  // Arranca cargando CUANDO YA HAY USUARIO. El proveedor se monta despues de
+  // comprobar la sesion, asi que al recargar `elegida` ya trae la empresa del
+  // localStorage: si el primer efecto de sincronizacion corriera con la lista
+  // vacia, llamaria `fijarEmpresaActiva(null)` y borraria esa eleccion antes de
+  // que llegara `/auth/empresas`. El tablero pediria sin `X-Company-ID` y el
+  // servidor responderia 409 aunque la persona si hubiera elegido empresa.
+  const [cargando, setCargando] = useState(Boolean(userId));
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const recargar = useCallback(() => setVersion((v) => v + 1), []);
@@ -72,8 +78,12 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    // Sincronizar solo DESPUES de cargar la lista. Antes, `empresaActiva` es
+    // null porque `empresas` esta vacia, no porque la persona no haya elegido:
+    // borrar la cabecera en ese instante es lo que producia el 409 al recargar.
+    if (cargando) return;
     fijarEmpresaActiva(empresaActiva?.company_id ?? null);
-  }, [empresaActiva?.company_id]);
+  }, [empresaActiva?.company_id, cargando]);
 
   const elegirEmpresa = useCallback((companyId: string) => {
     setElegida(companyId);

@@ -839,6 +839,54 @@ class TestProveedorEnMinusculasSostenidas:
         assert _parse_receipt_text("1234\nTOTAL: 100.00\n").provider_name == "Unknown Provider"
 
 
+class TestProveedorEnCfdiconTipoDeDocumentoPegado:
+    """MEDIDO 2026-11-27: el tablero mostraba un encabezado como proveedor.
+
+    Tres CFDI reales de esta maquina tenian `provider_name =
+    "ClaveProd Cant Unidad Descripción P. Unitario Importe"`, y por eso
+    "Principales proveedores" mostraba ese texto en vez de la razon social.
+    La primera linea del PDF traia el nombre del emisor SEGUIDO de
+    "FACTURA ELECTRÓNICA (CFDI 4.0)"; se descartaba por el boilerplate y el
+    parser seguia hasta la fila de encabezados de conceptos.
+    """
+
+    TEXTO_REAL = (
+        "OPERADORA GASTRONOMICA DEL BAJIO SA DE CV FACTURA ELECTRÓNICA (CFDI 4.0)\n"
+        "RFC: OGB150304MN2 Folio: R-33109\n"
+        "RECEPTOR: SOLUCIONES TECNOLOGICAS CELOTTS SA DE CV | RFC: STC220115XY9\n"
+        "ClaveProd Cant Unidad Descripción P. Unitario Importe\n"
+        "SERVICIO DE CATERING 1 1 1148.40 1148.40\n"
+        "SUBTOTAL 1148.40\n"
+        "TOTAL 1148.40\n"
+    )
+
+    def test_toma_el_nombre_impreso_antes_del_tipo_de_documento(self):
+        resultado = _parse_receipt_text(self.TEXTO_REAL)
+        assert resultado.provider_name == "OPERADORA GASTRONOMICA DEL BAJIO SA DE CV"
+        assert resultado.provider_tax_id == "OGB150304MN2"
+
+    def test_el_encabezado_de_conceptos_nunca_es_proveedor(self):
+        """Contraprueba: sin el filtro, este texto daba el encabezado."""
+        texto = self.TEXTO_REAL.replace(
+            "OPERADORA GASTRONOMICA DEL BAJIO SA DE CV FACTURA ELECTRÓNICA (CFDI 4.0)\n", ""
+        )
+        assert "ClaveProd" not in _parse_receipt_text(texto).provider_name
+
+    def test_una_linea_solo_de_boilerplate_sigue_sin_ser_nombre(self):
+        texto = "FACTURA ELECTRÓNICA (CFDI 4.0)\nTOTAL: 100.00\n"
+        assert _parse_receipt_text(texto).provider_name == "Unknown Provider"
+
+    def test_no_se_recorta_un_nombre_que_solo_empieza_igual(self):
+        """Quitar el sufijo no puede comerse parte del nombre del emisor."""
+        texto = (
+            "COMERCIALIZADORA OFFICE QUERETARO SA DE CV FACTURA ELECTRÓNICA (CFDI 4.0)\n"
+            "RFC: COQ180512AB1\nTOTAL: 3,712.00\n"
+        )
+        assert _parse_receipt_text(texto).provider_name == (
+            "COMERCIALIZADORA OFFICE QUERETARO SA DE CV"
+        )
+
+
 class TestExtraccionDeSubtotal:
     """El subtotal nunca se extracia, y el campo estaba declarado y documentado.
 

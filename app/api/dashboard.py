@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import UsuarioActual
+from app.core.deps import EmpresaVisible
 from app.models.company import CompanyModel
 from app.services import analitica, hallazgos
 from app.services.accuracy_service import compute_accuracy_report
@@ -279,17 +279,24 @@ async def _resumen_mes(
 
 @router.get("/", response_model=DashboardResponse)
 async def get_dashboard(
-    usuario: UsuarioActual,
-    company_id: Optional[UUID] = Query(None, description="Filtrar por empresa"),
+    empresa: EmpresaVisible,
+    company_id: Optional[UUID] = Query(None, description="Compatibilidad; gana X-Company-ID"),
     meses: int = Query(12, ge=1, le=36, description="Meses de la tendencia"),
     db: AsyncSession = Depends(get_db),
 ) -> DashboardResponse:
-    """El tablero.
+    """El tablero de UNA empresa.
 
-    `usuario` se declara y no se usa: la proteccion la pone el router entero en
-    `api_router.py`, no este endpoint. Se deja para que quede a la vista que
-    aqui no hay puerta, y no porque sirva de algo.
+    Antes este endpoint fiaba todo al `?company_id=` de la query. El front dejo
+    de mandarlo para no pelear con `X-Company-ID`, y entonces el tablero pedia
+    `company_id=None`: sumaba las dos empresas y al cambiar de empresa en la
+    barra la cifra no se movia. La cabecera manda, igual que en tickets: el
+    parametro se conserva por compatibilidad con clientes viejos, pero nunca
+    puede ampliar el alcance.
+
+    `empresa` puede ser `None` solo para cuentas heredadas sin membresias
+    (compatibilidad anterior a `0022`): en ese caso no hay filtro, como siempre.
     """
+    company_id = empresa or company_id
     company_name = None
     if company_id:
         company = await db.get(CompanyModel, company_id)

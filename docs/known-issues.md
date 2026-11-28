@@ -2956,6 +2956,132 @@ empresa. Tambien monta el formulario con la empresa anulada y permisos viejos de
 escritura: los botones quedan deshabilitados y la anulada no sale en el selector.
 Al quitar el cartel de `Scan.tsx` mueren 6 comprobaciones; comprobado.
 
+### 56. Crear una empresa no daba acceso a quien la creo, y tres pantallas peleaban con la cabecera — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-27.** El front decide acceso con `GET /auth/empresas`, que
+solo devuelve empresas con membresia. `create_company` creaba la empresa y no la
+membresia: quien la creaba no la veia en el selector y tenia que dar acceso a si
+mismo desde Mantenimiento, que a su vez exige empresa activa. `create_company`
+ahora inserta `UsuarioEmpresaModel(... rol=OWNER, activo=True)` y hace `commit`
+antes de auditar. `test_la_empresa_creada_se_puede_seleccionar` comprueba la
+membresia, que la empresa sale activa en `/auth/empresas` y que el dashboard
+responde 200 con `X-Company-ID`. El acceso se administra en **Mantenimiento →
+Roles por empresa** (`POST /usuarios/membresias`), dentro de la empresa activa;
+una cuenta puede tener varias membresías.
+
+**El 409 al elegir la segunda empresa no era del servidor.** `Dashboard.tsx`,
+`ReviewQueue.tsx` y `SpotCheck.tsx` tenian su propio `useState('')` alimentado
+por el listado viejo de empresas y mandaban `?company_id=` ademas de la cabecera
+`X-Company-ID` que inyecta `api.ts`. Al cambiar de empresa en la barra lateral
+las dos verdades divergian y `guardia_de_permisos` respondia 409 `El company_id
+no coincide con la empresa activa (X-Company-ID)`. Las tres leen ahora
+`empresaActiva` del contexto, ofrecen solo empresas `activo` con `elegirEmpresa`
+y piden datos sin `company_id` en la query. Sin empresa: `AvisoSinEmpresa` y
+cero datos, no un error de red. `npm run verify:empresa` incluye las tres en la
+misma lista que Escaner, Tickets y Caja Chica y comprueba que no aparezca
+`companiesApi` ni un `company_id` suelto. Bundle servido y local comprobados
+por SHA-256: un 409 persistente tras el despliegue es cache del navegador, no
+una defensa que haya que relajar.
+
+Verificacion: `npm run build`, `npm run verify:empresa`,
+`scripts/verify_baja_empresas_mutations.py` (19 mutaciones, 19 mueren) y la
+suite completa. **No correr el verificador de mutaciones en paralelo con
+`pytest tests/ -q`**: muta archivos de codigo mientras la suite los lee. Una
+corrida simultanea dio un falso `test_no_se_digitaliza_pero_si_se_consulta`
+con `password authentication failed for user "admin"` desde la auditoria; el
+test pasa solo al repetirse con el archivo restaurado.
+
+### 57. Escenario real: ticket de otra empresa, y el mismo papel en dos empresas
+
+`tests/integration/test_mismo_comprobante_dos_empresas.py` separa dos preguntas
+que se parecen y no son la misma:
+
+- **Un ticket identificado por ID no se procesa desde otra empresa.** Con la
+  cuenta perteneciente a la segunda empresa, `GET /tickets/{id}` del ticket de
+  la primera da **404**; el mismo ID con la empresa duena da 200. Sin la
+  membresia la cuenta es legacy (ve todo, compatibilidad anterior a `0022`) y
+  el 404 no probaria nada: por eso el test la crea y lleva contraprueba.
+- **Los mismos bytes subidos con otra empresa crean otro ticket.** Es la regla 8
+  de `AGENTS.md`: el idempotente es `(company_id, source_hash)`, porque el hash
+  no lleva empresa dentro. El primer test lo comprueba por la via real de
+  persistencia (`_persist_extracted`), no con filas inventadas: la segunda
+  empresa ve su propio ticket, no el ajeno. Cambiar esto a dedup global es un
+  cambio de contrato y rompe la regla documentada; no se hace sin decisions
+  explicita de producto.
+
+### 58. "Principales proveedores" mostraba el encabezado de la tabla (MEDIDO 2026-11-27)
+
+En el tablero aparecia como proveedor principal el texto
+`ClaveProd Cant Unidad Descripción P. Unitario Importe`, con $1,148.40, $6,960.00
+y $3,712.00 en tres CFDI reales de esta maquina. No era un comercio: era la
+fila de encabezados de conceptos del PDF.
+
+El papel traia el nombre encima:
+
+```
+OPERADORA GASTRONOMICA DEL BAJIO SA DE CV FACTURA ELECTRÓNICA (CFDI 4.0)
+RFC: OGB150304MN2 Folio: R-33109
+ClaveProd Cant Unidad Descripción P. Unitario Importe
+```
+
+`is_provider_candidate` descartaba esa primera linea porque contenia
+"factura electronica"/"CFDI", y seguia buscando hasta que el encabezado de
+conceptos parecia un nombre. Como `top_proveedores` del tablero solo lee
+`provider_name`, el error se veia en "Inicio" y no en la cola de revision: los
+tres tickets estaban `REQUIERE_REVISION` por `subtotal_plus_tax_mismatch` (IVA
+16% no leido), asi que el veredicto del gate no decia nada del proveedor.
+
+Dos cambios en `parser_service.py`:
+
+- `BOILERPLATE_SUFIJO_RE` poda **el tipo de documento impreso despues del
+  nombre**, antes de decidir si la linea es candidata. Lo que se guarda es texto
+  que el papel imprime, no un nombre inventado. Una linea que sea solo
+  "FACTURA ELECTRONICA (CFDI 4.0)" sigue descartandose: al podar no queda nada.
+- `CONCEPTOS_ENCABEZADO_RE` descarta la fila de encabezados por su forma
+  completa, no por una palabra suelta: "IMPORTADORA UNITARIO" podria ser un
+  nombre real.
+
+`tests/unit/test_parser_service.py::TestProveedorEnCfdiconTipoDeDocumentoPegado`
+tiene cuatro pruebas: toma el nombre impreso antes del tipo de documento, el
+encabezado nunca es proveedor (contraprueba: sin el filtro daba "ClaveProd"),
+el boilerplate suelto sigue sin ser nombre y la poda no se come un nombre que
+solo empieza igual. Los tickets ya guardados con el encabezado no se corrigen
+solos: hay que reparsearlos o corregirlos desde la cola.
+
+### 59. El botón «Salir» cerraba la sesión sin preguntar y dejaba la digitalización corriendo — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-27.** `App.tsx` llamaba a `cerrarSesion()` en el `onClick`.
+Dos consecuencias distintas: un clic accidental cerraba la sesión, y si había
+una digitalización en marcha la persona se iba sin saber que el servidor seguía
+trabajando —`POST /scan` no se corta cuando el navegador se cierra; está
+documentado en el caso del 504 de nginx, donde el trabajo se hace aunque el
+cliente vea un error.
+
+El modal pregunta «Desea salir de la aplicacion?» y, antes de habilitar la
+confirmación, consulta `GET /scan/runs`. La verdad de `en_curso` la da el
+servidor: un spinner local no ve otra pestaña escaneando. Cuatro estados, y
+solo uno autoriza:
+
+| estado | botón Salir | motivo |
+|---|---|---|
+| `comprobando` | deshabilitado | todavía no se sabe |
+| `libre` | habilitado | `en_curso` llegó vacío |
+| `ocupado` | deshabilitado | hay N digitalizaciones vivas, se dice cuántas |
+| `error` | deshabilitado | no se pudo preguntar; no se finge respuesta |
+
+«Cancelar» funciona en los cuatro. «Volver a comprobar» solo aparece cuando hay
+bloqueo. `salir()` no se tocó: al confirmar se revoca el token en el servidor
+con el token aún guardado y se borra el local en `finally`. El modal decide
+**cuándo** se cierra, no **cómo**.
+
+`front/scripts/verificar_modal_salida.tsx` monta `ModalSalirVista` en los cuatro
+estados y mira **el HTML**, no el retorno de una función: comprobar la palabra
+`disabled` en las clases de Tailwind daba verde con el botón activo, porque las
+clases están en los cuatro estados. El atributo `disabled` se distingue de la
+clase. `scripts/verify_modal_salida_mutations.py` (4 mutaciones, 4 mueren)
+comprueba que mueren quitar el `disabled`, declarar libre una corrida viva,
+fingir libre un error de red y volver a cerrar desde la barra sin confirmar.
+
 ---
 
 ## El cliente de IA vivo no tenia `chat_completion` (MEDIDO 2026-11-27)
@@ -3008,6 +3134,60 @@ modelo") la estaba sosteniendo un bug, no una decision. La app corre con
 y en `.env.example`. Los tests unitarios la fijan con `monkeypatch`; los de
 integracion dependen del entorno, y por eso el valor tiene que vivir en la
 plantilla ademas de en la maquina.
+
+---
+
+## El tablero sumaba las dos empresas (MEDIDO 2026-11-27)
+
+El front dejo de mandar `?company_id=` en Inicio, Cola y Muestreo para no pelearse
+con `X-Company-ID` (§56). Pero `GET /dashboard/` seguia leyendo **solo** la query:
+con `company_id=None` las consultas de `analitica` no filtraban y el tablero
+sumaba las dos empresas. El sintoma que reporto el usuario —"al cambiar de empresa
+en el dashboard no se actualizan los datos"— era exactamente eso: la cabecera
+cambiaba, el front volvia a pedir, y el servidor devolvia las mismas cifras.
+
+El arreglo tiene tres partes, y las tres importan:
+
+1. `get_dashboard` pide `EmpresaVisible` y hace `company_id = empresa or company_id`.
+   El parametro de query se conserva para clientes viejos, pero **nunca amplia**
+   el alcance: si difiere de la cabecera, la guardia global responde 409.
+2. La respuesta lleva `company_id` y `company_name` de la empresa que mando la
+   cabecera. No es adorno: es el dato registrado que dice a que empresa pertenecen
+   esas cifras. El ticket ya tenia su `company_id` en la fila; el tablero no lo
+   tenia en la suya.
+3. La pantalla muestra el UUID con `title="Empresa dueña de estas cifras"`, y el
+   cliente `dashboardApi.get()` **no manda** `company_id`: el `_companyId` de la
+   firma existe solo para no romper llamadores, y se ignora. Dos sitios decidiendo
+   la empresa es el 409 de §56 otra vez.
+
+Sin membresias (cuentas anteriores a `0022`) `empresa` es `None` y no hay filtro,
+que es la compatibilidad documentada, no un permiso nuevo.
+
+`tests/integration/test_dashboard_por_empresa.py` crea dos empresas con un ticket
+cada una (`100.00` y `250.00`) y comprueba que cada cabecera devuelve su id, su
+nombre y su monto, que los tickets no se mueven y que la query no puede suplantar
+la cabecera. `npm run verify:empresa` mira el HTML del ID y el cliente sin
+`company_id`. `scripts/verify_dashboard_empresa_mutations.py` tiene 5 mutaciones
+y las 5 mueren; entra en `verificar_todas_las_mutaciones.py` por glob.
+
+**El mismo 409 aparecía al refrescar, y la causa era distinta.** El efecto que
+sincroniza la empresa derivada con `fijarEmpresaActiva` corría en el PRIMER
+render, cuando `empresas` todavia era `[]`. Llamaba con `null` y
+`fijarEmpresaActiva` borraba el `localStorage` donde estaba la empresa elegida.
+Despues llegaba `/auth/empresas`: `elegida` (leida al montar) seguia apuntando a
+esa empresa, `empresaActiva` se volvia truthy, el tablero pedia los datos...
+y `fetchApi` ya no tenia cabecera. Con dos membresias, el servidor respondia
+409. La peticion era correcta; el cliente se habia Olvidado de la eleccion.
+
+El proveedor arranca ahora `cargando = Boolean(userId)` (se monta despues de
+comprobar la sesion) y el efecto de sincronizacion hace `if (cargando) return;`.
+La lista vieja del `.catch` sigue sin borrarse por la misma razon: un fallo de
+red no puede convertirse en "no hay empresa elegida". `verify:empresa` mira
+las dos defensas en el codigo y la mutacion que quita la guarda muere.
+
+La coleccion de Insomnia se regenero tras cambiar el docstring del endpoint
+(`make insomnia`): el generador lee el OpenAPI de la API viva, y un cambio de
+descripcion la deja desfasada aunque no haya una ruta nueva.
 
 ---
 

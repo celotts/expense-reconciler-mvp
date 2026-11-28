@@ -119,6 +119,12 @@ for (const archivo of [
   'src/pages/CajaChica.tsx',
   'src/pages/Scan.tsx',
   'src/pages/Tickets.tsx',
+  // El tablero, la cola y el muestreo tenian su propio `empresa` con la lista
+  // vieja de empresas y mandaban un `?company_id=` distinto de la cabecera:
+  // al elegir la segunda daban 409. La misma defensa que en las que escriben.
+  'src/pages/Dashboard.tsx',
+  'src/pages/ReviewQueue.tsx',
+  'src/pages/SpotCheck.tsx',
 ]) {
   const texto = leer(archivo);
   comprobar(`${archivo} usa la empresa del contexto`, texto.includes('useEmpresa'));
@@ -129,12 +135,44 @@ for (const archivo of [
   );
 }
 
+const tablero = leer('src/pages/Dashboard.tsx');
+comprobar(
+  'el tablero no manda un company_id suelto que pelee con la cabecera',
+  /dashboardApi\.get\(\)/.test(tablero),
+);
+comprobar(
+  'el tablero muestra el id de la empresa dueña de las cifras',
+  tablero.includes('ID de empresa: ${datos.company_id}'),
+);
+const inicioDashboard = api.indexOf('export const dashboardApi = {');
+const bloqueDashboard = api.slice(
+  inicioDashboard,
+  api.indexOf('// Caja chica', inicioDashboard),
+);
+comprobar(
+  'el cliente del tablero no manda company_id: manda la cabecera',
+  inicioDashboard >= 0
+    && !/params\.append\(['"]company_id['"]/.test(bloqueDashboard)
+    && !/\?company_id=/.test(bloqueDashboard)
+    && !/new URLSearchParams\(\{[^}]*company_id/.test(bloqueDashboard),
+);
+comprobar(
+  'el selector del tablero llama al mismo contexto',
+  /onChange=\{e => elegirEmpresa\(e\.target\.value\)\}/.test(tablero),
+);
+
 const contexto = leer('src/contextos/Empresa.tsx');
 comprobar(
   'el cartel cambia de empresa por el mismo contexto, no por un company_id suelto',
   contexto.includes('onChange={e => elegirEmpresa(e.target.value)}')
     && contexto.includes('fijarEmpresaActiva(companyId)'),
 );
+comprobar(
+  'al recargar no se borra la empresa guardada antes de cargar la lista',
+  contexto.includes('useState(Boolean(userId))')
+    && /if \(cargando\) return;\n    fijarEmpresaActiva\(empresaActiva\?\.company_id \?\? null\)/.test(contexto),
+);
+
 const inicioCatch = contexto.indexOf('.catch(');
 const bloqueCatch = contexto.slice(
   inicioCatch,

@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
-from app.core.enums import EstadoEmpresa
+from app.core.enums import EstadoEmpresa, RolEmpresa
 from app.models.company import CompanyModel
+from app.models.usuario_empresa import UsuarioEmpresaModel
 from app.schemas.company import (
     CompanyCreate,
     CompanyResponse,
@@ -143,6 +144,22 @@ async def create_company(
     # que le falta sembrar: la ausencia parece un bug del front. Es idempotente,
     # asi que un reintento tras un fallo de red no duplica nada.
     await tipos_gasto_service.asegurar_catalogo(db, company.id)
+    # Quien crea la empresa tiene que poder trabajar en ella. Sin esta fila la
+    # empresa nueva es inalcanzable desde la interfaz: `/auth/empresas` solo
+    # ofrece empresas con membresia, y Mantenimiento solo asigna roles DENTRO de
+    # la empresa activa (X-Company-ID validado contra las membresias del que
+    # llama), asi que no hay forma de darse acceso a una empresa a la que ya no
+    # se pertenece. El backfill de 0022 hacia admin en todas las empresas que
+    # existian entonces; una empresa creada despues debe nacer con su dueno.
+    db.add(
+        UsuarioEmpresaModel(
+            user_id=usuario.id,
+            company_id=company.id,
+            rol=RolEmpresa.OWNER.value,
+            activo=True,
+        )
+    )
+    await db.commit()
     await registrar_auditoria(
         accion="crear_empresa",
         modulo="companies",
