@@ -202,44 +202,49 @@ siga cabiendo en la VM.
 
 ### Archivos de entorno
 
-Hay **dos** archivos y solo uno se versiona. Antes eran cuatro y estaban repartidos en tres
-locales; la configuración de la app y la contraseña de la base viven ahora en el mismo `.env`,
-porque con cuatro archivos sin explicar cuál era cuál la clave acababa en dos sitios y la
-contraseña en tres — no por descuido, sino porque nadie sabía quién ganaba.
-
-Lo único que se queda fuera es la `SECRET_KEY`, y por un motivo concreto: con ella se firman
-tokens válidos sin pasar por el login. Si estuviera en `.env`, compartir la configuración de IA
-con otra persona significaría compartir la clave, porque los dos viajan en el mismo archivo.
+Hay **tres** archivos y solo uno se versiona. La configuración se comparte; los secretos no.
 
 | Archivo | Versionado | Qué lleva | Quién lo lee |
 |---|---|---|---|
-| `.env.example` | **sí** | la plantilla | tú |
-| `.env` | no | `POSTGRES_PASSWORD` + toda la configuración: IA, carpeta de tickets, OCR | `docker compose` (interpola `${POSTGRES_PASSWORD}`) y `app/core/config.py` |
-| `.env.local` | no | solo `SECRET_KEY` | `docker compose` y `app/core/config.py`, **gana** sobre `.env` |
+| `.env.example` | **sí** | plantilla, sin valores de secreto | tú |
+| `.env` | no | solo configuración: IA, rutas, OCR, CORS, `email` | `docker compose --env-file .env ...` y `app/core/config.py` |
+| `.env.local` | no, `chmod 600` | solo `SECRET_KEY` y `POSTGRES_PASSWORD` | los mismos dos, y **gana** sobre `.env` |
 
 ```bash
 cp .env.example .env
-chmod 600 .env             # con 644 cualquiera con una sesión en la máquina los lee
+touch .env.local
+chmod 600 .env .env.local   # con 644 cualquiera con una sesión en la máquina los lee
+# Rellena SECRET_KEY y POSTGRES_PASSWORD en .env.local:
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-La app lee `.env` y después `.env.local`, en ese orden y con el último ganando — el mismo
-orden que usa `docker-compose.yml`. Correr `uvicorn` a mano firma los tokens con la misma clave
-que el contenedor; antes no era así, y se veía como "la sesión se cae, pero solo cuando depuro
-en local".
+**`env_file:` no interpola `${...}`**: Compose solo lo hace desde `--env-file`. Por eso todas
+las recetas que abren el proyecto pasan los dos archivos, incluido el segundo paso de
+`make up` (el que espera con `--wait`). Pero `env_file:` **sí** inyecta variables dentro del
+contenedor: quitar `.env.local` de ahí deja a la API sin `SECRET_KEY` y cada `--reload` cierra
+las sesiones. Los dos mecanismos son distintos y los dos hacen falta. Las variables exportadas
+en el shell ganan sobre ambos archivos: si tienes `POSTGRES_PASSWORD` o `SECRET_KEY` en el
+entorno, haz `unset` antes de `make up` o verás una clave distinta de la del archivo.
+
+`docker-compose.yml` es el único sitio donde se arma una URL con contraseña:
+`${POSTGRES_PASSWORD:?...}`. Ese `:?` es el chequeo de arranque: si falta `.env.local`,
+Compose falla antes de crear contenedores con un mensaje que nombra la variable. La misma
+contraseña se inyecta a la API como `password_inicial` —un alias en el contenedor para el
+usuario inicial de `app/main.py`—, no una segunda línea escrita en disco.
 
 > **`SECRET_KEY` no tiene valor por defecto.** Sin ella, `config.py` genera una clave efímera y
 > avisa: molesto (con `--reload`, cada cambio en un `.py` cierra las sesiones) pero no roto.
-> Genera una real con `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` y ponla
-> en `.env.local`. Con ella se pueden firmar tokens válidos sin pasar por el login, así que si
-> crees que salió del equipo, **rotarla** es lo único que sirve.
+> Genera una real con el comando de arriba y ponla en `.env.local`. Con ella se pueden firmar
+> tokens válidos sin pasar por el login, así que si crees que salió del equipo, **rotarla** es
+> lo único que sirve.
 
-> **`DATABASE_URL` va sin contraseña, aunque `POSTGRES_PASSWORD` esté treinta líneas más
-> arriba en el mismo `.env`.** Dentro de Docker la sobrescribe `docker-compose.yml` en su
-> `environment:` con la que arma desde `${POSTGRES_PASSWORD}`, así que la del archivo no se usa
-> para el contenedor. Esa línea de `docker-compose.yml` es el **único** lugar del proyecto donde
-> existe una URL con contraseña; duplicarla en `.env` sería el mismo secreto en dos líneas.
-> Fuera de Docker sí se usa la del archivo: ahí apunta a una base que exista de verdad y
-> rellenas la contraseña tú (o exportas `DATABASE_URL` antes de levantar `uvicorn`).
+> **`DATABASE_URL` va sin contraseña, aunque `POSTGRES_PASSWORD` esté en `.env.local`.**
+> Dentro de Docker la sobrescribe `docker-compose.yml` en su `environment:` con la que arma
+> desde `${POSTGRES_PASSWORD}`, así que la del archivo no se usa para el contenedor. Esa línea
+> es el **único** lugar del proyecto donde existe una URL con contraseña; duplicarla sería el
+> mismo secreto en dos sitios. Fuera de Docker sí se usa la del archivo: ahí apunta a una base
+> que exista de verdad y rellenas la contraseña tú (o exportas `DATABASE_URL` antes de
+> levantar `uvicorn`).
 
 > **`CORS_ORIGINS` no admite `"*"`.** La app se sirve con `allow_credentials=True`, y esa
 > combinación hace que cualquier sitio web pueda leer la API con la sesión del navegador de
@@ -342,6 +347,14 @@ Tres cosas que conviene saber antes de usarlo:
 POST /api/v1/companies/
 {"name": "Mi Taquería", "tax_id": "MTA123456789"}
 ```
+
+Una empresa tiene `estado`: `activo`, `inactivo` o `eliminado`.
+`POST /companies/{id}/desactivar` es una baja reversible; `/activar` la reabre;
+`/eliminar` (y `DELETE /companies/{id}`) es un borrado lógico que solo se permite
+si la empresa no tiene datos. **Ninguna ruta borra la evidencia**: una empresa con
+movimiento se desactiva, no se elimina. Sin empresa activa no se procesa ni se
+consulta trabajo (403 `SIN_EMPRESA_ACTIVA`); el front muestra un aviso y permite
+seguir listando, creando o activando empresas para salir de ese estado.
 
 ### 2. Registrar Tickets (manual o extracción automática)
 ```bash

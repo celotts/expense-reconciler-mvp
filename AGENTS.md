@@ -38,7 +38,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 13 archivos de página (los nuevos son `CajaChica.tsx` y `Mantenimiento.tsx`) |
-| Tests | **2027**: **2026 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta una `SECRET_KEY` corta y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
+| Tests | **2063**: **2062 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY -u POSTGRES_PASSWORD -u password_inicial TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta variables de entorno y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
 Las rutas del front son hashes y las decide `renderPage` en `App.tsx`: `#/dashboard` ·
@@ -120,7 +120,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 2026 passed, 1 skip
+python3 -m pytest tests/ -q           # 2062 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 
@@ -229,6 +229,49 @@ cuando no hay elección. `App.tsx` usa el rol por empresa para no ofrecer Caja C
 a quien no puede entrar, pero esa es una comodidad: la autoridad sigue siendo el
 servicio. `npm run verify:empresa` monta el aviso en HTML y comprueba el orden de
 inyección y que ninguna pantalla vuelva a decidir `companyId` por su cuenta.
+
+### Bajar una empresa no es borrarla, y cerrar la última no es truco de interfaz
+
+`companies.estado` sustituye al booleano `activo`: **`activo` · `inactivo` ·
+`eliminado`**, con CHECK en `db/init.sql` y en `db/migrations/0029_estado_empresa.sql`.
+Un booleano no puede decir "pausa reversible" y "borrado lógico" a la vez. Las tres
+transiciones son rutas distintas (`POST /companies/{id}/desactivar`, `/activar`,
+`/eliminar`), y `DELETE /companies/{id}` es **alias del soft delete**, nunca un borrado
+de filas: las FK de Postgres son `ON DELETE CASCADE` y un `DELETE` se llevaba por delante
+tickets, banco, caja, inventario y cierres.
+
+**Los cerrojos viven en `app/services/empresas_service.py`, no solo en la base.**
+`datos_de_la_empresa()` cuenta las filas de trabajo (`TABLAS_DE_TRABAJO`); no cuentan
+`ticket_documents`, `compra_items`, `reconciliations` —son hijos— ni la auditoría suelta
+ni el catálogo sembrado al crear una empresa, porque entonces ninguna empresa podría
+eliminarse nunca. Con datos: **no se elimina, se desactiva**. Sin datos, si es la única
+activa y hay trabajo en el sistema, tampoco se desactiva: el sistema no se queda sin
+empresa donde trabajar. Una eliminada no se reactiva (`verificar_activar`).
+
+**Sin empresa activa para la cuenta, para TODO el trabajo.** La guardia global
+(`guardia_de_permisos`) filtra `%membresias_del_usuario` por `CompanyModel.estado`, y
+cuando la cuenta tiene membresías pero todas cerradas responde 403 `SIN_EMPRESA_ACTIVA`
+**también en GET**: tablero, tickets, informes, caja. No basta con cerrar las escrituras.
+Las cuentas **sin membresías** siguen viendo todo por compatibilidad con las anteriores
+a `0022`. La excepción es la recuperación —login, `GET /auth/empresas`, listar/crear/
+activar empresas— y existe `_es_recuperacion` en `deps.py`: sin esa lista el propio
+cerrojo dejaría encerrado a quien tiene que activar la empresa. El front lo dice con
+`AvisoSinEmpresa` en Escáner, Tickets y Caja Chica; la autoridad sigue siendo el servidor.
+
+`GET /companies` muestra **solo activas** por omisión; `?incluir_inactivas=true` existe
+para reactivar. El front `(Companies.tsx)` muestra el `estado` que manda el servidor,
+tiene un check "Mostrar inactivas" y llama a `recargar()` del contexto de empresa tras
+cada cambio, para que la barra lateral vuelva a preguntar al servidor.
+
+Verificación: `tests/unit/test_empresas_service.py` (13),
+`tests/integration/test_baja_de_empresas.py` (12, con los cuatro endpoints, el bloqueo
+de `POST /scan` y la recuperación), `scripts/verify_baja_empresas_mutations.py` (12
+mutaciones) y `npm run verify:empresa` (miran el HTML del aviso y el cliente de API).
+La migración se aplicó con `env -u POSTGRES_PASSWORD -u SECRET_KEY make migrar MIGRAR_SI=1`:
+**el shell exporta esos secretos y Compose interpolated el valor del shell en vez del
+de `.env.local`**, así que sin `env -u` el `psql` del servicio dice "password
+authentication failed" aunque la contraseña del archivo sea la correcta. Es la misma
+trampa documentada para `OLLAMA_MODEL`, pero con secretos. Ver `known-issues.md` §54.
 
 ### Mantenimiento: crear una cuenta y darle acceso son dos decisiones
 Antes no había pantalla para administrar cuentas: `Login.tsx` decía que las creaba quien
@@ -2395,32 +2438,41 @@ Estas no son opiniones: se comprobaron leyendo el código. Morar en ellas cuesta
   columna cruda en el modelo. La del email **es correcta**: el funcional es el que
   vale, porque el login normaliza a minúsculas antes de buscar.
 
-- **Hay dos `.env` y sólo uno se versiona.** `.env.example` es la plantilla (versionada);
-  `.env` lleva `POSTGRES_PASSWORD` **y toda la configuración** de la app; `.env.local` lleva la
-  `SECRET_KEY` y **gana** sobre `.env`. `config.py` y `docker-compose.yml` leen los dos en ese
-  mismo orden: antes `config.py` leía sólo el de configuración y `docker-compose` los dos, así
-  que `uvicorn` local firmaba con una clave distinta a la del contenedor ("la sesión se cae,
-  pero sólo cuando depuro en local"). Los dos con secretos van en `chmod 600`.
+- **Hay tres `.env` y sólo uno se versiona.** `.env.example` es la plantilla (versionada, sin
+  valores de secreto); `.env` lleva **sólo configuración** (IA, rutas, OCR, CORS, `email`) y
+  `.env.local` (`chmod 600`) lleva **los dos secretos**: `SECRET_KEY` y `POSTGRES_PASSWORD`, y
+  gana sobre `.env`. `config.py` lee los dos en ese orden; `docker-compose.yml` los declara en
+  `env_file:` (que sí inyecta variables al contenedor) **y** los pasa con `--env-file` en todas
+  las recetas (que es lo único que interpola `${...}`). Antes `config.py` leía sólo el de
+  configuración y `uvicorn` local firmaba con una clave distinta a la del contenedor ("la sesión
+  se cae, pero sólo cuando depuro en local").
 
-  **Eran cuatro y se fusionaron en dos** (`.env` + `.env.dev` → `.env`). Con cuatro archivos
-  sin explicar cuál era cuál, la clave acababa en dos sitios y la contraseña en tres: no por
-  descuido, sino porque nadie sabía quién ganaba. `.env.dev` ya no existe.
+  **Eran cuatro, se fusionaron en dos y ahora son tres por responsabilidad.** Con cuatro
+  archivos sin explicar cuál era cuál, la clave acababa en dos sitios y la contraseña en tres:
+  no por descuido, sino porque nadie sabía quién ganaba. `.env.dev` ya no existe. La contraseña
+  se llama `POSTGRES_PASSWORD` de extremo a extremo; `password_inicial` es sólo un alias que
+  compose inyecta a la API en tiempo de ejecución para que `app/main.py` siembre el admin sin
+  leer un segundo secreto escrito. `${POSTGRES_PASSWORD:?...}` es el chequeo de arranque: falla
+  antes de crear contenedores y nombra el archivo que falta.
 
-  Lo único que sigue fuera de `.env` es la `SECRET_KEY`, y por un motivo concreto: con ella se
-  firman tokens válidos sin pasar por el login, así que si estuviera en `.env`, compartir la
-  configuración de IA significaría compartir la clave.
+  Los dos secretos siguen fuera de `.env`, y por un motivo concreto: con la `SECRET_KEY` se
+  firman tokens válidos sin pasar por el login, y con `POSTGRES_PASSWORD` se entra a la base.
+  Compartir la configuración de IA no debe compartir ninguno de los dos.
 
-  **La regla que sobrevive a la fusión, y es más estrecha: la contraseña no se duplica.** La
-  `DATABASE_URL` de `.env` va **sin contraseña, aunque `POSTGRES_PASSWORD` esté treinta líneas
-  más arriba en el mismo archivo**. La sola línea que arma una URL con contraseña es la de
-  `docker-compose.yml`, por interpolación de `${POSTGRES_PASSWORD}`. Dentro de Docker la de
-  `.env` no se usa: `environment:` pisa siempre a `env_file:`. Fuera de Docker sí se usa, y ahí
-  la rellenas tú. Un test (`TestLaPlantillaDeLosEnv`) lo hace cumplir, porque `.gitignore` y
-  `git status` no delatan nada de esto.
+  **La regla que sobrevive a las tres disposiciones, y es más estrecha: la contraseña no se
+  duplica.** La `DATABASE_URL` de `.env` va **sin contraseña, aunque `POSTGRES_PASSWORD` esté en
+  `.env.local`**. La sola línea que arma una URL con contraseña es la de `docker-compose.yml`,
+  por interpolación de `${POSTGRES_PASSWORD:?...}`. Dentro de Docker la de `.env` no se usa:
+  `environment:` pisa siempre a `env_file:`. Fuera de Docker sí se usa, y ahí la rellenas tú.
+  `TestLaPlantillaDeLosEnv` lo hace cumplir, porque `.gitignore` y `git status` no delatan nada
+  de esto. `TestLosEnvFileDelArranque` comprueba la otra mitad: los dos `--env-file` en CADA
+  comando de la receta (no en un comentario) y `.env.local` en `env_file:` de la API, que es
+  cómo llega la `SECRET_KEY` al contenedor.
 
-  Lo que **ya no** se puede afirmar es "el archivo de configuración no lleva secretos": con la
-  fusión, su único secreto (`POSTGRES_PASSWORD`) está ahí a propósito. No reescribas la
-  defensa en esa forma; defiéndela como "una sola URL con contraseña".
+  Lo que **ya no** se puede afirmar es "el archivo de configuración no lleva secretos" para
+  defender los secretos: ahora son dos archivos separados. Defiéndelo como "`.env` no lleva
+  valores de `SECRET_KEY`, `POSTGRES_PASSWORD` ni `password_inicial`, y `.env.local` no lleva
+  configuración".
 
 - **El puerto de Ollama publicado es 11435.** En esta máquina hay un Ollama nativo en
   `127.0.0.1:11434` y publicar el mismo puerto en loopback no arranca. La app habla con

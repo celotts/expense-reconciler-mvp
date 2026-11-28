@@ -42,6 +42,7 @@ const VACIO: EmpresaContextValue = {
   necesitaEleccion: false,
   error: null,
   elegirEmpresa: () => undefined,
+  recargar: () => undefined,
 };
 
 function pintar(valor: EmpresaContextValue): string {
@@ -65,11 +66,24 @@ comprobar(
 
 const conEmpresa = pintar({
   ...VACIO,
-  empresas: [{ company_id: 'c1', name: 'Una', tax_id: 'RFC1', rol: 'admin', permisos: ['leer', 'crear'] }],
-  empresaActiva: { company_id: 'c1', name: 'Una', tax_id: 'RFC1', rol: 'admin', permisos: ['leer', 'crear'] },
+  empresas: [{ company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'activo', rol: 'admin', permisos: ['leer', 'crear'] }],
+  empresaActiva: { company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'activo', rol: 'admin', permisos: ['leer', 'crear'] },
   rol: 'admin',
 });
 comprobar('con empresa activa no se ensucia la pantalla con un aviso', !conEmpresa.includes('role="alert"'));
+
+const sinMensaje = renderToStaticMarkup(
+  React.createElement(
+    EmpresaContext.Provider,
+    { value: VACIO },
+    React.createElement(AvisoSinEmpresa),
+  ),
+);
+comprobar(
+  'el aviso propio dice que active o cree una antes de procesar',
+  sinMensaje.includes('Active o cree una') && sinMensaje.includes('procesar gastos'),
+  sinMensaje,
+);
 
 const cargando = pintar({ ...VACIO, cargando: true });
 comprobar('mientras carga no se dice que falta una empresa', !cargando.includes('role="alert"'));
@@ -136,6 +150,52 @@ const bloque = caja.slice(
 comprobar(
   'los datos de banco solo salen de una reposicion',
   bloque.includes('datos.banco_nombre') && bloque.includes('datos.referencia_bancaria'),
+);
+
+const tipos = leer('src/types/api.ts');
+comprobar(
+  'el estado de la empresa tiene tres valores, no un booleano',
+  /type EstadoEmpresa = 'activo' \| 'inactivo' \| 'eliminado'/.test(tipos),
+);
+const contextoData = leer('src/contextos/EmpresaContexto.ts');
+comprobar(
+  'la lista de empresas del usuario lee el estado del servidor',
+  contextoData.includes('estado: EstadoEmpresa'),
+);
+
+const apiEmpresas = api.slice(api.indexOf('export const companiesApi'), api.indexOf('// Tickets API'));
+comprobar(
+  'el listado por omision pide solo activas',
+  apiEmpresas.includes(
+    "incluirInactivas ? '/companies/?incluir_inactivas=true' : '/companies/'",
+  ),
+);
+comprobar(
+  'hay una via explicita para ver inactivas',
+  apiEmpresas.includes('incluir_inactivas=true'),
+);
+for (const accion of ['desactivar', 'activar', 'eliminar']) {
+  comprobar(`companiesApi.${accion} existe`, apiEmpresas.includes(`${accion}: (id: string)`));
+}
+comprobar('no queda la ruta vieja de baja', !apiEmpresas.includes('/baja'));
+
+const companiesPage = leer('src/pages/Companies.tsx');
+comprobar(
+  'la columna Estado sale del campo del servidor',
+  companiesPage.includes("key: 'estado'") && companiesPage.includes('ETIQUETA_ESTADO[c.estado]'),
+);
+comprobar(
+  'la plantilla muestra solo activas salvo que se pidan inactivas',
+  companiesPage.includes('Mostrar inactivas') && companiesPage.includes('companiesApi.list(incluirInactivas)'),
+);
+comprobar(
+  'desactivar, activar y eliminar son acciones distintas',
+  companiesPage.includes('handleDesactivar') && companiesPage.includes('handleActivar')
+    && companiesPage.includes('handleEliminar'),
+);
+comprobar(
+  'tras cambiar el estado se recarga la empresa del contexto',
+  companiesPage.includes('recargar?.()'),
 );
 
 if (fallos) {

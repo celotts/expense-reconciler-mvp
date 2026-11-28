@@ -25,6 +25,8 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
   const [elegida, setElegida] = useState<string | null>(() => empresaActivaGuardada());
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const recargar = useCallback(() => setVersion((v) => v + 1), []);
 
   useEffect(() => {
     if (!userId) {
@@ -57,7 +59,7 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
     return () => {
       vivo = false;
     };
-  }, [userId]);
+  }, [userId, version]);
 
   // La memoria del modulo y el localStorage siguen a la eleccion derivada, no
   // al `useState`: si la cuenta solo tiene una empresa, esa empresa queda
@@ -88,8 +90,9 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
       necesitaEleccion: !cargando && empresas.length > 1 && empresaActiva === null,
       error,
       elegirEmpresa,
+      recargar,
     }),
-    [empresas, empresaActiva, cargando, error, elegirEmpresa],
+    [empresas, empresaActiva, cargando, error, elegirEmpresa, recargar],
   );
 
   return <EmpresaContext.Provider value={valor}>{children}</EmpresaContext.Provider>;
@@ -107,7 +110,7 @@ export function AvisoSinEmpresa({ mensaje }: { mensaje?: string }) {
   if (cargando || empresaActiva) return null;
   return (
     <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-      {mensaje ?? 'Elige una empresa activa en la barra lateral antes de continuar.'}
+      {mensaje ?? 'No hay ninguna empresa activa. Active o cree una en la barra lateral antes de procesar gastos.'}
     </div>
   );
 }

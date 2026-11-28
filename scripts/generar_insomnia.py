@@ -261,7 +261,10 @@ NOMBRES: dict[tuple[str, str], str] = {
     ("POST", "/companies/"): "c1. Crear empresa",
     ("GET", "/companies/{company_id}"): "c2. Ver una empresa",
     ("PATCH", "/companies/{company_id}"): "c3. Corregir una empresa",
-    ("DELETE", "/companies/{company_id}"): "c4. Borrar una empresa (CASCADE: se lleva todo)",
+    ("POST", "/companies/{company_id}/desactivar"): "c4. Desactivar empresa (baja reversible, conserva datos)",
+    ("POST", "/companies/{company_id}/activar"): "c5. Reactivar empresa desactivada",
+    ("POST", "/companies/{company_id}/eliminar"): "c6. Eliminar empresa (soft delete, solo si esta vacia)",
+    ("DELETE", "/companies/{company_id}"): "c7. Alias de eliminar (soft delete; ya NO borra en cascada)",
     # --- Leer un comprobante ---------------------------------------------
     # Los dos endpoints de diagnostico van antes de los que guardan, y no por
     # preferencia: es el orden en el que uno no ensucia la base. Un

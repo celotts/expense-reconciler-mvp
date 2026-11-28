@@ -27,6 +27,8 @@ from app.core.enums import RolEmpresa
 from app.core.permisos import a_rol_de_empresa, Permiso, roles_validos, tiene_permiso
 from app.core.security import ErrorDeToken, TokenCaducado, leer_token
 from app.core.time import como_utc, utcnow
+from app.core.enums import EstadoEmpresa
+from app.models.company import CompanyModel
 from app.models.sesion_activa import SesionActiva
 from app.models.token_revocado import TokenRevocado
 from app.models.usuario_empresa import UsuarioEmpresaModel
@@ -208,16 +210,75 @@ UsuarioActual = Annotated[UserModel, Depends(get_current_user)]
 # por el orden de las filas.
 
 
+SIN_EMPRESA_ACTIVA = (
+    "No hay ninguna empresa activa. Active o cree una para procesar gastos."
+)
+
+
+# Cuando TODAS las empresas estan cerradas, casi toda la API tiene que parar:
+# digitalizar, conciliar, exportar, inventario, caja, cuentas, auditoria. Las
+# unicas excepciones son las que permiten SALIR de ese estado. Sin esta lista,
+# el propio cerrojo dejaria encerrado a quien tiene que activar la empresa.
+_RUTAS_DE_RECUPERACION = frozenset({
+    "/api/v1/companies",
+    "/api/v1/companies/{id}",
+    "/api/v1/companies/{id}/activar",
+})
+
+
+def _es_recuperacion(request: Request) -> bool:
+    ruta = request.url.path.rstrip("/")
+    if ruta == "/api/v1/companies":
+        return request.method.upper() in {"GET", "POST"}
+    partes = ruta.split("/")
+    if len(partes) == 5 and partes[:4] == ["", "api", "v1", "companies"]:
+        return request.method.upper() == "GET"  # GET /companies/{id}
+    if (
+        len(partes) == 6
+        and partes[:4] == ["", "api", "v1", "companies"]
+        and partes[5] == "activar"
+    ):
+        return request.method.upper() == "POST"
+    return False
+
+
+async def _tiene_membresias(usuario: UserModel, db: Sesion) -> bool:
+    """¿Existe alguna fila de membresia, aunque la empresa este de baja?
+
+    Sin esta pregunta, una cuenta cuyas empresas estan todas dadas de baja
+    parece una cuenta anterior a `0022` (sin membresias) y la guardia global
+    la deja escribir. Son dos estados distintos y piden respuestas distintas.
+    """
+    fila = await db.scalar(
+        select(UsuarioEmpresaModel.company_id).where(
+            UsuarioEmpresaModel.user_id == usuario.id
+        ).limit(1)
+    )
+    return fila is not None
+
+
 async def _membresias_del_usuario(
     usuario: UserModel, db: Sesion
 ) -> list[tuple[str, UUID]]:
-    """Las filas activas de `usuarios_empresas`, en una sola consulta."""
+    """Membresias activas EN EMPRESAS ACTIVAS, en una sola consulta.
+
+    El filtro de `companies.estado` no es cosmetico: sin el, el header de una
+    empresa desactivada o eliminada seguia autorizando escrituras, que es
+    exactamente lo que la baja tiene que impedir. Se lee de la BD en esta
+    peticion, igual que el rol y el `is_active` de la cuenta.
+    """
     return list(
         (
             await db.execute(
-                select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id).where(
+                select(UsuarioEmpresaModel.rol, UsuarioEmpresaModel.company_id)
+                .join(
+                    CompanyModel,
+                    CompanyModel.id == UsuarioEmpresaModel.company_id,
+                )
+                .where(
                     UsuarioEmpresaModel.user_id == usuario.id,
                     UsuarioEmpresaModel.activo.is_(True),
+                    CompanyModel.estado == EstadoEmpresa.ACTIVO.value,
                 )
             )
         ).all()
@@ -244,6 +305,11 @@ async def empresa_activa(
     company_ids = await _companies_del_usuario(usuario, db)
 
     if not company_ids:
+        if await _tiene_membresias(usuario, db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=SIN_EMPRESA_ACTIVA,
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="La cuenta no tiene acceso a ninguna empresa",
@@ -297,6 +363,14 @@ async def empresa_visible(
     """
     company_ids = await _companies_del_usuario(usuario, db)
     if not company_ids:
+        # Legacy (sin membresias) sigue viendo todo por compatibilidad. Quien
+        # tenia membresias y las perdio todas por baja NO es legacy: no puede
+        # seguir procesando con el header de una empresa inactiva.
+        if await _tiene_membresias(usuario, db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=SIN_EMPRESA_ACTIVA,
+            )
         return None
 
     cabecera = request.headers.get("X-Company-ID")
@@ -338,7 +412,7 @@ async def rol_actual(
     los endpoints exigen un rol concreto. FastAPI cachea `empresa_activa` dentro
     de la misma request, asi que pedir las dos no duplica la consulta de empresas.
     """
-    # No se filtra `activo` de nuevo: `company_id` VIENE de `empresa_activa`,
+    # No se filtra `estado` de nuevo: `company_id` VIENE de `empresa_activa`,
     # que ya exigio una membresia activa. Poner aqui el mismo filtro seria una
     # defensa que no puede cambiar el veredicto y que por eso no se puede probar
     # (lo detecto el verificador de mutaciones: sobrevivio al quitarla).
@@ -518,7 +592,24 @@ async def guardia_de_permisos(
     cliente declara.
     """
     filas = await _membresias_del_usuario(usuario, db)
+    permiso = _permiso_de_la_peticion(request)
     if not filas:
+        # Cuenta con membresias, pero TODAS en empresas cerradas: no es una
+        # cuenta anterior a `0022` (sin membresias). Sin esto, las puertas de
+        # digitalizacion que solo comprueban que la empresa EXISTA seguian
+        # escribiendo tickets en una empresa desactivada o eliminada.
+        # La excepcion es la recuperacion: listar, crear o activar una empresa
+        # tiene que seguir funcionando para poder volver a trabajar.
+        if _es_recuperacion(request):
+            return
+        # No solo escrituras: tablero, informes, exportaciones y listados tambien
+        # son trabajo sobre datos de una empresa. Si una cuenta con membresias
+        # ve todo despues de cerrar la unica empresa, el bloqueo es decorativo.
+        if await _tiene_membresias(usuario, db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=SIN_EMPRESA_ACTIVA,
+            )
         return
 
     company_ids = {company_id for _rol, company_id in filas}
@@ -561,7 +652,6 @@ async def guardia_de_permisos(
                 detail="El company_id no coincide con la empresa activa (X-Company-ID)",
             )
 
-    permiso = _permiso_de_la_peticion(request)
     if permiso is None:
         return
 

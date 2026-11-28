@@ -34,12 +34,21 @@ SERVICIO="postgres-reconciler"
 # crea solo `POSTGRES_USER` (admin). MEDIDO el 2026-11-20: con ese literal este
 # script decia "La base no respondio" aunque la base estuviera sana, porque el
 # `psql` moria con `FATAL: role "postgres" does not exist` y el `2>/dev/null` se
-# lo tragaba. Se lee del mismo `.env` que configura Compose, con el literal
-# `admin` solo como ultimo recurso si alguien corrio el script sin .env.
+# lo tragaba. Usuario y base son CONFIGURACION: se leen de `.env`, con el
+# literal `admin` solo como ultimo recurso si alguien corrio el script sin .env.
 USUARIO="$(sed -n 's/^POSTGRES_USER=//p' .env 2>/dev/null | head -1)"
 USUARIO="${USUARIO:-admin}"
 DB="$(sed -n 's/^POSTGRES_DB=//p' .env 2>/dev/null | head -1)"
 DB="${DB:-expense_db}"
+
+# Compose no interpola `${...}` desde `env_file:`: los dos archivos se pasan
+# aqui igual que en el Makefile. Sin esto, una interpolacion fallida salia como
+# "La base no respondio", que es mentira y manda a mirar el contenedor.
+COMPOSE_ENV=(--env-file .env --env-file .env.local)
+if ! grep -q '^POSTGRES_PASSWORD=' .env.local 2>/dev/null; then
+  echo "Falta POSTGRES_PASSWORD en .env.local: sin ella Compose no puede armar la URL de la base." >&2
+  exit 1
+fi
 
 CONFIRMAR=1
 case "${1:-}" in
@@ -48,7 +57,7 @@ case "${1:-}" in
   *)        CONFIRMAR=1 ;;
 esac
 
-sql() { docker compose exec -T "$SERVICIO" psql -U "$USUARIO" -d "$DB" -At -c "$1" < /dev/null 2>/dev/null; }
+sql() { docker compose "${COMPOSE_ENV[@]}" exec -T "$SERVICIO" psql -U "$USUARIO" -d "$DB" -At -c "$1" < /dev/null 2>/dev/null; }
 
 esta_levantada() {
   [ -n "$(sql "SELECT 1")" ]
@@ -115,4 +124,4 @@ fi
 
 # El MISMO servicio que corre en el arranque. `--no-deps` para no volver a
 # levantar Postgres ni arrastrar a la API: solo se quiere aplicar el DDL.
-docker compose run --rm --no-deps migraciones
+docker compose "${COMPOSE_ENV[@]}" run --rm --no-deps migraciones

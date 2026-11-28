@@ -334,7 +334,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "3. Listar Empresas  <- fija {{ company_id }} sola",
-      "description": "List all companies with pagination.",
+      "description": "Por omision SOLO activas.\n\n`incluir_inactivas` existe para poder reactivar una empresa desactivada:\nsin esa via, una baja reversible seria irreversible por la interfaz. La\nplantilla no lo pide, asi que ve solo las activas.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -351,6 +351,12 @@
           "name": "limit",
           "value": "100",
           "disabled": false,
+          "description": ""
+        },
+        {
+          "name": "incluir_inactivas",
+          "value": "False",
+          "disabled": true,
           "description": ""
         }
       ],
@@ -378,7 +384,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "c1. Crear empresa",
-      "description": "Create a new company.",
+      "description": "Create a new company, always in `activo`.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",
@@ -430,7 +436,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "c3. Corregir una empresa",
-      "description": "Update a company.",
+      "description": "Update a company. `estado` NO es editable aqui: tiene sus tres rutas.",
       "method": "PATCH",
       "body": {
         "mimeType": "application/json",
@@ -457,8 +463,80 @@
       "parentId": "fld_04",
       "modified": 1759353600000,
       "created": 1759353600000,
-      "name": "c4. Borrar una empresa (CASCADE: se lleva todo)",
-      "description": "Delete a company.",
+      "name": "c4. Desactivar empresa (baja reversible, conserva datos)",
+      "description": "Baja reversible: `estado='inactivo'`, sin borrar ni una fila.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}/desactivar",
+      "metaSortKey": 12,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_13",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c5. Reactivar empresa desactivada",
+      "description": "Recuperar una empresa desactivada. Una eliminada NO se reactiva.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}/activar",
+      "metaSortKey": 13,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_14",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c6. Eliminar empresa (soft delete, solo si esta vacia)",
+      "description": "Soft delete: `estado='eliminado'`. Solo para empresas sin datos.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": ""
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ token }}"
+        }
+      ],
+      "url": "{{ base_url }}/companies/{{ company_id }}/eliminar",
+      "metaSortKey": 14,
+      "collectionId": "col_api",
+      "_type": "request"
+    },
+    {
+      "_id": "req_15",
+      "parentId": "fld_04",
+      "modified": 1759353600000,
+      "created": 1759353600000,
+      "name": "c7. Alias de eliminar (soft delete; ya NO borra en cascada)",
+      "description": "DELETE es un alias del soft delete: ninguna ruta borra evidencia.\n\nAntes borraba la fila en cascada y las FK se llevaban tickets, banco,\ncaja e inventario. Los cerrojos viven en el servicio, no en la base.",
       "method": "DELETE",
       "body": {
         "mimeType": "application/json",
@@ -472,7 +550,7 @@
         }
       ],
       "url": "{{ base_url }}/companies/{{ company_id }}",
-      "metaSortKey": 12,
+      "metaSortKey": 15,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -492,7 +570,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_13",
+      "_id": "req_16",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -530,7 +608,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/extract-diagnostico",
-      "metaSortKey": 13,
+      "metaSortKey": 16,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -542,7 +620,7 @@
       ]
     },
     {
-      "_id": "req_14",
+      "_id": "req_17",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -580,7 +658,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/extract-and-create",
-      "metaSortKey": 14,
+      "metaSortKey": 17,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -592,7 +670,7 @@
       ]
     },
     {
-      "_id": "req_15",
+      "_id": "req_18",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -660,7 +738,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/",
-      "metaSortKey": 15,
+      "metaSortKey": 18,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -672,7 +750,7 @@
       ]
     },
     {
-      "_id": "req_16",
+      "_id": "req_19",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -710,12 +788,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/review-queue",
-      "metaSortKey": 16,
+      "metaSortKey": 19,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_17",
+      "_id": "req_20",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -734,12 +812,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}",
-      "metaSortKey": 17,
+      "metaSortKey": 20,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_18",
+      "_id": "req_21",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -762,12 +840,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/review",
-      "metaSortKey": 18,
+      "metaSortKey": 21,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_19",
+      "_id": "req_22",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -793,12 +871,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/accuracy",
-      "metaSortKey": 19,
+      "metaSortKey": 22,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_20",
+      "_id": "req_23",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -836,12 +914,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/spot-check",
-      "metaSortKey": 20,
+      "metaSortKey": 23,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_21",
+      "_id": "req_24",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -864,12 +942,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/spot-check",
-      "metaSortKey": 21,
+      "metaSortKey": 24,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_22",
+      "_id": "req_25",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -892,12 +970,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/",
-      "metaSortKey": 22,
+      "metaSortKey": 25,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_23",
+      "_id": "req_26",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -920,12 +998,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}",
-      "metaSortKey": 23,
+      "metaSortKey": 26,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_24",
+      "_id": "req_27",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -944,12 +1022,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
-      "metaSortKey": 24,
+      "metaSortKey": 27,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_25",
+      "_id": "req_28",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -968,12 +1046,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento/vista-previa",
-      "metaSortKey": 25,
+      "metaSortKey": 28,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_26",
+      "_id": "req_29",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -992,12 +1070,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documentos",
-      "metaSortKey": 26,
+      "metaSortKey": 29,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_27",
+      "_id": "req_30",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1029,12 +1107,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}/documento",
-      "metaSortKey": 27,
+      "metaSortKey": 30,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_28",
+      "_id": "req_31",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1066,12 +1144,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/extract",
-      "metaSortKey": 28,
+      "metaSortKey": 31,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_29",
+      "_id": "req_32",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1094,12 +1172,12 @@
         }
       ],
       "url": "{{ base_url }}/tickets/categoria",
-      "metaSortKey": 29,
+      "metaSortKey": 32,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_30",
+      "_id": "req_33",
       "parentId": "fld_05",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1118,7 +1196,7 @@
         }
       ],
       "url": "{{ base_url }}/tickets/{{ ticket_id }}",
-      "metaSortKey": 30,
+      "metaSortKey": 33,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1138,7 +1216,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_31",
+      "_id": "req_34",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1157,12 +1235,12 @@
         }
       ],
       "url": "{{ base_url }}/expenses/digitalizar-directorio",
-      "metaSortKey": 31,
+      "metaSortKey": 34,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_32",
+      "_id": "req_35",
       "parentId": "fld_06",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1206,7 +1284,7 @@
         }
       ],
       "url": "{{ base_url }}/expenses/upload-batch",
-      "metaSortKey": 32,
+      "metaSortKey": 35,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1226,7 +1304,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_33",
+      "_id": "req_36",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1270,7 +1348,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/files",
-      "metaSortKey": 33,
+      "metaSortKey": 36,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -1282,7 +1360,7 @@
       ]
     },
     {
-      "_id": "req_34",
+      "_id": "req_37",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1301,7 +1379,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/diagnostico",
-      "metaSortKey": 34,
+      "metaSortKey": 37,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -1313,7 +1391,7 @@
       ]
     },
     {
-      "_id": "req_35",
+      "_id": "req_38",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1336,12 +1414,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/",
-      "metaSortKey": 35,
+      "metaSortKey": 38,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_36",
+      "_id": "req_39",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1360,12 +1438,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/config",
-      "metaSortKey": 36,
+      "metaSortKey": 39,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_37",
+      "_id": "req_40",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1384,12 +1462,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/ia",
-      "metaSortKey": 37,
+      "metaSortKey": 40,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_38",
+      "_id": "req_41",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1408,12 +1486,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/ocr",
-      "metaSortKey": 38,
+      "metaSortKey": 41,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_39",
+      "_id": "req_42",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1432,12 +1510,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/stats",
-      "metaSortKey": 39,
+      "metaSortKey": 42,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_40",
+      "_id": "req_43",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1463,12 +1541,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/runs",
-      "metaSortKey": 40,
+      "metaSortKey": 43,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_41",
+      "_id": "req_44",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1487,12 +1565,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/runs/{{ corrida_id }}",
-      "metaSortKey": 41,
+      "metaSortKey": 44,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_42",
+      "_id": "req_45",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1518,12 +1596,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/reprocess",
-      "metaSortKey": 42,
+      "metaSortKey": 45,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_43",
+      "_id": "req_46",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1542,12 +1620,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}",
-      "metaSortKey": 43,
+      "metaSortKey": 46,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_44",
+      "_id": "req_47",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1566,12 +1644,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/documento",
-      "metaSortKey": 44,
+      "metaSortKey": 47,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_45",
+      "_id": "req_48",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1590,12 +1668,12 @@
         }
       ],
       "url": "{{ base_url }}/scan/files/{{ file_id }}/documento/vista-previa",
-      "metaSortKey": 45,
+      "metaSortKey": 48,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_46",
+      "_id": "req_49",
       "parentId": "fld_07",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1618,7 +1696,7 @@
         }
       ],
       "url": "{{ base_url }}/scan/reset",
-      "metaSortKey": 46,
+      "metaSortKey": 49,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1638,7 +1716,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_47",
+      "_id": "req_50",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1661,12 +1739,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios",
-      "metaSortKey": 47,
+      "metaSortKey": 50,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_48",
+      "_id": "req_51",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1704,12 +1782,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios",
-      "metaSortKey": 48,
+      "metaSortKey": 51,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_49",
+      "_id": "req_52",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1728,12 +1806,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 49,
+      "metaSortKey": 52,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_50",
+      "_id": "req_53",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1760,12 +1838,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}",
-      "metaSortKey": 50,
+      "metaSortKey": 53,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_51",
+      "_id": "req_54",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1792,12 +1870,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena",
-      "metaSortKey": 51,
+      "metaSortKey": 54,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_52",
+      "_id": "req_55",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1816,12 +1894,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/membresias",
-      "metaSortKey": 52,
+      "metaSortKey": 55,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_53",
+      "_id": "req_56",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1848,12 +1926,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/membresias",
-      "metaSortKey": 53,
+      "metaSortKey": 56,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_54",
+      "_id": "req_57",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1880,12 +1958,12 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/membresias/{{ usuario_id }}",
-      "metaSortKey": 54,
+      "metaSortKey": 57,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_55",
+      "_id": "req_58",
       "parentId": "fld_08",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1912,7 +1990,7 @@
         }
       ],
       "url": "{{ base_url }}/usuarios/{{ usuario_id }}/contrasena-admin",
-      "metaSortKey": 55,
+      "metaSortKey": 58,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -1932,7 +2010,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_56",
+      "_id": "req_59",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -1958,12 +2036,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/cola",
-      "metaSortKey": 56,
+      "metaSortKey": 59,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_57",
+      "_id": "req_60",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2007,12 +2085,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras",
-      "metaSortKey": 57,
+      "metaSortKey": 60,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_58",
+      "_id": "req_61",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2031,12 +2109,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}",
-      "metaSortKey": 58,
+      "metaSortKey": 61,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_59",
+      "_id": "req_62",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2059,12 +2137,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/items/{{ item_id }}/producto",
-      "metaSortKey": 59,
+      "metaSortKey": 62,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_60",
+      "_id": "req_63",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2087,12 +2165,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/confirmar",
-      "metaSortKey": 60,
+      "metaSortKey": 63,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_61",
+      "_id": "req_64",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2115,12 +2193,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/rechazar",
-      "metaSortKey": 61,
+      "metaSortKey": 64,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_62",
+      "_id": "req_65",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2139,12 +2217,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/compras/{{ compra_id }}/reabrir",
-      "metaSortKey": 62,
+      "metaSortKey": 65,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_63",
+      "_id": "req_66",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2182,12 +2260,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 63,
+      "metaSortKey": 66,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_64",
+      "_id": "req_67",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2217,12 +2295,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/movimientos",
-      "metaSortKey": 64,
+      "metaSortKey": 67,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_65",
+      "_id": "req_68",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2260,12 +2338,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 65,
+      "metaSortKey": 68,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_66",
+      "_id": "req_69",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2295,12 +2373,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos",
-      "metaSortKey": 66,
+      "metaSortKey": 69,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_67",
+      "_id": "req_70",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2326,12 +2404,12 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 67,
+      "metaSortKey": 70,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_68",
+      "_id": "req_71",
       "parentId": "fld_09",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2361,7 +2439,7 @@
         }
       ],
       "url": "{{ base_url }}/inventario/productos/{{ producto_id }}",
-      "metaSortKey": 68,
+      "metaSortKey": 71,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2381,7 +2459,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_69",
+      "_id": "req_72",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2419,7 +2497,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 69,
+      "metaSortKey": 72,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2431,7 +2509,7 @@
       ]
     },
     {
-      "_id": "req_70",
+      "_id": "req_73",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2454,12 +2532,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/",
-      "metaSortKey": 70,
+      "metaSortKey": 73,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_71",
+      "_id": "req_74",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2533,12 +2611,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv",
-      "metaSortKey": 71,
+      "metaSortKey": 74,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_72",
+      "_id": "req_75",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2618,12 +2696,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/import-csv-and-create",
-      "metaSortKey": 72,
+      "metaSortKey": 75,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_73",
+      "_id": "req_76",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2642,12 +2720,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 73,
+      "metaSortKey": 76,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_74",
+      "_id": "req_77",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2670,12 +2748,12 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 74,
+      "metaSortKey": 77,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_75",
+      "_id": "req_78",
       "parentId": "fld_10",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2694,7 +2772,7 @@
         }
       ],
       "url": "{{ base_url }}/bank-transactions/{{ transaction_id }}",
-      "metaSortKey": 75,
+      "metaSortKey": 78,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -2714,7 +2792,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_76",
+      "_id": "req_79",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2758,7 +2836,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 76,
+      "metaSortKey": 79,
       "collectionId": "col_api",
       "_type": "request",
       "scripts": [
@@ -2770,7 +2848,7 @@
       ]
     },
     {
-      "_id": "req_77",
+      "_id": "req_80",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2793,12 +2871,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/",
-      "metaSortKey": 77,
+      "metaSortKey": 80,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_78",
+      "_id": "req_81",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2821,12 +2899,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/run",
-      "metaSortKey": 78,
+      "metaSortKey": 81,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_79",
+      "_id": "req_82",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2845,12 +2923,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 79,
+      "metaSortKey": 82,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_80",
+      "_id": "req_83",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2873,12 +2951,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 80,
+      "metaSortKey": 83,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_81",
+      "_id": "req_84",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2897,12 +2975,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/{{ reconciliation_id }}",
-      "metaSortKey": 81,
+      "metaSortKey": 84,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_82",
+      "_id": "req_85",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -2946,12 +3024,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/excel",
-      "metaSortKey": 82,
+      "metaSortKey": 85,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_83",
+      "_id": "req_86",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3001,12 +3079,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/contpaqi",
-      "metaSortKey": 83,
+      "metaSortKey": 86,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_84",
+      "_id": "req_87",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3056,12 +3134,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/export/generic",
-      "metaSortKey": 84,
+      "metaSortKey": 87,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_85",
+      "_id": "req_88",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3087,12 +3165,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 85,
+      "metaSortKey": 88,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_86",
+      "_id": "req_89",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3115,12 +3193,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings",
-      "metaSortKey": 86,
+      "metaSortKey": 89,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_87",
+      "_id": "req_90",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3139,12 +3217,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 87,
+      "metaSortKey": 90,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_88",
+      "_id": "req_91",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3167,12 +3245,12 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 88,
+      "metaSortKey": 91,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_89",
+      "_id": "req_92",
       "parentId": "fld_11",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3191,7 +3269,7 @@
         }
       ],
       "url": "{{ base_url }}/reconciliations/mappings/{{ mapping_id }}",
-      "metaSortKey": 89,
+      "metaSortKey": 92,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3211,7 +3289,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_90",
+      "_id": "req_93",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3243,12 +3321,12 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual",
-      "metaSortKey": 90,
+      "metaSortKey": 93,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_91",
+      "_id": "req_94",
       "parentId": "fld_12",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3280,7 +3358,7 @@
         }
       ],
       "url": "{{ base_url }}/reports/cierre-mensual.pdf",
-      "metaSortKey": 91,
+      "metaSortKey": 94,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3300,7 +3378,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_92",
+      "_id": "req_95",
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3323,12 +3401,12 @@
         }
       ],
       "url": "{{ base_url }}/auditoria/evento",
-      "metaSortKey": 92,
+      "metaSortKey": 95,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_93",
+      "_id": "req_96",
       "parentId": "fld_13",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3384,7 +3462,7 @@
         }
       ],
       "url": "{{ base_url }}/auditoria",
-      "metaSortKey": 93,
+      "metaSortKey": 96,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3404,7 +3482,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_94",
+      "_id": "req_97",
       "parentId": "fld_14",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3423,7 +3501,7 @@
         }
       ],
       "url": "{{ base_url }}/sistema/backup",
-      "metaSortKey": 94,
+      "metaSortKey": 97,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3443,7 +3521,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_95",
+      "_id": "req_98",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3469,12 +3547,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/",
-      "metaSortKey": 95,
+      "metaSortKey": 98,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_96",
+      "_id": "req_99",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3497,12 +3575,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/",
-      "metaSortKey": 96,
+      "metaSortKey": 99,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_97",
+      "_id": "req_100",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3521,12 +3599,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}",
-      "metaSortKey": 97,
+      "metaSortKey": 100,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_98",
+      "_id": "req_101",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3549,12 +3627,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}",
-      "metaSortKey": 98,
+      "metaSortKey": 101,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_99",
+      "_id": "req_102",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3573,12 +3651,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/cerrar",
-      "metaSortKey": 99,
+      "metaSortKey": 102,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_100",
+      "_id": "req_103",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3597,12 +3675,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/conciliacion-bancaria",
-      "metaSortKey": 100,
+      "metaSortKey": 103,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_101",
+      "_id": "req_104",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3621,12 +3699,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/en-revision",
-      "metaSortKey": 101,
+      "metaSortKey": 104,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_102",
+      "_id": "req_105",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3645,12 +3723,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/movimientos",
-      "metaSortKey": 102,
+      "metaSortKey": 105,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_103",
+      "_id": "req_106",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3673,12 +3751,12 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/movimientos",
-      "metaSortKey": 103,
+      "metaSortKey": 106,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_104",
+      "_id": "req_107",
       "parentId": "fld_15",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3697,7 +3775,7 @@
         }
       ],
       "url": "{{ base_url }}/caja-chica/{{ caja_id }}/reabrir",
-      "metaSortKey": 104,
+      "metaSortKey": 107,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3717,7 +3795,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_105",
+      "_id": "req_108",
       "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3740,12 +3818,12 @@
         }
       ],
       "url": "{{ base_url }}/duplicados/buscar",
-      "metaSortKey": 105,
+      "metaSortKey": 108,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_106",
+      "_id": "req_109",
       "parentId": "fld_16",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3771,7 +3849,7 @@
         }
       ],
       "url": "{{ base_url }}/duplicados/resumen",
-      "metaSortKey": 106,
+      "metaSortKey": 109,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -3791,7 +3869,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_107",
+      "_id": "req_110",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3810,12 +3888,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/sembrar",
-      "metaSortKey": 107,
+      "metaSortKey": 110,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_108",
+      "_id": "req_111",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3841,12 +3919,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto",
-      "metaSortKey": 108,
+      "metaSortKey": 111,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_109",
+      "_id": "req_112",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3869,12 +3947,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto",
-      "metaSortKey": 109,
+      "metaSortKey": 112,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_110",
+      "_id": "req_113",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3897,12 +3975,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/{{ tipo_id }}",
-      "metaSortKey": 110,
+      "metaSortKey": 113,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_111",
+      "_id": "req_114",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3925,12 +4003,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/cuenta",
-      "metaSortKey": 111,
+      "metaSortKey": 114,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_112",
+      "_id": "req_115",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3953,12 +4031,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/cuenta",
-      "metaSortKey": 112,
+      "metaSortKey": 115,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_113",
+      "_id": "req_116",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -3981,12 +4059,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/productos/{{ producto_id }}/cuenta",
-      "metaSortKey": 113,
+      "metaSortKey": 116,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_114",
+      "_id": "req_117",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -4005,12 +4083,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/autorizacion",
-      "metaSortKey": 114,
+      "metaSortKey": 117,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_115",
+      "_id": "req_118",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -4036,12 +4114,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/autorizacion/pendientes",
-      "metaSortKey": 115,
+      "metaSortKey": 118,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_116",
+      "_id": "req_119",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -4060,12 +4138,12 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/autorizar",
-      "metaSortKey": 116,
+      "metaSortKey": 119,
       "collectionId": "col_api",
       "_type": "request"
     },
     {
-      "_id": "req_117",
+      "_id": "req_120",
       "parentId": "fld_17",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -4088,7 +4166,7 @@
         }
       ],
       "url": "{{ base_url }}/tipos-gasto/tickets/{{ ticket_id }}/rechazar",
-      "metaSortKey": 117,
+      "metaSortKey": 120,
       "collectionId": "col_api",
       "_type": "request"
     },
@@ -4108,7 +4186,7 @@
       "_type": "request_group"
     },
     {
-      "_id": "req_118",
+      "_id": "req_121",
       "parentId": "fld_18",
       "modified": 1759353600000,
       "created": 1759353600000,
@@ -4122,7 +4200,7 @@
       "parameters": [],
       "headers": [],
       "url": "{{ api_root }}/health",
-      "metaSortKey": 118,
+      "metaSortKey": 121,
       "collectionId": "col_api",
       "_type": "request",
       "authentication": {

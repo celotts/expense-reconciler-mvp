@@ -3,6 +3,13 @@
 # aire para que el sistema no entre en swap. Si un servicio se pasa del limite,
 # Docker lo mata (OOMKilled) en vez de congelar la laptop.
 services:
+  # Dos mecanismos distintos, y confundirlos rompe la app:
+  #   - `env_file:` SI inyecta variables DENTRO del contenedor (aqui llega la
+  #     `SECRET_KEY` que `config.py` lee al arrancar).
+  #   - `${...}` NO se interpola desde `env_file:`. Todas las recetas pasan
+  #     `--env-file .env --env-file .env.local`, y el `${POSTGRES_PASSWORD:?...}`
+  #     de abajo es el chequeo de arranque: falla antes de crear contenedores
+  #     y dice que archivo rellenar.
   postgres-reconciler:
     image: pgvector/pgvector:pg16
     container_name: expense_pgvector
@@ -14,7 +21,7 @@ services:
     environment:
       POSTGRES_DB: expense_db
       POSTGRES_USER: admin
-      POSTGRES_PASSWORD: ${password_inicial:?password_inicial no esta definida. Copia .env.example a .env y rellenala}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Ponla en .env.local}
     ports:
       - "127.0.0.1:5434:5432"
     volumes:
@@ -197,7 +204,7 @@ services:
     environment:
       - POSTGRES_HOST=postgres-reconciler
       - MIGRACIONES_DIR=/docker-entrypoint-initdb.d/migrations
-      - PGPASSWORD=${password_inicial:?password_inicial no esta definida. Copia .env.example a .env y rellenala}
+      - PGPASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Ponla en .env.local}
     volumes:
       - ./db:/docker-entrypoint-initdb.d:ro
       - ./scripts/migrar_auto.sh:/migrar_auto.sh:ro
@@ -233,7 +240,10 @@ services:
         required: false
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql+asyncpg://admin:${password_inicial:?password_inicial no esta definida}@postgres-reconciler:5432/expense_db
+      - DATABASE_URL=postgresql+asyncpg://admin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida}@postgres-reconciler:5432/expense_db
+      # Alias en tiempo de ejecucion: app/main.py siembra el admin leyendo
+      # `password_inicial`. El secreto sigue escrito UNA sola vez, en .env.local.
+      - password_inicial=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida}
       - HF_HOME=/opt/hf-cache
       - OLLAMA_BASE_URL=http://ollama:11434
       - TICKETS_INPUT_DIR=/tickets

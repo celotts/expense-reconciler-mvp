@@ -3,10 +3,18 @@ import { companiesApi, type Company, type CompanyCreate } from '../services/api'
 import { 
   Button, Input, Modal, Table, Card, Loading, EmptyState 
 } from '../components/ui';
-import { usePermisos } from '../contextos/EmpresaContexto';
+import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
+
+const ETIQUETA_ESTADO: Record<Company['estado'], string> = {
+  activo: 'Activa',
+  inactivo: 'Inactiva (se puede reactivar)',
+  eliminado: 'Eliminada',
+};
 
 export function Companies() {
   const { puede } = usePermisos();
+  const { recargar } = useEmpresa();
+  const [incluirInactivas, setIncluirInactivas] = useState(false);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +26,7 @@ export function Companies() {
   const loadCompanies = async () => {
     try {
       setLoading(true);
-      const data = await companiesApi.list();
+      const data = await companiesApi.list(incluirInactivas);
       setCompanies(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al cargar empresas');
@@ -27,7 +35,7 @@ export function Companies() {
     }
   };
 
-  useEffect(() => { loadCompanies(); }, []);
+  useEffect(() => { void loadCompanies(); }, [incluirInactivas]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,11 +69,39 @@ export function Companies() {
     setShowModal(true);
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('¿Eliminar esta empresa? Se borrarán todos sus tickets y movimientos.')) return;
+  const trasCambiar = () => {
+    void loadCompanies();
+    // La barra lateral decide con `/auth/empresas`: sin recargarla, una empresa
+    // reactivada seguiria sin aparecer como opcion en el resto de la pantalla.
+    recargar?.();
+  };
+
+  const handleDesactivar = async (id: string) => {
+    if (!confirm('¿Desactivar esta empresa? Sus datos se conservan y podra reactivarla; mientras este inactiva no se podra trabajar en ella.')) return;
     try {
-      await companiesApi.delete(id);
-      loadCompanies();
+      await companiesApi.desactivar(id);
+      trasCambiar();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al desactivar');
+    }
+  };
+
+  const handleActivar = async (id: string) => {
+    try {
+      await companiesApi.activar(id);
+      trasCambiar();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al activar');
+    }
+  };
+
+  const handleEliminar = async (id: string) => {
+    // Soft delete: no hay confirmacion de "se borran los tickets" porque eso
+    // seria prometer algo que el servidor no hace. Solo empresas sin datos.
+    if (!confirm('¿Eliminar esta empresa? Solo se permite si no tiene datos; la fila se conserva como eliminada. Para conservar la evidencia, desactívela.')) return;
+    try {
+      await companiesApi.eliminar(id);
+      trasCambiar();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al eliminar');
     }
@@ -76,11 +112,27 @@ export function Companies() {
     { key: 'tax_id', header: 'RFC', render: (c: Company) => <code className="text-sm bg-gray-100 px-2 py-1 rounded">{c.tax_id}</code> },
     { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
     {
+      key: 'estado', header: 'Estado',
+      render: (c: Company) => (
+        <span className={c.estado === 'activo' ? 'text-green-700' : 'text-gray-500'}>
+          {ETIQUETA_ESTADO[c.estado]}
+        </span>
+      ),
+    },
+    {
       key: 'actions', header: 'Acciones',
       render: (c: Company) => puede('administrar') ? (
         <div className="flex gap-2">
           <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
-          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}>Eliminar</Button>
+          {c.estado === 'activo' && (
+            <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); handleDesactivar(c.id); }}>Desactivar</Button>
+          )}
+          {c.estado === 'inactivo' && (
+            <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); handleActivar(c.id); }}>Activar</Button>
+          )}
+          {c.estado !== 'eliminado' && (
+            <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleEliminar(c.id); }}>Eliminar</Button>
+          )}
         </div>
       ) : null,
     },
@@ -93,7 +145,17 @@ export function Companies() {
           <h1 className="text-2xl font-bold text-gray-900">Empresas</h1>
           <p className="text-gray-500">Gestiona tus empresas y perfiles fiscales</p>
         </div>
-        {puede('administrar') && <Button onClick={openCreateModal}>Nueva Empresa</Button>}
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              checked={incluirInactivas}
+              onChange={(e) => setIncluirInactivas(e.target.checked)}
+            />
+            Mostrar inactivas
+          </label>
+          {puede('administrar') && <Button onClick={openCreateModal}>Nueva Empresa</Button>}
+        </div>
       </div>
 
       {error && (

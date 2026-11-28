@@ -2,21 +2,77 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import UsuarioActual
+from app.core.enums import EstadoEmpresa
 from app.models.company import CompanyModel
 from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
-from app.services import tipos_gasto_service
-from app.services.auditoria import (
-    registrar_auditoria,
-    registrar_delete_auditoria,
-    registrar_update_auditoria,
-)
+from app.services import empresas_service, tipos_gasto_service
+from app.services.auditoria import registrar_auditoria, registrar_update_auditoria
 
 router = APIRouter(tags=["Companies"])
+
+
+async def _company_o_404(db: AsyncSession, company_id: UUID) -> CompanyModel:
+    result = await db.execute(select(CompanyModel).where(CompanyModel.id == company_id))
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La empresa no existe",
+        )
+    return company
+
+
+def _conflicto(mensaje: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=mensaje)
+
+
+async def _cambiar_estado(
+    db: AsyncSession,
+    company: CompanyModel,
+    request: Request,
+    usuario: UsuarioActual,
+    nuevo: EstadoEmpresa,
+    verificar,
+) -> CompanyModel:
+    """Un solo sitio para las tres transiciones, con firma y auditoria.
+
+    La verificacion corre ANTES de escribir: si se contaran las activas despues
+    del flush, desactivar la ultima daria el numero equivocado y el cerrojo no
+    defenderia nada.
+    """
+    anterior = company.estado
+    try:
+        await verificar(db, company)
+        cambio = empresas_service.cambiar_estado(db, company, nuevo)
+    except (empresas_service.EmpresaConDatosError,
+            empresas_service.UltimaEmpresaActivaError,
+            empresas_service.EmpresaEliminadaError) as error:
+        # `verificar` corre ANTES de escribir: no hay nada que deshacer. Un
+        # rollback aqui expiraria al usuario de la request compartida en los
+        # tests y, en produccion, tiraria trabajo ajeno de la misma sesion.
+        raise _conflicto(str(error))
+    if cambio:
+        # `anterior` se capturo ANTES de escribir: leerlo despues daria el
+        # mismo valor en los dos lados y la auditoria mentiria sobre el cambio.
+        await registrar_update_auditoria(
+            modelo="companies",
+            registro_id=str(company.id),
+            campos_modificados=["estado"],
+            usuario_id=str(usuario.id),
+            valores_anteriores={"estado": anterior},
+            valores_nuevos={"estado": company.estado},
+            nombre=company.name,
+            rol=usuario.perfil,
+            ip=request.client.host if request.client else "desconocida",
+            db=db,
+        )
+    await db.commit()
+    await db.refresh(company)
+    return company
 
 
 @router.post("/", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
@@ -26,7 +82,7 @@ async def create_company(
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> CompanyModel:
-    """Create a new company."""
+    """Create a new company, always in `activo`."""
     existing = await db.execute(
         select(CompanyModel).where(CompanyModel.tax_id == company_in.tax_id)
     )
@@ -35,7 +91,7 @@ async def create_company(
             status_code=status.HTTP_409_CONFLICT,
             detail="Ya hay una empresa con ese RFC"
         )
-    
+
     company = CompanyModel(**company_in.model_dump())
     db.add(company)
     await db.commit()
@@ -61,11 +117,67 @@ async def create_company(
 
 @router.get("/", response_model=list[CompanyResponse])
 async def list_companies(
-    skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)
+    skip: int = 0,
+    limit: int = 100,
+    incluir_inactivas: bool = False,
+    db: AsyncSession = Depends(get_db),
 ) -> list[CompanyModel]:
-    """List all companies with pagination."""
-    result = await db.execute(select(CompanyModel).offset(skip).limit(limit))
+    """Por omision SOLO activas.
+
+    `incluir_inactivas` existe para poder reactivar una empresa desactivada:
+    sin esa via, una baja reversible seria irreversible por la interfaz. La
+    plantilla no lo pide, asi que ve solo las activas.
+    """
+    consulta = select(CompanyModel)
+    if not incluir_inactivas:
+        consulta = consulta.where(CompanyModel.estado == EstadoEmpresa.ACTIVO.value)
+    result = await db.execute(consulta.offset(skip).limit(limit))
     return list(result.scalars().all())
+
+
+@router.post("/{company_id}/desactivar", response_model=CompanyResponse)
+async def desactivar_company(
+    company_id: UUID,
+    request: Request,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> CompanyModel:
+    """Baja reversible: `estado='inactivo'`, sin borrar ni una fila."""
+    company = await _company_o_404(db, company_id)
+    return await _cambiar_estado(
+        db, company, request, usuario,
+        EstadoEmpresa.INACTIVO, empresas_service.verificar_desactivar,
+    )
+
+
+@router.post("/{company_id}/eliminar", response_model=CompanyResponse)
+async def eliminar_company(
+    company_id: UUID,
+    request: Request,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> CompanyModel:
+    """Soft delete: `estado='eliminado'`. Solo para empresas sin datos."""
+    company = await _company_o_404(db, company_id)
+    return await _cambiar_estado(
+        db, company, request, usuario,
+        EstadoEmpresa.ELIMINADO, empresas_service.verificar_eliminar,
+    )
+
+
+@router.post("/{company_id}/activar", response_model=CompanyResponse)
+async def activar_company(
+    company_id: UUID,
+    request: Request,
+    usuario: UsuarioActual,
+    db: AsyncSession = Depends(get_db),
+) -> CompanyModel:
+    """Recuperar una empresa desactivada. Una eliminada NO se reactiva."""
+    company = await _company_o_404(db, company_id)
+    return await _cambiar_estado(
+        db, company, request, usuario,
+        EstadoEmpresa.ACTIVO, empresas_service.verificar_activar,
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)
@@ -74,14 +186,7 @@ async def get_company(
     db: AsyncSession = Depends(get_db)
 ) -> CompanyModel:
     """Get a company by ID."""
-    result = await db.execute(select(CompanyModel).where(CompanyModel.id == company_id))
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La empresa no existe"
-        )
-    return company
+    return await _company_o_404(db, company_id)
 
 
 @router.patch("/{company_id}", response_model=CompanyResponse)
@@ -92,17 +197,11 @@ async def update_company(
     usuario: UsuarioActual,
     db: AsyncSession = Depends(get_db)
 ) -> CompanyModel:
-    """Update a company."""
-    result = await db.execute(select(CompanyModel).where(CompanyModel.id == company_id))
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La empresa no existe"
-        )
-    
+    """Update a company. `estado` NO es editable aqui: tiene sus tres rutas."""
+    company = await _company_o_404(db, company_id)
+
     update_data = company_in.model_dump(exclude_unset=True)
-    
+
     if "tax_id" in update_data:
         existing = await db.execute(
             select(CompanyModel).where(
@@ -115,11 +214,11 @@ async def update_company(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Ya hay una empresa con ese RFC"
             )
-    
+
     valores_antes = {k: getattr(company, k, None) for k in update_data}
     for field, value in update_data.items():
         setattr(company, field, value)
-    
+
     await db.commit()
     await db.refresh(company)
     # Solo los campos que venian en el cuerpo (`exclude_unset`): un PATCH sin
@@ -144,42 +243,15 @@ async def delete_company(
     company_id: UUID,
     request: Request,
     usuario: UsuarioActual,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Delete a company."""
-    result = await db.execute(select(CompanyModel).where(CompanyModel.id == company_id))
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La empresa no existe"
-        )
-    
-    # Si la empresa tiene hijos (tickets, productos, movimientos), el DELETE
-    # revienta con un IntegrityError. En vez de dejar que salga como 500,
-    # se traduce a 409 con un mensaje que dice qué hacer.
-    #
-    # MEDIDO: sin este manejo, `DELETE /companies/{id}` devuelve 500 para
-    # toda empresa con datos, y el usuario no tiene forma de saber por qué.
-    try:
-        await db.delete(company)
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="La empresa tiene datos asociados (comprobantes, productos, "
-                   "movimientos). Elimínelos primero o dé de baja la empresa.",
-        )
-    # Solo si el borrado se confirmo: un 409 no borro nada y no hay nada que
-    # auditar como borrado.
-    await registrar_delete_auditoria(
-        modelo="companies",
-        registro_id=str(company_id),
-        usuario_id=str(usuario.id),
-        nombre=company.name,
-        detalles={"nombre": company.name, "tax_id": company.tax_id},
-        rol=usuario.perfil,
-        ip=request.client.host if request.client else "desconocida",
-        db=db,
+    """DELETE es un alias del soft delete: ninguna ruta borra evidencia.
+
+    Antes borraba la fila en cascada y las FK se llevaban tickets, banco,
+    caja e inventario. Los cerrojos viven en el servicio, no en la base.
+    """
+    company = await _company_o_404(db, company_id)
+    await _cambiar_estado(
+        db, company, request, usuario,
+        EstadoEmpresa.ELIMINADO, empresas_service.verificar_eliminar,
     )

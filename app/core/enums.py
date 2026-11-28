@@ -455,3 +455,19 @@ class RolEmpresa(str, Enum):
     def es_operador(self) -> bool:
         """Solo `operator` tiene alcance limitado a sus propias cajas."""
         return self is RolEmpresa.OPERATOR
+
+
+class EstadoEmpresa(str, Enum):
+    """Ciclo de vida de una empresa.
+
+    Tres valores, no un booleano: `inactivo` es una baja reversible y
+    `eliminado` es un borrado logico. Un booleano no puede decir si la fila
+    se esta Guardando para reactivarla o si nadie debe volver a usarla.
+
+    Las cadenas son las mismas que el CHECK de `0029`. Anadir uno sin tocar
+    la base daria un 500 al escribir, no un 422 limpio.
+    """
+
+    ACTIVO = "activo"
+    INACTIVO = "inactivo"
+    ELIMINADO = "eliminado"

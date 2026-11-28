@@ -276,27 +276,21 @@ class TestElOrdenDeLosArchivosDeEntorno:
 
 
 class TestLaPlantillaDeLosEnv:
-    """Los archivos del repo tienen que seguir siendo secretos-free y claros.
+    """Tres archivos, uno versionado y cada uno con una sola responsabilidad.
 
-    Es la unica defensa contra volver a poner una clave real en el archivo de
-    configuracion. El archivo esta en `.gitignore`, asi que `git status` no lo
-    delata ni cuando se rompe la regla; y `git diff` tampoco lo muestra.
+    `.env.example` es la plantilla (versionada); `.env` es solo configuracion y
+    `.env.local` es el unico sitio donde se escriben los dos secretos. Los dos
+    locales estan en `.gitignore`, asi que `git status` y `git diff` no delatan
+    una clave que se cuela en ellos: por eso hay que mirar el contenido.
 
-    NOTA DE POR QUE ESTE TEST SIGUE VIVO CON `.env` Y `.env.local`
-    =============================================================
-    Se fusionaron tres archivos en dos: `.env` tiene ahora la contrasena de la
-    base Y la configuracion, en vez de solo la contrasena. Con eso, la defensa
-    "el archivo de configuracion no lleva secretos" ya no se puede aplicar al
-    archivo entero, porque su unico secreto (`POSTGRES_PASSWORD`) esta ahi a
-    proposito.
-
-    Lo que SI se sigue defendiendo es mas estrecho y mas util: **la contrasena
-    no se duplica**. Sigue habiendo un unico lugar donde existe una
-    `DATABASE_URL` con contrasena, que es la linea que `docker-compose.yml`
-    arma por interpolacion. Por eso la `DATABASE_URL` de `.env` va sin
-    contrasena, aunque `.env` tenga la contrasena de la base treinta lineas mas
-    arriba.
+    La regla estrecha sigue siendo **la contrasena no se duplica**. El unico
+    lugar donde existe una `DATABASE_URL` con contrasena es la linea que arma
+    `docker-compose.yml` por interpolacion; la de `.env` va sin contrasena. El
+    alias `password_inicial` que compose inyecta a la API es un nombre en el
+    contenedor, no una segunda linea escrita en disco.
     """
+
+    SECRETOS = ("SECRET_KEY", "POSTGRES_PASSWORD", "password_inicial")
 
     def _leer(self, nombre: str) -> str:
         from pathlib import Path
@@ -304,64 +298,66 @@ class TestLaPlantillaDeLosEnv:
         raiz = Path(__file__).resolve().parents[2]
         return (raiz / nombre).read_text(encoding="utf-8")
 
+    def _valores(self, texto: str, nombre: str) -> list[str]:
+        # Solo lineas con valor: un comentario que explica donde vive el secreto
+        # no es el secreto. Por eso se exige el inicio de linea exacto.
+        return [l for l in texto.splitlines() if l.startswith(f"{nombre}=")]
+
+    def test_la_plantilla_no_lleva_valores_de_secreto(self):
+        texto = self._leer(".env.example")
+        for nombre in self.SECRETOS:
+            assert not self._valores(texto, nombre), (
+                f".env.example lleva un valor para {nombre}: los secretos van en .env.local"
+            )
+
+    def test_env_no_lleva_valores_de_secreto(self):
+        texto = self._leer(".env")
+        for nombre in self.SECRETOS:
+            assert not self._valores(texto, nombre), (
+                f".env lleva un valor para {nombre}: es configuracion, no secretos"
+            )
+
+    def test_env_local_tiene_los_dos_secretos_y_nada_mas_de_la_base(self):
+        texto = self._leer(".env.local")
+        for nombre in ("SECRET_KEY", "POSTGRES_PASSWORD"):
+            assert len(self._valores(texto, nombre)) == 1, (
+                f".env.local debe tener exactamente una linea {nombre}="
+            )
+        assert not self._valores(texto, "password_inicial"), (
+            "password_inicial es un alias de compose, no un secreto escrito dos veces"
+        )
+        assert not self._valores(texto, "DATABASE_URL")
+        assert not self._valores(texto, "email"), "email es configuracion: va en .env"
+
+    def test_gitignore_sigue_ignorando_env_local(self):
+        lineas = self._leer(".gitignore").splitlines()
+        assert ".env.local" in lineas, "sin esta linea, .env.local se versionaria con los secretos"
+
     def test_env_no_tiene_contrasena_en_la_url_de_la_base(self):
-        """La `DATABASE_URL` de `.env` no lleva contrasena, AUNQUE `.env` la tenga.
-
-        Es el test que sobrevive a la fusion de los tres `.env` en dos, y el
-        que mas trabajo hace: el archivo contiene `POSTGRES_PASSWORD` a proposito,
-        asi que la tentacion de escribir la URL completa con la contrasena
-        economiza cuatro caracteres y duplica el secreto.
-
-        Dentro de Docker la sobrescribe `docker-compose.yml` en su `environment:`
-        (que pisa al `env_file:`), asi que la que este aqui no se usa para el
-        contenedor. La plantilla `.env.example` ya lo explica; este test lo hace
-        cumplir.
-        """
+        """La `DATABASE_URL` de `.env` no lleva contrasena: se arma en compose."""
         for linea in self._leer(".env").splitlines():
             if linea.startswith("DATABASE_URL="):
                 usuario_y_host, _, _ = linea.partition("@")
-                # `usuario:password@host` -> la parte antes de la arroba no lleva
-                # dos puntos, que es donde iria la contrasena.
+                # `usuario:password@host` lleva dos puntos antes de la arroba.
                 assert usuario_y_host.count(":") <= 1, linea
 
-    def test_env_local_no_declara_ninguna_de_la_base(self):
-        """`.env.local` es el archivo del secreto de firma y nada mas.
-
-        Si aparece `POSTGRES_PASSWORD` ahi, el secreto se multiplica otra vez, en
-        un archivo cuya copia local nadie revisa.
-        """
-        texto = self._leer(".env.local")
-        assert "POSTGRES_PASSWORD" not in texto
-        assert "DATABASE_URL" not in texto
-
-    def test_la_plantilla_explica_cuantos_archivos_hay(self):
-        """La plantilla dice para que es cada archivo.
-
-        Varios archivos `.env` sin explicar cual es cual es como acaba la clave
-        en dos sitios y la contrasena en tres: no por descuido, sino porque nadie
-        sabe quien gana. Este test no mira el texto completo, solo que nombrelos.
-
-        `.env.dev` ya no se nombra porque el archivo ya no existe: la plantilla
-        tiene que describir la disposicion REAL, y una que mentiona un archivo
-        borrado manda al que la lee a buscarselo.
-        """
+    def test_la_plantilla_explica_los_tres_archivos(self):
         texto = self._leer(".env.example")
-        for nombre in (".env", ".env.local"):
+        for nombre in (".env.example", ".env", ".env.local"):
             assert nombre in texto, f"{nombre} no se menciona en .env.example"
-        assert ".env.dev" not in texto, (
-            ".env.example todavia menciona .env.dev, que ya no existe"
-        )
+        assert ".env.dev" not in texto, ".env.example menciona un archivo borrado"
 
-    def test_la_plantilla_avisa_de_lo_del_cors(self):
-        """El comentario de `CORS_ORIGINS` tiene que estar junto a la variable.
-
-        Es la unica documentacion que vera alguien que copie el archivo. Y la
-        trampa es real: `*` es lo que se escribe cuando se quiere "que no haya
-        problemas de CORS".
-        """
+    def test_la_plantilla_tiene_una_sola_linea_de_cors(self):
         texto = self._leer(".env.example")
-        linea_cors = next(
-            l for l in texto.splitlines() if l.startswith("CORS_ORIGINS=")
+        lineas = [l for l in texto.splitlines() if l.startswith("CORS_ORIGINS=")]
+        assert len(lineas) == 1, (
+            "CORS_ORIGINS duplicado en la plantilla: copiarla deja un list[str] invalido"
         )
-        contexto = texto[max(0, texto.index(linea_cors) - 700) : texto.index(linea_cors)]
-        assert "*" in contexto, "el aviso del origen comodin no esta junto a la variable"
+        # Contar LINEAS no basta: dos asignaciones pegadas en la misma linea
+        # siguen siendo una linea y dejan un `list[str]` invalido al copiar.
+        assert sum(l.count("CORS_ORIGINS=") for l in lineas) == 1, (
+            "CORS_ORIGINS aparece dos veces en una sola linea de la plantilla"
+        )
+        assert "*" in texto[max(0, texto.index(lineas[0]) - 700) : texto.index(lineas[0])], (
+            "el aviso del origen comodin no esta junto a la variable"
+        )

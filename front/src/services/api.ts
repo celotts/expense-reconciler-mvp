@@ -368,7 +368,11 @@ async function fetchArchivo(endpoint: string, params: URLSearchParams): Promise<
 
 // Companies API
 export const companiesApi = {
-  list: () => fetchApi<Company[]>('/companies/'),
+  // Por omision solo activas: la plantilla no ofrece empresas cerradas. El
+  // listado con inactivas existe para poder reactivar una baja reversible.
+  list: (incluirInactivas = false) => fetchApi<Company[]>(
+    incluirInactivas ? '/companies/?incluir_inactivas=true' : '/companies/',
+  ),
   create: (data: CompanyCreate) => fetchApi<Company>('/companies/', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -377,6 +381,10 @@ export const companiesApi = {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
+  desactivar: (id: string) => fetchApi<Company>(`/companies/${id}/desactivar`, { method: 'POST' }),
+  activar: (id: string) => fetchApi<Company>(`/companies/${id}/activar`, { method: 'POST' }),
+  // Soft delete: la fila y su evidencia siguen en la base.
+  eliminar: (id: string) => fetchApi<Company>(`/companies/${id}/eliminar`, { method: 'POST' }),
   delete: (id: string) => fetchApi<void>(`/companies/${id}`, { method: 'DELETE' }),
 };
 

@@ -98,6 +98,11 @@ class TestCompaniesAPI:
 
     @pytest.mark.asyncio
     async def test_delete_company(self, async_client: AsyncClient):
+        """`DELETE` ya no borra en cascada: es alias del soft delete.
+
+        El 204 se conserva por contrato, pero la fila sigue ahi con
+        `estado='eliminado'` para que la evidencia no desaparezca sin rastro.
+        """
         create_resp = await async_client.post(
             "/api/v1/companies/", json={"name": "Para Borrar", "tax_id": "DEL123"}
         )
@@ -106,6 +111,9 @@ class TestCompaniesAPI:
         response = await async_client.delete(f"/api/v1/companies/{company_id}")
         assert response.status_code == 204
         
-        # Verificar que ya no existe
+        # La fila sigue, pero deja de ofrecerse como empresa de trabajo.
         get_resp = await async_client.get(f"/api/v1/companies/{company_id}")
-        assert get_resp.status_code == 404
+        assert get_resp.status_code == 200
+        assert get_resp.json()["estado"] == "eliminado"
+        list_resp = await async_client.get("/api/v1/companies/")
+        assert company_id not in [c["id"] for c in list_resp.json()]

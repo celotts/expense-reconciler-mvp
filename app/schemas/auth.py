@@ -15,6 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.enums import EstadoEmpresa
+
 # El mismo limite que el backend, aplicado antes de gastar un scrypt. Un
 # campo de correo de 500 caracteres no es un correo, y mandarlo a la base
 # primero es trabajo gratis para quien este probando.
@@ -102,6 +104,10 @@ class MembresiaEmpresaResponse(BaseModel):
     name: str
     tax_id: str
     rol: str
+    # Solo activas: esta respuesta contesta "donde puede trabajar esta cuenta",
+    # no "qué empresas existen". El estado viaja para que el front no tenga que
+    # inventarlo a partir de una lista vacia.
+    estado: EstadoEmpresa
     # Lo calcula el servidor desde el rol leido en BD, no el navegador desde su
     # copia: un front desactualizado puede quedarse sin un boton nuevo, nunca
     # puede concederse una accion que la guardia rechazaria.

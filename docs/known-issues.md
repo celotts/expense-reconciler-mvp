@@ -1535,21 +1535,36 @@ pregunta al servidor, porque el middleware es de Starlette y leer el `main.py` n
 la API sin TLS y **la base de datos con su contraseña** alcanzables desde la red del café. Ahora
 los cuatro van a `127.0.0.1`. El de Ollama es `11435` porque hay un Ollama nativo en 11434.
 
-### 25. Cuatro archivos `.env` y el mismo secreto en varios — ✅ CORREGIDO
-`.env` (600) · `.env.dev` (**644**) · `.env.local` (**644**) · `.env.example` (versionado).
+### 25. Archivos `.env`: de cuatro a dos a tres, con secretos duplicados — ✅ CORREGIDO
+`.env.example` (versionado, sin secretos) · `.env` (600, solo configuración) · `.env.local`
+(600, solo `SECRET_KEY` y `POSTGRES_PASSWORD`). `.env.dev` ya no existe.
 
-- **La contraseña de la base estaba en `.env.dev`**, dentro de `DATABASE_URL`, con permisos de
-  lectura para el grupo. Docker la sobrescribe con la de `POSTGRES_PASSWORD`, así que la de
-  `.env.dev` no se usaba: era un segundo lugar donde vive el mismo secreto. Quitada.
-- **`.env.dev` y `.env.local` en 644.** Con una sesión abierta en la máquina, cualquier otro
-  usuario las lee. Ahora en 600.
-- **`config.py` leía solo `.env.dev`** mientras `docker-compose` leía los dos. La
-  `SECRET_KEY` de `.env.local` solo valía dentro de Docker: `uvicorn` en local firmaba con
-  otra, y el síntoma era "la sesión se cae, pero solo cuando depuro". Ahora los dos leen los
-  dos en el mismo orden.
-- **Los comentarios mentían.** Los dos archivos decían que la clave "mide EXACTAMENTE 32
-  caracteres" (mide 64) y que `.env.dev` "SÍ está versionado en git" (está en `.gitignore`).
-  Un comentario que afirma lo contrario de lo que se hace se lee más rápido que el código.
+**Primera ronda (cuatro → dos).** La contraseña de la base estaba en `.env.dev`, dentro de
+`DATABASE_URL`, con permisos 644; `config.py` leía solo ese archivo mientras Compose leía los
+dos, así que `uvicorn` en local firmaba con otra clave ("la sesión se cae, pero solo cuando
+depuro"). Los comentarios además mentían: la clave "mide exactamente 32 caracteres" (mide 64) y
+`.env.dev` "SÍ está versionado" (está en `.gitignore`).
+
+**Segunda ronda (dos → tres, por responsabilidad).** La fusión dejó `POSTGRES_PASSWORD` en
+`.env` junto a toda la configuración, y el secreto se llamaba `password_inicial` en Compose.
+Dos fallos medidos al validar:
+
+- **`env_file:` no interpola `${...}`.** Con el shell limpio, `docker compose config` moría con
+  `required variable password_inicial is missing a value`, aunque los archivos estuvieran
+  ahí. `--env-file` es lo único que alimenta la interpolación; `env_file:` solo inyecta
+  variables al contenedor. Quitar `.env.local` de `env_file:` para "evitar duplicar" rompe la
+  otra mitad: la API se queda sin `SECRET_KEY`, genera una clave efímera y cada `--reload`
+  cierra las sesiones. Los dos mecanismos tienen que seguir vivos.
+- **El chequeo viajaba en el mensaje equivocado.** `${password_inicial:?Copia .env.example a
+  .env y rellenala}` mandaba a escribir el secreto en el archivo que tiene que quedar sin
+  secretos. Ahora es `${POSTGRES_PASSWORD:?POSTGRES_PASSWORD no esta definida. Ponla en
+  .env.local}`, y el alias `password_inicial=${POSTGRES_PASSWORD:?...}` se inyecta solo al
+  contenedor para que `app/main.py` siembre el admin sin leer un segundo valor escrito.
+
+`TestLaPlantillaDeLosEnv` defiende los tres archivos (sin secretos en la plantilla ni en
+`.env`, los dos y solo los dos en `.env.local`, `CORS_ORIGINS` una sola línea).
+`TestLosEnvFileDelArranque` mira la **receta** (`_lineas_de_receta`), no el texto completo:
+una cadena en un comentario daba verde con el `--wait` y con los `--env-file` quitados.
 
 **Pendiente, y es lo único de esta sección que no se puede arreglar en el código: rotar
 `SECRET_KEY` y `POSTGRES_PASSWORD`.** Los archivos están fuera de git, pero §15 dice que el
@@ -2832,6 +2847,52 @@ en secuencial (cada uno escribe el archivo original y lo restaura) y falla tanto
 por código de salida como por marcas de "no se aplicó". `make verificar-defensas`
 y `.github/workflows/defensas.yml` son la misma puerta. Añadir un mutador nuevo
 entra en la corrida sin tocar la lista.
+
+---
+
+### 54. Bajar una empresa no era posible y borrarla borraba la evidencia — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-27.** `DELETE /companies/{id}` ofrecia en el confirm "se borraran
+sus tickets y movimientos": las FK son `ON DELETE CASCADE`, y en Postgres eso no era una
+amenaza retórica. No habia baja, no habia reactivacion, y el boton de eliminar estaba
+siempre disponible. Las tres premisas del producto —empresa con movimiento se desactiva,
+sin empresa activa no se procesa, el sistema no se queda sin empresa con datos— no tenian
+ninguna representacion en el modelo.
+
+`estado` sustituye al booleano `activo` (`activo`/`inactivo`/`eliminado`), con CHECK y
+indice en `0029_estado_empresa.sql` y en `init.sql`. Tres transiciones, tres rutas;
+`DELETE` es alias de `/eliminar` (soft delete). Los cerrojos estan en
+`empresas_service.py`: cuentan filas de trabajo, no hijos ni catalogo sembrado. Con datos
+no se elimina; la ultima activa con datos en el sistema no se desactiva; una eliminada
+no se reactiva. Todo se audita con quien firma, sacado del token, y es idempotente.
+
+**Cerrar la ultima empresa tenia que parar tambien las lecturas.** El primer bloqueo solo
+miraba las escrituras, asi que un token con membresias cerradas seguia viendo tablero,
+tickets e informes: la baja era decorativa. Ahora `guardia_de_permisos`, `empresa_activa`
+y `empresa_visible` filtran por `CompanyModel.estado == 'activo'` y distinguen "membresias
+todas cerradas" de "cuenta anterior a 0022 sin membresias" (esta ultima sigue viendo todo
+por compatibilidad). `_es_recuperacion` deja abiertas exactamente las rutas que permiten
+salir: login, `GET /auth/empresas`, listar/crear/activar empresas. Sin esa excepcion, el
+cerrojo encerraba a la persona que tenia que reactivar la empresa.
+
+`GET /companies` por omision solo activas; `?incluir_inactivas=true` es la via para
+reactivar. El front lee el `estado` del servidor, ofrece "Mostrar inactivas" y recarga el
+contexto de empresa despues de cada cambio, porque si no la barra lateral seguia creyendo
+que la empresa reactivada no existia.
+
+**La migracion no se pudo aplicar con `make migrar MIGRAR_SI=1` tal cual.** El shell tiene
+`POSTGRES_PASSWORD` y `SECRET_KEY` exportados, y Compose los interpoló **antes** que
+`.env.local`: el `psql` del servicio recibio la clave del shell y respondio
+`password authentication failed for user "admin"`, aunque la clave del archivo era la de
+la base. Se aplico con `env -u POSTGRES_PASSWORD -u SECRET_KEY make migrar MIGRAR_SI=1`.
+Es la misma trampa que la de `OLLAMA_MODEL`, pero con secretos: no se arregla editando la
+clave, sino quitando la variable del entorno del shell.
+
+Verificacion: `tests/unit/test_empresas_service.py` (13),
+`tests/integration/test_baja_de_empresas.py` (12, incluye `POST /scan` sin empresa y la
+recuperacion), `scripts/verify_baja_empresas_mutations.py` (12 mutaciones, las 12 mueren)
+y `npm run verify:empresa`. La coleccion de Insomnia se regenero contra la API viva:
+121 peticiones, 19 carpetas.
 
 ---
 

@@ -8,6 +8,9 @@ export DOCKER_HOST ?= unix://$(HOME)/.docker/run/docker.sock
 # Ambiente: prod (default), dev o qa. Se puede usar con `make up ENV=dev`.
 ENV ?= prod
 COMPOSE_FILES := -f docker-compose.yml
+# Compose no interpola desde `env_file:`, solo desde `--env-file`. Cada receta
+# que parsea el proyecto lleva los dos; las variables exportadas en el shell
+# ganan sobre los archivos (unsetearlas antes de `make up` si estan definidas).
 ifeq ($(ENV),dev)
 COMPOSE_FILES += -f docker-compose.dev.yml
 else ifeq ($(ENV),qa)
@@ -15,7 +18,7 @@ COMPOSE_FILES += -f docker-compose.qa.yml
 endif
 
 build:
-	docker compose $(COMPOSE_FILES) build
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local build
 
 # up reconstruye las imagenes (usa cache de capas) antes de levantar,
 # para no usar imagenes vieja cuando cambia requirements.txt o el codigo del front.
@@ -52,16 +55,16 @@ build:
 # quedarse sirviendo: con `--no-deps`, `modelos` no entra en la espera y el
 # codigo de salida dice la verdad.
 up: build
-	docker compose $(COMPOSE_FILES) up -d --remove-orphans
-	docker compose $(COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 expense-api expense-front
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local up -d --remove-orphans
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local up -d --no-deps --wait --wait-timeout 120 expense-api expense-front
 
 # up-force ignora la cache de Docker y rehace todas las capas.
 # El `--wait` es el mismo y por el mismo motivo: `--no-cache` tarda mas, no
 # significa que la app quede mas lista.
 up-force:
-	docker compose $(COMPOSE_FILES) build --no-cache
-	docker compose $(COMPOSE_FILES) up -d --remove-orphans
-	docker compose $(COMPOSE_FILES) up -d --no-deps --wait --wait-timeout 120 expense-api expense-front
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local build --no-cache
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local up -d --remove-orphans
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local up -d --no-deps --wait --wait-timeout 120 expense-api expense-front
 
 up-dev:
 	$(MAKE) up ENV=dev
@@ -79,13 +82,13 @@ up_qa:
 	$(MAKE) up ENV=qa
 
 down:
-	docker compose $(COMPOSE_FILES) down
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local down
 
 ps:
-	docker compose ps
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local ps
 
 logs:
-	docker compose logs -f
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local logs -f
 
 # Consumo de RAM/CPU en vivo contra la cuota de cada contenedor.
 stats:
@@ -185,7 +188,7 @@ migrar:
 
 # Borra contenedores, red y volumenes (INCLUYE la base de datos y los modelos).
 clean:
-	docker compose down -v
+	docker compose $(COMPOSE_FILES) --env-file .env --env-file .env.local down -v
 
 # Borra solo imagenes huerfanas y cache de build. Conserva volumenes y datos.
 # No toca imagenes de infraestructura de Docker Desktop (kindest/node, envoy).

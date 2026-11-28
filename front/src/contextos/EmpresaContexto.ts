@@ -8,11 +8,14 @@
  */
 import { createContext, useContext } from 'react';
 import { permisosDeRol, TODOS_LOS_PERMISOS, type PermisoDeEmpresa } from '../permisos';
+import type { EstadoEmpresa } from '../types/api';
 
 export interface MembresiaEmpresa {
   company_id: string;
   name: string;
   tax_id: string;
+  /** `/auth/empresas` solo devuelve activas; viaja para que el front no adivine. */
+  estado: EstadoEmpresa;
   rol: string;
   /** Calculados por el servidor desde el rol en BD. No los inventa el front. */
   permisos: string[];
@@ -36,6 +39,8 @@ export interface EmpresaContextValue {
   necesitaEleccion: boolean;
   error: string | null;
   elegirEmpresa: (companyId: string) => void;
+  /** Tras desactivar/activar una empresa hay que volver a preguntar al servidor. */
+  recargar?: () => void;
 }
 
 // Los verificadores montan pantallas sueltas con `renderToStaticMarkup`, sin

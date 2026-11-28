@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import func, select
 
 from app.core.deps import Sesion, UsuarioActual
+from app.core.enums import EstadoEmpresa
 from app.core.permisos import permisos_de_rol
 from app.core.rate_limit import (
     anotar_intento_exitoso,
@@ -278,6 +279,7 @@ async def mis_empresas(usuario: UsuarioActual, db: Sesion) -> list[MembresiaEmpr
             .where(
                 UsuarioEmpresaModel.user_id == usuario.id,
                 UsuarioEmpresaModel.activo.is_(True),
+                CompanyModel.estado == EstadoEmpresa.ACTIVO.value,
             )
             .order_by(CompanyModel.name)
         )
@@ -289,6 +291,7 @@ async def mis_empresas(usuario: UsuarioActual, db: Sesion) -> list[MembresiaEmpr
             name=company.name,
             tax_id=company.tax_id,
             rol=rol,
+            estado=company.estado,
             permisos=list(permisos_de_rol(rol)),
         )
         for company, rol in filas

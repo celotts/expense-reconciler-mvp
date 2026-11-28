@@ -67,11 +67,16 @@ export interface UsuarioUpdate {
   is_active?: boolean;
 }
 
+/** Tres estados, no un booleano: `inactivo` se reactiva, `eliminado` no. */
+export type EstadoEmpresa = 'activo' | 'inactivo' | 'eliminado';
+
 export interface Company {
   id: string;
   name: string;
   tax_id: string;
   created_at: string;
+  /** Lo decide el servidor; el front no adivina el estado. */
+  estado: EstadoEmpresa;
 }
 
 export interface CompanyCreate {

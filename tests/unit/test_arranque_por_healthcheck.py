@@ -340,6 +340,21 @@ class TestElOrdenDeArranque:
 
 class TestMakeUpEspera:
 
+    @staticmethod
+    def _es_up(linea: str) -> bool:
+        # Los `--env-file` van entre `compose` y `up`, asi que el literal
+        # "docker compose up" ya no aparece. Se comprueban las dos palabras
+        # separadas: quitar `--wait` sigue matando el test.
+        normal = _sin_variables(linea)
+        return "docker compose" in normal and " up " in f" {normal} "
+
+    @staticmethod
+    def _tiene_wait(linea: str) -> bool:
+        # `--wait` como TOKEN, no como substring: `--wait-timeout 120` contiene
+        # la cadena "--wait" y daba verde con el `--wait` quitado. Una defensa
+        # que no puede cambiar el veredicto no esta defendiendo.
+        return bool(re.search(r"(?:^|\s)--wait(?:\s|$)", linea))
+
     def test_up_usa_wait(self):
         """`make up` tiene que esperar, no devolver el control antes de servir.
 
@@ -366,14 +381,12 @@ class TestMakeUpEspera:
         """
         receta = _lineas_de_receta("up")
 
-        assert any(
-            "docker compose up" in _sin_variables(l) and "--wait" in l for l in receta
-        ), (
+        assert any(self._es_up(l) and self._tiene_wait(l) for l in receta), (
             "la receta de `up` no lleva `--wait` en su `docker compose up`: "
             "devuelve el control antes de que la app este servible. (Ojo: este "
             "test mira la RECETA, no el archivo entero — `--wait` si aparece en "
             "los comentarios, y un test que lee comentarios no prueba el "
-            "comando.)"
+            "comando. Tampoco cuenta `--wait-timeout`: es otra bandera.)"
         )
 
     def test_up_force_usa_wait_tambien(self):
@@ -381,9 +394,7 @@ class TestMakeUpEspera:
         el mismo: mas lento no significa mas listo."""
         receta = _lineas_de_receta("up-force")
 
-        assert any(
-            "docker compose up" in _sin_variables(l) and "--wait" in l for l in receta
-        ), (
+        assert any(self._es_up(l) and self._tiene_wait(l) for l in receta), (
             "`up-force` tambien necesita `--wait`: `--no-cache` tarda mas, no "
             "significa que la app quede mas lista"
         )
@@ -411,6 +422,103 @@ class TestMakeUpEspera:
             f"`{lineas_de_up[0].strip()}` no declara `build`: `make up` levanta "
             "con la imagen anterior y un `requirements.txt` nuevo deja la API "
             "con imports rotos, sin error visible"
+        )
+
+
+class TestLosEnvFileDelArranque:
+    """Compose no interpola desde `env_file:`, solo desde `--env-file`.
+
+    El secreto esta escrito una sola vez, en `.env.local`. Si una sola receta
+    olvida pasarlo, Compose falla al interpolarten antes de crear el
+    contenedor — o peor: si el shell tiene la variable exportada, arranca aqui
+    y falla en la maquina de quien no la tiene. Por eso se mira CADA comando de
+    la receta, no si la cadena aparece en algun comentario del Makefile.
+    """
+
+    @staticmethod
+    def _comandos(objetivo: str) -> list[str]:
+        return [
+            l for l in _lineas_de_receta(objetivo)
+            if "docker compose" in _sin_variables(l)
+        ]
+
+    def test_up_pasa_los_dos_env_file_en_cada_comando(self):
+        for objetivo in ("up", "up-force"):
+            comandos = self._comandos(objetivo)
+            assert comandos, f"`{objetivo}` no tiene ningun comando de docker compose"
+            for comando in comandos:
+                normal = _sin_variables(comando)
+                assert "--env-file .env --env-file .env.local" in normal, (
+                    f"`{objetivo}` tiene un `docker compose` sin los dos --env-file: "
+                    f"{normal}"
+                )
+
+    def test_ninguna_receta_que_parsea_compose_olvida_los_env_file(self):
+        for objetivo in ("build", "up", "up-force", "down", "ps", "logs", "clean"):
+            comandos = self._comandos(objetivo)
+            assert comandos, f"`{objetivo}` no tiene ningun comando de docker compose"
+            for comando in comandos:
+                normal = _sin_variables(comando)
+                assert "--env-file .env --env-file .env.local" in normal, (
+                    f"`{objetivo}` abre Compose sin los dos --env-file: {normal}"
+                )
+
+    @staticmethod
+    def _entorno(compose: dict, nombre: str) -> str:
+        # `postgres-reconciler` declara el entorno como mapping; los otros,
+        # como lista. Mirar solo las claves daria verde con la interpolacion
+        # quitada, porque la clave POSTGRES_PASSWORD sigue existiendo.
+        entorno = _servicio(compose, nombre).get("environment", [])
+        valores = entorno.values() if isinstance(entorno, dict) else entorno
+        return " ".join(str(v) for v in valores)
+
+    def test_la_api_sigue_recibiendo_el_secret_key_por_env_file(self, compose):
+        """`--env-file` solo interpola `${...}`; NO inyecta variables en el contenedor.
+
+        Quitar `.env.local` de `env_file:` deja a `config.py` sin `SECRET_KEY`
+        dentro del contenedor: genera una clave efimera y cada `--reload` cierra
+        las sesiones. El sintoma es "la sesion se cae de vez en cuando", que no
+        apunta al compose. Los dos mecanismos tienen que seguir vivos.
+        """
+        entorno = _servicio(compose, "expense-api")["env_file"]
+        rutas = [e["path"] if isinstance(e, dict) else e for e in entorno]
+        assert ".env" in rutas and ".env.local" in rutas, (
+            f"la API no recibe los dos archivos por env_file: {rutas}"
+        )
+
+    def test_compose_interpola_postgres_password_y_no_password_inicial(self, compose):
+        texto = COMPOSE.read_text(encoding="utf-8")
+        assert "${password_inicial" not in texto, (
+            "`password_inicial` volvio a ser la fuente del secreto: debe ser un "
+            "alias de `${POSTGRES_PASSWORD}`, no la variable que se interpolated"
+        )
+        for nombre in ("postgres-reconciler", "migraciones", "expense-api"):
+            entorno = self._entorno(compose, nombre)
+            assert "${POSTGRES_PASSWORD:?" in entorno, (
+                f"{nombre} no toma la contrasena de POSTGRES_PASSWORD: sin el :? "
+                "no hay mensaje accionable cuando falta .env.local"
+            )
+        entorno_api = self._entorno(compose, "expense-api")
+        assert "password_inicial=${POSTGRES_PASSWORD:?" in entorno_api, (
+            "app/main.py siembra el admin leyendo `password_inicial`: compose "
+            "tiene que inyectarlo como alias, sin escribir el secreto dos veces"
+        )
+
+    def test_el_wrapper_del_host_lee_config_de_env_y_pasa_los_env_file(self):
+        script = (RAIZ / "scripts/migrar.sh").read_text(encoding="utf-8")
+
+        assert "s/^POSTGRES_USER=//p' .env" in script
+        assert "s/^POSTGRES_DB=//p' .env" in script
+        assert "s/^POSTGRES_USER=//p' .env.local" not in script, (
+            "usuario y base son configuracion: leerlos de .env.local los hace "
+            "caer al default sin avisar"
+        )
+        assert 'COMPOSE_ENV=(--env-file .env --env-file .env.local)' in script
+        assert 'docker compose "${COMPOSE_ENV[@]}" exec' in script
+        assert 'docker compose "${COMPOSE_ENV[@]}" run' in script
+        assert "Falta POSTGRES_PASSWORD en .env.local" in script, (
+            "sin este preflight, un fallo de interpolacion se reportaba como "
+            "'La base no respondio' y mandaba a mirar el contenedor"
         )
 
 
@@ -501,9 +609,10 @@ class TestLasMigracionesSeAplicanAlArrancar:
         wrapper = (RAIZ / "scripts/migrar.sh").read_text(encoding="utf-8")
         auto = (RAIZ / "scripts/migrar_auto.sh").read_text(encoding="utf-8")
 
-        assert "docker compose run --rm --no-deps migraciones" in wrapper, (
+        assert 'docker compose "${COMPOSE_ENV[@]}" run --rm --no-deps migraciones' in wrapper, (
             "`make migrar` tiene que delegar al MISMO servicio que corre en el "
-            "arranque, no aplicar por su cuenta"
+            "arranque, no aplicar por su cuenta. El array de --env-file va antes: "
+            "sin el, Compose no interpola y el wrapper muere en un shell limpio"
         )
         assert "-f \"$CONTENEDOR_DB" not in wrapper, (
             "el bucle viejo con `docker compose exec ... psql -f` sigue en el "
