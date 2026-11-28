@@ -349,12 +349,17 @@ POST /api/v1/companies/
 ```
 
 Una empresa tiene `estado`: `activo`, `inactivo` o `eliminado`.
-`POST /companies/{id}/desactivar` es una baja reversible; `/activar` la reabre;
-`/eliminar` (y `DELETE /companies/{id}`) es un borrado lógico que solo se permite
-si la empresa no tiene datos. **Ninguna ruta borra la evidencia**: una empresa con
-movimiento se desactiva, no se elimina. Sin empresa activa no se procesa ni se
-consulta trabajo (403 `SIN_EMPRESA_ACTIVA`); el front muestra un aviso y permite
-seguir listando, creando o activando empresas para salir de ese estado.
+`POST /companies/{id}/desactivar` la **anula** (en pantalla `inactivo` se llama
+*Anulada*): admite una nota opcional con el motivo, se puede revertir con
+`/activar` y permite **consultar** sus datos, pero no digitalizar, aprobar,
+conciliar, cerrar ni exportar (403 `SIN_EMPRESA_ANULADA`). El formulario de
+digitalización muestra el motivo declarado para que se entienda por qué no se
+puede usar esa empresa. `/eliminar` (y `DELETE /companies/{id}`) es un borrado
+lógico que solo se permite si la empresa está vacía: **ninguna ruta borra la
+evidencia**. El botón dice *Anular* o *Eliminar* según lo que decida el servidor,
+no según un conteo en el navegador. Sin empresa activa para procesar, el front
+muestra un aviso y permite seguir listando, creando o activando empresas para
+salir de ese estado.
 
 ### 2. Registrar Tickets (manual o extracción automática)
 ```bash

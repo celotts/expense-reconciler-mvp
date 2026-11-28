@@ -38,7 +38,7 @@ No es una plataforma corporativa ni un producto de IA genérico. El valor está 
 | Informe | `app/services/reporte_cierre.py` → cierre mensual (JSON + PDF) |
 | Caja chica | `app/services/caja_chica_service.py` + `app/services/duplicados_service.py` → saldo atómico y huella fiscal |
 | Front | `front/src/` — React 18 + Vite + TS + Tailwind, 13 archivos de página (los nuevos son `CajaChica.tsx` y `Mantenimiento.tsx`) |
-| Tests | **2063**: **2062 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY -u POSTGRES_PASSWORD -u password_inicial TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta variables de entorno y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
+| Tests | **2068**: **2067 passed, 1 skip**, sin warnings, medido en local con Python 3.14 y `env -u SECRET_KEY -u POSTGRES_PASSWORD -u password_inicial TICKETS_SCAN_RESET_HABILITADO=false PYTHONPATH=. pytest tests/ -q` (el shell exporta variables de entorno y la `.env` enciende el reset). Sin `git` fallan los tests de `.gitignore`/lockfile por entorno |
 
 ### Rutas que existen
 Las rutas del front son hashes y las decide `renderPage` en `App.tsx`: `#/dashboard` ·
@@ -120,7 +120,7 @@ make stats       # RAM/CPU vs cuota por contenedor
 make clean       # ⚠️ borra volúmenes (BD y modelos)
 make prune       # limpia imágenes/cache, conserva datos
 
-python3 -m pytest tests/ -q           # 2062 passed, 1 skip
+python3 -m pytest tests/ -q           # 2067 passed, 1 skip
 python3 -m pytest tests/unit -q
 python3 -m pytest tests/integration -q
 
@@ -240,33 +240,61 @@ transiciones son rutas distintas (`POST /companies/{id}/desactivar`, `/activar`,
 de filas: las FK de Postgres son `ON DELETE CASCADE` y un `DELETE` se llevaba por delante
 tickets, banco, caja, inventario y cierres.
 
+**En pantalla `inactivo` se llama Anulada y la acción es Anular.** El valor de la BD no se
+renombró (no vale una migración para cambiar una etiqueta). Anular es la decisión
+correcta cuando la empresa tiene datos: conserva la evidencia, permite consultarla y se
+puede revertir. Eliminar es solo para la empresa vacía, y aun así es borrado lógico. La
+regla es del servidor: con datos, 409 que dice "Anule la empresa para conservar su
+evidencia"; el front no decide contando filas.
+
+**Anular pide una nota opcional.** `DesactivarEmpresaRequest.motivo` (máximo 500) se guarda
+en `companies.motivo_baja` junto con `bajada_en` y `bajada_por` (migración `0030`). Al
+reactivar se limpian las tres columnas; la auditoría conserva el motivo porque es un
+hecho, no un campo editable. `/auth/empresas` devuelve las anuladas con su `motivo_baja`
+y `permisos: ["leer"]`: el formulario de digitalización puede decir **por qué** no se
+puede usar esa empresa, en vez de un aviso genérico.
+
 **Los cerrojos viven en `app/services/empresas_service.py`, no solo en la base.**
 `datos_de_la_empresa()` cuenta las filas de trabajo (`TABLAS_DE_TRABAJO`); no cuentan
 `ticket_documents`, `compra_items`, `reconciliations` —son hijos— ni la auditoría suelta
 ni el catálogo sembrado al crear una empresa, porque entonces ninguna empresa podría
-eliminarse nunca. Con datos: **no se elimina, se desactiva**. Sin datos, si es la única
+eliminarse nunca. Con datos: **no se elimina, se anula**. Sin datos, si es la única
 activa y hay trabajo en el sistema, tampoco se desactiva: el sistema no se queda sin
 empresa donde trabajar. Una eliminada no se reactiva (`verificar_activar`).
+`empresas_con_datos()` y `puede_eliminarse()` exponen la misma decisión al listado: el
+botón dice **Anular** o **Eliminar** según lo que el servidor permita, no según un conteo
+en el navegador.
 
-**Sin empresa activa para la cuenta, para TODO el trabajo.** La guardia global
-(`guardia_de_permisos`) filtra `%membresias_del_usuario` por `CompanyModel.estado`, y
-cuando la cuenta tiene membresías pero todas cerradas responde 403 `SIN_EMPRESA_ACTIVA`
-**también en GET**: tablero, tickets, informes, caja. No basta con cerrar las escrituras.
-Las cuentas **sin membresías** siguen viendo todo por compatibilidad con las anteriores
+**Una empresa anulada solo se consulta; no procesa ni se exporta.** La guardia global
+(`guardia_de_permisos`) y `empresa_activa` en `deps.py` distinguen la petición por ruta,
+no por verbo: una lectura acepta membresías `activo` o `inactivo`; una escritura,
+conciliación, cierre o exportación exige `activo` y responde 403
+`SIN_EMPRESA_ANULADA`. `POST /duplicados/buscar` es lectura aunque sea POST. Las
+cuentas **sin membresías** siguen viendo todo por compatibilidad con las anteriores
 a `0022`. La excepción es la recuperación —login, `GET /auth/empresas`, listar/crear/
 activar empresas— y existe `_es_recuperacion` en `deps.py`: sin esa lista el propio
 cerrojo dejaría encerrado a quien tiene que activar la empresa. El front lo dice con
-`AvisoSinEmpresa` en Escáner, Tickets y Caja Chica; la autoridad sigue siendo el servidor.
+`AvisoSinEmpresa` —también dentro del formulario de digitalización— y muestra el
+`motivo_baja` declarado; la autoridad sigue siendo el servidor.
+
+**Las dos puertas se prueban aisladas.** Por HTTP la guardia y `empresa_activa` se
+tapan: si quitas una, la otra sigue devolviendo el 403 y el test da verde. Por eso
+`test_baja_de_empresas.py` las llama directamente con un `Request` de Starlette para
+que cada mutación muera por su motivo. La recuperación se prueba con la única empresa
+**eliminada**, no con la anulada: con una anulada hay membresía consultable y la guardia
+ni entra en la rama de recuperación.
 
 `GET /companies` muestra **solo activas** por omisión; `?incluir_inactivas=true` existe
 para reactivar. El front `(Companies.tsx)` muestra el `estado` que manda el servidor,
 tiene un check "Mostrar inactivas" y llama a `recargar()` del contexto de empresa tras
 cada cambio, para que la barra lateral vuelva a preguntar al servidor.
 
-Verificación: `tests/unit/test_empresas_service.py` (13),
-`tests/integration/test_baja_de_empresas.py` (12, con los cuatro endpoints, el bloqueo
-de `POST /scan` y la recuperación), `scripts/verify_baja_empresas_mutations.py` (12
-mutaciones) y `npm run verify:empresa` (miran el HTML del aviso y el cliente de API).
+Verificación: `tests/unit/test_empresas_service.py` y
+`tests/integration/test_baja_de_empresas.py` (30 entre los dos, con los cuatro
+endpoints, el bloqueo de lote/directorio/conciliación/PDF, la nota, los permisos
+reducidos y la recuperación), `scripts/verify_baja_empresas_mutations.py` (19
+mutaciones, las 19 mueren) y `npm run verify:empresa` (mira el HTML del aviso, incluso
+el del formulario de digitalización, y el cliente de API).
 La migración se aplicó con `env -u POSTGRES_PASSWORD -u SECRET_KEY make migrar MIGRAR_SI=1`:
 **el shell exporta esos secretos y Compose interpolated el valor del shell en vez del
 de `.env.local`**, así que sin `env -u` el `psql` del servicio dice "password

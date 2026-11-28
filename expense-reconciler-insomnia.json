@@ -132,7 +132,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "2a. Mis empresas (membresias y rol por empresa)",
-      "description": "Las membresias activas y el rol en cada una, leidos de la BD.\n\nEl cliente necesita esta lista para elegir la empresa activa y para no\nofrecer acciones que su rol no puede ejecutar. No la saca del token: un rol\ncambiado en la BD surte efecto en el proximo request, igual que `is_active`\n(regla 9 de `AGENTS.md`). Tampoco la saca de `companies`: ahi estan TODAS,\ny enumerarlas aqui seria invitar al navegador a elegir una ajena.",
+      "description": "Membresias activas y anuladas, con el rol y los permisos reales.\n\nUna empresa anulada se lista para que el operador vea POR QUE no puede\ndigitalizar en ella: si desapareciera, el aviso seria el generico \"no hay\nempresa\" y pareceria un problema de eleccion. Sus permisos se reducen a\n`leer`, que es lo unico que el servidor le permite. Eliminadas no se\nofrecen: salieron del trabajo, aunque la fila siga en la base.",
       "method": "GET",
       "body": {
         "mimeType": "application/json",
@@ -464,7 +464,7 @@
       "modified": 1759353600000,
       "created": 1759353600000,
       "name": "c4. Desactivar empresa (baja reversible, conserva datos)",
-      "description": "Baja reversible: `estado='inactivo'`, sin borrar ni una fila.",
+      "description": "Anular: `estado='inactivo'`, sin borrar ni una fila.\n\nLa nota es opcional por contrato con Clients antiguos, pero se guarda con\nquien la escribe y cuando, para que la pantalla pueda decir por que no se\nprocesa. Reactivar la limpia de la fila; la auditoria conserva el motivo.",
       "method": "POST",
       "body": {
         "mimeType": "application/json",

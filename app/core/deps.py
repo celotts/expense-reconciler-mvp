@@ -745,7 +745,7 @@ async def guardia_de_permisos(
         # Cuenta con membresias, pero todas en empresas cerradas: no es una
         # cuenta anterior a `0022` (sin membresias). La lectura de una empresa
         # anulada SI pasa por arriba; aqui solo queda una empresa eliminada.
-        if False:
+        if await _tiene_membresias(usuario, db):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=await _detalle_sin_empresa_activa(request, usuario, db),

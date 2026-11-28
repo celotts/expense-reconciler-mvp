@@ -2866,14 +2866,38 @@ indice en `0029_estado_empresa.sql` y en `init.sql`. Tres transiciones, tres rut
 no se elimina; la ultima activa con datos en el sistema no se desactiva; una eliminada
 no se reactiva. Todo se audita con quien firma, sacado del token, y es idempotente.
 
-**Cerrar la ultima empresa tenia que parar tambien las lecturas.** El primer bloqueo solo
-miraba las escrituras, asi que un token con membresias cerradas seguia viendo tablero,
-tickets e informes: la baja era decorativa. Ahora `guardia_de_permisos`, `empresa_activa`
-y `empresa_visible` filtran por `CompanyModel.estado == 'activo'` y distinguen "membresias
-todas cerradas" de "cuenta anterior a 0022 sin membresias" (esta ultima sigue viendo todo
-por compatibilidad). `_es_recuperacion` deja abiertas exactamente las rutas que permiten
-salir: login, `GET /auth/empresas`, listar/crear/activar empresas. Sin esa excepcion, el
-cerrojo encerraba a la persona que tenia que reactivar la empresa.
+**La baja tenia que distinguir consultar de procesar.** El primer bloqueo paraba tambien
+las lecturas: con la empresa cerrada no se podia ni mirar lo que ya estaba guardado, que
+es justo lo que alguien necesita ver antes de decidir si la reactiva. Ahora
+`guardia_de_permisos` y `empresa_activa` clasifican la peticion por ruta, no por verbo:
+una lectura acepta membresias `activo` o `inactivo`; una escritura, conciliacion, cierre
+o exportacion exige `activo` y devuelve 403 `SIN_EMPRESA_ANULADA`. `POST
+/duplicados/buscar` queda clasificado como lectura aunque sea POST. Las cuentas sin
+membresias siguen viendo todo por compatibilidad con las anteriores a `0022`.
+`_es_recuperacion` deja abiertas exactamente las rutas que permiten salir: login,
+`GET /auth/empresas`, listar/crear/activar empresas. Sin esa excepcion, el cerrojo
+encerraba a quien tenia que reactivar la empresa.
+
+**Las dos puertas se tapan entre si por HTTP.** Si se prueban solo con `async_client`,
+quitar `empresa_activa` no cambia el veredicto: la guardia global sigue devolviendo el
+403. Por eso `test_baja_de_empresas.py` llama a las dos directamente con un `Request`
+de Starlette. La recuperacion se prueba con la unica empresa **eliminada**, no con la
+anulada: con una anulada hay membresia consultable y la guardia ni entra en la rama de
+recuperacion, asi que el test daba verde con el cerrojo quitado.
+
+**Anular es la accion con datos, y lleva nota.** En pantalla `inactivo` se llama
+*Anulada*; el valor de la BD no se renombro. Con filas de trabajo el boton dice **Anular**
+y `DELETE` devuelve 409: `La empresa tiene {filas} filas de trabajo y no se puede
+eliminar. Anule la empresa para conservar su evidencia.` Sin datos se puede eliminar,
+pero con borrado logico a `eliminado`. `empresas_con_datos()` y `puede_eliminarse()`
+calculan la decision en el servidor con los mismos cerrojos; el front no cuenta filas.
+`DesactivarEmpresaRequest.motivo` (maximo 500) se guarda en `companies.motivo_baja`
+junto con `bajada_en` y `bajada_por` (`0030_anular_empresa_con_nota.sql`, espejado en
+`init.sql`); al reactivar se limpian las tres columnas y la auditoria conserva el motivo.
+`GET /auth/empresas` devuelve las anuladas con `estado`, `motivo_baja` y
+`permisos: ["leer"]`, para que `AvisoSinEmpresa` —incluido el del formulario de
+digitalizacion— diga **por que** no se puede usar esa empresa en vez de un aviso
+generico.
 
 `GET /companies` por omision solo activas; `?incluir_inactivas=true` es la via para
 reactivar. El front lee el `estado` del servidor, ofrece "Mostrar inactivas" y recarga el
@@ -2888,10 +2912,12 @@ la base. Se aplico con `env -u POSTGRES_PASSWORD -u SECRET_KEY make migrar MIGRA
 Es la misma trampa que la de `OLLAMA_MODEL`, pero con secretos: no se arregla editando la
 clave, sino quitando la variable del entorno del shell.
 
-Verificacion: `tests/unit/test_empresas_service.py` (13),
-`tests/integration/test_baja_de_empresas.py` (12, incluye `POST /scan` sin empresa y la
-recuperacion), `scripts/verify_baja_empresas_mutations.py` (12 mutaciones, las 12 mueren)
-y `npm run verify:empresa`. La coleccion de Insomnia se regenero contra la API viva:
+Verificacion: `tests/unit/test_empresas_service.py` y
+`tests/integration/test_baja_de_empresas.py` (30 entre los dos: cuatro endpoints,
+lote/directorio/conciliacion/PDF, nota, permisos reducidos y recuperacion),
+`scripts/verify_baja_empresas_mutations.py` (19 mutaciones, las 19 mueren) y
+`npm run verify:empresa`. La `0030` se aplico con el mismo `env -u` que la `0029` y
+esta espejada en `init.sql`. La coleccion de Insomnia se regenero contra la API viva:
 121 peticiones, 19 carpetas.
 
 ---
