@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { registrarEventoFrontend } from '../services/auditoria';
 import { ticketsApi, type Ticket } from '../services/api';
 import { cajaChicaApi, type CajaChica } from '../services/cajaChica';
-import { AvisoSinEmpresa } from '../contextos/Empresa';
+import { AvisoSinEmpresa, CartelEmpresaEnDigitalizacion } from '../contextos/Empresa';
 import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 import { useNavegacion } from '../contextos/NavegacionContexto';
 import type {
@@ -38,10 +38,11 @@ import { EstadoDeIa } from '../components/EstadoDeIa';
  * claro que es una decision, no un efecto de correr un escaneo.
  */
 export function Scan() {
-  // La empresa se elige UNA vez en la barra lateral y viaja en `X-Company-ID`.
-  // Un selector aqui permitiria escanear una empresa mientras el resto de la
-  // pantalla (y el token) defendia otra; el servidor lo rechazaria con 409 y el
-  // operador no entenderia por que.
+  // La empresa se elige UNA vez y viaja en `X-Company-ID`. El cartel de abajo
+  // permite cambiarla SIN abrir un segundo sitio de decision: llama al mismo
+  // `elegirEmpresa` del contexto, asi que el escaneo, el lote y el resto de la
+  // aplicacion siguen viendo la misma empresa. Un `company_id` suelto en el
+  // cuerpo seria otra verdad y el servidor lo rechazaria con 409.
   const { empresaActiva } = useEmpresa();
   const { puede } = usePermisos();
   const { irA } = useNavegacion();
@@ -284,8 +285,9 @@ export function Scan() {
         </div>
       </div>
 
-      <div className="mb-4">
+      <div className="mb-4 space-y-3">
         <AvisoSinEmpresa mensaje="Elige una empresa activa en la barra lateral antes de escanear. Sin ella no se puede atribuir ningún comprobante ni crear tickets." />
+        <CartelEmpresaEnDigitalizacion />
       </div>
 
       {cajasAbiertas.length > 0 && (
@@ -566,8 +568,9 @@ export function CargaPorLote({
         de carpeta y se registran en `scan_files`, así que reenviar los mismos bytes
         no crea tickets duplicados.
       </p>
-      <div className="mt-3">
+      <div className="mt-3 space-y-3">
         <AvisoSinEmpresa mensaje="Elige una empresa activa para digitalizar. Sin ella no se puede atribuir ningún comprobante ni crear tickets." />
+        <CartelEmpresaEnDigitalizacion />
       </div>
 
       <input

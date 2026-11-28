@@ -2920,6 +2920,36 @@ lote/directorio/conciliacion/PDF, nota, permisos reducidos y recuperacion),
 esta espejada en `init.sql`. La coleccion de Insomnia se regenero contra la API viva:
 121 peticiones, 19 carpetas.
 
+### 55. Con varias empresas el formulario no decia donde se escribia — ✅ CORREGIDO
+
+**MEDIDO el 2026-11-27.** Con una sola empresa el front toma esa automaticamente y
+no hay selector, asi que el riesgo no se ve en la maquina de desarrollo: con dos,
+la corrida se atribuia a la que hubiera quedado de la pasada anterior y el error
+aparecia al cierre, cuando ya no es barato corregirlo. Deducirla del comprobante no
+es una opcion: el RFC impreso es del PROVEEDOR y en fotos se lee 0% bien (medido en
+esta maquina).
+
+`CartelEmpresaEnDigitalizacion` se pinta en las dos puertas de `Scan.tsx` con
+«Digitalizando en: X» y el RFC, **antes** de los botones que escriben. Con varias
+activas muestra un `<select>` que llama al mismo `elegirEmpresa` del contexto, que
+es el unico que escribe `X-Company-ID` mediante `fijarEmpresaActiva`. No es un
+segundo sitio de decision: un `company_id` suelto en el cuerpo seria otra verdad y
+el servidor lo rechazaria con 409 sin que el operador supiera cual gana. Sin empresa
+o con la elegida anulada el cartel no se pinta, porque `AvisoSinEmpresa` ya dice el
+motivo declarado.
+
+**Las sucursales se contemplan, pero no como empresas.** Empresa es la entidad
+fiscal (RFC); una sucursal comparte cierres, dedup, roles e inventario. Un
+`company_id` por sucursal partira el kardex, fragmentaria el cierre mensual y
+permitiria contar dos veces el mismo papel. Si hace falta distinguirlas, se agrega
+un campo `sucursal` al ticket y se filtra en reportes, sin tocar la autoridad de
+`X-Company-ID`. Lo dice el propio cartel en pantalla.
+
+Verificacion: `npm run verify:empresa` monta `CargaPorLote` con dos empresas y mira
+el HTML (49 comprobaciones): el cartel nombra la elegida, cambia con ella, ofrece
+las dos activas, va antes del boton y nombra la sucursal como parte de la misma
+empresa. Al quitar el cartel de `Scan.tsx` mueren 6 comprobaciones; comprobado.
+
 ---
 
 ## El cliente de IA vivo no tenia `chat_completion` (MEDIDO 2026-11-27)

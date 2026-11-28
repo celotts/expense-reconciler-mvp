@@ -126,3 +126,55 @@ export function AvisoSinEmpresa({ mensaje }: { mensaje?: string }) {
     </div>
   );
 }
+
+/** La empresa a la que se atribuye la corrida, visible ANTES de pulsar.
+ *
+ *  No es un segundo sitio donde se decide: el `<select>` llama al MISMO
+ *  `elegirEmpresa` del contexto, que es el unico que escribe la cabecera
+ *  `X-Company-ID` (`fijarEmpresaActiva`). Un `company_id` suelto en el cuerpo
+ *  seria una segunda verdad, y el servidor lo rechazaria con 409 sin que el
+ *  operador supiera cual de las dos gana.
+ *
+ *  Si no hay empresa, o la elegida no esta activa, aqui no se pinta nada:
+ *  `AvisoSinEmpresa` ya dice POR QUE. Dos carteles compitiendo por el mismo
+ *  estado seria el mismo error que estamos evitando.
+ *
+ *  Las sucursales no se representan como empresas: empresa es la entidad
+ *  fiscal (RFC), y todos sus comprobantes se consolidan en la misma corrida.
+ */
+export function CartelEmpresaEnDigitalizacion() {
+  const { empresas, empresaActiva, cargando, elegirEmpresa } = useEmpresa();
+  if (cargando || empresaActiva?.estado !== 'activo') return null;
+
+  const activas = empresas.filter((m) => m.estado === 'activo');
+  return (
+    <div
+      className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900"
+      data-empresa-digitalizacion={empresaActiva.company_id}
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <strong>{`Digitalizando en: ${empresaActiva.name}`}</strong>
+        <span className="text-xs">{empresaActiva.tax_id}</span>
+        {activas.length > 1 && (
+          <label className="flex items-center gap-2 text-xs">
+            <span>Cambiar</span>
+            <select
+              aria-label="Empresa para digitalizar"
+              value={empresaActiva.company_id}
+              onChange={e => elegirEmpresa(e.target.value)}
+              className="px-2 py-1 text-sm border border-blue-300 rounded-lg bg-white"
+            >
+              {activas.map((m) => (
+                <option key={m.company_id} value={m.company_id}>{m.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-blue-800">
+        Toda la corrida se atribuye a esta entidad fiscal. Una sucursal no es otra
+        empresa: comparte este RFC y sus comprobantes se consolidan aqui.
+      </p>
+    </div>
+  );
+}

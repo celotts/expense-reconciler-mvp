@@ -18,8 +18,9 @@ import { resolve } from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { AvisoSinEmpresa } from '../src/contextos/Empresa';
+import { AvisoSinEmpresa, CartelEmpresaEnDigitalizacion } from '../src/contextos/Empresa';
 import { EmpresaContext, type EmpresaContextValue } from '../src/contextos/EmpresaContexto';
+import { CargaPorLote } from '../src/pages/Scan';
 
 const leer = (ruta: string) => readFileSync(resolve(process.cwd(), ruta), 'utf8');
 
@@ -129,6 +130,11 @@ for (const archivo of [
 }
 
 const contexto = leer('src/contextos/Empresa.tsx');
+comprobar(
+  'el cartel cambia de empresa por el mismo contexto, no por un company_id suelto',
+  contexto.includes('onChange={e => elegirEmpresa(e.target.value)}')
+    && contexto.includes('fijarEmpresaActiva(companyId)'),
+);
 const inicioCatch = contexto.indexOf('.catch(');
 const bloqueCatch = contexto.slice(
   inicioCatch,
@@ -227,6 +233,63 @@ const inicioCarga = scan.indexOf('Digitalizar desde esta máquina');
 comprobar(
   'el form de digitalizar muestra el aviso de empresa no activa',
   inicioCarga > -1 && scan.indexOf('AvisoSinEmpresa', inicioCarga) > inicioCarga,
+);
+
+// Una corrida siempre se atribuye a una entidad fiscal. Con dos empresas el
+// cartel tiene que seguir a la eleccion del contexto, no quedar congelado en la
+// que habia al abrir la pantalla: se monta dos veces, con las dos elecciones.
+const DOS = [
+  { company_id: 'c1', name: 'Persona fisica', tax_id: 'RFC1', estado: 'activo' as const, motivo_baja: null, rol: 'admin', permisos: ['leer', 'crear'] },
+  { company_id: 'c2', name: 'Persona moral', tax_id: 'RFC2', estado: 'activo' as const, motivo_baja: null, rol: 'admin', permisos: ['leer', 'crear'] },
+];
+
+function pintarCarga(empresaActiva: EmpresaContextValue['empresaActiva']): string {
+  return renderToStaticMarkup(
+    React.createElement(
+      EmpresaContext.Provider,
+      { value: { ...VACIO, empresas: DOS, empresaActiva, rol: 'admin', permisos: ['leer', 'crear'] } },
+      React.createElement(CargaPorLote),
+    ),
+  );
+}
+
+const enUna = pintarCarga(DOS[0]);
+const enOtra = pintarCarga(DOS[1]);
+comprobar('el form de digitalizar dice en que empresa se escribe', enUna.includes('Digitalizando en: Persona fisica'));
+comprobar(
+  'al cambiar la empresa el cartel sigue a la MISMA decision',
+  !enUna.includes('Digitalizando en: Persona moral') && enOtra.includes('Digitalizando en: Persona moral'),
+);
+comprobar(
+  'con varias empresas el cambio esta junto al boton de digitalizar',
+  enUna.includes('aria-label="Empresa para digitalizar"')
+    && enUna.includes('value="c2"')
+    && enUna.includes('>Persona moral</option>'),
+);
+comprobar(
+  'el cartel va antes de los botones de digitalizar',
+  enUna.indexOf('Digitalizando en:') > -1 && enUna.indexOf('Digitalizando en:') < enUna.indexOf('Digitalizar 0'),
+);
+comprobar(
+  'el cartel dice que una sucursal comparte el RFC',
+  enUna.includes('Una sucursal no es otra empresa') && enUna.includes('RFC'),
+);
+comprobar('sin empresa no se pinta un cartel que contradiga al aviso', !pintarCarga(null).includes('Digitalizando en:'));
+comprobar(
+  'el cartel se pinta en las dos puertas del escaner',
+  (scan.match(/<CartelEmpresaEnDigitalizacion \/>/g) ?? []).length === 2,
+);
+
+const cartelSuelto = renderToStaticMarkup(
+  React.createElement(
+    EmpresaContext.Provider,
+    { value: { ...VACIO, empresas: DOS, empresaActiva: DOS[0], rol: 'admin' } },
+    React.createElement(CartelEmpresaEnDigitalizacion),
+  ),
+);
+comprobar(
+  'el cartel suelto muestra la entidad fiscal, no una sucursal',
+  cartelSuelto.includes('Digitalizando en: Persona fisica') && cartelSuelto.includes('RFC1'),
 );
 
 if (fallos) {
