@@ -20,6 +20,11 @@ class CompanyModel(Base):
     # en los dos; solo `activo` puede ser la empresa de una peticion.
     # La longitud 20 es la misma del CHECK de `0029` y del espejo en init.sql.
     estado = Column(String(20), nullable=False, default=EstadoEmpresa.ACTIVO.value)
+    # Espejo de 0030. `inactivo` se llama "anulada" en la pantalla; la nota
+    # permite decir por que, y quien lo firmo, sin leer la auditoria.
+    motivo_baja = Column(String(500), nullable=True)
+    bajada_en = Column(TIMESTAMP(timezone=True), nullable=True)
+    bajada_por = Column(String(150), nullable=True)
 
     @property
     def activa(self) -> bool:

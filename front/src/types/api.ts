@@ -67,7 +67,7 @@ export interface UsuarioUpdate {
   is_active?: boolean;
 }
 
-/** Tres estados, no un booleano: `inactivo` se reactiva, `eliminado` no. */
+/** Tres estados, no un booleano: `inactivo` (anulada) se reactiva, `eliminado` no. */
 export type EstadoEmpresa = 'activo' | 'inactivo' | 'eliminado';
 
 export interface Company {
@@ -77,6 +77,15 @@ export interface Company {
   created_at: string;
   /** Lo decide el servidor; el front no adivina el estado. */
   estado: EstadoEmpresa;
+  /** Lo calcula el servidor con los mismos cerrojos del endpoint de baja. */
+  puede_eliminarse: boolean;
+  motivo_baja: string | null;
+  bajada_en: string | null;
+  bajada_por: string | null;
+}
+
+export interface DesactivarEmpresaRequest {
+  motivo?: string;
 }
 
 export interface CompanyCreate {

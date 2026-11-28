@@ -104,13 +104,15 @@ class MembresiaEmpresaResponse(BaseModel):
     name: str
     tax_id: str
     rol: str
-    # Solo activas: esta respuesta contesta "donde puede trabajar esta cuenta",
-    # no "qué empresas existen". El estado viaja para que el front no tenga que
-    # inventarlo a partir de una lista vacia.
+    # Activas y anuladas: una anulada SIGUE siendo consultable. El estado viaja
+    # para que el front diga POR QUE no se puede digitalizar en ella, en vez de
+    # fingir que no existe. Eliminadas no se ofrecen ni para consultar.
     estado: EstadoEmpresa
+    motivo_baja: str | None = None
     # Lo calcula el servidor desde el rol leido en BD, no el navegador desde su
-    # copia: un front desactualizado puede quedarse sin un boton nuevo, nunca
-    # puede concederse una accion que la guardia rechazaria.
+    # copia: una empresa anulada solo puede LEER, aunque su rol sea admin. Un
+    # front desactualizado puede quedarse sin un boton nuevo, nunca puede
+    # concederse una accion que la guardia rechazaria.
     permisos: list[str]
 
 

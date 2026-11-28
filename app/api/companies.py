@@ -8,7 +8,12 @@ from app.core.database import get_db
 from app.core.deps import UsuarioActual
 from app.core.enums import EstadoEmpresa
 from app.models.company import CompanyModel
-from app.schemas.company import CompanyCreate, CompanyResponse, CompanyUpdate
+from app.schemas.company import (
+    CompanyCreate,
+    CompanyResponse,
+    CompanyUpdate,
+    DesactivarEmpresaRequest,
+)
 from app.services import empresas_service, tipos_gasto_service
 from app.services.auditoria import registrar_auditoria, registrar_update_auditoria
 
@@ -30,6 +35,33 @@ def _conflicto(mensaje: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=mensaje)
 
 
+async def _marcar_puede_eliminarse(
+    db: AsyncSession,
+    companies: list[CompanyModel],
+) -> list[CompanyModel]:
+    """El boton de la pantalla lee la misma decision que el cerrojo del servicio.
+
+    Una sola consulta para las diez tablas de trabajo y todas las empresas de la
+    pagina; calcularlo por separado en cada fila seria N+1 y, peor, dos fuentes
+    de verdad si el boton y el servicio preguntaran distinto.
+    """
+    if not companies:
+        return companies
+    ids = {company.id for company in companies}
+    con_datos = await empresas_service.empresas_con_datos(db, ids)
+    activas = await empresas_service.cantidad_de_empresas_activas(db)
+    hay_datos = await empresas_service.hay_datos_en_el_sistema(db)
+    for company in companies:
+        company.puede_eliminarse = await empresas_service.puede_eliminarse(
+            db,
+            company,
+            ids_con_datos=con_datos,
+            hay_datos=hay_datos,
+            activas=activas,
+        )
+    return companies
+
+
 async def _cambiar_estado(
     db: AsyncSession,
     company: CompanyModel,
@@ -37,6 +69,7 @@ async def _cambiar_estado(
     usuario: UsuarioActual,
     nuevo: EstadoEmpresa,
     verificar,
+    motivo: str | None = None,
 ) -> CompanyModel:
     """Un solo sitio para las tres transiciones, con firma y auditoria.
 
@@ -47,7 +80,11 @@ async def _cambiar_estado(
     anterior = company.estado
     try:
         await verificar(db, company)
-        cambio = empresas_service.cambiar_estado(db, company, nuevo)
+        cambio = empresas_service.cambiar_estado(
+            db, company, nuevo,
+            motivo=(motivo or "").strip() or None,
+            usuario=usuario.email,
+        )
     except (empresas_service.EmpresaConDatosError,
             empresas_service.UltimaEmpresaActivaError,
             empresas_service.EmpresaEliminadaError) as error:
@@ -58,13 +95,18 @@ async def _cambiar_estado(
     if cambio:
         # `anterior` se capturo ANTES de escribir: leerlo despues daria el
         # mismo valor en los dos lados y la auditoria mentiria sobre el cambio.
+        campos = ["estado"]
+        valores_nuevos = {"estado": company.estado}
+        if nuevo is EstadoEmpresa.INACTIVO and company.motivo_baja:
+            campos.append("motivo_baja")
+            valores_nuevos["motivo_baja"] = company.motivo_baja
         await registrar_update_auditoria(
             modelo="companies",
             registro_id=str(company.id),
-            campos_modificados=["estado"],
+            campos_modificados=campos,
             usuario_id=str(usuario.id),
             valores_anteriores={"estado": anterior},
-            valores_nuevos={"estado": company.estado},
+            valores_nuevos=valores_nuevos,
             nombre=company.name,
             rol=usuario.perfil,
             ip=request.client.host if request.client else "desconocida",
@@ -72,7 +114,7 @@ async def _cambiar_estado(
         )
     await db.commit()
     await db.refresh(company)
-    return company
+    return (await _marcar_puede_eliminarse(db, [company]))[0]
 
 
 @router.post("/", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
@@ -112,7 +154,7 @@ async def create_company(
         resultado="exito",
         db=db,
     )
-    return company
+    return (await _marcar_puede_eliminarse(db, [company]))[0]
 
 
 @router.get("/", response_model=list[CompanyResponse])
@@ -132,7 +174,7 @@ async def list_companies(
     if not incluir_inactivas:
         consulta = consulta.where(CompanyModel.estado == EstadoEmpresa.ACTIVO.value)
     result = await db.execute(consulta.offset(skip).limit(limit))
-    return list(result.scalars().all())
+    return await _marcar_puede_eliminarse(db, list(result.scalars().all()))
 
 
 @router.post("/{company_id}/desactivar", response_model=CompanyResponse)
@@ -140,13 +182,20 @@ async def desactivar_company(
     company_id: UUID,
     request: Request,
     usuario: UsuarioActual,
+    datos: DesactivarEmpresaRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> CompanyModel:
-    """Baja reversible: `estado='inactivo'`, sin borrar ni una fila."""
+    """Anular: `estado='inactivo'`, sin borrar ni una fila.
+
+    La nota es opcional por contrato con Clients antiguos, pero se guarda con
+    quien la escribe y cuando, para que la pantalla pueda decir por que no se
+    procesa. Reactivar la limpia de la fila; la auditoria conserva el motivo.
+    """
     company = await _company_o_404(db, company_id)
     return await _cambiar_estado(
         db, company, request, usuario,
         EstadoEmpresa.INACTIVO, empresas_service.verificar_desactivar,
+        motivo=datos.motivo if datos else None,
     )
 
 

@@ -14,8 +14,10 @@ export interface MembresiaEmpresa {
   company_id: string;
   name: string;
   tax_id: string;
-  /** `/auth/empresas` solo devuelve activas; viaja para que el front no adivine. */
+  /** `/auth/empresas` devuelve activas y anuladas; el front no adivina el estado. */
   estado: EstadoEmpresa;
+  /** Motivo declarado al anularla; se muestra en el aviso de digitalizacion. */
+  motivo_baja: string | null;
   rol: string;
   /** Calculados por el servidor desde el rol en BD. No los inventa el front. */
   permisos: string[];

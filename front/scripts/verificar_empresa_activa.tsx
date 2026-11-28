@@ -66,11 +66,26 @@ comprobar(
 
 const conEmpresa = pintar({
   ...VACIO,
-  empresas: [{ company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'activo', rol: 'admin', permisos: ['leer', 'crear'] }],
-  empresaActiva: { company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'activo', rol: 'admin', permisos: ['leer', 'crear'] },
+  empresas: [{ company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'activo', motivo_baja: null, rol: 'admin', permisos: ['leer', 'crear'] }],
+  empresaActiva: { company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'activo', motivo_baja: null, rol: 'admin', permisos: ['leer', 'crear'] },
   rol: 'admin',
 });
 comprobar('con empresa activa no se ensucia la pantalla con un aviso', !conEmpresa.includes('role="alert"'));
+
+const anulada = pintar({
+  ...VACIO,
+  empresaActiva: {
+    company_id: 'c1', name: 'Una', tax_id: 'RFC1', estado: 'inactivo',
+    motivo_baja: 'Cierre del ejercicio', rol: 'admin', permisos: ['leer'],
+  },
+  rol: 'admin',
+});
+comprobar(
+  'una empresa anulada dice que no se puede escanear ni procesar',
+  anulada.includes('esta anulada') && anulada.includes('No se puede escanear ni procesar'),
+  anulada,
+);
+comprobar('el aviso de anulada dice el motivo declarado', anulada.includes('Cierre del ejercicio'), anulada);
 
 const sinMensaje = renderToStaticMarkup(
   React.createElement(
@@ -174,7 +189,8 @@ comprobar(
   'hay una via explicita para ver inactivas',
   apiEmpresas.includes('incluir_inactivas=true'),
 );
-for (const accion of ['desactivar', 'activar', 'eliminar']) {
+comprobar('companiesApi.desactivar acepta el motivo', apiEmpresas.includes('desactivar: (id: string, motivo?: string)'));
+for (const accion of ['activar', 'eliminar']) {
   comprobar(`companiesApi.${accion} existe`, apiEmpresas.includes(`${accion}: (id: string)`));
 }
 comprobar('no queda la ruta vieja de baja', !apiEmpresas.includes('/baja'));
@@ -189,13 +205,28 @@ comprobar(
   companiesPage.includes('Mostrar inactivas') && companiesPage.includes('companiesApi.list(incluirInactivas)'),
 );
 comprobar(
-  'desactivar, activar y eliminar son acciones distintas',
-  companiesPage.includes('handleDesactivar') && companiesPage.includes('handleActivar')
+  'anular, activar y eliminar son acciones distintas',
+  companiesPage.includes('confirmarAnular') && companiesPage.includes('handleActivar')
     && companiesPage.includes('handleEliminar'),
+);
+comprobar(
+  'el boton Anular sale del flag calculado por el servidor',
+  companiesPage.includes('c.puede_eliminarse ?') && companiesPage.includes('>Anular<'),
+);
+comprobar(
+  'el alta de una empresa anulada pide el motivo',
+  companiesPage.includes('Motivo de la anulación') && companiesPage.includes('desactivar(anulando.id, motivoBaja.trim()'),
 );
 comprobar(
   'tras cambiar el estado se recarga la empresa del contexto',
   companiesPage.includes('recargar?.()'),
+);
+
+const scan = leer('src/pages/Scan.tsx');
+const inicioCarga = scan.indexOf('Digitalizar desde esta máquina');
+comprobar(
+  'el form de digitalizar muestra el aviso de empresa no activa',
+  inicioCarga > -1 && scan.indexOf('AvisoSinEmpresa', inicioCarga) > inicioCarga,
 );
 
 if (fallos) {

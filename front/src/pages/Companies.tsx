@@ -7,7 +7,10 @@ import { useEmpresa, usePermisos } from '../contextos/EmpresaContexto';
 
 const ETIQUETA_ESTADO: Record<Company['estado'], string> = {
   activo: 'Activa',
-  inactivo: 'Inactiva (se puede reactivar)',
+  // "Anular" es la accion y "anulada" el estado en la pantalla. El valor de la
+  // base sigue siendo `inactivo`: no necesitamos otra migration para renombrar
+  // una etiqueta, y el contrato HTTP no cambia.
+  inactivo: 'Anulada (se puede reactivar)',
   eliminado: 'Eliminada',
 };
 
@@ -20,6 +23,8 @@ export function Companies() {
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingCompany, setEditingCompany] = useState<Company | null>(null);
+  const [anulando, setAnulando] = useState<Company | null>(null);
+  const [motivoBaja, setMotivoBaja] = useState('');
   const [formData, setFormData] = useState<CompanyCreate>({ name: '', tax_id: '' });
   const [submitting, setSubmitting] = useState(false);
 
@@ -76,13 +81,19 @@ export function Companies() {
     recargar?.();
   };
 
-  const handleDesactivar = async (id: string) => {
-    if (!confirm('¿Desactivar esta empresa? Sus datos se conservan y podra reactivarla; mientras este inactiva no se podra trabajar en ella.')) return;
+  const abrirAnular = (company: Company) => {
+    setAnulando(company);
+    setMotivoBaja('');
+  };
+
+  const confirmarAnular = async () => {
+    if (!anulando) return;
     try {
-      await companiesApi.desactivar(id);
+      await companiesApi.desactivar(anulando.id, motivoBaja.trim() || undefined);
+      setAnulando(null);
       trasCambiar();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error al desactivar');
+      setError(e instanceof Error ? e.message : 'Error al anular');
     }
   };
 
@@ -108,7 +119,20 @@ export function Companies() {
   };
 
   const columns = [
-    { key: 'name', header: 'Nombre', render: (c: Company) => <span className="font-medium">{c.name}</span> },
+    {
+      key: 'name', header: 'Nombre',
+      render: (c: Company) => (
+        <div>
+          <span className="font-medium">{c.name}</span>
+          {c.estado === 'inactivo' && c.motivo_baja && (
+            <div className="text-xs text-gray-600">Motivo de la anulación: {c.motivo_baja}</div>
+          )}
+          {c.estado === 'inactivo' && c.bajada_por && (
+            <div className="text-xs text-gray-400">Anulada por {c.bajada_por}</div>
+          )}
+        </div>
+      ),
+    },
     { key: 'tax_id', header: 'RFC', render: (c: Company) => <code className="text-sm bg-gray-100 px-2 py-1 rounded">{c.tax_id}</code> },
     { key: 'created_at', header: 'Creada', render: (c: Company) => new Date(c.created_at).toLocaleDateString('es-MX') },
     {
@@ -125,12 +149,18 @@ export function Companies() {
         <div className="flex gap-2">
           <Button variant="edit" size="sm" onClick={(e) => { e.stopPropagation(); openEditModal(c); }}>Editar</Button>
           {c.estado === 'activo' && (
-            <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); handleDesactivar(c.id); }}>Desactivar</Button>
+            // Con datos, "Eliminar" seria una promesa que el servidor rechaza:
+            // se ofrece "Anular", que conserva la evidencia y se puede revertir.
+            c.puede_eliminarse ? (
+              <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleEliminar(c.id); }}>Eliminar</Button>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); abrirAnular(c); }}>Anular</Button>
+            )
           )}
           {c.estado === 'inactivo' && (
             <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); handleActivar(c.id); }}>Activar</Button>
           )}
-          {c.estado !== 'eliminado' && (
+          {c.estado === 'inactivo' && c.puede_eliminarse && (
             <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleEliminar(c.id); }}>Eliminar</Button>
           )}
         </div>
@@ -162,6 +192,32 @@ export function Companies() {
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center justify-between">
           <span>{error}</span>
           <Button variant="ghost" size="sm" onClick={() => setError(null)}>×</Button>
+        </div>
+      )}
+
+      {anulando && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
+            <h2 className="text-lg font-semibold">Anular {anulando.name}</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Sus datos se conservan; mientras este anulada solo se podran consultar. Podras reactivarla.
+            </p>
+            <label className="mt-4 block text-sm font-medium" htmlFor="motivo-baja">
+              Motivo de la anulación (opcional)
+            </label>
+            <textarea
+              id="motivo-baja"
+              className="mt-1 w-full rounded border border-gray-300 p-2 text-sm"
+              maxLength={500}
+              value={motivoBaja}
+              onChange={(e) => setMotivoBaja(e.target.value)}
+              placeholder="¿Por que se anula?"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setAnulando(null)}>Cancelar</Button>
+              <Button variant="danger" onClick={confirmarAnular}>Anular</Button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -4,20 +4,29 @@ Tres premisas del producto, cada una con su contraprueba:
 
 1. Una empresa con datos NO se elimina: se desactiva, conservando la evidencia.
 2. El sistema no se queda sin empresa activa mientras haya datos de trabajo.
-3. Sin empresa activa NO se procesa nada (ni se consulta): el front lo dice con
-   `AvisoSinEmpresa`, y el servidor responde 403 con `SIN_EMPRESA_ACTIVA`.
+3. Una empresa ANULADA no procesa, pero SI se consulta: el front lo dice con
+   `AvisoSinEmpresa` y el servidor responde 403 con `SIN_EMPRESA_ANULADA` a
+   cualquier escritura. Las lecturas siguen sirviendo la evidencia.
    Seguir listando, creando y activando empresas es la via de salida.
 """
 
+import json
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy import select
+from starlette.requests import Request
 
-from app.core.deps import SIN_EMPRESA_ACTIVA
+from app.core.deps import (
+    SIN_EMPRESA_ACTIVA,
+    SIN_EMPRESA_ANULADA,
+    empresa_activa,
+    guardia_de_permisos,
+)
 from app.core.enums import EstadoEmpresa
 from app.models.auditoria import Auditoria
 from app.models.bank_transaction import BankTransactionModel
@@ -87,6 +96,81 @@ class TestDesactivarYEliminar:
         assert movimientos is not None
 
     @pytest.mark.asyncio
+    async def test_el_boton_anular_sale_del_servicio_no_de_un_conteo_del_front(
+        self, async_client, db_session, usuario_de_prueba
+    ):
+        con_datos = await _crear_empresa(async_client, "Con datos", "BAJA001C")
+        vacia = await _crear_empresa(async_client, "Vacia", "BAJA001V")
+        await _membresia(db_session, usuario_de_prueba, con_datos)
+        await _membresia(db_session, usuario_de_prueba, vacia)
+        await _movimiento(db_session, con_datos)
+
+        respuesta = await async_client.get(
+            "/api/v1/companies/", params={"incluir_inactivas": True}
+        )
+        assert respuesta.status_code == 200
+        banderas = {c["id"]: c["puede_eliminarse"] for c in respuesta.json()}
+        # Con datos: Anular. Sin datos: Eliminar (siempre que quede otra activa).
+        assert banderas[con_datos] is False
+        assert banderas[vacia] is True
+
+        # El cerrojo sigue en el servicio aunque el cliente reenvie un body viejo.
+        assert (await async_client.post(
+            f"/api/v1/companies/{con_datos}/eliminar"
+        )).status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_anular_guarda_el_motivo_y_activar_lo_limpia(
+        self, async_client, db_session, usuario_de_prueba
+    ):
+        primera = await _crear_empresa(async_client, "Con nota", "BAJA001N")
+        segunda = await _crear_empresa(async_client, "Otra", "BAJA001O")
+        await _membresia(db_session, usuario_de_prueba, primera)
+        await _membresia(db_session, usuario_de_prueba, segunda)
+        await _movimiento(db_session, primera)
+
+        baja = await async_client.post(
+            f"/api/v1/companies/{primera}/desactivar",
+            json={"motivo": "Cierre del ejercicio"},
+        )
+        assert baja.status_code == 200
+        assert baja.json()["motivo_baja"] == "Cierre del ejercicio"
+        assert baja.json()["bajada_por"] == usuario_de_prueba.email
+        assert baja.json()["bajada_en"] is not None
+
+        empresa = await db_session.get(CompanyModel, UUID(primera))
+        assert empresa.motivo_baja == "Cierre del ejercicio"
+        await db_session.refresh(empresa)
+
+        filas = (await db_session.scalars(
+            select(Auditoria).where(
+                Auditoria.registro_afectado == UUID(primera),
+                Auditoria.accion == "update",
+            )
+        )).all()
+        assert len(filas) == 1
+        cambios = json.loads(filas[0].detalles)["cambios"]
+        assert any(c["campo"] == "motivo_baja" and c["despues"] == "Cierre del ejercicio"
+                   for c in cambios)
+
+        alta = await async_client.post(f"/api/v1/companies/{primera}/activar")
+        assert alta.status_code == 200
+        assert alta.json()["motivo_baja"] is None
+        assert alta.json()["bajada_en"] is None
+        assert alta.json()["bajada_por"] is None
+
+        await db_session.refresh(empresa)
+        assert empresa.motivo_baja is None
+        # La nota se limpia de la fila, pero NO se borra del rastro.
+        filas = (await db_session.scalars(
+            select(Auditoria).where(
+                Auditoria.registro_afectado == UUID(primera),
+                Auditoria.accion == "update",
+            )
+        )).all()
+        assert len(filas) == 2
+
+    @pytest.mark.asyncio
     async def test_soft_delete_no_borra_la_fila(
         self, async_client, db_session, usuario_de_prueba
     ):
@@ -122,7 +206,7 @@ class TestDesactivarYEliminar:
         assert respuesta.json()["estado"] == "activo"
 
     @pytest.mark.asyncio
-    async def test_la_baja_sale_de_la_lista_de_empresas_del_usuario(
+    async def test_la_anulada_sigue_en_la_lista_para_explicar_el_motivo(
         self, async_client, db_session, usuario_de_prueba
     ):
         primera = await _crear_empresa(async_client, "Primera", "BAJA004")
@@ -131,13 +215,19 @@ class TestDesactivarYEliminar:
         await _membresia(db_session, usuario_de_prueba, segunda)
         await _movimiento(db_session, primera)
 
-        await async_client.post(f"/api/v1/companies/{primera}/desactivar")
+        await async_client.post(
+            f"/api/v1/companies/{primera}/desactivar",
+            json={"motivo": "Cierre del ejercicio"},
+        )
         respuesta = await async_client.get("/api/v1/auth/empresas")
         assert respuesta.status_code == 200
-        ids = [m["company_id"] for m in respuesta.json()]
-        assert primera not in ids
-        assert segunda in ids
-        assert all(m["estado"] == "activo" for m in respuesta.json())
+        por_id = {m["company_id"]: m for m in respuesta.json()}
+        assert primera in por_id and segunda in por_id
+        # Si desapareciera, el front no podria decir POR QUE no digitaliza.
+        assert por_id[primera]["estado"] == "inactivo"
+        assert por_id[primera]["motivo_baja"] == "Cierre del ejercicio"
+        assert por_id[primera]["permisos"] == ["leer"]
+        assert por_id[segunda]["estado"] == "activo"
 
     @pytest.mark.asyncio
     async def test_el_listado_solo_muestra_activas_por_omision(
@@ -170,10 +260,20 @@ class TestDesactivarYEliminar:
         await _movimiento(db_session, primera)
 
         await async_client.post(f"/api/v1/companies/{primera}/desactivar")
-        respuesta = await async_client.get(
+        # Consultar la evidencia sigue permitido...
+        consulta = await async_client.get(
             "/api/v1/caja-chica/", headers={"X-Company-ID": primera}
         )
+        assert consulta.status_code == 200
+
+        # ...pero abrir una caja NO. La misma dependencia decide segun la accion.
+        respuesta = await async_client.post(
+            "/api/v1/caja-chica/",
+            json={"nombre": "Caja nueva"},
+            headers={"X-Company-ID": primera},
+        )
         assert respuesta.status_code == 403
+        assert respuesta.json()["detail"] == SIN_EMPRESA_ANULADA
 
     @pytest.mark.asyncio
     async def test_ultima_activa_con_datos_no_se_da_de_baja(
@@ -242,50 +342,85 @@ class TestSinEmpresaActiva:
             f"/api/v1/companies/{company_id}/desactivar"
         )
         assert respuesta.status_code == 200
+        # Anulada se ve (para explicar el motivo); eliminada desaparece.
+        assert [m["estado"] for m in (await async_client.get("/api/v1/auth/empresas")).json()] == ["inactivo"]
+        assert (await async_client.post(
+            f"/api/v1/companies/{company_id}/eliminar"
+        )).status_code == 200
         assert (await async_client.get("/api/v1/auth/empresas")).json() == []
+        # Eliminada no es anulada: ni siquiera se consulta.
+        consulta = await async_client.get(
+            "/api/v1/dashboard/", headers={"X-Company-ID": company_id}
+        )
+        assert consulta.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_no_se_digitaliza_ni_se_consulta_nada(
+    async def test_no_se_digitaliza_pero_si_se_consulta(
         self, async_client, db_session, usuario_de_prueba
     ):
-        """La unica empresa cerrada para TODAS las puertas de trabajo."""
+        """Anulada: las escrituras paran con motivo; las lecturas siguen."""
         company_id = await _crear_empresa(async_client, "Unica", "BAJA015")
         await _membresia(db_session, usuario_de_prueba, company_id)
         assert (await async_client.post(
-            f"/api/v1/companies/{company_id}/desactivar"
+            f"/api/v1/companies/{company_id}/desactivar",
+            json={"motivo": "Prueba de anulacion"},
         )).status_code == 200
+        cabecera = {"X-Company-ID": company_id}
 
-        # Escaneo de carpeta, sin company_id: tampoco inventaria archivos.
+        # Escaneo de carpeta, sin company_id: no hay empresa activa que inventar.
         escanear = await async_client.post("/api/v1/scan/", json={})
         assert escanear.status_code == 403
         assert escanear.json()["detail"] == SIN_EMPRESA_ACTIVA
 
-        # Las dos puertas explicitas de digitalizacion.
+        # Las dos puertas explicitas de digitalizacion SI nombran la anulada:
+        # el motivo tiene que ser el de la empresa elegida, no el generico.
         lote = await async_client.post(
             "/api/v1/expenses/upload-batch",
             files={"files": ("ticket.pdf", b"%PDF-1.4 prueba", "application/pdf")},
             data={"company_id": company_id},
+            headers=cabecera,
         )
         assert lote.status_code == 403
-        assert lote.json()["detail"] == SIN_EMPRESA_ACTIVA
+        assert lote.json()["detail"] == SIN_EMPRESA_ANULADA
 
         directorio = await async_client.post(
             "/api/v1/expenses/digitalizar-directorio",
             data={"company_id": company_id},
+            headers=cabecera,
         )
         assert directorio.status_code == 403
-        assert directorio.json()["detail"] == SIN_EMPRESA_ACTIVA
+        assert directorio.json()["detail"] == SIN_EMPRESA_ANULADA
 
-        # Y las demas opciones: tablero, tickets, informe, caja.
-        for ruta in (
-            "/api/v1/dashboard/",
-            "/api/v1/tickets/",
-            "/api/v1/reports/cierre-mensual",
-            "/api/v1/caja-chica/",
+        # Conciliar tambien es procesar, aunque el cuerpo traiga la empresa.
+        conciliar = await async_client.post(
+            "/api/v1/reconciliations/run",
+            json={"company_id": company_id},
+            headers=cabecera,
+        )
+        assert conciliar.status_code == 403
+        assert conciliar.json()["detail"] == SIN_EMPRESA_ANULADA
+
+        # Un PDF es SALIDA de datos, no una consulta: tampoco se genera.
+        pdf = await async_client.get(
+            "/api/v1/reports/cierre-mensual.pdf",
+            params={"company_id": company_id, "periodo": "2026-11"},
+            headers=cabecera,
+        )
+        assert pdf.status_code == 403
+        assert pdf.json()["detail"] == SIN_EMPRESA_ANULADA
+
+        # La evidencia sigue consultable, incluida la caja que usa EmpresaActiva.
+        for ruta, parametros in (
+            ("/api/v1/dashboard/", None),
+            ("/api/v1/tickets/", None),
+            (
+                "/api/v1/reports/cierre-mensual",
+                {"company_id": company_id, "periodo": "2026-11"},
+            ),
+            ("/api/v1/caja-chica/", None),
         ):
-            respuesta = await async_client.get(ruta)
-            assert respuesta.status_code == 403, (ruta, respuesta.text)
-            assert respuesta.json()["detail"] == SIN_EMPRESA_ACTIVA
+            respuesta = await async_client.get(ruta, params=parametros, headers=cabecera)
+            assert respuesta.status_code == 200, (ruta, respuesta.text)
 
     @pytest.mark.asyncio
     async def test_la_recuperacion_sigue_abierta(
@@ -298,7 +433,7 @@ class TestSinEmpresaActiva:
             f"/api/v1/companies/{company_id}/desactivar"
         )).status_code == 200
 
-        assert (await async_client.get("/api/v1/auth/empresas")).json() == []
+        assert [m["estado"] for m in (await async_client.get("/api/v1/auth/empresas")).json()] == ["inactivo"]
         assert (await async_client.get("/api/v1/companies/")).status_code == 200
         assert (await async_client.get(f"/api/v1/companies/{company_id}")).status_code == 200
 
@@ -306,3 +441,82 @@ class TestSinEmpresaActiva:
         assert activar.status_code == 200
         assert activar.json()["estado"] == "activo"
         assert (await async_client.get("/api/v1/dashboard/")).status_code == 200
+
+
+    @pytest.mark.asyncio
+    async def test_la_recuperacion_sigue_abierta_con_la_unica_eliminada(
+        self, async_client, db_session, usuario_de_prueba
+    ):
+        """`_es_recuperacion` se prueba con la empresa ELIMINADA, no con la anulada.
+
+        Con una anulada hay membresia consultable y la guardia ni entra en la
+        rama de recuperacion: un test ahi daba verde con el cerrojo quitado.
+        """
+        company_id = await _crear_empresa(async_client, "Unica", "BAJA019")
+        await _membresia(db_session, usuario_de_prueba, company_id)
+        assert (await async_client.post(
+            f"/api/v1/companies/{company_id}/eliminar"
+        )).status_code == 200
+
+        # Listar y ver el detalle son la via de salida; tienen que responder.
+        assert (await async_client.get("/api/v1/companies/")).status_code == 200
+        assert (await async_client.get(
+            f"/api/v1/companies/{company_id}"
+        )).status_code == 200
+        # Activar SI se alcanza: el 409 lo pone el servicio, no la guardia.
+        assert (await async_client.post(
+            f"/api/v1/companies/{company_id}/activar"
+        )).status_code == 409
+
+
+class TestLasDosPuertasSePruebanAisladas:
+    """La guardia y `empresa_activa` se tapan entre si por HTTP.
+
+    Si solo se prueban con `async_client`, quitar una defensa no cambia el
+    veredicto: la otra sigue devolviendo el 403. Estas dos llamadas directas
+    son las que hacen que cada mutacion muera por su motivo.
+    """
+
+    @pytest.mark.asyncio
+    async def test_la_guardia_para_a_quien_solo_tiene_empresas_eliminadas(
+        self, async_client, db_session, usuario_de_prueba
+    ):
+        company_id = await _crear_empresa(async_client, "Eliminada", "BAJA017")
+        await _membresia(db_session, usuario_de_prueba, company_id)
+        assert (await async_client.post(
+            f"/api/v1/companies/{company_id}/eliminar"
+        )).status_code == 200
+
+        peticion = Request({
+            "type": "http", "method": "GET", "path": "/api/v1/dashboard/",
+            "headers": [], "query_string": b"",
+        })
+        with pytest.raises(HTTPException) as error:
+            await guardia_de_permisos(peticion, usuario_de_prueba, db_session)
+        assert error.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_empresa_activa_rechaza_una_anulada_para_escribir(
+        self, async_client, db_session, usuario_de_prueba
+    ):
+        company_id = await _crear_empresa(async_client, "Anulada", "BAJA018")
+        otra = await _crear_empresa(async_client, "Otra", "BAJA018B")
+        await _membresia(db_session, usuario_de_prueba, company_id)
+        await _membresia(db_session, usuario_de_prueba, otra)
+        await _movimiento(db_session, company_id)
+        assert (await async_client.post(
+            f"/api/v1/companies/{company_id}/desactivar",
+            json={"motivo": "Prueba de la dependencia"},
+        )).status_code == 200
+
+        peticion = Request({
+            "type": "http", "method": "POST", "path": "/api/v1/caja-chica/",
+            "headers": [(b"x-company-id", company_id.encode())],
+            "query_string": b"",
+        })
+        with pytest.raises(HTTPException) as error:
+            await empresa_activa(
+                peticion, usuario_de_prueba, db_session, x_company_id=company_id
+            )
+        assert error.value.status_code == 403
+        assert error.value.detail == SIN_EMPRESA_ANULADA

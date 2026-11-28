@@ -261,13 +261,13 @@ async def yo(usuario: UsuarioActual) -> UsuarioResponse:
     summary="Empresas a las que esta cuenta tiene acceso",
 )
 async def mis_empresas(usuario: UsuarioActual, db: Sesion) -> list[MembresiaEmpresaResponse]:
-    """Las membresias activas y el rol en cada una, leidos de la BD.
+    """Membresias activas y anuladas, con el rol y los permisos reales.
 
-    El cliente necesita esta lista para elegir la empresa activa y para no
-    ofrecer acciones que su rol no puede ejecutar. No la saca del token: un rol
-    cambiado en la BD surte efecto en el proximo request, igual que `is_active`
-    (regla 9 de `AGENTS.md`). Tampoco la saca de `companies`: ahi estan TODAS,
-    y enumerarlas aqui seria invitar al navegador a elegir una ajena.
+    Una empresa anulada se lista para que el operador vea POR QUE no puede
+    digitalizar en ella: si desapareciera, el aviso seria el generico "no hay
+    empresa" y pareceria un problema de eleccion. Sus permisos se reducen a
+    `leer`, que es lo unico que el servidor le permite. Eliminadas no se
+    ofrecen: salieron del trabajo, aunque la fila siga en la base.
     """
     filas = (
         await db.execute(
@@ -279,7 +279,9 @@ async def mis_empresas(usuario: UsuarioActual, db: Sesion) -> list[MembresiaEmpr
             .where(
                 UsuarioEmpresaModel.user_id == usuario.id,
                 UsuarioEmpresaModel.activo.is_(True),
-                CompanyModel.estado == EstadoEmpresa.ACTIVO.value,
+                CompanyModel.estado.in_(
+                    (EstadoEmpresa.ACTIVO.value, EstadoEmpresa.INACTIVO.value)
+                ),
             )
             .order_by(CompanyModel.name)
         )
@@ -292,7 +294,12 @@ async def mis_empresas(usuario: UsuarioActual, db: Sesion) -> list[MembresiaEmpr
             tax_id=company.tax_id,
             rol=rol,
             estado=company.estado,
-            permisos=list(permisos_de_rol(rol)),
+            motivo_baja=company.motivo_baja,
+            permisos=(
+                list(permisos_de_rol(rol))
+                if company.estado == EstadoEmpresa.ACTIVO.value
+                else ["leer"]
+            ),
         )
         for company, rol in filas
     ]

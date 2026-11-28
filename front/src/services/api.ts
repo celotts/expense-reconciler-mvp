@@ -381,7 +381,10 @@ export const companiesApi = {
     method: 'PATCH',
     body: JSON.stringify(data),
   }),
-  desactivar: (id: string) => fetchApi<Company>(`/companies/${id}/desactivar`, { method: 'POST' }),
+  desactivar: (id: string, motivo?: string) => fetchApi<Company>(`/companies/${id}/desactivar`, {
+    method: 'POST',
+    body: motivo ? JSON.stringify({ motivo }) : undefined,
+  }),
   activar: (id: string) => fetchApi<Company>(`/companies/${id}/activar`, { method: 'POST' }),
   // Soft delete: la fila y su evidencia siguen en la base.
   eliminar: (id: string) => fetchApi<Company>(`/companies/${id}/eliminar`, { method: 'POST' }),

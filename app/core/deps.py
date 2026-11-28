@@ -214,6 +214,17 @@ SIN_EMPRESA_ACTIVA = (
     "No hay ninguna empresa activa. Active o cree una para procesar gastos."
 )
 
+# Cuando el cliente NOMBRA una empresa anulada, el mensaje generico miente:
+# no es que no haya empresa, es que la que eligio no puede procesar. Decirlo
+# evita que el operador repita la corrida o cambie de empresa sin saber why.
+SIN_EMPRESA_ANULADA = (
+    "La empresa seleccionada esta anulada. No se puede escanear ni procesar "
+    "informacion. Actívela para continuar."
+)
+SIN_EMPRESA_ELIMINADA = (
+    "La empresa seleccionada esta eliminada. Cree otra para volver a trabajar."
+)
+
 
 # Cuando TODAS las empresas estan cerradas, casi toda la API tiene que parar:
 # digitalizar, conciliar, exportar, inventario, caja, cuentas, auditoria. Las
@@ -257,6 +268,87 @@ async def _tiene_membresias(usuario: UserModel, db: Sesion) -> bool:
     return fila is not None
 
 
+async def _membresias_consultables(
+    usuario: UserModel, db: Sesion
+) -> list[tuple[str, UUID, str]]:
+    """Membresias en empresas activas O anuladas, con su estado.
+
+    Una empresa anulada no procesa, pero sigue siendo evidencia: se pueden
+    consultar sus datos. Eliminada no: desaparecio del trabajo, aunque la fila
+    siga en la base. Leer el estado en esta misma peticion evita que un cambio
+    de estado reciente siga autorizando con la respuesta anterior.
+    """
+    return list(
+        (
+            await db.execute(
+                select(
+                    UsuarioEmpresaModel.rol,
+                    UsuarioEmpresaModel.company_id,
+                    CompanyModel.estado,
+                )
+                .join(
+                    CompanyModel,
+                    CompanyModel.id == UsuarioEmpresaModel.company_id,
+                )
+                .where(
+                    UsuarioEmpresaModel.user_id == usuario.id,
+                    UsuarioEmpresaModel.activo.is_(True),
+                    CompanyModel.estado.in_(
+                        (EstadoEmpresa.ACTIVO.value, EstadoEmpresa.INACTIVO.value)
+                    ),
+                )
+            )
+        ).all()
+    )
+
+
+async def _estado_empresa_del_usuario(
+    usuario: UserModel, db: Sesion, company_id: UUID
+) -> str | None:
+    """Estado de una empresa de la cuenta, sin filtrar por activa."""
+    return await db.scalar(
+        select(CompanyModel.estado)
+        .join(
+            UsuarioEmpresaModel,
+            UsuarioEmpresaModel.company_id == CompanyModel.id,
+        )
+        .where(
+            UsuarioEmpresaModel.user_id == usuario.id,
+            UsuarioEmpresaModel.activo.is_(True),
+            CompanyModel.id == company_id,
+        )
+        .limit(1)
+    )
+
+
+async def _motivo_de_empresa_no_activa(
+    usuario: UserModel, db: Sesion, elegida: UUID
+) -> str | None:
+    """Si la empresa elegida esta cerrada, decir POR QUE, no solo 'sin acceso'."""
+    estado = await _estado_empresa_del_usuario(usuario, db, elegida)
+    if estado == EstadoEmpresa.INACTIVO.value:
+        return SIN_EMPRESA_ANULADA
+    if estado == EstadoEmpresa.ELIMINADO.value:
+        return SIN_EMPRESA_ELIMINADA
+    return None
+
+
+async def _detalle_sin_empresa_activa(
+    request: Request, usuario: UserModel, db: Sesion
+) -> str:
+    """Explicar POR QUE no se procesa, con el nombre de la empresa elegida."""
+    cabecera = request.headers.get("X-Company-ID")
+    if cabecera:
+        try:
+            elegida = UUID(cabecera)
+        except ValueError:
+            return SIN_EMPRESA_ACTIVA
+        motivo = await _motivo_de_empresa_no_activa(usuario, db, elegida)
+        if motivo:
+            return motivo
+    return SIN_EMPRESA_ACTIVA
+
+
 async def _membresias_del_usuario(
     usuario: UserModel, db: Sesion
 ) -> list[tuple[str, UUID]]:
@@ -291,24 +383,35 @@ async def _companies_del_usuario(usuario: UserModel, db: Sesion) -> set[UUID]:
 
 
 async def empresa_activa(
+    request: Request,
     usuario: UsuarioActual,
     db: Sesion,
     x_company_id: Annotated[str | None, Header(alias="X-Company-ID")] = None,
 ) -> UUID:
-    """La empresa en la que opera esta peticion, o 403/409.
+    """La empresa de esta peticion: activa para escribir, anulada para consultar.
 
     403 para "no tienes acceso a esa empresa" y 409 para "tienes acceso a
     varias y no dijiste cual". Son respuestas distintas porque piden acciones
     distintas: la primera no tiene arreglo del lado del cliente, la segunda se
     arregla enviando la cabecera.
     """
-    company_ids = await _companies_del_usuario(usuario, db)
+    # La lectura de una empresa anulada es consulta de evidencia; la escritura
+    # no. Esto vive aqui y no solo en la guardia porque los routers de caja
+    # escriben con esta misma dependencia: si solo la guardia supiera la
+    # diferencia, un endpoint nuevo con `EmpresaActiva` podria escribir en una
+    # empresa anulada sin que la dependencia se enterara.
+    permiso = _permiso_de_la_peticion(request)
+    if permiso is None:
+        consultables = await _membresias_consultables(usuario, db)
+        company_ids = {company_id for _rol, company_id, _estado in consultables}
+    else:
+        company_ids = await _companies_del_usuario(usuario, db)
 
     if not company_ids:
         if await _tiene_membresias(usuario, db):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=SIN_EMPRESA_ACTIVA,
+                detail=await _detalle_sin_empresa_activa(request, usuario, db),
             )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -334,9 +437,13 @@ async def empresa_activa(
         ) from exc
 
     if elegida not in company_ids:
+        # Un header que nombra una empresa anulada no es "sin acceso": es la
+        # razón por la que no se procesa. Decirlo aquí evita que el operador
+        # repita la corrida culpando a la red.
+        motivo = await _motivo_de_empresa_no_activa(usuario, db, elegida)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="La cuenta no tiene acceso a esa empresa",
+            detail=motivo or "La cuenta no tiene acceso a esa empresa",
         )
     return elegida
 
@@ -349,27 +456,36 @@ async def empresa_visible(
     usuario: UsuarioActual,
     db: Sesion,
 ) -> UUID | None:
-    """La empresa a la que este token puede ver datos, o `None` si es legacy.
+    """La empresa de esta peticion: activa para escribir, tambien anulada para leer.
 
-    `empresa_activa` Exige 403 a las cuentas sin membresia porque los routers de
-    caja no saben trabajar sin empresa. Los routers antiguos (tickets, banco,
-    conciliaciones) SI saben: antes de `0022` no habia membresias y forzarla
-    aqui dejaria sin pantalla a esas cuentas. Por eso `None` significa "no
-    filtre por empresa", y no "no tiene acceso": es compatibilidad, no permiso.
+    Los routers antiguos (tickets, banco, conciliaciones) saben trabajar sin
+    membresia: antes de `0022` no habia, y forzarla dejaria sin pantalla a esas
+    cuentas. Por eso `None` significa "no filtre por empresa" y no "no tiene
+    acceso": es compatibilidad, no permiso.
 
-    Con varias membresias y sin cabecera NO se adivina: se pide la eleccion,
-    igual que en `empresa_activa`. Filtrar por la primera fila seria una decision
-    de seguridad tomada por el orden de la base de datos.
+    Una empresa anulada sigue siendo evidencia, asi que una consulta la acepta.
+    Escribir o exportar no: eso exige una empresa activa y lo impide la guardia
+    global incluso si este departamento se olvidara de comprobarlo.
     """
-    company_ids = await _companies_del_usuario(usuario, db)
+    # Una empresa anulada NO procesa, pero sus datos SIGUEN siendo consultables.
+    # Por eso la lectura usa membresias consultables (activa o anulada) y la
+    # escritura sigue exigiendo una activa. La Exportacion NO es lectura: es una
+    # salida de datos y `_permiso_de_la_peticion` la clasifica como EXPORTAR.
+    permiso = _permiso_de_la_peticion(request)
+    if permiso is None:
+        consultables = await _membresias_consultables(usuario, db)
+        company_ids = {company_id for _rol, company_id, _estado in consultables}
+    else:
+        company_ids = await _companies_del_usuario(usuario, db)
+
     if not company_ids:
         # Legacy (sin membresias) sigue viendo todo por compatibilidad. Quien
         # tenia membresias y las perdio todas por baja NO es legacy: no puede
-        # seguir procesando con el header de una empresa inactiva.
+        # seguir procesando con el header de una empresa anulada.
         if await _tiene_membresias(usuario, db):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=SIN_EMPRESA_ACTIVA,
+                detail=await _detalle_sin_empresa_activa(request, usuario, db),
             )
         return None
 
@@ -390,9 +506,10 @@ async def empresa_visible(
             detail="X-Company-ID no es un UUID valido",
         ) from exc
     if elegida not in company_ids:
+        motivo = await _motivo_de_empresa_no_activa(usuario, db, elegida)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="La cuenta no tiene acceso a esa empresa",
+            detail=motivo or "La cuenta no tiene acceso a esa empresa",
         )
     return elegida
 
@@ -591,28 +708,50 @@ async def guardia_de_permisos(
     sigue siendo competencia del servicio: aqui solo se puede juzgar lo que el
     cliente declara.
     """
-    filas = await _membresias_del_usuario(usuario, db)
     permiso = _permiso_de_la_peticion(request)
-    if not filas:
-        # Cuenta con membresias, pero TODAS en empresas cerradas: no es una
-        # cuenta anterior a `0022` (sin membresias). Sin esto, las puertas de
-        # digitalizacion que solo comprueban que la empresa EXISTA seguian
-        # escribiendo tickets en una empresa desactivada o eliminada.
-        # La excepcion es la recuperacion: listar, crear o activar una empresa
-        # tiene que seguir funcionando para poder volver a trabajar.
-        if _es_recuperacion(request):
+    ruta = request.url.path.rstrip("/")
+
+    # Gestion de empresas: la autoridad no depende de que haya una empresa
+    # activa, sino de la membresia (activa o anulada). Si dependiera, no se
+    # podria anular ni reactivar la ultima empresa porque no habria otra activa
+    # que sirviera de fiador para la peticion.
+    if ruta == "/api/v1/companies" or ruta.startswith("/api/v1/companies/"):
+        consultables = await _membresias_consultables(usuario, db)
+        if not consultables:
+            if await _tiene_membresias(usuario, db) and not _es_recuperacion(request):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="La cuenta no tiene acceso a esa empresa",
+                )
             return
-        # No solo escrituras: tablero, informes, exportaciones y listados tambien
-        # son trabajo sobre datos de una empresa. Si una cuenta con membresias
-        # ve todo despues de cerrar la unica empresa, el bloqueo es decorativo.
-        if await _tiene_membresias(usuario, db):
+        roles = roles_validos(rol for rol, _id, _estado in consultables)
+        if permiso is not None and not any(tiene_permiso(rol, permiso) for rol in roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=SIN_EMPRESA_ACTIVA,
+                detail=f"El rol de la cuenta no permite {permiso.value} en esta empresa",
             )
         return
 
-    company_ids = {company_id for _rol, company_id in filas}
+    # Una empresa anulada NO procesa; la evidencia SIGUE siendo consultable.
+    # Un POST que parezca consulta ya esta declarado en `_RUTAS_DE_SOLO_LECTURA`,
+    # y un PDF o Excel cuenta como SALIDA: `_permiso_de_la_peticion` lo clasifica
+    # como EXPORTAR y por eso NO entra en la rama de lectura.
+    consultables = await _membresias_consultables(usuario, db) if permiso is None else []
+    activas = await _membresias_del_usuario(usuario, db)
+    filas = consultables if permiso is None else activas
+    company_ids = {company_id for _rol, company_id, *_ in filas}
+
+    if not company_ids:
+        # Cuenta con membresias, pero todas en empresas cerradas: no es una
+        # cuenta anterior a `0022` (sin membresias). La lectura de una empresa
+        # anulada SI pasa por arriba; aqui solo queda una empresa eliminada.
+        if False:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=await _detalle_sin_empresa_activa(request, usuario, db),
+            )
+        return
+
     cabecera = request.headers.get("X-Company-ID")
     if cabecera:
         try:
@@ -626,19 +765,23 @@ async def guardia_de_permisos(
                 detail="X-Company-ID no es un UUID valido",
             ) from exc
         if elegida not in company_ids:
+            motivo = (
+                await _motivo_de_empresa_no_activa(usuario, db, elegida)
+                if permiso is not None else None
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="La cuenta no tiene acceso a esa empresa",
+                detail=motivo or "La cuenta no tiene acceso a esa empresa",
             )
-        # Un rol que no entendemos se descarta, no se convierte en admin ni
-        # revienta con ValueError en medio de la peticion.
-        roles = roles_validos(rol for rol, company_id in filas if company_id == elegida)
+        roles = roles_validos(
+            rol for rol, company_id, *_ in filas if company_id == elegida
+        )
     else:
         elegida = next(iter(company_ids)) if len(company_ids) == 1 else None
-        roles = roles_validos(rol for rol, _ in filas)
+        roles = roles_validos(rol for rol, *_ in filas)
 
     declarada = await _company_id_declarada(request)
-    if declarada is not None and not request.url.path.startswith("/api/v1/usuarios"):
+    if declarada is not None and not ruta.startswith("/api/v1/usuarios"):
         # `/usuarios` prohíbe `company_id` en el cuerpo con `extra="forbid"` y su
         # contrato es 422; cambiarlo aqui por un 409 sería romper ese contrato.
         if elegida is None:

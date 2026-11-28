@@ -107,7 +107,19 @@ export function EmpresaProvider({ children }: { children: ReactNode }) {
  */
 export function AvisoSinEmpresa({ mensaje }: { mensaje?: string }) {
   const { empresaActiva, cargando } = useEmpresa();
-  if (cargando || empresaActiva) return null;
+  if (cargando || empresaActiva?.estado === 'activo') return null;
+
+  if (empresaActiva?.estado === 'inactivo') {
+    const motivo = empresaActiva.motivo_baja
+      ? ` Motivo declarado: ${empresaActiva.motivo_baja}.`
+      : '';
+    return (
+      <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+        La empresa {empresaActiva.name} esta anulada. No se puede escanear ni procesar informacion; solo consultar sus datos. Actívela para continuar.{motivo}
+      </div>
+    );
+  }
+
   return (
     <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
       {mensaje ?? 'No hay ninguna empresa activa. Active o cree una en la barra lateral antes de procesar gastos.'}

@@ -10,7 +10,11 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     -- La baja no borra la fila ni su evidencia. Espejo de 0029.
     estado VARCHAR(20) NOT NULL DEFAULT 'activo'
-        CHECK (estado IN ('activo', 'inactivo', 'eliminado'))
+        CHECK (estado IN ('activo', 'inactivo', 'eliminado')),
+    -- Espejo de 0030: "anular" es la etiqueta de `inactivo` en la pantalla.
+    motivo_baja VARCHAR(500),
+    bajada_en TIMESTAMP WITH TIME ZONE,
+    bajada_por VARCHAR(150)
 );
 CREATE INDEX IF NOT EXISTS ix_companies_estado ON companies (estado);
 
@@ -863,7 +867,8 @@ INSERT INTO schema_migrations (nombre) VALUES
     ('0026_auditoria_company_id.sql'),
     ('0027_costo_del_kardex.sql'),
     ('0028_sesiones_activas.sql'),
-    ('0029_estado_empresa.sql')
+    ('0029_estado_empresa.sql'),
+    ('0030_anular_empresa_con_nota.sql')
 ON CONFLICT (nombre) DO NOTHING;
 
 CREATE TABLE ticket_persistence (

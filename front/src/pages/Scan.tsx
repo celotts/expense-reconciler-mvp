@@ -566,6 +566,9 @@ export function CargaPorLote({
         de carpeta y se registran en `scan_files`, así que reenviar los mismos bytes
         no crea tickets duplicados.
       </p>
+      <div className="mt-3">
+        <AvisoSinEmpresa mensaje="Elige una empresa activa para digitalizar. Sin ella no se puede atribuir ningún comprobante ni crear tickets." />
+      </div>
 
       <input
         id="carga-lote-archivos"

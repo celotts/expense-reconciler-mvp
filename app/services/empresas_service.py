@@ -24,10 +24,11 @@ una comprobacion solo en la base daria verde en la suite y en produccion el
 borrado se llevaria por delante la evidencia en cascada.
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import EstadoEmpresa
+from app.core.time import utcnow
 from app.models.accounting_mapping import AccountingMappingModel
 from app.models.bank_transaction import BankTransactionModel
 from app.models.caja_chica import CajaChicaModel, MovimientoCajaModel
@@ -90,6 +91,53 @@ async def cantidad_de_empresas_activas(db: AsyncSession) -> int:
     return int(await db.scalar(consulta) or 0)
 
 
+async def empresas_con_datos(db: AsyncSession, company_ids) -> set:
+    """Que empresas de la lista tienen filas de trabajo, en una sola consulta.
+
+    El boton "Anular" no puede decidirlo el front contando filas que no ve. Y
+    hacer una consulta por empresa en el listado seria N+1: diez tablas por
+    cada fila de la tabla de empresas.
+    """
+    ids = list(company_ids)
+    if not ids:
+        return set()
+    consulta = union_all(*[
+        select(modelo.company_id).where(modelo.company_id.in_(ids))
+        for modelo in TABLAS_DE_TRABAJO
+    ])
+    filas = (await db.execute(consulta)).all()
+    return {fila[0] for fila in filas if fila[0] is not None}
+
+
+async def puede_eliminarse(
+    db: AsyncSession,
+    company: CompanyModel,
+    *,
+    ids_con_datos: set | None = None,
+    hay_datos: bool | None = None,
+    activas: int | None = None,
+) -> bool:
+    """Los mismos cerrojos de `verificar_eliminar`, sin lanzar excepcion.
+
+    Es lo que el front necesita para cambiar "Eliminar" por "Anular" ANTES de
+    que la persona haga clic. No sustituye al cerrojo del servicio: si el
+    cliente reenvia un body viejo, `verificar_eliminar` sigue mandando el 409.
+    """
+    if ids_con_datos is None:
+        if await datos_de_la_empresa(db, company.id):
+            return False
+    elif company.id in ids_con_datos:
+        return False
+
+    if company.estado != EstadoEmpresa.ACTIVO.value:
+        return True
+    if activas is None:
+        activas = await cantidad_de_empresas_activas(db)
+    if hay_datos is None:
+        hay_datos = await hay_datos_en_el_sistema(db)
+    return not (activas == 1 and hay_datos)
+
+
 class EmpresaConDatosError(Exception):
     """La empresa tiene filas de trabajo: no se elimina, se desactiva."""
 
@@ -97,7 +145,7 @@ class EmpresaConDatosError(Exception):
         self.filas = filas
         super().__init__(
             f"La empresa tiene {filas} filas de trabajo y no se puede eliminar. "
-            "Desactívela para conservar su evidencia."
+            "Anule la empresa para conservar su evidencia."
         )
 
 
@@ -142,15 +190,32 @@ async def verificar_eliminar(db: AsyncSession, company: CompanyModel) -> None:
 
 
 def cambiar_estado(
-    db: AsyncSession, company: CompanyModel, estado: EstadoEmpresa
+    db: AsyncSession,
+    company: CompanyModel,
+    estado: EstadoEmpresa,
+    *,
+    motivo: str | None = None,
+    usuario: str | None = None,
 ) -> bool:
     """Escribe el estado y devuelve si hubo cambio (idempotente).
 
     No hace `commit`: el cambio y su auditoria tienen que entrar juntos, o el
     rastro podria decir que se desactivo una empresa que sigue activa. Es
     sincrona a proposito: no consulta la base y por eso no puede fallar a mitad.
+
+    La nota pertenece a la baja, no a la empresa: al reactivar se limpia de la
+    fila (la auditoria conserva el historico). Mostrar "anulada por X" en una
+    empresa activa seria un dato viejo con forma de dato actual.
     """
     if company.estado == estado.value:
         return False
     company.estado = estado.value
+    if estado is EstadoEmpresa.INACTIVO:
+        company.motivo_baja = motivo or None
+        company.bajada_en = utcnow()
+        company.bajada_por = usuario
+    elif estado is EstadoEmpresa.ACTIVO:
+        company.motivo_baja = None
+        company.bajada_en = None
+        company.bajada_por = None
     return True
